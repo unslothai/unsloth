@@ -5,7 +5,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useTrainingConfigStore } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
 import { ChipIcon, Database02Icon, GpuIcon, Settings04Icon } from "@hugeicons/core-free-icons";
@@ -103,7 +102,6 @@ export function SummaryStep() {
 
   const showLoraParams = isAdapterMethod(trainingMethod);
   const datasetName = datasetSource === "upload" ? uploadedFile : dataset;
-  const trainingMethodLabel = getTrainingMethodLabel(trainingMethod);
 
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -152,7 +150,7 @@ export function SummaryStep() {
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
             <Row label="Type" value={modelType} capitalize />
-            <Row label="Method" value={trainingMethodLabel} />
+            <Row label="Method" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"} />
           </div>
         </CardContent>
       </Card>
@@ -201,7 +199,7 @@ export function SummaryStep() {
             <div className="flex flex-1 flex-col">
               <span className="text-xs text-muted-foreground">Training</span>
               <span className="text-sm font-medium">
-                {trainingMethodLabel}
+                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"}
               </span>
             </div>
           </div>

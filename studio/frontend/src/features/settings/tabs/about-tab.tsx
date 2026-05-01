@@ -12,7 +12,6 @@ import {
   Book03Icon,
   Cancel01Icon,
   MessageNotification01Icon,
-  NewReleasesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -49,9 +48,9 @@ export function AboutTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">Help</h1>
+        <h1 className="text-lg font-semibold font-heading">About</h1>
         <p className="text-xs text-muted-foreground">
-          Documentation, release notes, feedback, and Studio build info.
+          Unsloth Studio build info and support.
         </p>
       </header>
 
@@ -77,18 +76,6 @@ export function AboutTab() {
           >
             <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
             unsloth.ai/docs
-            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-          </a>
-        </SettingsRow>
-        <SettingsRow label="Release notes">
-          <a
-            href="https://unsloth.ai/docs/new/changelog"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-          >
-            <HugeiconsIcon icon={NewReleasesIcon} className="size-3.5" />
-            What's new
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>

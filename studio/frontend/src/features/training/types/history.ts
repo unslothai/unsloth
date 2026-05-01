@@ -12,8 +12,6 @@ export interface TrainingRunSummary {
   final_step: number | null;
   final_loss: number | null;
   output_dir: string | null;
-  can_resume: boolean;
-  resumed_later: boolean;
   duration_seconds: number | null;
   error_message: string | null;
   loss_sparkline: number[] | null;

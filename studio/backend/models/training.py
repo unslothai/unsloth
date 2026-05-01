@@ -16,11 +16,8 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
-    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = (
-        Field(
-            ...,
-            description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
-        )
+    training_type: str = Field(
+        ..., description = "Training type: 'LoRA/QLoRA' or 'Full Finetuning'"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
@@ -89,13 +86,6 @@ class TrainingStartRequest(BaseModel):
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
-    embedding_learning_rate: Optional[float] = Field(
-        None,
-        gt = 0,
-        lt = 1.0,
-        description = "Separate learning rate for embedding matrices (CPT). "
-        "Must be in (0, 1). Should be 2-10x smaller than the main learning rate.",
-    )
 
     # LoRA parameters
     use_lora: bool = Field(True, description = "Use LoRA (derived from training_type)")
@@ -137,9 +127,6 @@ class TrainingStartRequest(BaseModel):
     wandb_project: Optional[str] = Field(None, description = "W&B project name")
     enable_tensorboard: bool = Field(False, description = "Enable TensorBoard logging")
     tensorboard_dir: Optional[str] = Field(None, description = "TensorBoard directory")
-    resume_from_checkpoint: Optional[str] = Field(
-        None, description = "Saved training output directory to resume from"
-    )
 
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(
@@ -233,8 +220,6 @@ class TrainingRunSummary(BaseModel):
     duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
-    can_resume: bool = False
-    resumed_later: bool = False
 
 
 class TrainingRunListResponse(BaseModel):

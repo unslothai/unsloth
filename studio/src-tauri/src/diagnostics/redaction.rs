@@ -20,12 +20,6 @@ pub(crate) fn redact_text(text: &str, report: &mut RedactionReport) -> String {
     out = replace_regex(cookie_re(), &out, "$1: <redacted>", report);
     out = replace_regex(token_re(), &out, "<redacted token>", report);
     out = replace_regex(env_secret_re(), &out, "$1=<redacted>", report);
-    out = replace_regex(
-        native_path_lease_re(),
-        &out,
-        "$1<redacted native path lease>",
-        report,
-    );
     out = replace_known_paths(&out, report);
     out = replace_regex(windows_studio_re(), &out, "<studio_home>", report);
     out = replace_regex(windows_home_re(), &out, "%USERPROFILE%", report);
@@ -132,16 +126,6 @@ fn env_secret_re() -> &'static Regex {
     })
 }
 
-fn native_path_lease_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"#,
-        )
-        .unwrap()
-    })
-}
-
 fn windows_studio_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -181,7 +165,6 @@ mod tests {
             "Cookie: session=abcdef\n",
             "HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz\n",
             "API_KEY=secret123\n",
-            "native_path_lease=abc.DEF_123\n",
             "url=https://user:pass@example.com/path\n",
             "email=alex@example.com\n",
             "path=/Users/alex/.unsloth/studio/logs/install.log\n",
@@ -195,8 +178,6 @@ mod tests {
         assert!(!redacted.contains("session=abcdef"));
         assert!(!redacted.contains("hf_abcdefghijklmnopqrstuvwxyz"));
         assert!(!redacted.contains("secret123"));
-        assert!(!redacted.contains("abc.DEF_123"));
-        assert!(redacted.contains("native_path_lease=<redacted native path lease>"));
         assert!(redacted.contains("https://<redacted>@example.com/path"));
         assert!(!redacted.contains("alex@example.com"));
         assert!(redacted.contains("<studio_home>"));

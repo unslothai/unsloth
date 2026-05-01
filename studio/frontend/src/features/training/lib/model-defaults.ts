@@ -3,7 +3,6 @@
 
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
-import { usePlatformStore } from "@/config/env";
 
 type ModelDefaultsPatch = Partial<
   Pick<
@@ -70,13 +69,7 @@ function toStringArray(value: unknown): string[] | undefined {
 function toGradientCheckpointing(
   value: unknown,
 ): TrainingConfigState["gradientCheckpointing"] | undefined {
-  if (value === "none" || value === "true" || value === "unsloth" || value === "mlx") {
-    // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
-    if (usePlatformStore.getState().deviceType === "mac" && value === "unsloth") {
-      return "mlx";
-    }
-    return value;
-  }
+  if (value === "none" || value === "true" || value === "unsloth") return value;
   return undefined;
 }
 

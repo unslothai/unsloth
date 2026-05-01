@@ -6,7 +6,6 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
-from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -66,7 +65,6 @@ def get_physical_gpu_count() -> Optional[int]:
             capture_output = True,
             text = True,
             timeout = 5,
-            env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -92,7 +90,6 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
             capture_output = True,
             text = True,
             timeout = 5,
-            env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -144,7 +141,6 @@ def get_visible_gpu_utilization(
             capture_output = True,
             text = True,
             timeout = 5,
-            env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -231,7 +227,6 @@ def get_backend_visible_gpu_info(
             capture_output = True,
             text = True,
             timeout = 10,
-            env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:

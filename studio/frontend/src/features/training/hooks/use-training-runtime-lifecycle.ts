@@ -2,11 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { hasAuthToken } from "@/features/auth";
-import {
-  notifyNative,
-  safeNotificationLabel,
-  sanitizeNotificationBody,
-} from "@/lib/native-notifications";
 import { useEffect } from "react";
 import {
   getTrainingMetrics,
@@ -14,7 +9,6 @@ import {
   isAbortError,
   streamTrainingProgress,
 } from "../api/train-api";
-import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingRuntimeStore } from "../types/runtime";
 
@@ -22,76 +16,9 @@ const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
 const IDLE_POLL_INTERVAL_MS = 30000;
 const STREAM_RECONNECT_DELAY_MS = 1500;
-const GENERIC_TRAINING_STREAM_ERROR = "Training stream error";
-const DEFAULT_TRAINING_ERROR_BODY = "Your training run stopped with an error.";
 
 function shouldUseLiveSync(state: TrainingRuntimeStore): boolean {
   return state.isTrainingRunning || state.phase === "training";
-}
-
-function getTrainingErrorBody(state: TrainingRuntimeStore): string {
-  return sanitizeNotificationBody(
-    state.error ?? state.message,
-    DEFAULT_TRAINING_ERROR_BODY,
-  );
-}
-
-function shouldNotifyTrainingError(
-  before: TrainingRuntimeStore,
-  after: TrainingRuntimeStore,
-): boolean {
-  if (after.phase !== "error") {
-    return false;
-  }
-  if (before.phase !== "error" || before.jobId !== after.jobId) {
-    return true;
-  }
-  if (before.error !== GENERIC_TRAINING_STREAM_ERROR) {
-    return false;
-  }
-
-  return getTrainingErrorBody(before) !== getTrainingErrorBody(after);
-}
-
-function maybeNotifyTrainingTerminalTransition(
-  before: TrainingRuntimeStore,
-  after: TrainingRuntimeStore,
-): void {
-  if (!after.jobId) {
-    return;
-  }
-  if (
-    before.stopRequested ||
-    after.stopRequested ||
-    after.phase === "stopped"
-  ) {
-    return;
-  }
-
-  const sameJob = before.jobId === after.jobId;
-  const samePhase = before.phase === after.phase;
-
-  if (after.phase === "completed" && !(sameJob && samePhase)) {
-    const model = safeNotificationLabel(
-      after.startModelName ?? useTrainingConfigStore.getState().selectedModel,
-      "Your training run",
-    );
-    notifyNative({
-      key: `training-completed:${after.jobId}`,
-      title: "Training finished",
-      body: `${model} is complete.`,
-      requestPermission: false,
-    }).catch(() => undefined);
-  }
-
-  if (shouldNotifyTrainingError(before, after)) {
-    notifyNative({
-      key: `training-error:${after.jobId}`,
-      title: "Training failed",
-      body: getTrainingErrorBody(after),
-      requestPermission: false,
-    }).catch(() => undefined);
-  }
 }
 
 export function useTrainingRuntimeLifecycle(): void {
@@ -135,9 +62,7 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    const pollStatus = async (options?: {
-      suppressNativeNotifications?: boolean;
-    }) => {
+    const pollStatus = async () => {
       if (!hasAuthToken()) return;
       const gen = runtimeStore.getState().resetGeneration;
       try {
@@ -146,13 +71,9 @@ export function useTrainingRuntimeLifecycle(): void {
           return;
         }
 
-        const previousState = runtimeStore.getState();
         runtimeStore.getState().applyStatus(status);
 
         const nextState = runtimeStore.getState();
-        if (!options?.suppressNativeNotifications) {
-          maybeNotifyTrainingTerminalTransition(previousState, nextState);
-        }
         if (shouldUseLiveSync(nextState)) {
           void ensureStream();
         } else {
@@ -203,7 +124,7 @@ export function useTrainingRuntimeLifecycle(): void {
             }
 
             if (event.event === "error") {
-              liveStore.setRuntimeError(GENERIC_TRAINING_STREAM_ERROR);
+              liveStore.setRuntimeError("Training stream error");
               stopStream();
             }
           },
@@ -233,10 +154,7 @@ export function useTrainingRuntimeLifecycle(): void {
     const hydrate = async () => {
       runtimeStore.getState().setHydrating(true);
       try {
-        await Promise.all([
-          pollStatus({ suppressNativeNotifications: true }),
-          pollMetrics(),
-        ]);
+        await Promise.all([pollStatus(), pollMetrics()]);
       } finally {
         if (!disposed) {
           runtimeStore.getState().setHydrating(false);
@@ -254,12 +172,7 @@ export function useTrainingRuntimeLifecycle(): void {
 
     const statusTimer = setInterval(() => {
       const s = runtimeStore.getState();
-      if (!s.hasHydrated || s.isHydrating) {
-        return;
-      }
-      if (isIdle()) {
-        return;
-      }
+      if (isIdle() && s.hasHydrated) return;
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
 
@@ -274,13 +187,7 @@ export function useTrainingRuntimeLifecycle(): void {
     // Low-frequency background poll to recover from failed hydration or detect
     // out-of-band state changes (e.g. training started from another client).
     const idleTimer = setInterval(() => {
-      const s = runtimeStore.getState();
-      if (!s.hasHydrated || s.isHydrating) {
-        return;
-      }
-      if (!isIdle()) {
-        return;
-      }
+      if (!isIdle()) return;
       void pollStatus();
     }, IDLE_POLL_INTERVAL_MS);
 

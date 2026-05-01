@@ -35,6 +35,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 from utils.models.model_config import (
     is_vision_model,
     _is_vision_model_uncached,
+    _is_vision_model_subprocess,
     _vision_detection_cache,
 )
 
@@ -116,6 +117,65 @@ class TestVisionCacheSubprocessPath:
 
         mock_subprocess.assert_called_once()
         assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
+
+    @patch("utils.models.model_config._load_raw_model_config")
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    def test_subprocess_none_falls_back_to_gemma4_raw_config(
+        self, mock_needs_t5, mock_subprocess, mock_load_raw_config
+    ):
+        mock_load_raw_config.return_value = {
+            "architectures": ["Gemma4AudioForCausalLM"],
+            "model_type": "gemma4audio",
+        }
+
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is True
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is True
+
+        mock_subprocess.assert_called_once()
+        mock_load_raw_config.assert_called_once_with(
+            "unsloth/gemma-4-E4B-it", hf_token = None
+        )
+        assert _vision_detection_cache[("unsloth/gemma-4-E4B-it", None)] is True
+
+    @patch("utils.models.model_config._load_raw_model_config", return_value = None)
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    def test_raw_config_transient_failure_not_cached(
+        self, mock_needs_t5, mock_subprocess, mock_load_raw_config
+    ):
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is False
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is False
+
+        assert mock_subprocess.call_count == 2
+        assert mock_load_raw_config.call_count == 2
+        assert ("unsloth/gemma-4-E4B-it", None) not in _vision_detection_cache
+
+    @patch("utils.models.model_config._load_raw_model_config")
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    def test_non_vision_raw_config_false_cached(
+        self, mock_needs_t5, mock_subprocess, mock_load_raw_config
+    ):
+        mock_load_raw_config.return_value = {
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        }
+
+        assert is_vision_model("org/text-only-needs-t5") is False
+        assert is_vision_model("org/text-only-needs-t5") is False
+
+        mock_subprocess.assert_called_once()
+        mock_load_raw_config.assert_called_once()
+        assert _vision_detection_cache[("org/text-only-needs-t5", None)] is False
+
+    @patch("utils.transformers_version._ensure_venv_t5_550_exists", return_value = False)
+    @patch("utils.models.model_config.subprocess.run")
+    def test_missing_t5_550_env_returns_none_without_subprocess(
+        self, mock_run, mock_ensure_t5
+    ):
+        assert _is_vision_model_subprocess("unsloth/gemma-4-E4B-it") is None
+        mock_run.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

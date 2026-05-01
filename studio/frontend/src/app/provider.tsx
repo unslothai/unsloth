@@ -10,7 +10,6 @@ import {
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
@@ -246,7 +245,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const content = showApp ? (
     <>
       <TauriUpdateLayer isExternalServer={isExternalServer} />
-      <NativeIntentDrain />
       {children}
     </>
   ) : (

@@ -36,7 +36,7 @@ export function ApiKeysTab() {
     try {
       setKeys(await fetchApiKeys());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load API access.");
+      setError(e instanceof Error ? e.message : "Couldn't load API keys.");
     } finally {
       setLoading(false);
     }
@@ -54,7 +54,7 @@ export function ApiKeysTab() {
       await load();
       setRevokeTarget(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't revoke access token.");
+      setError(e instanceof Error ? e.message : "Couldn't revoke key.");
     } finally {
       setRevoking(false);
     }
@@ -63,18 +63,9 @@ export function ApiKeysTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">API</h1>
+        <h1 className="text-lg font-semibold font-heading">API Keys</h1>
         <p className="text-xs text-muted-foreground">
-          Access Unsloth programmatically via the OpenAI-compatible API.{" "}
-          <a
-            href="https://unsloth.ai/docs/basics/api"
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
-          >
-            Read the API docs
-          </a>
-          .
+          Access Unsloth Studio programmatically via the OpenAI-compatible API.
         </p>
       </header>
 
@@ -112,7 +103,7 @@ export function ApiKeysTab() {
       </AnimatePresence>
 
       <section className="flex flex-col">
-        <h2 className="mb-2 text-sm font-semibold text-foreground">Access tokens</h2>
+        <h2 className="mb-2 text-sm font-semibold text-foreground">Your keys</h2>
         {error ? (
           <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             {error}
@@ -128,7 +119,7 @@ export function ApiKeysTab() {
           </div>
         ) : keys.length === 0 ? (
           <p className="py-6 text-center text-xs text-muted-foreground">
-            No API access yet.
+            No API keys yet.
           </p>
         ) : (
           <div className="flex flex-col">
@@ -144,9 +135,9 @@ export function ApiKeysTab() {
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Revoke access token “{revokeTarget?.name}”?</DialogTitle>
+            <DialogTitle>Revoke key “{revokeTarget?.name}”?</DialogTitle>
             <DialogDescription>
-              Applications using this token will immediately lose access. This cannot be undone.
+              Applications using this key will immediately lose access. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

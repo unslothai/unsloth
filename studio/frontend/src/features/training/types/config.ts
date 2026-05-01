@@ -41,7 +41,6 @@ export interface TrainingConfigState {
   epochs: number;
   contextLength: number;
   learningRate: number;
-  embeddingLearningRate: number | null;
   optimizerType: string;
   lrSchedulerType: string;
   loraRank: number;
@@ -116,7 +115,6 @@ export interface TrainingConfigActions {
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
   setLearningRate: (rate: number) => void;
-  setEmbeddingLearningRate: (rate: number | null) => void;
   setOptimizerType: (value: string) => void;
   setLrSchedulerType: (value: string) => void;
   setLoraRank: (rank: number) => void;

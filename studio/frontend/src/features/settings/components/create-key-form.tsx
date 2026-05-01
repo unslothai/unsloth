@@ -34,7 +34,7 @@ export function CreateKeyForm({
       onCreated(result.key);
       setName("");
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Couldn't create access token.");
+      onError(err instanceof Error ? err.message : "Couldn't create key.");
     } finally {
       setLoading(false);
     }
@@ -49,9 +49,9 @@ export function CreateKeyForm({
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Token name (e.g. production)"
+          placeholder="Key name (e.g. production)"
           className="h-8 min-w-[180px] flex-1 text-sm"
-          aria-label="New access token name"
+          aria-label="New key name"
         />
         <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
           {EXPIRY_PRESETS.map((p) => {
@@ -75,7 +75,7 @@ export function CreateKeyForm({
           })}
         </div>
         <Button type="submit" size="sm" disabled={loading || !name.trim()}>
-          {loading ? "Creating…" : "Create token"}
+          {loading ? "Creating…" : "Create key"}
         </Button>
       </div>
     </form>

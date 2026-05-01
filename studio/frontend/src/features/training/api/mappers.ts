@@ -3,10 +3,9 @@
 
 import type { TrainingConfigState } from "../types/config";
 import type { TrainingStartRequest } from "../types/api";
-import {
-  isRawTextDatasetFormat,
-  toBackendTrainingType,
-} from "../lib/training-methods";
+
+const BACKEND_LORA_TYPE = "LoRA/QLoRA";
+const BACKEND_FULL_TYPE = "Full Finetuning";
 
 function parseSliceValue(value: string | null): number | null {
   if (value == null) return null;
@@ -17,15 +16,16 @@ function parseSliceValue(value: string | null): number | null {
   return num;
 }
 
+export function toBackendTrainingType(trainingMethod: string): string {
+  return trainingMethod === "full" ? BACKEND_FULL_TYPE : BACKEND_LORA_TYPE;
+}
+
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
 ): TrainingStartRequest {
-  const isCpt = config.trainingMethod === "cpt";
   const adapterMethod = config.trainingMethod !== "full";
   const isQloraMethod = config.trainingMethod === "qlora";
-  const isFourBitModel = (config.selectedModel ?? "").toLowerCase().includes("4bit");
   const isEmbedding = config.isEmbeddingModel;
-  const isRawText = isRawTextDatasetFormat(config.datasetFormat);
   const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
   const localDatasets =
     config.datasetSource === "upload" && config.uploadedFile
@@ -53,7 +53,7 @@ export function buildTrainingStartPayload(
     model_name: config.selectedModel ?? "",
     training_type: toBackendTrainingType(config.trainingMethod),
     hf_token: config.hfToken.trim() || null,
-    load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
+    load_in_4bit: adapterMethod ? isQloraMethod : false,
     max_seq_length: config.contextLength,
     trust_remote_code: config.trustRemoteCode ?? false,
     hf_dataset: hfDataset,
@@ -71,10 +71,6 @@ export function buildTrainingStartPayload(
     custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,
     learning_rate: String(config.learningRate),
-    embedding_learning_rate:
-      isCpt && config.embeddingLearningRate != null
-        ? config.embeddingLearningRate
-        : null,
     batch_size: config.batchSize,
     gradient_accumulation_steps: config.gradientAccumulation,
     warmup_steps: isEmbedding ? null : config.warmupSteps,
@@ -95,8 +91,7 @@ export function buildTrainingStartPayload(
     gradient_checkpointing: config.gradientCheckpointing,
     use_rslora: config.loraVariant === "rslora",
     use_loftq: config.loraVariant === "loftq",
-    // CPT always trains on full sequences (no chat format masking)
-    train_on_completions: (isEmbedding || isCpt || isRawText) ? false : config.trainOnCompletions,
+    train_on_completions: isEmbedding ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
