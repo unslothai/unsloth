@@ -432,7 +432,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             weight.shape[0] != weight_scale.shape[0]
             and weight.shape[1] == weight_scale.shape[0]
-        ) or (weight.shape[0] // 8 != 0 or weight.shape[1] // 8 != 0):
+        ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
             # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
             # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
             # The shape case, I noticed to happen in MLP of Qwen 2.5 VL 7B where the gate proj is of shape (3420, 1280) and 3420/8=427.5
