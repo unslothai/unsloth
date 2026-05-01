@@ -290,7 +290,7 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const threadId = useAuiState(({ thread }) => thread.id);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.id);
   const thisThreadInStore = useChatRuntimeStore((s) =>
     Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
   );
