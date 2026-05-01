@@ -16,6 +16,7 @@
     "biome:fix": "biome check . --write"
   },
   "dependencies": {
+    "@assistant-ui/core": "0.1.17",
     "@assistant-ui/react": "^0.12.19",
     "@assistant-ui/react-markdown": "^0.12.3",
     "@assistant-ui/react-streamdown": "^0.1.2",
@@ -41,6 +42,11 @@
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-router": "^1.159.10",
     "@tanstack/react-table": "^8.21.3",
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
+    "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@toolwind/corner-shape": "^0.0.8-3",
     "@types/canvas-confetti": "^1.9.0",
     "@xyflow/react": "^12.10.0",

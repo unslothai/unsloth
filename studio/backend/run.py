@@ -248,6 +248,7 @@ def run_server(
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
+    api_only: bool = False,
     llama_parallel_slots: int = 1,
 ):
     """
@@ -258,6 +259,7 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
+        api_only: Run API server only, no frontend serving (for Tauri desktop app)
         llama_parallel_slots: Number of parallel slots for llama-server
 
     Note:
@@ -274,6 +276,10 @@ def run_server(
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
+
+    # Set env var BEFORE importing main so CORS middleware picks it up
+    if api_only:
+        os.environ["UNSLOTH_API_ONLY"] = "1"
 
     import nest_asyncio
 
@@ -310,8 +316,12 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Setup frontend if path provided
-    if frontend_path:
+    # Output port for Tauri to parse when in api-only mode
+    if api_only:
+        print(f"TAURI_PORT={port}", flush = True)
+
+    # Setup frontend if path provided (skip in api-only mode)
+    if frontend_path and not api_only:
         if setup_frontend(app, frontend_path):
             if not silent:
                 print(f"[OK] Frontend loaded from {frontend_path}")
@@ -391,10 +401,17 @@ if __name__ == "__main__":
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    parser.add_argument(
+        "--api-only",
+        action = "store_true",
+        help = "API server only, no frontend (for Tauri)",
+    )
 
     args = parser.parse_args()
 
-    kwargs = dict(host = args.host, port = args.port, silent = args.silent)
+    kwargs = dict(
+        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+    )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
 
