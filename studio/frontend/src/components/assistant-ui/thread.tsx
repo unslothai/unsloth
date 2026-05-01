@@ -313,7 +313,7 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
   // so that the eval hidden host's generation (which uses its own ChatRuntimeProvider)
   // is recognised as "this thread running" when the visible thread is the same DB thread.
   const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const threadId = useAuiState(({ thread }) => thread.id);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.id);
   const thisThreadInStore = useChatRuntimeStore((s) =>
     Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
   );
@@ -387,15 +387,6 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
                 className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 placeholder="Prompt Eval name..."
               />
-              <button
-                type="button"
-                onClick={() => setPromptStorageOpen(true)}
-                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-primary/80 hover:bg-primary/10 hover:text-primary transition-colors shrink-0"
-                title="Open Prompt Storage"
-              >
-                <BookmarkIcon className="size-3.5" />
-                Prompt Storage
-              </button>
             </div>
           )}
           <ComposerAttachments />
@@ -410,7 +401,7 @@ const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => vo
             disabled={disabled}
             aria-label="Message input"
           />
-          <ComposerAction disabled={disabled} sendDisabled={anotherThreadRunning} />
+          <ComposerAction disabled={disabled} sendDisabled={anotherThreadRunning} onOpenPromptStorage={promptEvalMode ? () => setPromptStorageOpen(true) : undefined} />
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>
     </>
@@ -820,7 +811,7 @@ const ExportPromptEvalButton: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ disabled, sendDisabled }) => {
+const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean; onOpenPromptStorage?: () => void }> = ({ disabled, sendDisabled, onOpenPromptStorage }) => {
   const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
   const promptEvalSendFn = usePromptEvalStore((s) => s.promptEvalSendFn);
   // Custom send handler for prompt eval mode.
@@ -858,6 +849,17 @@ const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ di
         <WebSearchToggle />
         <CodeToolsToggle />
         <PromptEvalToggle />
+        {onOpenPromptStorage && (
+          <TooltipIconButton
+            tooltip="Prompt Storage"
+            variant="ghost"
+            className="size-8 rounded-full text-muted-foreground"
+            onClick={onOpenPromptStorage}
+            type="button"
+          >
+            <BookmarkIcon className="size-4" />
+          </TooltipIconButton>
+        )}
       </div>
       <div className="flex items-center gap-1">
         <ExportPromptEvalButton />

@@ -56,18 +56,13 @@ db.version(3)
   );
 
 db.version(4).stores({
-  threads: "id, modelType, pairId, benchmarkId, archived, createdAt",
-  messages: "id, threadId, createdAt",
-});
-
-db.version(5).stores({
-  threads: "id, modelType, pairId, benchmarkId, archived, createdAt",
+  threads: "id, modelType, pairId, archived, createdAt",
   messages: "id, threadId, createdAt",
   promptEntries: "id, createdAt",
   promptLists: "id, createdAt",
 });
 
-db.version(6)
+db.version(5)
   .stores({
     threads: "id, modelType, pairId, promptEvalId, archived, createdAt",
     messages: "id, threadId, createdAt",
