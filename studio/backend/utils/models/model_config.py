@@ -506,11 +506,16 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 def _is_vlm(config) -> bool:
     architectures = getattr(config, "architectures", None) or []
-    if any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures):
-        return True
     model_type = getattr(config, "model_type", None)
-    return model_type is not None and any(
-        model_type.startswith(vlm_type) for vlm_type in _VLM_MODEL_TYPES
+    return (
+        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+        or hasattr(config, "vision_config")
+        or hasattr(config, "img_processor")
+        or hasattr(config, "image_token_index")
+        or (
+            model_type is not None
+            and any(model_type.startswith(vlm_type) for vlm_type in _VLM_MODEL_TYPES)
+        )
     )
 
 
@@ -553,34 +558,16 @@ sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-def _is_vlm(config):
-    vlm_types = {"phi3_v","llava","llava_next","llava_onevision",
-                  "internvl_chat","cogvlm2","minicpmv","gemma4"}
-    architectures = getattr(config, "architectures", []) or []
-    if any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in architectures
-    ):
-        return True
-    model_type = getattr(config, "model_type", None)
-    return model_type is not None and any(
-        model_type.startswith(vlm_type) for vlm_type in vlm_types
-    )
-
 try:
     from transformers import AutoConfig
+    from utils.models.model_config import _is_vlm
+
     kwargs = {"trust_remote_code": True}
     if token:
         kwargs["token"] = token
     config = AutoConfig.from_pretrained(model_name, **kwargs)
 
     is_vlm = _is_vlm(config)
-    if not is_vlm and hasattr(config, "vision_config"):
-        is_vlm = True
-    if not is_vlm and hasattr(config, "img_processor"):
-        is_vlm = True
-    if not is_vlm and hasattr(config, "image_token_index"):
-        is_vlm = True
 
     model_type = getattr(config, "model_type", None)
     archs = getattr(config, "architectures", [])
@@ -773,21 +760,6 @@ def _is_vision_model_uncached(
 
         if _is_vlm(config):
             logger.info(f"Model {model_name} detected as VLM")
-            return True
-
-        # Check 2: Has vision_config (most VLMs: LLaVA, Gemma-3, Qwen2-VL, etc.)
-        if hasattr(config, "vision_config"):
-            logger.info(f"Model {model_name} detected as VLM: has vision_config")
-            return True
-
-        # Check 3: Has img_processor (Phi-3.5 Vision uses this instead of vision_config)
-        if hasattr(config, "img_processor"):
-            logger.info(f"Model {model_name} detected as VLM: has img_processor")
-            return True
-
-        # Check 4: Has image_token_index (common in VLMs for image placeholder tokens)
-        if hasattr(config, "image_token_index"):
-            logger.info(f"Model {model_name} detected as VLM: has image_token_index")
             return True
 
         return False
