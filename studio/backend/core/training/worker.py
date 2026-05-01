@@ -365,6 +365,46 @@ def _adapt_for_mlx_vlm(items):
     return adapted
 
 
+_MLX_STUDIO_OPTIM_MAP = {
+    "adamw_8bit": "adamw",
+    "paged_adamw_8bit": "adamw",
+    "adamw_bnb_8bit": "adamw",
+    "paged_adamw_32bit": "adamw",
+    "adamw_torch": "adamw",
+    "adamw_torch_fused": "adamw",
+    "adamw": "adamw",
+    "adafactor": "adafactor",
+    "sgd": "sgd",
+    "adam": "adam",
+    "muon": "muon",
+    "lion": "lion",
+}
+_MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
+
+
+def _normalize_mlx_studio_optimizer(value):
+    raw = str(value or "adamw_8bit").strip().lower()
+    try:
+        return _MLX_STUDIO_OPTIM_MAP[raw]
+    except KeyError:
+        supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
+        raise ValueError(
+            f"Unsupported optimizer for MLX training: {value!r}. "
+            f"Supported values: {supported}."
+        )
+
+
+def _normalize_mlx_studio_scheduler(value):
+    raw = str(value or "linear").strip().lower()
+    if raw not in _MLX_STUDIO_LR_SCHEDULERS:
+        supported = ", ".join(sorted(_MLX_STUDIO_LR_SCHEDULERS))
+        raise ValueError(
+            f"Unsupported LR scheduler for MLX training: {value!r}. "
+            f"Supported values: {supported}."
+        )
+    return raw
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -400,6 +440,16 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
 
+    if config.get("use_loftq"):
+        message = "LoftQ is not supported for MLX training yet."
+        _send("error", error=message)
+        raise NotImplementedError(message)
+
+    optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
+    lr_scheduler_type = _normalize_mlx_studio_scheduler(
+        config.get("lr_scheduler_type", "linear")
+    )
+
     # ── 1. Load model ──
     # Force text-only if the dataset is not an image dataset, even if the model
     # has vision capabilities (e.g. Qwen3.5-VL trained on plain alpaca text).
@@ -413,6 +463,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         full_finetuning=not use_lora,
         text_only=None if is_dataset_image else True,
         trust_remote_code=bool(config.get("trust_remote_code", False)),
+        random_state=config.get("random_seed", 3407),
     )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
@@ -433,6 +484,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             r=config.get("lora_r", 16),
             lora_alpha=config.get("lora_alpha", 16),
             lora_dropout=config.get("lora_dropout", 0.0),
+            use_rslora=config.get("use_rslora", False),
+            init_lora_weights=config.get("init_lora_weights", True),
+            random_state=config.get("random_seed", 3407),
             target_modules=config.get("target_modules") or [
                 "q_proj", "k_proj", "v_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj",
@@ -569,23 +623,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if warmup_steps is None:
         warmup_steps = 5
 
-    # Map optim name (Studio sends torch optimizers; map to MLX equivalents)
-    optim_raw = (config.get("optim") or "adafactor").lower()
-    optim_map = {
-        "adamw_8bit": "adamw",
-        "paged_adamw_8bit": "adamw",
-        "adamw_bnb_8bit": "adamw",
-        "paged_adamw_32bit": "adamw",
-        "adamw_torch": "adamw",
-        "adamw_torch_fused": "adamw",
-        "adafactor": "adafactor",
-        "sgd": "sgd",
-        "adam": "adam",
-        "muon": "muon",
-        "lion": "lion",
-    }
-    optim_name = optim_map.get(optim_raw, "adafactor")
-
     # ── 5. Build output dir ──
     output_dir = config.get("output_dir", "")
     if not output_dir:
@@ -614,7 +651,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             max_steps=max_steps,
             learning_rate=lr_value,
             warmup_steps=warmup_steps,
-            lr_scheduler_type=config.get("lr_scheduler_type", "cosine"),
+            lr_scheduler_type=lr_scheduler_type,
             optim=optim_name,
             weight_decay=float(config.get("weight_decay", 0.001) or 0.001),
             logging_steps=1,
