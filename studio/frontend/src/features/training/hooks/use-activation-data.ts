@@ -55,17 +55,14 @@ export function useActivationData({
       const result = await fetchActivations(outputDir, lastStepRef.current);
       if (mountedRef.current) {
         if (result.records.length > 0) {
-          const maxStep = Math.max(...result.records.map((r) => (r as { step?: number }).step ?? 0));
-          lastStepRef.current = maxStep;
+          lastStepRef.current = Math.max(...result.records.map((r) => r.step));
           setData((prev) => ({
             metadata: result.metadata ?? prev.metadata,
-            records: lastStepRef.current === undefined
-              ? result.records
-              : [...prev.records, ...result.records],
+            records: [...prev.records, ...result.records],
           }));
         } else if (lastStepRef.current === undefined) {
-          // First fetch, no records yet — still update metadata.
-          setData({ metadata: result.metadata, records: [] });
+          // Training started but no captures yet — surface metadata if available.
+          setData((prev) => ({ ...prev, metadata: result.metadata }));
         }
         setError(null);
       }
