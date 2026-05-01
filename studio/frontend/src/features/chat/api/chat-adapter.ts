@@ -49,6 +49,9 @@ type RunMessage = RunMessages[number];
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
+/** Thread key used in runningByThreadId before a new thread is persisted to the DB. */
+export const DEFAULT_THREAD_KEY = DEFAULT_THREAD_KEY as const;
+
 /**
  * Match error messages that indicate the request filled or would fill
  * the KV cache, so the UI can show a dedicated toast pointing at the
@@ -620,7 +623,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = resolvedThreadId || "__default";
+        const threadKey = resolvedThreadId || DEFAULT_THREAD_KEY;
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -667,7 +670,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         return;
       }
 
-      const threadKey = resolvedThreadId || "__default";
+      const threadKey = resolvedThreadId || DEFAULT_THREAD_KEY;
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
