@@ -52,7 +52,27 @@ const statusBadge: Record<
     className:
       "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
   },
+  resumed_later: {
+    label: "Continued",
+    className:
+      "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
+  },
 };
+
+function wasContinuedInVisibleRuns(
+  run: TrainingRunSummary,
+  runs: TrainingRunSummary[],
+): boolean {
+  if (run.status !== "stopped" || !run.output_dir) return false;
+  const startedAt = new Date(run.started_at).getTime();
+  return runs.some(
+    (other) =>
+      other.id !== run.id &&
+      other.output_dir === run.output_dir &&
+      (other.status === "stopped" || other.status === "completed") &&
+      new Date(other.started_at).getTime() > startedAt,
+  );
+}
 
 function catmullRomPath(points: { x: number; y: number }[]): string {
   if (points.length < 2) return "";
@@ -286,9 +306,13 @@ export function HistoryCardGrid({
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {runs.map((run) => {
-          const badge = statusBadge[run.status] ?? statusBadge.error;
+          const wasContinued =
+            run.resumed_later || wasContinuedInVisibleRuns(run, runs);
+          const badge = wasContinued
+            ? statusBadge.resumed_later
+            : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
-          const canResume = run.can_resume;
+          const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
           return (
             <div

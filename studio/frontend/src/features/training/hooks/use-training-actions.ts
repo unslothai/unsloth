@@ -50,6 +50,11 @@ export function useTrainingActions() {
       return false;
     }
 
+    runtimeStore.setStartResources(
+      config.selectedModel ?? null,
+      getHfDatasetName(config),
+      false,
+    );
     runtimeStore.setStarting(true);
 
     try {
@@ -116,6 +121,7 @@ export function useTrainingActions() {
 
       // Re-read config after potential store updates from dataset check
       const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
+      runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, false);
       const response = await startTraining(payload);
 
       if (response.status === "error") {
@@ -158,6 +164,7 @@ export function useTrainingActions() {
   const resumeTrainingRunFromHistory = useCallback(async (runId: string): Promise<boolean> => {
     const runtimeStore = useTrainingRuntimeStore.getState();
     runtimeStore.setStartError(null);
+    runtimeStore.setStartResources(null, null, true);
     runtimeStore.setStarting(true);
 
     try {
@@ -178,6 +185,8 @@ export function useTrainingActions() {
         wandb_token: null,
         resume_from_checkpoint: outputDir,
       } as TrainingStartRequest;
+
+      runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
 
       const response = await startTraining(payload);
       if (response.status === "error") {
@@ -230,6 +239,10 @@ function getDatasetName(config: TrainingConfigState): string | null {
   return config.datasetSource === "huggingface"
     ? config.dataset
     : config.uploadedFile;
+}
+
+function getHfDatasetName(config: TrainingConfigState): string | null {
+  return config.datasetSource === "huggingface" ? config.dataset : null;
 }
 
 function hasManualMapping(config: TrainingConfigState, isVlm = false, isAudio = false): boolean {

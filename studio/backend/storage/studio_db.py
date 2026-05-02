@@ -267,10 +267,23 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         total = conn.execute("SELECT COUNT(*) FROM training_runs").fetchone()[0]
         rows = conn.execute(
             """
-            SELECT id, status, model_name, dataset_name, started_at, ended_at,
-                   total_steps, final_step, final_loss, output_dir,
-                   duration_seconds, error_message, loss_sparkline
-            FROM training_runs
+            SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
+                   r.ended_at, r.total_steps, r.final_step, r.final_loss,
+                   r.output_dir, r.duration_seconds, r.error_message,
+                   r.loss_sparkline,
+                   CASE
+                       WHEN r.status = 'stopped'
+                            AND r.output_dir IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM training_runs newer
+                                WHERE newer.output_dir = r.output_dir
+                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.started_at > r.started_at
+                            )
+                       THEN 1 ELSE 0
+                   END AS resumed_later
+            FROM training_runs r
             ORDER BY started_at DESC
             LIMIT ? OFFSET ?
             """,
@@ -297,7 +310,26 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
 def get_run(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM training_runs WHERE id = ?", (id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT r.*,
+                   CASE
+                       WHEN r.status = 'stopped'
+                            AND r.output_dir IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM training_runs newer
+                                WHERE newer.output_dir = r.output_dir
+                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.started_at > r.started_at
+                            )
+                       THEN 1 ELSE 0
+                   END AS resumed_later
+            FROM training_runs r
+            WHERE r.id = ?
+            """,
+            (id,),
+        ).fetchone()
         if row is None:
             return None
         run = dict(row)

@@ -224,6 +224,7 @@ class TrainingRunSummary(BaseModel):
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
+    resumed_later: bool = False
 
 
 class TrainingRunListResponse(BaseModel):

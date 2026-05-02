@@ -81,6 +81,9 @@ export interface TrainingRuntimeState {
   hasHydrated: boolean;
   isStarting: boolean;
   startError: string | null;
+  startModelName: string | null;
+  startDatasetName: string | null;
+  startFromResume: boolean;
   sseConnected: boolean;
   firstStepReceived: boolean;
   lastEventId: number | null;
@@ -110,6 +113,11 @@ export interface TrainingRuntimeActions {
   setHasHydrated: (value: boolean) => void;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
+  setStartResources: (
+    modelName: string | null,
+    datasetName: string | null,
+    fromResume?: boolean,
+  ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
   resetRuntime: () => void;

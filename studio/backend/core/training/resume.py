@@ -57,6 +57,9 @@ def normalize_resume_output_dir(path_value: str) -> str:
 
 
 def can_resume_run(run: dict) -> bool:
+    if run.get("resumed_later"):
+        return False
+
     final_step = run.get("final_step")
     total_steps = run.get("total_steps")
     has_remaining_steps = (
