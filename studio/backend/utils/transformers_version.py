@@ -63,6 +63,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
+    "qwen3.6",
 )
 
 # Architecture classes / model_type values that require transformers 5.5.0.

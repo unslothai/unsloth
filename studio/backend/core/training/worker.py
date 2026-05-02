@@ -50,6 +50,8 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
         for key in (
             "qwen3.5",
             "qwen3_5",
+            "qwen3.6",
+            "qwen3_6",
             "qwen3-next",
             "qwen3_next",
             "nemotron_h",
