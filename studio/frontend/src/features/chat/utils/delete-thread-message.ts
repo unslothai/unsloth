@@ -9,7 +9,9 @@ import type {
 /**
  * assistant-ui does not expose a public `deleteMessage` on `ThreadRuntime` / `MessageRuntime`
  * in our version, but it already implements branch-safe deletion inside `MessageRepository`.
- * We import that helper from an **internal** package path (`runtime/utils/message-repository`).
+ * We import that helper from `@assistant-ui/core/internal`, the package's exported internal
+ * surface. Avoid importing the deeper `runtime/utils/message-repository` path directly: newer
+ * `@assistant-ui/core` releases no longer export arbitrary deep paths.
  *
  * **Maintainability:** treat this file as the only place that imports `MessageRepository` from
  * `@assistant-ui/core`. When bumping `@assistant-ui/react` / `@assistant-ui/core`, re-run chat
