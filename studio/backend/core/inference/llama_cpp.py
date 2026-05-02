@@ -200,9 +200,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
         from huggingface_hub import hf_hub_download
 
-        cfg_path = hf_hub_download(
-            repo_id, "config.json", repo_type = "model"
-        )
+        cfg_path = hf_hub_download(repo_id, "config.json", repo_type = "model")
         with open(cfg_path) as f:
             cfg = json.load(f)
     except Exception:
@@ -239,7 +237,10 @@ def _resolve_swa_pattern(
         return None
     if allow_network is None:
         allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
-            "1", "true", "True", "yes",
+            "1",
+            "true",
+            "True",
+            "yes",
         )
 
     cache = _load_swa_cache()
@@ -1356,7 +1357,10 @@ class LlamaCppBackend:
                         if vtype == 8:  # STRING
                             slen = struct.unpack("<Q", f.read(8))[0]
                             val_s = f.read(slen).decode("utf-8")
-                            if key.startswith("general.") and key != "general.architecture":
+                            if (
+                                key.startswith("general.")
+                                and key != "general.architecture"
+                            ):
                                 general[key] = val_s
                             if key == "general.architecture":
                                 arch = val_s

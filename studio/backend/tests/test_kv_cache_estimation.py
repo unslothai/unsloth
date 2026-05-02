@@ -472,17 +472,30 @@ class TestDynamicSwaResolver:
 
         # Irregular pattern with no fixed period.
         lt = [
-            "sliding_attention", "full_attention", "sliding_attention",
-            "sliding_attention", "full_attention", "sliding_attention",
-            "sliding_attention", "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
         ]
         assert _period_from_layer_types(lt) is None
 
     def test_hf_repo_from_url(self):
         from core.inference.llama_cpp import _hf_repo_from_url
 
-        assert _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it") == "google/gemma-3-1b-it"
-        assert _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json") == "google/gemma-3-1b-it"
+        assert (
+            _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it")
+            == "google/gemma-3-1b-it"
+        )
+        assert (
+            _hf_repo_from_url(
+                "https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json"
+            )
+            == "google/gemma-3-1b-it"
+        )
         assert _hf_repo_from_url("https://huggingface.co/google") is None
         assert _hf_repo_from_url("https://example.com/foo/bar") is None
         assert _hf_repo_from_url(None) is None
@@ -496,7 +509,9 @@ class TestDynamicSwaResolver:
 
         # Mark network as forbidden -- Tier 2 must answer alone.
         def boom(*a, **kw):
-            raise AssertionError("HF fetch must not be called when bootstrap covers the arch")
+            raise AssertionError(
+                "HF fetch must not be called when bootstrap covers the arch"
+            )
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
         b = _backend_from_gguf(
