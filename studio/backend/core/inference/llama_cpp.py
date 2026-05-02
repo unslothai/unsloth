@@ -77,84 +77,30 @@ _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
-# Most GGUF converters do not propagate `sliding_window_pattern`
-# (or `layer_types`) into GGUF metadata even when the source HF config
-# sets it. When a GGUF reports a sliding window but no per-layer
-# pattern, we resolve the pattern through a 5-tier lookup so newly
-# released models work without any code change here:
-#
-#   Tier 0:   GGUF metadata directly (handled by the parser before this
-#             resolver runs -- both the BOOL array and the scalar
-#             period paths). If the converter ever starts emitting the
-#             pattern, we use it verbatim.
-#
-#   Tier 1:   On-disk cache at $UNSLOTH_STUDIO_HOME/swa_cache.json.
-#             Populated by Tier 2.5 / Tier 3 results. Survives
-#             restarts.
-#
-#   Tier 2:   Bootstrap defaults shipped with Studio
-#             (`_BOOTSTRAP_SWA_DEFAULTS`). Covers the popular SWA
-#             arches in the unsloth/* catalogue today and lets
-#             fully-offline installs work for them with zero network
-#             AND zero transformers introspection cost.
-#
-#   Tier 2.5: Locally-installed `transformers` package introspection.
-#             Tries default-instantiating the matching `Config` class
-#             and reading `sliding_window_pattern` / `layer_types`;
-#             falls back to `inspect.getsource` regex on the class
-#             source when the constructor raises. Offline-friendly,
-#             covers any arch transformers already knows about.
-#
-#   Tier 3:   HF Hub `config.json` fetch. Pulls the source repo's
-#             `sliding_window_pattern` (int) or
-#             `text_config.layer_types` (string array) directly.
-#             Result is cached to Tier 1. Disabled by
-#             `UNSLOTH_STUDIO_OFFLINE=1` and gracefully swallows
-#             network errors so offline installs never break.
-#
-#   Tier 4:   Caller falls back to the legacy 1/4-global SWA estimate.
-#
-# Period semantics match `transformers` (and the metadata array path):
-# for period N, layer i is sliding-window iff (i + 1) % N != 0.
-#
-# Architectures intentionally NOT in the bootstrap table:
-#   * `phi3`: GGUF emits `sliding_window=262144` but never emits
-#     `key_length`/`value_length`, so the SWA path is gated off and the
-#     estimator falls to the legacy formula. The huge window also
-#     means SWA layers behave identical to global at any practical
-#     ctx, so a fallback would be a no-op anyway.
-#   * `qwen2`, `qwen2_vl`, `qwen2_5_vl`: HF configs may set
-#     `sliding_window` but `use_sliding_window: false`. The llama.cpp
-#     converter respects that flag and does NOT emit
-#     `qwen2.attention.sliding_window` in the resulting GGUF, so the
-#     SWA path never fires (verified against Qwen2.5-0.5B-GGUF).
-#   * `mistral`: v0.1/v0.2 are all-SWA every-layer, but our period
-#     sentinel can't express that without ambiguity.
+# Resolves the per-layer SWA mask when a GGUF reports a sliding window
+# but no `sliding_window_pattern` field. Tier order in
+# `_resolve_swa_pattern`: GGUF metadata, on-disk cache, bootstrap dict
+# below, transformers introspection, HF Hub config.json, legacy 1/4
+# fallback. Period N means layer i is SWA iff `(i + 1) % N != 0`,
+# matching transformers. Skipped on purpose: phi3 (no key/val length
+# in GGUF, window >= ctx anyway), qwen2 family (converter strips
+# sliding_window when use_sliding_window=False), mistral v0.1/v0.2
+# (all-SWA can't be expressed as a period).
 _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
-    # Gemma 2: alternating local/global (Gemma2Config.sliding_window_pattern = 2)
-    "gemma2": 2,
-    # Gemma 3: 1 global per 6 layers (Gemma3TextConfig.sliding_window_pattern = 6)
-    "gemma3": 6,
-    # Gemma 3n: 1 global per 5 layers (from text_config.layer_types in
-    # google/gemma-3n-* configs: SWA SWA SWA SWA FULL ...)
-    "gemma3n": 5,
-    # gpt-oss: alternating SWA/FULL per layer_types in openai/gpt-oss-* configs
-    "gpt_oss": 2,
-    # Cohere Command R-style: 1 global per 4 layers when SWA is enabled.
-    "cohere2": 4,
+    "gemma2": 2,    # Gemma2Config.sliding_window_pattern
+    "gemma3": 6,    # Gemma3TextConfig.sliding_window_pattern
+    "gemma3n": 5,   # text_config.layer_types: SWA*4 + FULL
+    "gpt_oss": 2,   # text_config.layer_types: alternating
+    "cohere2": 4,   # Cohere2Config.sliding_window_pattern
 }
 
-# Process-wide in-memory cache; backed by a JSON file on disk. Keys are
-# GGUF arch strings; values are either an int period or a list[bool]
-# mask (used verbatim when no fixed period fits a layer_types array).
-# Loaded lazily on first access via `_load_swa_cache()`.
+# Process-wide cache backed by JSON on disk. Values are int period or
+# list[bool] mask. Lazy-loaded.
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
 
 def _swa_cache_path() -> Path:
-    """Return the on-disk SWA cache path. Honours UNSLOTH_STUDIO_HOME
-    so the same cache survives across reinstalls."""
     home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     base = Path(home) if home else Path.home() / ".unsloth" / "studio"
     return base / "swa_cache.json"
@@ -176,7 +122,6 @@ def _load_swa_cache() -> dict:
 
 
 def _save_swa_cache(cache: dict) -> None:
-    """Best-effort persist; never throws."""
     try:
         path = _swa_cache_path()
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -189,9 +134,8 @@ def _save_swa_cache(cache: dict) -> None:
 
 
 def _period_from_layer_types(layer_types: list) -> Optional[int]:
-    """Try to express a per-layer SWA mask as a uniform period N.
-    Returns the smallest period that fits, or None if no fixed
-    period matches (in which case the caller stores the raw mask)."""
+    """Smallest period N where `(i+1) % N != 0` matches the SWA mask,
+    or None if no fixed period fits."""
     if not layer_types:
         return None
     is_swa = ["full" not in str(t).lower() for t in layer_types]
@@ -203,9 +147,6 @@ def _period_from_layer_types(layer_types: list) -> Optional[int]:
 
 
 def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
-    """Fetch HF `config.json` for `repo_id` and return either an int
-    period, a list[bool] per-layer mask, or None. Network errors are
-    swallowed."""
     try:
         from huggingface_hub import hf_hub_download
 
@@ -216,26 +157,19 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         return None
 
     src = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else cfg
-
     period = src.get("sliding_window_pattern")
     if isinstance(period, int) and period > 0:
         return period
-
     lt = src.get("layer_types")
     if isinstance(lt, list) and lt:
-        # Prefer a periodic representation when one fits.
-        p = _period_from_layer_types(lt)
-        if p is not None:
-            return p
-        return ["full" not in str(t).lower() for t in lt]
-
+        return _period_from_layer_types(lt) or [
+            "full" not in str(t).lower() for t in lt
+        ]
     return None
 
 
 def _arch_aliases(arch: str) -> tuple:
-    """Return likely transformers `model_type` strings for a GGUF arch.
-    GGUF and HF mostly agree but some converters use hyphens
-    (`falcon-h1`) where HF uses underscores (`falcon_h1`)."""
+    # GGUF emits `falcon-h1`; HF model_type is `falcon_h1`. Normalise both ways.
     seen = []
     for a in (arch, arch.replace("-", "_"), arch.replace("_", "-")):
         if a and a not in seen:
@@ -244,40 +178,26 @@ def _arch_aliases(arch: str) -> tuple:
 
 
 def _swa_entry_from_config_obj(cfg) -> Optional[object]:
-    """Pull a sliding_window_pattern (int) or layer_types-derived value
-    off an instantiated transformers config object. Drills into
-    `text_config` for multimodal wrappers."""
     src = getattr(cfg, "text_config", None) or cfg
     period = getattr(src, "sliding_window_pattern", None)
     if isinstance(period, int) and period > 0:
         return period
     lt = getattr(src, "layer_types", None)
     if isinstance(lt, list) and lt:
-        p = _period_from_layer_types(lt)
-        if p is not None:
-            return p
-        return ["full" not in str(t).lower() for t in lt]
+        return _period_from_layer_types(lt) or [
+            "full" not in str(t).lower() for t in lt
+        ]
     return None
 
 
-# Catches `sliding_window_pattern: int = 6` and `sliding_window_pattern=6`.
 _SWA_PATTERN_SOURCE_RE = re.compile(
     r"sliding_window_pattern\s*(?::\s*[\w\[\], ]*)?\s*=\s*(\d+)"
 )
 
 
 def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
-    """Tier 2.5: ask the locally-installed transformers package.
-
-    Two strategies, in order:
-      a. Default-instantiate the config class and read attributes.
-      b. Regex-parse the class source via `inspect.getsource` (handles
-         configs whose default constructor raises or whose
-         `sliding_window_pattern` lives only in __init__ signature).
-
-    Both are local-only -- no network. Returns the same kind of entry
-    `_fetch_swa_entry_from_hf` does (int period, list[bool] mask, or
-    None) so it slots into the cache the same way."""
+    """Default-instantiate the matching Config; on failure, regex-parse
+    its source for `sliding_window_pattern = N`."""
     try:
         from transformers.models.auto.configuration_auto import (
             CONFIG_MAPPING,
@@ -297,18 +217,12 @@ def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
     if cfg_class is None:
         return None
 
-    # Strategy a: default-instantiate.
     try:
-        cfg = cfg_class()
-        entry = _swa_entry_from_config_obj(cfg)
-        if entry is not None:
+        if (entry := _swa_entry_from_config_obj(cfg_class())) is not None:
             return entry
     except Exception:
-        pass  # fall through to source parsing
+        pass
 
-    # Strategy b: regex on the class source. Walks the MRO so wrappers
-    # that delegate to a TextConfig still get inspected. Also probes
-    # the config's module file in case the constant is module-level.
     import inspect
 
     candidates = [cfg_class]
@@ -334,17 +248,11 @@ def _resolve_swa_pattern(
     *,
     allow_network: Optional[bool] = None,
 ) -> Optional[list]:
-    """Return a per-layer SWA mask for `arch`, or None if no source
-    knows the answer (in which case the caller uses the legacy
-    1/4-global fallback). See module-level comment for tier order."""
     if not arch or not n_layers:
         return None
     if allow_network is None:
         allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
-            "1",
-            "true",
-            "True",
-            "yes",
+            "1", "true", "True", "yes",
         )
 
     cache = _load_swa_cache()
@@ -361,19 +269,13 @@ def _resolve_swa_pattern(
             cache[arch] = entry
         _save_swa_cache(cache)
 
-    # Tier 1: persistent cache
     if (entry := cache.get(arch)) is not None:
         if (mask := _entry_to_mask(entry)) is not None:
             return mask
 
-    # Tier 2: bootstrap defaults
     if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
         return _entry_to_mask(entry)
 
-    # Tier 2.5: introspect the locally-installed transformers package.
-    # Offline-friendly: works for any arch whose Config class is
-    # importable, no network. Result is cached so subsequent loads
-    # skip even the import overhead.
     entry = _resolve_swa_entry_from_transformers(arch)
     if entry is not None:
         _persist(entry)
@@ -1074,10 +976,7 @@ class LlamaCppBackend:
         # New-style: need both explicit key AND value dimensions
         if self._kv_key_length is not None and self._kv_value_length is not None:
             return True
-        # Legacy: need embedding_length + head count. A per-layer
-        # n_kv_heads array (Gemma 4 / GLM SWA) also satisfies the head
-        # requirement -- the scalar field is mirrored from it at parse
-        # time but we accept the array directly here for safety.
+        # Legacy: need embedding_length + a head count (scalar or per-layer).
         return self._embedding_length is not None and (
             self._n_kv_heads is not None
             or self._n_heads is not None
@@ -1152,18 +1051,9 @@ class LlamaCppBackend:
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
-        # Path 3: Sliding Window (Gemma-2, Gemma-3, Gemma-3n, Gemma-4,
-        # gpt-oss, Phi-3, Cohere-2, ...). SWA layers only cache
-        # min(ctx, window) tokens; global layers cache full ctx.
-        # The per-layer pattern resolves in order:
-        #   1. Explicit BOOL array from GGUF metadata
-        #      (`<arch>.attention.sliding_window_pattern`).
-        #   2. Scalar period from GGUF metadata, expanded at parse time.
-        #   3. Architecture default from `_SWA_PATTERN_DEFAULTS_BY_ARCH`,
-        #      expanded at parse time. Covers Gemma-2/3/3n/gpt-oss/Phi-3/
-        #      Cohere-2 GGUFs that today ship `sliding_window` but no
-        #      pattern field.
-        #   4. Legacy 1/4-global heuristic (last-resort fallback).
+        # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
+        # Pattern is filled in by the resolver at parse time; if absent,
+        # falls through to the legacy 1/4-global heuristic below.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -1435,9 +1325,7 @@ class LlamaCppBackend:
             WANTED = {
                 "general.architecture",
                 "tokenizer.chat_template",
-                # Source-repo hints used by the dynamic SWA resolver to
-                # fall back to HF config.json for unknown arches. The
-                # exact key set varies by converter version.
+                # Source-repo hints for the SWA resolver's HF fallback.
                 "general.source.huggingface.repository",
                 "general.source.url",
                 "general.source.repo_url",
@@ -1521,12 +1409,8 @@ class LlamaCppBackend:
                             attr = arch_keys.get(key)
                             if attr == "n_kv_heads" and val_a is not None:
                                 self._n_kv_heads_by_layer = [int(x) for x in val_a]
-                                # Mirror a representative scalar so the
-                                # non-SWA estimator paths (GQA, legacy)
-                                # and any caller using
-                                # `n_kv = self._n_kv_heads or ...` get a
-                                # safe upper bound rather than falling
-                                # through to `n_heads` (much larger).
+                                # Mirror max into scalar so non-SWA paths
+                                # don't fall through to `n_heads`.
                                 if self._n_kv_heads is None and val_a:
                                     self._n_kv_heads = max(int(x) for x in val_a)
                             elif attr == "sliding_window_pattern" and val_a is not None:
@@ -1537,8 +1421,7 @@ class LlamaCppBackend:
                     else:
                         self._gguf_skip_value(f, vtype)
 
-            # Expand any scalar period from GGUF metadata into a
-            # per-layer mask first (Tier 0).
+            # Expand a scalar period straight from the GGUF first.
             if (
                 self._sliding_window_pattern is None
                 and sliding_window_pattern_period
@@ -1549,17 +1432,8 @@ class LlamaCppBackend:
                     for i in range(self._n_layers)
                 ]
 
-            # Dynamic resolver (Tiers 1-3) for arches whose GGUFs
-            # report a sliding window but no per-layer pattern. Today's
-            # Gemma-2/3/3n and gpt-oss GGUFs land here because the
-            # converter does not propagate `sliding_window_pattern`
-            # (or `layer_types`); without this the SWA estimator falls
-            # through to its 1/4-global heuristic and over-counts
-            # global layers (50% overshoot on Gemma-3, 200% on
-            # gpt-oss). The resolver also makes brand-new arches work
-            # automatically by fetching `config.json` from the GGUF's
-            # source HF repo, so no code change is needed when a new
-            # SWA model ships.
+            # Otherwise hand off to the resolver (cache / bootstrap /
+            # transformers / HF). See `_resolve_swa_pattern`.
             if (
                 self._sliding_window_pattern is None
                 and self._sliding_window
@@ -1586,9 +1460,7 @@ class LlamaCppBackend:
                     ),
                 )
                 self._sliding_window_pattern = _resolve_swa_pattern(
-                    arch,
-                    self._n_layers,
-                    hf_repo_candidates,
+                    arch, self._n_layers, hf_repo_candidates,
                 )
 
             if self._context_length:

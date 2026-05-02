@@ -215,12 +215,8 @@ class TestGGUFParserNewFields:
 
 
 class TestArchSwaPatternDefaults:
-    """Verify the per-architecture SWA-period fallback table fires when
-    a GGUF reports a sliding window but no explicit pattern field. This
-    is the case for every Gemma-2/Gemma-3/Gemma-3n/gpt-oss/Phi-3 GGUF
-    on Hugging Face today: llama.cpp's converter does not propagate
-    `sliding_window_pattern` (or `layer_types`) for any of these arches.
-    """
+    """Bootstrap arch table fires when GGUF reports `sliding_window` but
+    no per-layer pattern (true for every Gemma 2/3/3n/gpt-oss GGUF today)."""
 
     @pytest.mark.parametrize(
         "arch,n_layers,expected_period",
@@ -250,8 +246,6 @@ class TestArchSwaPatternDefaults:
         ), f"{arch} should expand to period={expected_period}"
 
     def test_unknown_arch_no_default(self):
-        """Architectures not in the table fall through to the legacy
-        1/4 estimate; they MUST NOT be assigned a synthetic pattern."""
         b = _backend_from_gguf(
             "totallymadeupv7",
             {
@@ -266,8 +260,7 @@ class TestArchSwaPatternDefaults:
         assert b._sliding_window_pattern is None
 
     def test_explicit_pattern_overrides_arch_default(self):
-        """If the GGUF carries an explicit pattern field, the arch
-        table must NOT clobber it."""
+        # Period=6 is the gemma3 default; the explicit array must win.
         b = _backend_from_gguf(
             "gemma3",
             {
@@ -277,30 +270,14 @@ class TestArchSwaPatternDefaults:
                 "attention.key_length": 256,
                 "attention.value_length": 256,
                 "attention.sliding_window": 512,
-                # Per-layer override (would NOT match the period=6 default).
                 "attention.sliding_window_pattern": [
-                    True,
-                    False,
-                    True,
-                    False,
-                    True,
-                    False,
+                    True, False, True, False, True, False,
                 ],
             },
         )
-        assert b._sliding_window_pattern == [
-            True,
-            False,
-            True,
-            False,
-            True,
-            False,
-        ]
+        assert b._sliding_window_pattern == [True, False, True, False, True, False]
 
     def test_no_sliding_window_no_pattern(self):
-        """Even for a known arch, do not fabricate a pattern when the
-        GGUF has no sliding_window field at all (purely full-attention
-        variant of the same arch family, e.g. legacy mistral 7B)."""
         b = _backend_from_gguf(
             "gemma3",
             {
@@ -318,14 +295,8 @@ class TestArchSwaPatternDefaults:
         "arch", ["llama", "qwen2", "qwen3", "mistral", "mistral3", "glm4", "llama4"]
     )
     def test_non_swa_arch_uses_full_attention_path(self, arch):
-        """Pure-GQA architectures must NOT receive a synthetic SWA
-        pattern, even though several of them set `sliding_window` in
-        their HF config (Qwen2/2.5 with use_sliding_window=False, etc.)
-        The llama.cpp converter strips `sliding_window` for these
-        arches so the GGUF never carries the field. This test pins the
-        invariant: when the GGUF lacks sliding_window, no SWA pattern
-        is fabricated and the estimate matches the GQA path
-        (`n_layers * n_ctx * n_kv * (key+val) * bpe`)."""
+        # Pure-GQA arches: GGUF has no sliding_window, no synthetic
+        # pattern, estimator hits Path 4.
         b = _backend_from_gguf(
             arch,
             {
@@ -335,20 +306,15 @@ class TestArchSwaPatternDefaults:
                 "attention.key_length": 128,
                 "attention.value_length": 128,
                 "embedding_length": 4096,
-                # NO sliding_window field
             },
         )
         assert b._sliding_window_pattern is None
         assert b._sliding_window is None
-        # Estimator should hit Path 4 (GQA), not SWA, not legacy.
         kv = b._estimate_kv_cache_bytes(8192, "f16")
         gqa_expected = 32 * 8192 * 8 * (128 + 128) * 2
         assert kv == gqa_expected
 
     def test_arch_default_reduces_kv_estimate_vs_legacy(self):
-        """End-to-end smoke: with the arch fallback, the SWA estimator
-        should produce a strictly smaller KV estimate than the legacy
-        1/4-global path on a Gemma-3-shaped model."""
         common = {
             "block_count": 62,
             "attention.head_count": 32,
@@ -427,24 +393,20 @@ class TestArchSwaPatternDefaults:
         assert b._ssm_state_size == 128
 
 
+_SWA_FIELDS = {
+    "block_count": 12,
+    "attention.head_count": 4,
+    "attention.head_count_kv": 1,
+    "attention.key_length": 256,
+    "attention.value_length": 256,
+    "attention.sliding_window": 512,
+}
+
+
 class TestDynamicSwaResolver:
-    """Cover the 4-tier resolver:
-
-      0. Explicit GGUF metadata (covered by TestArchSwaPatternDefaults).
-      1. On-disk cache (~/.unsloth/studio/swa_cache.json).
-      2. Bootstrap defaults shipped with Studio.
-      3. Live HF Hub config.json fetch (with cache write-through).
-      4. None -> caller falls back to the legacy 1/4 estimate.
-
-    Tier 3 makes brand-new SWA architectures work without a code
-    change here -- the resolver pulls `sliding_window_pattern` (int)
-    or `text_config.layer_types` (string array) directly from the
-    source repo's HF config.
-    """
+    """4-tier resolver: GGUF metadata, on-disk cache, bootstrap, HF fetch."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
-        """Point the on-disk cache at a fresh tmpdir + reset the
-        in-memory cache so each test starts with a clean slate."""
         from core.inference import llama_cpp as lc
 
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -454,127 +416,58 @@ class TestDynamicSwaResolver:
     def test_period_from_layer_types_finds_smallest_period(self):
         from core.inference.llama_cpp import _period_from_layer_types
 
-        # Gemma-3-style: 1 global per 6 layers
-        lt = ["sliding_attention"] * 5 + ["full_attention"]
-        lt = lt * 4  # 24 layers, period 6
-        assert _period_from_layer_types(lt) == 6
-
-        # gpt-oss-style: alternating
-        lt = ["sliding_attention", "full_attention"] * 12
-        assert _period_from_layer_types(lt) == 2
-
-        # gemma3n-style: 1 global per 5 layers
-        lt = (["sliding_attention"] * 4 + ["full_attention"]) * 7  # 35 layers
-        assert _period_from_layer_types(lt) == 5
+        # gemma3 (1 global per 6), gpt-oss (alternating), gemma3n (1 per 5).
+        assert _period_from_layer_types((["sliding_attention"] * 5 + ["full_attention"]) * 4) == 6
+        assert _period_from_layer_types(["sliding_attention", "full_attention"] * 12) == 2
+        assert _period_from_layer_types((["sliding_attention"] * 4 + ["full_attention"]) * 7) == 5
 
     def test_period_from_layer_types_returns_none_for_aperiodic(self):
         from core.inference.llama_cpp import _period_from_layer_types
 
-        # Irregular pattern with no fixed period.
-        lt = [
-            "sliding_attention",
-            "full_attention",
-            "sliding_attention",
-            "sliding_attention",
-            "full_attention",
-            "sliding_attention",
-            "sliding_attention",
-            "sliding_attention",
-        ]
+        lt = ["sliding_attention", "full_attention", "sliding_attention",
+              "sliding_attention", "full_attention", "sliding_attention",
+              "sliding_attention", "sliding_attention"]
         assert _period_from_layer_types(lt) is None
 
     def test_hf_repo_from_url(self):
         from core.inference.llama_cpp import _hf_repo_from_url
 
-        assert (
-            _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it")
-            == "google/gemma-3-1b-it"
-        )
-        assert (
-            _hf_repo_from_url(
-                "https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json"
-            )
-            == "google/gemma-3-1b-it"
-        )
-        assert _hf_repo_from_url("https://huggingface.co/google") is None
-        assert _hf_repo_from_url("https://example.com/foo/bar") is None
-        assert _hf_repo_from_url(None) is None
-        assert _hf_repo_from_url("") is None
+        assert _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it") == "google/gemma-3-1b-it"
+        assert _hf_repo_from_url(
+            "https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json"
+        ) == "google/gemma-3-1b-it"
+        for bad in ["https://huggingface.co/google", "https://example.com/foo/bar", None, ""]:
+            assert _hf_repo_from_url(bad) is None
 
     def test_bootstrap_tier_used_when_no_cache(self, monkeypatch, tmp_path):
-        """Tier 2: known arch in `_BOOTSTRAP_SWA_DEFAULTS` resolves
-        without touching disk cache or network."""
         self._isolate_cache(monkeypatch, tmp_path)
         from core.inference import llama_cpp as lc
 
-        # Mark network as forbidden -- Tier 2 must answer alone.
         def boom(*a, **kw):
-            raise AssertionError(
-                "HF fetch must not be called when bootstrap covers the arch"
-            )
+            raise AssertionError("HF fetch must not run when bootstrap covers the arch")
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
-        b = _backend_from_gguf(
-            "gemma3",
-            {
-                "block_count": 18,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-        )
+        b = _backend_from_gguf("gemma3", dict(_SWA_FIELDS, block_count = 18))
         assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(18)]
 
     def test_disk_cache_takes_precedence_over_bootstrap(self, monkeypatch, tmp_path):
-        """Tier 1 wins over Tier 2: a value a previous fetch wrote to
-        disk for `gemma3` overrides the bootstrap period."""
         self._isolate_cache(monkeypatch, tmp_path)
-        cache_path = tmp_path / "swa_cache.json"
-        with open(cache_path, "w") as f:
-            json.dump({"gemma3": 3}, f)  # custom period that overrides bootstrap=6
-        b = _backend_from_gguf(
-            "gemma3",
-            {
-                "block_count": 18,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-        )
+        # Override bootstrap=6 with a cached period=3.
+        with open(tmp_path / "swa_cache.json", "w") as f:
+            json.dump({"gemma3": 3}, f)
+        b = _backend_from_gguf("gemma3", dict(_SWA_FIELDS, block_count = 18))
         assert b._sliding_window_pattern == [(i + 1) % 3 != 0 for i in range(18)]
 
     def test_disk_cache_supports_array_entries(self, monkeypatch, tmp_path):
-        """Cache entries may be a per-layer mask when no fixed period
-        fits the source `layer_types`. The resolver must use the
-        array verbatim (with truncation/repetition for size mismatch)."""
+        # Aperiodic mask gets tiled across n_layers.
         self._isolate_cache(monkeypatch, tmp_path)
-        cache_path = tmp_path / "swa_cache.json"
-        # Aperiodic per-layer mask of length 8 for an arch with 16
-        # layers -- resolver tiles it.
         mask = [True, False, True, True, False, True, False, False]
-        with open(cache_path, "w") as f:
+        with open(tmp_path / "swa_cache.json", "w") as f:
             json.dump({"customarch": mask}, f)
-        b = _backend_from_gguf(
-            "customarch",
-            {
-                "block_count": 16,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-        )
+        b = _backend_from_gguf("customarch", dict(_SWA_FIELDS, block_count = 16))
         assert b._sliding_window_pattern == [bool(mask[i % 8]) for i in range(16)]
 
     def test_hf_fetch_populates_cache(self, monkeypatch, tmp_path):
-        """Tier 3: an arch missing from cache and bootstrap triggers a
-        HF fetch; the result is persisted to the on-disk cache so
-        subsequent loads are offline-fast."""
         self._isolate_cache(monkeypatch, tmp_path)
         from core.inference import llama_cpp as lc
 
@@ -582,121 +475,64 @@ class TestDynamicSwaResolver:
 
         def fake_fetch(repo_id):
             calls.append(repo_id)
-            # Pretend the source HF config exposes period=4.
             return 4 if repo_id == "vendor/newmodel-1b-instruct" else None
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", fake_fetch)
         b = _backend_from_gguf(
-            "newmodel",
-            {
-                "block_count": 12,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-            general = {
-                "general.source.huggingface.repository": "vendor/newmodel-1b-instruct",
-            },
+            "newmodel", _SWA_FIELDS,
+            general = {"general.source.huggingface.repository": "vendor/newmodel-1b-instruct"},
         )
         assert b._sliding_window_pattern == [(i + 1) % 4 != 0 for i in range(12)]
         assert calls == ["vendor/newmodel-1b-instruct"]
-
-        # Cache file persisted for future loads.
         with open(tmp_path / "swa_cache.json") as f:
-            cache = json.load(f)
-        assert cache == {"newmodel": 4}
+            assert json.load(f) == {"newmodel": 4}
 
     def test_hf_fetch_falls_back_to_other_candidates(self, monkeypatch, tmp_path):
-        """When the first candidate repo doesn't exist, the resolver
-        tries the next one. Validates that we honour multiple GGUF
-        source-repo hint keys."""
         self._isolate_cache(monkeypatch, tmp_path)
         from core.inference import llama_cpp as lc
 
-        def fake_fetch(repo_id):
-            return 6 if repo_id == "vendor/newmodel-base" else None
-
-        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", fake_fetch)
+        monkeypatch.setattr(
+            lc, "_fetch_swa_entry_from_hf",
+            lambda r: 6 if r == "vendor/newmodel-base" else None,
+        )
         b = _backend_from_gguf(
-            "newmodel",
-            {
-                "block_count": 12,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-            general = {
-                "general.base_model.0.repo_url": "https://huggingface.co/vendor/newmodel-base",
-            },
+            "newmodel", _SWA_FIELDS,
+            general = {"general.base_model.0.repo_url": "https://huggingface.co/vendor/newmodel-base"},
         )
         assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(12)]
 
     def test_offline_env_skips_network(self, monkeypatch, tmp_path):
-        """UNSLOTH_STUDIO_OFFLINE=1 must short-circuit Tier 3 even when
-        a source repo is available. The pattern stays None and the
-        caller falls back to the legacy 1/4 estimate."""
         self._isolate_cache(monkeypatch, tmp_path)
         monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
         from core.inference import llama_cpp as lc
 
         def boom(*a, **kw):
-            raise AssertionError("HF fetch must not be called when offline=1")
+            raise AssertionError("HF fetch must not run when offline=1")
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
         b = _backend_from_gguf(
-            "newmodel",
-            {
-                "block_count": 12,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-            general = {
-                "general.source.huggingface.repository": "vendor/newmodel",
-            },
+            "newmodel", _SWA_FIELDS,
+            general = {"general.source.huggingface.repository": "vendor/newmodel"},
         )
         assert b._sliding_window_pattern is None
 
     def test_hf_fetch_failure_falls_through_silently(self, monkeypatch, tmp_path):
-        """A network error or non-existent repo must not raise; the
-        resolver returns None and the estimator falls back."""
         self._isolate_cache(monkeypatch, tmp_path)
         from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: None)
-        # Block Tier 2.5 too -- this test specifically exercises the
-        # Tier 3 failure path.
-        monkeypatch.setattr(
-            lc, "_resolve_swa_entry_from_transformers", lambda arch: None
-        )
+        # Force the failure into the Tier 3 path; bypass Tier 2.5.
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
         b = _backend_from_gguf(
-            "newmodel",
-            {
-                "block_count": 12,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-            general = {
-                "general.source.huggingface.repository": "vendor/does-not-exist",
-            },
+            "newmodel", _SWA_FIELDS,
+            general = {"general.source.huggingface.repository": "vendor/does-not-exist"},
         )
         assert b._sliding_window_pattern is None
-        # Cache file must NOT be created on failed lookup.
         assert not (tmp_path / "swa_cache.json").exists()
 
 
 class TestTransformersIntrospection:
-    """Tier 2.5: ask the locally-installed transformers package via
-    default-init plus inspect.getsource fallback. Offline-friendly."""
+    """Tier 2.5: default-init the matching Config; on failure, parse via inspect."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
         from core.inference import llama_cpp as lc
@@ -708,73 +544,42 @@ class TestTransformersIntrospection:
     def test_arch_aliases_normalises_hyphen_underscore(self):
         from core.inference.llama_cpp import _arch_aliases
 
-        # Most arches collapse to a single form because there's no
-        # hyphen/underscore to swap. Order matters: original first.
         aliases = _arch_aliases("falcon-h1")
-        assert aliases[0] == "falcon-h1"
-        assert "falcon_h1" in aliases
-        # Identity case: only the original is returned.
+        assert aliases[0] == "falcon-h1" and "falcon_h1" in aliases
         assert _arch_aliases("gemma3") == ("gemma3",)
-        # Empty input returns empty tuple.
         assert _arch_aliases("") == ()
 
-    def test_resolves_real_transformers_arches(self, monkeypatch):
-        """Smoke against the live transformers install. Each of these
-        arches has a Config class with a known
-        `sliding_window_pattern` default."""
+    def test_resolves_real_transformers_arches(self):
         from core.inference.llama_cpp import _resolve_swa_entry_from_transformers
 
-        # Sanity: matches the bootstrap defaults we shipped.
         assert _resolve_swa_entry_from_transformers("gemma3") == 6
         assert _resolve_swa_entry_from_transformers("gemma2") == 2
         assert _resolve_swa_entry_from_transformers("cohere2") == 4
 
     def test_falls_back_to_inspect_when_default_init_raises(self, monkeypatch):
-        """When the Config class can't be default-instantiated (e.g.
-        requires arguments), we still recover the period by parsing
-        the class source."""
         from core.inference import llama_cpp as lc
 
         class _FakeBrokenConfig:
-            """Class that cannot be default-instantiated.
-            sliding_window_pattern: int = 7
-            """
+            """Class with sliding_window_pattern: int = 7 in its docstring."""
 
             def __init__(self, required_arg):
                 raise TypeError("requires an argument")
 
-        fake_mapping = {"brokenarch": "FakeBroken"}
-
         class _FakeLazyMapping(dict):
             def __getitem__(self, k):
-                if k == "brokenarch":
-                    return _FakeBrokenConfig
-                raise KeyError(k)
+                return _FakeBrokenConfig if k == "brokenarch" else super().__getitem__(k)
 
-        # Patch the auto-config plumbing so our fake class is used.
-        import sys
-        import types as _types
-
+        import sys, types as _types
         fake_auto = _types.ModuleType("transformers.models.auto.configuration_auto")
-        fake_auto.CONFIG_MAPPING_NAMES = fake_mapping
-        fake_auto.CONFIG_MAPPING = _FakeLazyMapping(fake_mapping)
-        monkeypatch.setitem(
-            sys.modules,
-            "transformers.models.auto.configuration_auto",
-            fake_auto,
-        )
-        # The class source contains "sliding_window_pattern: int = 7"
-        # in its docstring; the regex picks it up.
+        fake_auto.CONFIG_MAPPING_NAMES = {"brokenarch": "FakeBroken"}
+        fake_auto.CONFIG_MAPPING = _FakeLazyMapping({"brokenarch": "FakeBroken"})
+        monkeypatch.setitem(sys.modules, "transformers.models.auto.configuration_auto", fake_auto)
         assert lc._resolve_swa_entry_from_transformers("brokenarch") == 7
 
     def test_returns_none_when_transformers_unavailable(self, monkeypatch):
-        """Catastrophic failure (transformers not installed at all) is
-        not an error; resolver returns None so the estimator falls
-        back to the legacy 1/4 estimate."""
         from core.inference import llama_cpp as lc
         import sys
 
-        # Remove the transformers auto-config module + block re-import.
         orig_import = (
             __builtins__["__import__"]
             if isinstance(__builtins__, dict)
@@ -787,11 +592,9 @@ class TestTransformersIntrospection:
             return orig_import(name, *a, **kw)
 
         monkeypatch.setattr("builtins.__import__", fake_import)
-        # Drop any cached module so the next import raises.
         for k in list(sys.modules):
             if k.startswith("transformers"):
                 monkeypatch.delitem(sys.modules, k, raising = False)
-
         assert lc._resolve_swa_entry_from_transformers("gemma3") is None
 
     def test_returns_none_for_arch_unknown_to_transformers(self):
@@ -799,44 +602,24 @@ class TestTransformersIntrospection:
 
         assert _resolve_swa_entry_from_transformers("totally-fake-arch-xyz") is None
 
-    def test_full_resolver_uses_transformers_before_hf_fetch(
-        self, monkeypatch, tmp_path
-    ):
-        """Tier 2.5 must fire BEFORE Tier 3 when bootstrap doesn't
-        cover the arch. This avoids unnecessary network calls when
-        transformers already knows the answer."""
+    def test_full_resolver_uses_transformers_before_hf_fetch(self, monkeypatch, tmp_path):
+        # With bootstrap empty, Tier 2.5 must answer before Tier 3 fires.
         self._isolate_cache(monkeypatch, tmp_path)
         from core.inference import llama_cpp as lc
 
-        # Make the bootstrap empty so Tier 2 misses.
         monkeypatch.setattr(lc, "_BOOTSTRAP_SWA_DEFAULTS", {})
 
-        # Spy on Tier 3 -- it must NOT be called.
         def boom(repo_id):
             raise AssertionError("Tier 3 must not run when Tier 2.5 has the answer")
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
-
         b = _backend_from_gguf(
-            "gemma3",
-            {
-                "block_count": 18,
-                "attention.head_count": 4,
-                "attention.head_count_kv": 1,
-                "attention.key_length": 256,
-                "attention.value_length": 256,
-                "attention.sliding_window": 512,
-            },
-            general = {
-                "general.source.huggingface.repository": "google/gemma-3-1b-it",
-            },
+            "gemma3", dict(_SWA_FIELDS, block_count = 18),
+            general = {"general.source.huggingface.repository": "google/gemma-3-1b-it"},
         )
-        # Period=6 from transformers Gemma3TextConfig.
         assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(18)]
-        # Result was persisted to cache.
         with open(tmp_path / "swa_cache.json") as f:
-            cache = json.load(f)
-        assert cache == {"gemma3": 6}
+            assert json.load(f) == {"gemma3": 6}
 
 
 class TestGGUFParserReset:
