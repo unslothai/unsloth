@@ -829,11 +829,10 @@ function ThreadDexieAutosave({
 }): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const isLoading = useAuiState(({ thread }) => thread.isLoading);
   const saveChainRef = useRef(Promise.resolve());
 
   const saveCurrentThread = useCallback(async (): Promise<void> => {
-    if (isLoading || !mainThreadId) {
+    if (!mainThreadId) {
       return;
     }
     const exported = aui.thread().export();
@@ -842,11 +841,6 @@ function ThreadDexieAutosave({
     }
 
     const { remoteId } = await aui.threadListItem().initialize();
-    if (isChatThreadDeleted(remoteId)) {
-      await deleteThreadRows(remoteId);
-      return;
-    }
-    await ensureThreadRecord({ threadId: remoteId, modelType, pairId });
     if (isChatThreadDeleted(remoteId)) {
       await deleteThreadRows(remoteId);
       return;
@@ -863,7 +857,7 @@ function ThreadDexieAutosave({
         store.setActiveThreadId(remoteId);
       }
     }
-  }, [aui, isLoading, mainThreadId, modelType, pairId]);
+  }, [aui, mainThreadId, modelType, pairId]);
 
   const queueSave = useCallback((): void => {
     saveChainRef.current = saveChainRef.current
