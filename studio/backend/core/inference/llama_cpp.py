@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import os
 import re
 import struct
 import structlog
@@ -75,25 +76,39 @@ _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
 
-# ── Per-architecture sliding-window-pattern defaults ──────────
+# ── Sliding-window-pattern resolver ───────────────────────────
 # Most GGUF converters do not propagate `sliding_window_pattern`
 # (or `layer_types`) into GGUF metadata even when the source HF config
 # sets it. When a GGUF reports a sliding window but no per-layer
-# pattern, we fall back to the canonical period from transformers'
-# config defaults so the KV-cache estimator stops over-counting
-# global-attention layers (which would otherwise inflate the estimate
-# and cap the auto context).
+# pattern, we resolve the pattern through a 4-tier lookup so newly
+# released models work without any code change here:
 #
-# The convention matches `transformers` (and the array path further
-# below): for period N, layer i is sliding-window iff (i + 1) % N != 0.
+#   Tier 0: GGUF metadata directly (handled by the parser before this
+#           resolver runs -- both the BOOL array and the scalar period
+#           paths). If the converter ever starts emitting the pattern,
+#           we use it verbatim.
 #
-# Sourced from a survey of every unsloth/* model on HF (1334 repos at
-# time of writing). Each arch listed here was checked against its
-# `config.json` directly or, for the multimodal variants, against
-# `text_config.layer_types`. Arches not listed fall through to the
-# legacy 1/4-global estimate (which still beats ignoring SWA entirely).
+#   Tier 1: On-disk cache at $UNSLOTH_STUDIO_HOME/swa_cache.json.
+#           Populated from previous Tier 3 fetches. Survives restarts.
 #
-# Architectures intentionally NOT in this table:
+#   Tier 2: Bootstrap defaults shipped with Studio
+#           (`_BOOTSTRAP_SWA_DEFAULTS`). Covers the popular SWA arches
+#           in the unsloth/* catalogue today and lets fully-offline
+#           installs work for them with zero network. Sourced from a
+#           survey of every unsloth/* model on HF (1334 repos).
+#
+#   Tier 3: HF Hub config.json fetch. Pulls the source repo's
+#           `sliding_window_pattern` (int) or `text_config.layer_types`
+#           (string array) directly. Result is cached to Tier 1.
+#           Disabled by `UNSLOTH_STUDIO_OFFLINE=1` and gracefully
+#           swallows network errors (offline installs never break).
+#
+#   Tier 4: Caller falls back to the legacy 1/4-global SWA estimate.
+#
+# Period semantics match `transformers` (and the metadata array path):
+# for period N, layer i is sliding-window iff (i + 1) % N != 0.
+#
+# Architectures intentionally NOT in the bootstrap table:
 #   * `phi3`: GGUF emits `sliding_window=262144` but never emits
 #     `key_length`/`value_length`, so the SWA path is gated off and the
 #     estimator falls to the legacy formula. The huge window also
@@ -105,10 +120,8 @@ _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 #     `qwen2.attention.sliding_window` in the resulting GGUF, so the
 #     SWA path never fires (verified against Qwen2.5-0.5B-GGUF).
 #   * `mistral`: v0.1/v0.2 are all-SWA every-layer, but our period
-#     sentinel can't express that without ambiguity. Mistral falls
-#     through to the legacy 1/4 estimate (slightly off but not a
-#     regression vs. main).
-_SWA_PATTERN_DEFAULTS_BY_ARCH: dict[str, int] = {
+#     sentinel can't express that without ambiguity.
+_BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
     # Gemma 2: alternating local/global (Gemma2Config.sliding_window_pattern = 2)
     "gemma2": 2,
     # Gemma 3: 1 global per 6 layers (Gemma3TextConfig.sliding_window_pattern = 6)
@@ -121,6 +134,156 @@ _SWA_PATTERN_DEFAULTS_BY_ARCH: dict[str, int] = {
     # Cohere Command R-style: 1 global per 4 layers when SWA is enabled.
     "cohere2": 4,
 }
+
+# Process-wide in-memory cache; backed by a JSON file on disk. Keys are
+# GGUF arch strings; values are either an int period or a list[bool]
+# mask (used verbatim when no fixed period fits a layer_types array).
+# Loaded lazily on first access via `_load_swa_cache()`.
+_SWA_CACHE: Optional[dict] = None
+_SWA_CACHE_LOCK = threading.Lock()
+
+
+def _swa_cache_path() -> Path:
+    """Return the on-disk SWA cache path. Honours UNSLOTH_STUDIO_HOME
+    so the same cache survives across reinstalls."""
+    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    base = Path(home) if home else Path.home() / ".unsloth" / "studio"
+    return base / "swa_cache.json"
+
+
+def _load_swa_cache() -> dict:
+    global _SWA_CACHE
+    with _SWA_CACHE_LOCK:
+        if _SWA_CACHE is not None:
+            return _SWA_CACHE
+        try:
+            with open(_swa_cache_path()) as f:
+                _SWA_CACHE = json.load(f)
+                if not isinstance(_SWA_CACHE, dict):
+                    _SWA_CACHE = {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            _SWA_CACHE = {}
+        return _SWA_CACHE
+
+
+def _save_swa_cache(cache: dict) -> None:
+    """Best-effort persist; never throws."""
+    try:
+        path = _swa_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(cache, f, indent = 2, sort_keys = True)
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _period_from_layer_types(layer_types: list) -> Optional[int]:
+    """Try to express a per-layer SWA mask as a uniform period N.
+    Returns the smallest period that fits, or None if no fixed
+    period matches (in which case the caller stores the raw mask)."""
+    if not layer_types:
+        return None
+    is_swa = ["full" not in str(t).lower() for t in layer_types]
+    n = len(is_swa)
+    for N in range(1, n + 1):
+        if all(((i + 1) % N != 0) == is_swa[i] for i in range(n)):
+            return N
+    return None
+
+
+def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
+    """Fetch HF `config.json` for `repo_id` and return either an int
+    period, a list[bool] per-layer mask, or None. Network errors are
+    swallowed."""
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cfg_path = hf_hub_download(
+            repo_id, "config.json", repo_type = "model"
+        )
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        return None
+
+    src = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else cfg
+
+    period = src.get("sliding_window_pattern")
+    if isinstance(period, int) and period > 0:
+        return period
+
+    lt = src.get("layer_types")
+    if isinstance(lt, list) and lt:
+        # Prefer a periodic representation when one fits.
+        p = _period_from_layer_types(lt)
+        if p is not None:
+            return p
+        return ["full" not in str(t).lower() for t in lt]
+
+    return None
+
+
+def _resolve_swa_pattern(
+    arch: Optional[str],
+    n_layers: Optional[int],
+    source_repo_candidates: tuple = (),
+    *,
+    allow_network: Optional[bool] = None,
+) -> Optional[list]:
+    """Return a per-layer SWA mask for `arch`, or None if no source
+    knows the answer (in which case the caller uses the legacy
+    1/4-global fallback). See module-level comment for tier order."""
+    if not arch or not n_layers:
+        return None
+    if allow_network is None:
+        allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
+            "1", "true", "True", "yes",
+        )
+
+    cache = _load_swa_cache()
+
+    def _entry_to_mask(entry):
+        if isinstance(entry, int) and entry > 0:
+            return [(i + 1) % entry != 0 for i in range(n_layers)]
+        if isinstance(entry, list) and entry:
+            return [bool(entry[i % len(entry)]) for i in range(n_layers)]
+        return None
+
+    # Tier 1: persistent cache
+    if (entry := cache.get(arch)) is not None:
+        if (mask := _entry_to_mask(entry)) is not None:
+            return mask
+
+    # Tier 2: bootstrap defaults
+    if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
+        return _entry_to_mask(entry)
+
+    # Tier 3: live HF fetch (with persistent caching of the result)
+    if allow_network:
+        for repo_id in source_repo_candidates:
+            if not repo_id:
+                continue
+            entry = _fetch_swa_entry_from_hf(repo_id)
+            if entry is not None:
+                with _SWA_CACHE_LOCK:
+                    cache[arch] = entry
+                _save_swa_cache(cache)
+                return _entry_to_mask(entry)
+
+    return None
+
+
+def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
+    """Strip `https://huggingface.co/owner/name(/...)` to `owner/name`."""
+    if not url or "huggingface.co/" not in url:
+        return None
+    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    parts = tail.split("/")
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
 
 
 # Model size extraction — lazy import to avoid pulling in transformers
@@ -1152,12 +1315,29 @@ class LlamaCppBackend:
         self._ssm_state_size = None
 
         try:
-            WANTED = {"general.architecture", "tokenizer.chat_template"}
+            WANTED = {
+                "general.architecture",
+                "tokenizer.chat_template",
+                # Source-repo hints used by the dynamic SWA resolver to
+                # fall back to HF config.json for unknown arches. The
+                # exact key set varies by converter version.
+                "general.source.huggingface.repository",
+                "general.source.url",
+                "general.source.repo_url",
+                "general.base_model.0.repo_url",
+                "general.base_model.0.organization",
+                "general.base_model.0.name",
+                "general.basename",
+                "general.organization",
+                "general.size_label",
+                "general.finetune",
+            }
             # Additional arch-specific keys are added dynamically once
             # we know the architecture name.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
             sliding_window_pattern_period: Optional[int] = None
+            general: dict[str, str] = {}
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -1176,6 +1356,8 @@ class LlamaCppBackend:
                         if vtype == 8:  # STRING
                             slen = struct.unpack("<Q", f.read(8))[0]
                             val_s = f.read(slen).decode("utf-8")
+                            if key.startswith("general.") and key != "general.architecture":
+                                general[key] = val_s
                             if key == "general.architecture":
                                 arch = val_s
                                 # Register arch-specific keys to look for
@@ -1235,22 +1417,8 @@ class LlamaCppBackend:
                     else:
                         self._gguf_skip_value(f, vtype)
 
-            # Fallback to the architecture's canonical SWA period when
-            # the GGUF reports a sliding window but no explicit pattern
-            # field. Today's Gemma-2/3/3n and gpt-oss GGUFs land here:
-            # llama.cpp's converter does not propagate
-            # `sliding_window_pattern` (or `layer_types`) for any of
-            # these arches, so without this fallback the SWA estimator
-            # falls through to its 1/4-global heuristic and over-counts
-            # global layers (50% overshoot on Gemma-3, 200% on gpt-oss).
-            if (
-                self._sliding_window_pattern is None
-                and sliding_window_pattern_period is None
-                and self._sliding_window
-                and arch in _SWA_PATTERN_DEFAULTS_BY_ARCH
-            ):
-                sliding_window_pattern_period = _SWA_PATTERN_DEFAULTS_BY_ARCH[arch]
-
+            # Expand any scalar period from GGUF metadata into a
+            # per-layer mask first (Tier 0).
             if (
                 self._sliding_window_pattern is None
                 and sliding_window_pattern_period
@@ -1260,6 +1428,48 @@ class LlamaCppBackend:
                     (i + 1) % sliding_window_pattern_period != 0
                     for i in range(self._n_layers)
                 ]
+
+            # Dynamic resolver (Tiers 1-3) for arches whose GGUFs
+            # report a sliding window but no per-layer pattern. Today's
+            # Gemma-2/3/3n and gpt-oss GGUFs land here because the
+            # converter does not propagate `sliding_window_pattern`
+            # (or `layer_types`); without this the SWA estimator falls
+            # through to its 1/4-global heuristic and over-counts
+            # global layers (50% overshoot on Gemma-3, 200% on
+            # gpt-oss). The resolver also makes brand-new arches work
+            # automatically by fetching `config.json` from the GGUF's
+            # source HF repo, so no code change is needed when a new
+            # SWA model ships.
+            if (
+                self._sliding_window_pattern is None
+                and self._sliding_window
+                and self._n_layers
+            ):
+                hf_repo_candidates = (
+                    general.get("general.source.huggingface.repository"),
+                    _hf_repo_from_url(general.get("general.source.url")),
+                    _hf_repo_from_url(general.get("general.source.repo_url")),
+                    _hf_repo_from_url(general.get("general.base_model.0.repo_url")),
+                    (
+                        f"{general['general.base_model.0.organization']}/"
+                        f"{general['general.base_model.0.name']}".replace(" ", "-")
+                        if general.get("general.base_model.0.organization")
+                        and general.get("general.base_model.0.name")
+                        else None
+                    ),
+                    (
+                        f"{general['general.organization']}/"
+                        f"{general['general.basename']}".replace(" ", "-")
+                        if general.get("general.organization")
+                        and general.get("general.basename")
+                        else None
+                    ),
+                )
+                self._sliding_window_pattern = _resolve_swa_pattern(
+                    arch,
+                    self._n_layers,
+                    hf_repo_candidates,
+                )
 
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")

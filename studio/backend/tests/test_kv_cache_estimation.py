@@ -12,6 +12,7 @@ Cross-platform: Linux, macOS, Windows, WSL.
 """
 
 import io
+import json
 import struct
 import sys
 import types as _types
@@ -118,9 +119,18 @@ def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
     return buf.getvalue()
 
 
-def _backend_from_gguf(arch: str, fields: dict) -> LlamaCppBackend:
-    """Create a LlamaCppBackend with parsed GGUF metadata from given fields."""
+def _backend_from_gguf(
+    arch: str, fields: dict, general: dict | None = None
+) -> LlamaCppBackend:
+    """Create a LlamaCppBackend with parsed GGUF metadata from given fields.
+
+    `general` lets a test inject extra `general.*` metadata (used to
+    verify the dynamic SWA resolver picks up source-repo hints from
+    GGUFs that ship them).
+    """
     kv = {"general.architecture": arch}
+    for k, v in (general or {}).items():
+        kv[k] = v
     for k, v in fields.items():
         kv[f"{arch}.{k}"] = v
     import tempfile, os
@@ -415,6 +425,253 @@ class TestArchSwaPatternDefaults:
         assert b._kv_value_length_swa == 64
         assert b._ssm_inner_size == 4096
         assert b._ssm_state_size == 128
+
+
+class TestDynamicSwaResolver:
+    """Cover the 4-tier resolver:
+
+      0. Explicit GGUF metadata (covered by TestArchSwaPatternDefaults).
+      1. On-disk cache (~/.unsloth/studio/swa_cache.json).
+      2. Bootstrap defaults shipped with Studio.
+      3. Live HF Hub config.json fetch (with cache write-through).
+      4. None -> caller falls back to the legacy 1/4 estimate.
+
+    Tier 3 makes brand-new SWA architectures work without a code
+    change here -- the resolver pulls `sliding_window_pattern` (int)
+    or `text_config.layer_types` (string array) directly from the
+    source repo's HF config.
+    """
+
+    def _isolate_cache(self, monkeypatch, tmp_path):
+        """Point the on-disk cache at a fresh tmpdir + reset the
+        in-memory cache so each test starts with a clean slate."""
+        from core.inference import llama_cpp as lc
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+        monkeypatch.setattr(lc, "_SWA_CACHE", None)
+        return tmp_path
+
+    def test_period_from_layer_types_finds_smallest_period(self):
+        from core.inference.llama_cpp import _period_from_layer_types
+
+        # Gemma-3-style: 1 global per 6 layers
+        lt = ["sliding_attention"] * 5 + ["full_attention"]
+        lt = lt * 4  # 24 layers, period 6
+        assert _period_from_layer_types(lt) == 6
+
+        # gpt-oss-style: alternating
+        lt = ["sliding_attention", "full_attention"] * 12
+        assert _period_from_layer_types(lt) == 2
+
+        # gemma3n-style: 1 global per 5 layers
+        lt = (["sliding_attention"] * 4 + ["full_attention"]) * 7  # 35 layers
+        assert _period_from_layer_types(lt) == 5
+
+    def test_period_from_layer_types_returns_none_for_aperiodic(self):
+        from core.inference.llama_cpp import _period_from_layer_types
+
+        # Irregular pattern with no fixed period.
+        lt = [
+            "sliding_attention", "full_attention", "sliding_attention",
+            "sliding_attention", "full_attention", "sliding_attention",
+            "sliding_attention", "sliding_attention",
+        ]
+        assert _period_from_layer_types(lt) is None
+
+    def test_hf_repo_from_url(self):
+        from core.inference.llama_cpp import _hf_repo_from_url
+
+        assert _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it") == "google/gemma-3-1b-it"
+        assert _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json") == "google/gemma-3-1b-it"
+        assert _hf_repo_from_url("https://huggingface.co/google") is None
+        assert _hf_repo_from_url("https://example.com/foo/bar") is None
+        assert _hf_repo_from_url(None) is None
+        assert _hf_repo_from_url("") is None
+
+    def test_bootstrap_tier_used_when_no_cache(self, monkeypatch, tmp_path):
+        """Tier 2: known arch in `_BOOTSTRAP_SWA_DEFAULTS` resolves
+        without touching disk cache or network."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        # Mark network as forbidden -- Tier 2 must answer alone.
+        def boom(*a, **kw):
+            raise AssertionError("HF fetch must not be called when bootstrap covers the arch")
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "block_count": 18,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+        )
+        assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(18)]
+
+    def test_disk_cache_takes_precedence_over_bootstrap(self, monkeypatch, tmp_path):
+        """Tier 1 wins over Tier 2: a value a previous fetch wrote to
+        disk for `gemma3` overrides the bootstrap period."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        cache_path = tmp_path / "swa_cache.json"
+        with open(cache_path, "w") as f:
+            json.dump({"gemma3": 3}, f)  # custom period that overrides bootstrap=6
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "block_count": 18,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+        )
+        assert b._sliding_window_pattern == [(i + 1) % 3 != 0 for i in range(18)]
+
+    def test_disk_cache_supports_array_entries(self, monkeypatch, tmp_path):
+        """Cache entries may be a per-layer mask when no fixed period
+        fits the source `layer_types`. The resolver must use the
+        array verbatim (with truncation/repetition for size mismatch)."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        cache_path = tmp_path / "swa_cache.json"
+        # Aperiodic per-layer mask of length 8 for an arch with 16
+        # layers -- resolver tiles it.
+        mask = [True, False, True, True, False, True, False, False]
+        with open(cache_path, "w") as f:
+            json.dump({"customarch": mask}, f)
+        b = _backend_from_gguf(
+            "customarch",
+            {
+                "block_count": 16,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+        )
+        assert b._sliding_window_pattern == [bool(mask[i % 8]) for i in range(16)]
+
+    def test_hf_fetch_populates_cache(self, monkeypatch, tmp_path):
+        """Tier 3: an arch missing from cache and bootstrap triggers a
+        HF fetch; the result is persisted to the on-disk cache so
+        subsequent loads are offline-fast."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        calls = []
+
+        def fake_fetch(repo_id):
+            calls.append(repo_id)
+            # Pretend the source HF config exposes period=4.
+            return 4 if repo_id == "vendor/newmodel-1b-instruct" else None
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", fake_fetch)
+        b = _backend_from_gguf(
+            "newmodel",
+            {
+                "block_count": 12,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+            general = {
+                "general.source.huggingface.repository": "vendor/newmodel-1b-instruct",
+            },
+        )
+        assert b._sliding_window_pattern == [(i + 1) % 4 != 0 for i in range(12)]
+        assert calls == ["vendor/newmodel-1b-instruct"]
+
+        # Cache file persisted for future loads.
+        with open(tmp_path / "swa_cache.json") as f:
+            cache = json.load(f)
+        assert cache == {"newmodel": 4}
+
+    def test_hf_fetch_falls_back_to_other_candidates(self, monkeypatch, tmp_path):
+        """When the first candidate repo doesn't exist, the resolver
+        tries the next one. Validates that we honour multiple GGUF
+        source-repo hint keys."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        def fake_fetch(repo_id):
+            return 6 if repo_id == "vendor/newmodel-base" else None
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", fake_fetch)
+        b = _backend_from_gguf(
+            "newmodel",
+            {
+                "block_count": 12,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+            general = {
+                "general.base_model.0.repo_url": "https://huggingface.co/vendor/newmodel-base",
+            },
+        )
+        assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(12)]
+
+    def test_offline_env_skips_network(self, monkeypatch, tmp_path):
+        """UNSLOTH_STUDIO_OFFLINE=1 must short-circuit Tier 3 even when
+        a source repo is available. The pattern stays None and the
+        caller falls back to the legacy 1/4 estimate."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
+        from core.inference import llama_cpp as lc
+
+        def boom(*a, **kw):
+            raise AssertionError("HF fetch must not be called when offline=1")
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
+        b = _backend_from_gguf(
+            "newmodel",
+            {
+                "block_count": 12,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+            general = {
+                "general.source.huggingface.repository": "vendor/newmodel",
+            },
+        )
+        assert b._sliding_window_pattern is None
+
+    def test_hf_fetch_failure_falls_through_silently(self, monkeypatch, tmp_path):
+        """A network error or non-existent repo must not raise; the
+        resolver returns None and the estimator falls back."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: None)
+        b = _backend_from_gguf(
+            "newmodel",
+            {
+                "block_count": 12,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+            general = {
+                "general.source.huggingface.repository": "vendor/does-not-exist",
+            },
+        )
+        assert b._sliding_window_pattern is None
+        # Cache file must NOT be created on failed lookup.
+        assert not (tmp_path / "swa_cache.json").exists()
 
 
 class TestGGUFParserReset:
