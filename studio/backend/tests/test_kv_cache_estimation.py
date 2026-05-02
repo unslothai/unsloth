@@ -195,9 +195,131 @@ class TestGGUFParserNewFields:
                 ],
             },
         )
-        assert b._n_kv_heads is None
+        # Per-layer KV head count is preserved exactly...
         assert b._n_kv_heads_by_layer == [8, 8, 8, 8, 8, 2]
+        # ...and mirrored into the scalar field as a conservative max so
+        # non-SWA estimator paths and any caller using
+        # `n_kv = self._n_kv_heads or ...` get a safe upper bound.
+        assert b._n_kv_heads == 8
         assert b._sliding_window_pattern == [True, True, True, True, True, False]
+
+
+class TestArchSwaPatternDefaults:
+    """Verify the per-architecture SWA-period fallback table fires when
+    a GGUF reports a sliding window but no explicit pattern field. This
+    is the case for every Gemma-2/Gemma-3/Gemma-3n/gpt-oss/Phi-3 GGUF
+    on Hugging Face today: llama.cpp's converter does not propagate
+    `sliding_window_pattern` (or `layer_types`) for any of these arches.
+    """
+
+    @pytest.mark.parametrize(
+        "arch,n_layers,expected_period",
+        [
+            ("gemma2", 26, 2),
+            ("gemma3", 18, 6),
+            ("gemma3n", 35, 5),
+            ("gpt_oss", 24, 2),
+            ("phi3", 32, 1),
+            ("cohere2", 32, 4),
+        ],
+    )
+    def test_arch_default_pattern_applied(self, arch, n_layers, expected_period):
+        b = _backend_from_gguf(
+            arch,
+            {
+                "block_count": n_layers,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+        )
+        expected_pattern = [(i + 1) % expected_period != 0 for i in range(n_layers)]
+        assert b._sliding_window_pattern == expected_pattern, (
+            f"{arch} should expand to period={expected_period}"
+        )
+
+    def test_unknown_arch_no_default(self):
+        """Architectures not in the table fall through to the legacy
+        1/4 estimate; they MUST NOT be assigned a synthetic pattern."""
+        b = _backend_from_gguf(
+            "totallymadeupv7",
+            {
+                "block_count": 24,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 128,
+                "attention.value_length": 128,
+                "attention.sliding_window": 1024,
+            },
+        )
+        assert b._sliding_window_pattern is None
+
+    def test_explicit_pattern_overrides_arch_default(self):
+        """If the GGUF carries an explicit pattern field, the arch
+        table must NOT clobber it."""
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "block_count": 6,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+                # Per-layer override (would NOT match the period=6 default).
+                "attention.sliding_window_pattern": [
+                    True, False, True, False, True, False,
+                ],
+            },
+        )
+        assert b._sliding_window_pattern == [
+            True, False, True, False, True, False,
+        ]
+
+    def test_no_sliding_window_no_pattern(self):
+        """Even for a known arch, do not fabricate a pattern when the
+        GGUF has no sliding_window field at all (purely full-attention
+        variant of the same arch family, e.g. legacy mistral 7B)."""
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "block_count": 18,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                # no sliding_window key
+            },
+        )
+        assert b._sliding_window_pattern is None
+
+    def test_arch_default_reduces_kv_estimate_vs_legacy(self):
+        """End-to-end smoke: with the arch fallback, the SWA estimator
+        should produce a strictly smaller KV estimate than the legacy
+        1/4-global path on a Gemma-3-shaped model."""
+        common = {
+            "block_count": 62,
+            "attention.head_count": 32,
+            "attention.head_count_kv": 16,
+            "attention.key_length": 128,
+            "attention.value_length": 128,
+            "attention.sliding_window": 1024,
+            "embedding_length": 5376,
+        }
+        with_default = _backend_from_gguf("gemma3", common)
+        # Arch not in the table -> legacy 1/4 path.
+        without_default = _backend_from_gguf("totallymadeupv7", common)
+
+        kv_default = with_default._estimate_kv_cache_bytes(131072, "f16")
+        kv_legacy = without_default._estimate_kv_cache_bytes(131072, "f16")
+        assert kv_default > 0
+        assert kv_legacy > 0
+        assert kv_default < kv_legacy, (
+            f"arch fallback should under-shoot legacy estimate: "
+            f"{kv_default} >= {kv_legacy}"
+        )
 
     def test_scalar_sliding_window_pattern_expanded(self):
         block_count = 8
@@ -994,10 +1116,16 @@ class TestLifecycle:
         )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(131072, "f16")
-        n_global = max(1, 62 // 4)  # 15
-        n_swa = 62 - n_global  # 47
+        # Gemma-3 uses period=6 (1 global per 6 layers) -- the GGUF
+        # converter doesn't propagate this so the parser falls back to
+        # `_SWA_PATTERN_DEFAULTS_BY_ARCH["gemma3"] = 6`.
+        period = 6
         kv_per = 16 * 256 * 2
-        expected = int(n_global * 131072 * kv_per + n_swa * 1024 * kv_per)
+        expected = 0
+        for i in range(62):
+            is_swa = (i + 1) % period != 0
+            layer_ctx = 1024 if is_swa else 131072
+            expected += layer_ctx * kv_per
         assert result == expected
 
     def test_end_to_end_synthetic_gqa(self):

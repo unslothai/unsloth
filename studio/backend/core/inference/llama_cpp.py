@@ -75,6 +75,41 @@ _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
 
+# ── Per-architecture sliding-window-pattern defaults ──────────
+# Most converters do not propagate `sliding_window_pattern` into GGUF
+# metadata even when the source HF config sets it. When a GGUF reports
+# a sliding window but no per-layer pattern, we fall back to the
+# canonical period from transformers' config defaults so the KV-cache
+# estimator stops over-counting global-attention layers (which would
+# otherwise inflate the estimate and cap the auto context).
+#
+# The convention matches `transformers` (and the array path further
+# below): for period N, layer i is sliding-window iff (i + 1) % N != 0.
+# A period of 1 means every layer is sliding-window (Phi-3 long-ctx
+# style); None means "no SWA, treat as full attention everywhere".
+#
+# Sourced from a survey of the top 150 unsloth/* models on HF: every
+# arch listed here was either checked against its `config.json`
+# directly or against `text_config.layer_types` for the multimodal
+# variants. Arches not listed fall through to the legacy 1/4 estimate
+# (which still beats ignoring SWA entirely).
+_SWA_PATTERN_DEFAULTS_BY_ARCH: dict[str, int] = {
+    # Gemma 2: alternating local/global (Gemma2Config.sliding_window_pattern = 2)
+    "gemma2": 2,
+    # Gemma 3: 1 global per 6 layers (Gemma3TextConfig.sliding_window_pattern = 6)
+    "gemma3": 6,
+    # Gemma 3n: 1 global per 5 layers (from text_config.layer_types in
+    # google/gemma-3n-* configs: SWA SWA SWA SWA FULL ...)
+    "gemma3n": 5,
+    # gpt-oss: alternating SWA/FULL per layer_types in openai/gpt-oss-* configs
+    "gpt_oss": 2,
+    # Phi-3 long-context variants are sliding-window on every layer.
+    "phi3": 1,
+    # Cohere Command R-style: 1 global per 4 layers when SWA is enabled.
+    "cohere2": 4,
+}
+
+
 # Model size extraction — lazy import to avoid pulling in transformers
 # at module level.  See PR description for the full explanation.
 def _extract_model_size_b(model_id: str):
@@ -746,9 +781,14 @@ class LlamaCppBackend:
         # New-style: need both explicit key AND value dimensions
         if self._kv_key_length is not None and self._kv_value_length is not None:
             return True
-        # Legacy: need embedding_length + head count
+        # Legacy: need embedding_length + head count. A per-layer
+        # n_kv_heads array (Gemma 4 / GLM SWA) also satisfies the head
+        # requirement -- the scalar field is mirrored from it at parse
+        # time but we accept the array directly here for safety.
         return self._embedding_length is not None and (
-            self._n_kv_heads is not None or self._n_heads is not None
+            self._n_kv_heads is not None
+            or self._n_heads is not None
+            or self._n_kv_heads_by_layer is not None
         )
 
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
@@ -819,11 +859,18 @@ class LlamaCppBackend:
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
-        # Path 3: Sliding Window (Gemma-3, gpt-oss)
-        # SWA layers only cache min(ctx, window) tokens; global layers cache full ctx.
-        # Most SWA architectures use few global layers (e.g., Gemma-3 uses 1 in 6).
-        # Without an explicit field, we conservatively assume 1/4 of layers are global
-        # which is still far more accurate than the legacy formula (which ignores SWA).
+        # Path 3: Sliding Window (Gemma-2, Gemma-3, Gemma-3n, Gemma-4,
+        # gpt-oss, Phi-3, Cohere-2, ...). SWA layers only cache
+        # min(ctx, window) tokens; global layers cache full ctx.
+        # The per-layer pattern resolves in order:
+        #   1. Explicit BOOL array from GGUF metadata
+        #      (`<arch>.attention.sliding_window_pattern`).
+        #   2. Scalar period from GGUF metadata, expanded at parse time.
+        #   3. Architecture default from `_SWA_PATTERN_DEFAULTS_BY_ARCH`,
+        #      expanded at parse time. Covers Gemma-2/3/3n/gpt-oss/Phi-3/
+        #      Cohere-2 GGUFs that today ship `sliding_window` but no
+        #      pattern field.
+        #   4. Legacy 1/4-global heuristic (last-resort fallback).
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -1159,6 +1206,14 @@ class LlamaCppBackend:
                             attr = arch_keys.get(key)
                             if attr == "n_kv_heads" and val_a is not None:
                                 self._n_kv_heads_by_layer = [int(x) for x in val_a]
+                                # Mirror a representative scalar so the
+                                # non-SWA estimator paths (GQA, legacy)
+                                # and any caller using
+                                # `n_kv = self._n_kv_heads or ...` get a
+                                # safe upper bound rather than falling
+                                # through to `n_heads` (much larger).
+                                if self._n_kv_heads is None and val_a:
+                                    self._n_kv_heads = max(int(x) for x in val_a)
                             elif attr == "sliding_window_pattern" and val_a is not None:
                                 self._sliding_window_pattern = [bool(x) for x in val_a]
                                 sliding_window_pattern_period = None
@@ -1166,6 +1221,22 @@ class LlamaCppBackend:
                             self._gguf_skip_value(f, vtype)
                     else:
                         self._gguf_skip_value(f, vtype)
+
+            # Fallback to the architecture's canonical SWA period when
+            # the GGUF reports a sliding window but no explicit pattern
+            # field. Today's Gemma-2/3/3n and gpt-oss GGUFs land here:
+            # llama.cpp's converter does not propagate
+            # `sliding_window_pattern` (or `layer_types`) for any of
+            # these arches, so without this fallback the SWA estimator
+            # falls through to its 1/4-global heuristic and over-counts
+            # global layers (50% overshoot on Gemma-3, 200% on gpt-oss).
+            if (
+                self._sliding_window_pattern is None
+                and sliding_window_pattern_period is None
+                and self._sliding_window
+                and arch in _SWA_PATTERN_DEFAULTS_BY_ARCH
+            ):
+                sliding_window_pattern_period = _SWA_PATTERN_DEFAULTS_BY_ARCH[arch]
 
             if (
                 self._sliding_window_pattern is None
