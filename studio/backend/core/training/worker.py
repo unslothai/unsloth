@@ -1257,7 +1257,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     _send_status(event_queue, "Saving model...")
     try:
         if _should_stop and _save_on_stop:
-            trainer.save_state()
+            trainer._save_checkpoint(trainer.model, trial = None)
         model.save_pretrained(output_dir)
         model.tokenizer.save_pretrained(output_dir)
         logger.info("Embedding model saved to %s", output_dir)

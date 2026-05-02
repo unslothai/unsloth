@@ -376,7 +376,7 @@ class UnslothTrainer:
     def _finalize_training(self, output_dir, label = ""):
         """Save model after training and update progress. Used by all training branches."""
         if self.should_stop and self.save_on_stop:
-            self.trainer.save_state()
+            self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
