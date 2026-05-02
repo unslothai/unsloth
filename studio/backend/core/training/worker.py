@@ -493,11 +493,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ],
             use_gradient_checkpointing=use_grad_checkpoint,
         )
-        peft_kwargs["finetune_language_layers"] = config.get("finetune_language_layers", True)
-        peft_kwargs["finetune_attention_modules"] = config.get("finetune_attention_modules", True)
-        peft_kwargs["finetune_mlp_modules"] = config.get("finetune_mlp_modules", True)
+        finetune_language = config.get("finetune_language_layers", True)
+        finetune_attention = config.get("finetune_attention_modules", True)
+        finetune_mlp = config.get("finetune_mlp_modules", True)
+        finetune_vision = config.get("finetune_vision_layers", False) if is_vlm else False
+
+        if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
+            finetune_language = True
+
+        peft_kwargs["finetune_language_layers"] = finetune_language
+        peft_kwargs["finetune_attention_modules"] = finetune_attention
+        peft_kwargs["finetune_mlp_modules"] = finetune_mlp
         if is_vlm:
-            peft_kwargs["finetune_vision_layers"] = config.get("finetune_vision_layers", False)
+            peft_kwargs["finetune_vision_layers"] = finetune_vision
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
     # ── 3. Load dataset ──
