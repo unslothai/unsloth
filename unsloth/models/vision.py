@@ -1588,11 +1588,7 @@ class FastBaseModel:
                 # Accept gradient_checkpointing_kwargs positionally or by keyword so
                 # callers like trl.models.utils.disable_gradient_checkpointing, which
                 # pass it positionally, do not raise TypeError.
-                gc_kwargs = (
-                    gradient_checkpointing_kwargs
-                    if gradient_checkpointing_kwargs is not None
-                    else kwargs.pop("gradient_checkpointing_kwargs", None)
-                ) or {}
+                gc_kwargs = gradient_checkpointing_kwargs or {}
                 gc_kwargs["use_reentrant"] = True
                 return _original_gc_enable(
                     gradient_checkpointing_kwargs = gc_kwargs, **kwargs
