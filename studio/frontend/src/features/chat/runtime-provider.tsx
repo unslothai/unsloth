@@ -828,19 +828,19 @@ function ThreadDexieAutosave({
   pairId?: string;
 }): ReactElement | null {
   const aui = useAui();
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const saveChainRef = useRef(Promise.resolve());
 
-  const saveCurrentThread = useCallback(async (): Promise<void> => {
-    if (!mainThreadId) {
+  const saveThread = useCallback(async (threadId: string): Promise<void> => {
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    if (!runtime) {
       return;
     }
-    const exported = aui.thread().export();
+    const exported = runtime.threads.getById(threadId).export();
     if (exported.messages.length === 0) {
       return;
     }
 
-    const { remoteId } = await aui.threadListItem().initialize();
+    const { remoteId } = await runtime.threads.getItemById(threadId).initialize();
     if (isChatThreadDeleted(remoteId)) {
       await deleteThreadRows(remoteId);
       return;
@@ -853,27 +853,28 @@ function ThreadDexieAutosave({
 
     if (modelType === "base" && !pairId) {
       const store = useChatRuntimeStore.getState();
-      if (store.activeThreadId !== remoteId) {
+      const activeThreadId = runtime.threads.getState().mainThreadId;
+      if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
         store.setActiveThreadId(remoteId);
       }
     }
-  }, [aui, mainThreadId, modelType, pairId]);
+  }, [aui, modelType, pairId]);
 
-  const queueSave = useCallback((): void => {
+  const queueSave = useCallback((threadId: string): void => {
     saveChainRef.current = saveChainRef.current
       .catch(() => {})
-      .then(() => saveCurrentThread())
+      .then(() => saveThread(threadId))
       .catch((error) => {
         console.error("Failed to autosave chat thread", error);
       });
-  }, [saveCurrentThread]);
+  }, [saveThread]);
 
-  useAuiEvent("thread.runEnd", () => {
-    queueSave();
+  useAuiEvent("thread.runEnd", ({ threadId }) => {
+    queueSave(threadId);
   });
 
-  useAuiEvent("thread.runStart", () => {
-    queueSave();
+  useAuiEvent("thread.runStart", ({ threadId }) => {
+    queueSave(threadId);
   });
 
   return null;
