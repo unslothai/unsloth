@@ -822,9 +822,7 @@ def run_training_process(
             )
         else:
             saved_output_dir = (
-                None
-                if trainer.should_stop and not trainer.save_on_stop
-                else output_dir
+                None if trainer.should_stop and not trainer.save_on_stop else output_dir
             )
             event_queue.put(
                 {

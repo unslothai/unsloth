@@ -328,7 +328,9 @@ def get_run_by_output_dir(output_dir: str) -> Optional[dict]:
             try:
                 run["loss_sparkline"] = json.loads(sparkline)
             except (json.JSONDecodeError, TypeError):
-                logger.debug("Failed to parse loss_sparkline for output_dir %s", output_dir)
+                logger.debug(
+                    "Failed to parse loss_sparkline for output_dir %s", output_dir
+                )
                 run["loss_sparkline"] = None
         return run
     finally:
