@@ -438,6 +438,13 @@ async function ensureThreadRecord({
   }
 }
 
+async function deleteThreadRows(threadId: string): Promise<void> {
+  await db.transaction("rw", db.threads, db.messages, async () => {
+    await db.messages.where("threadId").equals(threadId).delete();
+    await db.threads.delete(threadId);
+  });
+}
+
 function createDexieAdapter(
   modelType: ModelType,
   pairId?: string,
@@ -491,8 +498,7 @@ function createDexieAdapter(
 
     async delete(remoteId: string) {
       markChatThreadDeleted(remoteId);
-      await db.messages.where("threadId").equals(remoteId).delete();
-      await db.threads.delete(remoteId);
+      await deleteThreadRows(remoteId);
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
@@ -837,15 +843,17 @@ function ThreadDexieAutosave({
 
     const { remoteId } = await aui.threadListItem().initialize();
     if (isChatThreadDeleted(remoteId)) {
+      await deleteThreadRows(remoteId);
       return;
     }
     await ensureThreadRecord({ threadId: remoteId, modelType, pairId });
     if (isChatThreadDeleted(remoteId)) {
+      await deleteThreadRows(remoteId);
       return;
     }
     await syncExportedRepositoryToDexie(remoteId, exported);
     if (isChatThreadDeleted(remoteId)) {
-      await db.messages.where("threadId").equals(remoteId).delete();
+      await deleteThreadRows(remoteId);
       return;
     }
 
