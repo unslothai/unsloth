@@ -87,11 +87,11 @@ _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 # sliding_window when use_sliding_window=False), mistral v0.1/v0.2
 # (all-SWA can't be expressed as a period).
 _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
-    "gemma2": 2,    # Gemma2Config.sliding_window_pattern
-    "gemma3": 6,    # Gemma3TextConfig.sliding_window_pattern
-    "gemma3n": 5,   # text_config.layer_types: SWA*4 + FULL
-    "gpt_oss": 2,   # text_config.layer_types: alternating
-    "cohere2": 4,   # Cohere2Config.sliding_window_pattern
+    "gemma2": 2,  # Gemma2Config.sliding_window_pattern
+    "gemma3": 6,  # Gemma3TextConfig.sliding_window_pattern
+    "gemma3n": 5,  # text_config.layer_types: SWA*4 + FULL
+    "gpt_oss": 2,  # text_config.layer_types: alternating
+    "cohere2": 4,  # Cohere2Config.sliding_window_pattern
 }
 
 # Process-wide cache backed by JSON on disk. Values are int period or
@@ -252,7 +252,10 @@ def _resolve_swa_pattern(
         return None
     if allow_network is None:
         allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
-            "1", "true", "True", "yes",
+            "1",
+            "true",
+            "True",
+            "yes",
         )
 
     cache = _load_swa_cache()
@@ -1460,7 +1463,9 @@ class LlamaCppBackend:
                     ),
                 )
                 self._sliding_window_pattern = _resolve_swa_pattern(
-                    arch, self._n_layers, hf_repo_candidates,
+                    arch,
+                    self._n_layers,
+                    hf_repo_candidates,
                 )
 
             if self._context_length:

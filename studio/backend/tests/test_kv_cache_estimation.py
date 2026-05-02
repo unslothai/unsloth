@@ -271,7 +271,12 @@ class TestArchSwaPatternDefaults:
                 "attention.value_length": 256,
                 "attention.sliding_window": 512,
                 "attention.sliding_window_pattern": [
-                    True, False, True, False, True, False,
+                    True,
+                    False,
+                    True,
+                    False,
+                    True,
+                    False,
                 ],
             },
         )
@@ -417,26 +422,56 @@ class TestDynamicSwaResolver:
         from core.inference.llama_cpp import _period_from_layer_types
 
         # gemma3 (1 global per 6), gpt-oss (alternating), gemma3n (1 per 5).
-        assert _period_from_layer_types((["sliding_attention"] * 5 + ["full_attention"]) * 4) == 6
-        assert _period_from_layer_types(["sliding_attention", "full_attention"] * 12) == 2
-        assert _period_from_layer_types((["sliding_attention"] * 4 + ["full_attention"]) * 7) == 5
+        assert (
+            _period_from_layer_types(
+                (["sliding_attention"] * 5 + ["full_attention"]) * 4
+            )
+            == 6
+        )
+        assert (
+            _period_from_layer_types(["sliding_attention", "full_attention"] * 12) == 2
+        )
+        assert (
+            _period_from_layer_types(
+                (["sliding_attention"] * 4 + ["full_attention"]) * 7
+            )
+            == 5
+        )
 
     def test_period_from_layer_types_returns_none_for_aperiodic(self):
         from core.inference.llama_cpp import _period_from_layer_types
 
-        lt = ["sliding_attention", "full_attention", "sliding_attention",
-              "sliding_attention", "full_attention", "sliding_attention",
-              "sliding_attention", "sliding_attention"]
+        lt = [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
+        ]
         assert _period_from_layer_types(lt) is None
 
     def test_hf_repo_from_url(self):
         from core.inference.llama_cpp import _hf_repo_from_url
 
-        assert _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it") == "google/gemma-3-1b-it"
-        assert _hf_repo_from_url(
-            "https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json"
-        ) == "google/gemma-3-1b-it"
-        for bad in ["https://huggingface.co/google", "https://example.com/foo/bar", None, ""]:
+        assert (
+            _hf_repo_from_url("https://huggingface.co/google/gemma-3-1b-it")
+            == "google/gemma-3-1b-it"
+        )
+        assert (
+            _hf_repo_from_url(
+                "https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json"
+            )
+            == "google/gemma-3-1b-it"
+        )
+        for bad in [
+            "https://huggingface.co/google",
+            "https://example.com/foo/bar",
+            None,
+            "",
+        ]:
             assert _hf_repo_from_url(bad) is None
 
     def test_bootstrap_tier_used_when_no_cache(self, monkeypatch, tmp_path):
@@ -479,8 +514,11 @@ class TestDynamicSwaResolver:
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", fake_fetch)
         b = _backend_from_gguf(
-            "newmodel", _SWA_FIELDS,
-            general = {"general.source.huggingface.repository": "vendor/newmodel-1b-instruct"},
+            "newmodel",
+            _SWA_FIELDS,
+            general = {
+                "general.source.huggingface.repository": "vendor/newmodel-1b-instruct"
+            },
         )
         assert b._sliding_window_pattern == [(i + 1) % 4 != 0 for i in range(12)]
         assert calls == ["vendor/newmodel-1b-instruct"]
@@ -492,12 +530,16 @@ class TestDynamicSwaResolver:
         from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(
-            lc, "_fetch_swa_entry_from_hf",
+            lc,
+            "_fetch_swa_entry_from_hf",
             lambda r: 6 if r == "vendor/newmodel-base" else None,
         )
         b = _backend_from_gguf(
-            "newmodel", _SWA_FIELDS,
-            general = {"general.base_model.0.repo_url": "https://huggingface.co/vendor/newmodel-base"},
+            "newmodel",
+            _SWA_FIELDS,
+            general = {
+                "general.base_model.0.repo_url": "https://huggingface.co/vendor/newmodel-base"
+            },
         )
         assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(12)]
 
@@ -511,7 +553,8 @@ class TestDynamicSwaResolver:
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
         b = _backend_from_gguf(
-            "newmodel", _SWA_FIELDS,
+            "newmodel",
+            _SWA_FIELDS,
             general = {"general.source.huggingface.repository": "vendor/newmodel"},
         )
         assert b._sliding_window_pattern is None
@@ -522,9 +565,12 @@ class TestDynamicSwaResolver:
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: None)
         # Force the failure into the Tier 3 path; bypass Tier 2.5.
-        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        monkeypatch.setattr(
+            lc, "_resolve_swa_entry_from_transformers", lambda arch: None
+        )
         b = _backend_from_gguf(
-            "newmodel", _SWA_FIELDS,
+            "newmodel",
+            _SWA_FIELDS,
             general = {"general.source.huggingface.repository": "vendor/does-not-exist"},
         )
         assert b._sliding_window_pattern is None
@@ -567,13 +613,18 @@ class TestTransformersIntrospection:
 
         class _FakeLazyMapping(dict):
             def __getitem__(self, k):
-                return _FakeBrokenConfig if k == "brokenarch" else super().__getitem__(k)
+                return (
+                    _FakeBrokenConfig if k == "brokenarch" else super().__getitem__(k)
+                )
 
         import sys, types as _types
+
         fake_auto = _types.ModuleType("transformers.models.auto.configuration_auto")
         fake_auto.CONFIG_MAPPING_NAMES = {"brokenarch": "FakeBroken"}
         fake_auto.CONFIG_MAPPING = _FakeLazyMapping({"brokenarch": "FakeBroken"})
-        monkeypatch.setitem(sys.modules, "transformers.models.auto.configuration_auto", fake_auto)
+        monkeypatch.setitem(
+            sys.modules, "transformers.models.auto.configuration_auto", fake_auto
+        )
         assert lc._resolve_swa_entry_from_transformers("brokenarch") == 7
 
     def test_returns_none_when_transformers_unavailable(self, monkeypatch):
@@ -602,7 +653,9 @@ class TestTransformersIntrospection:
 
         assert _resolve_swa_entry_from_transformers("totally-fake-arch-xyz") is None
 
-    def test_full_resolver_uses_transformers_before_hf_fetch(self, monkeypatch, tmp_path):
+    def test_full_resolver_uses_transformers_before_hf_fetch(
+        self, monkeypatch, tmp_path
+    ):
         # With bootstrap empty, Tier 2.5 must answer before Tier 3 fires.
         self._isolate_cache(monkeypatch, tmp_path)
         from core.inference import llama_cpp as lc
@@ -614,7 +667,8 @@ class TestTransformersIntrospection:
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
         b = _backend_from_gguf(
-            "gemma3", dict(_SWA_FIELDS, block_count = 18),
+            "gemma3",
+            dict(_SWA_FIELDS, block_count = 18),
             general = {"general.source.huggingface.repository": "google/gemma-3-1b-it"},
         )
         assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(18)]
