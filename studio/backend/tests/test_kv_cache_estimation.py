@@ -219,7 +219,6 @@ class TestArchSwaPatternDefaults:
             ("gemma3", 18, 6),
             ("gemma3n", 35, 5),
             ("gpt_oss", 24, 2),
-            ("phi3", 32, 1),
             ("cohere2", 32, 4),
         ],
     )
@@ -304,6 +303,35 @@ class TestArchSwaPatternDefaults:
             },
         )
         assert b._sliding_window_pattern is None
+
+    @pytest.mark.parametrize("arch", ["llama", "qwen2", "qwen3", "mistral", "mistral3", "glm4", "llama4"])
+    def test_non_swa_arch_uses_full_attention_path(self, arch):
+        """Pure-GQA architectures must NOT receive a synthetic SWA
+        pattern, even though several of them set `sliding_window` in
+        their HF config (Qwen2/2.5 with use_sliding_window=False, etc.)
+        The llama.cpp converter strips `sliding_window` for these
+        arches so the GGUF never carries the field. This test pins the
+        invariant: when the GGUF lacks sliding_window, no SWA pattern
+        is fabricated and the estimate matches the GQA path
+        (`n_layers * n_ctx * n_kv * (key+val) * bpe`)."""
+        b = _backend_from_gguf(
+            arch,
+            {
+                "block_count": 32,
+                "attention.head_count": 32,
+                "attention.head_count_kv": 8,
+                "attention.key_length": 128,
+                "attention.value_length": 128,
+                "embedding_length": 4096,
+                # NO sliding_window field
+            },
+        )
+        assert b._sliding_window_pattern is None
+        assert b._sliding_window is None
+        # Estimator should hit Path 4 (GQA), not SWA, not legacy.
+        kv = b._estimate_kv_cache_bytes(8192, "f16")
+        gqa_expected = 32 * 8192 * 8 * (128 + 128) * 2
+        assert kv == gqa_expected
 
     def test_arch_default_reduces_kv_estimate_vs_legacy(self):
         """End-to-end smoke: with the arch fallback, the SWA estimator

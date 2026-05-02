@@ -76,23 +76,38 @@ _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 
 
 # ── Per-architecture sliding-window-pattern defaults ──────────
-# Most converters do not propagate `sliding_window_pattern` into GGUF
-# metadata even when the source HF config sets it. When a GGUF reports
-# a sliding window but no per-layer pattern, we fall back to the
-# canonical period from transformers' config defaults so the KV-cache
-# estimator stops over-counting global-attention layers (which would
-# otherwise inflate the estimate and cap the auto context).
+# Most GGUF converters do not propagate `sliding_window_pattern`
+# (or `layer_types`) into GGUF metadata even when the source HF config
+# sets it. When a GGUF reports a sliding window but no per-layer
+# pattern, we fall back to the canonical period from transformers'
+# config defaults so the KV-cache estimator stops over-counting
+# global-attention layers (which would otherwise inflate the estimate
+# and cap the auto context).
 #
 # The convention matches `transformers` (and the array path further
 # below): for period N, layer i is sliding-window iff (i + 1) % N != 0.
-# A period of 1 means every layer is sliding-window (Phi-3 long-ctx
-# style); None means "no SWA, treat as full attention everywhere".
 #
-# Sourced from a survey of the top 150 unsloth/* models on HF: every
-# arch listed here was either checked against its `config.json`
-# directly or against `text_config.layer_types` for the multimodal
-# variants. Arches not listed fall through to the legacy 1/4 estimate
-# (which still beats ignoring SWA entirely).
+# Sourced from a survey of every unsloth/* model on HF (1334 repos at
+# time of writing). Each arch listed here was checked against its
+# `config.json` directly or, for the multimodal variants, against
+# `text_config.layer_types`. Arches not listed fall through to the
+# legacy 1/4-global estimate (which still beats ignoring SWA entirely).
+#
+# Architectures intentionally NOT in this table:
+#   * `phi3`: GGUF emits `sliding_window=262144` but never emits
+#     `key_length`/`value_length`, so the SWA path is gated off and the
+#     estimator falls to the legacy formula. The huge window also
+#     means SWA layers behave identical to global at any practical
+#     ctx, so a fallback would be a no-op anyway.
+#   * `qwen2`, `qwen2_vl`, `qwen2_5_vl`: HF configs may set
+#     `sliding_window` but `use_sliding_window: false`. The llama.cpp
+#     converter respects that flag and does NOT emit
+#     `qwen2.attention.sliding_window` in the resulting GGUF, so the
+#     SWA path never fires (verified against Qwen2.5-0.5B-GGUF).
+#   * `mistral`: v0.1/v0.2 are all-SWA every-layer, but our period
+#     sentinel can't express that without ambiguity. Mistral falls
+#     through to the legacy 1/4 estimate (slightly off but not a
+#     regression vs. main).
 _SWA_PATTERN_DEFAULTS_BY_ARCH: dict[str, int] = {
     # Gemma 2: alternating local/global (Gemma2Config.sliding_window_pattern = 2)
     "gemma2": 2,
@@ -103,8 +118,6 @@ _SWA_PATTERN_DEFAULTS_BY_ARCH: dict[str, int] = {
     "gemma3n": 5,
     # gpt-oss: alternating SWA/FULL per layer_types in openai/gpt-oss-* configs
     "gpt_oss": 2,
-    # Phi-3 long-context variants are sliding-window on every layer.
-    "phi3": 1,
     # Cohere Command R-style: 1 global per 4 layers when SWA is enabled.
     "cohere2": 4,
 }
