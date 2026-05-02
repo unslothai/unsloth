@@ -130,6 +130,7 @@ export interface InferenceStatusResponse {
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
+  chat_template?: string | null;
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;

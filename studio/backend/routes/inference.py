@@ -1077,6 +1077,7 @@ async def get_status(
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
+                chat_template = llama_backend.chat_template,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
@@ -1090,12 +1091,19 @@ async def get_status(
         is_audio = False
         audio_type = None
         has_audio_input = False
+        model_info = {}
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+        chat_template_info = model_info.get("chat_template_info", {})
+        chat_template = (
+            chat_template_info.get("template")
+            if isinstance(chat_template_info, dict)
+            else None
+        )
 
         # Non-GGUF: only gpt-oss Harmony is wired through the transformers
         # generation path. Other template-level reasoning / tool kwargs
@@ -1133,6 +1141,7 @@ async def get_status(
             reasoning_always_on = False,
             supports_preserve_thinking = False,
             supports_tools = False,
+            chat_template = chat_template,
         )
 
     except Exception as e:

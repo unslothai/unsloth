@@ -976,12 +976,22 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
+            _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
             pip_install(
                 "Overlaying local repo (editable)",
                 "--no-cache-dir",
                 "--no-deps",
                 "-e",
                 local_repo,
+                constrain = False,
+            )
+            _step(_LABEL, "overlaying unsloth-zoo from git main")
+            pip_install(
+                "Overlaying unsloth-zoo from git main",
+                "--no-cache-dir",
+                "--no-deps",
+                "--force-reinstall",
+                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
                 constrain = False,
             )
     elif local_repo:
@@ -998,12 +1008,22 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
+        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
         pip_install(
             "Overlaying local repo (editable)",
             "--no-cache-dir",
             "--no-deps",
             "-e",
             local_repo,
+            constrain = False,
+        )
+        _step(_LABEL, "overlaying unsloth-zoo from git main")
+        pip_install(
+            "Overlaying unsloth-zoo from git main",
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
             constrain = False,
         )
     elif package_name != "unsloth":
