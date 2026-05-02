@@ -158,7 +158,7 @@ class MLXInferenceBackend:
     def _generate_text(self, messages, temperature, top_p, top_k,
                        max_new_tokens, repetition_penalty, cancel_event):
         from mlx_lm import stream_generate
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
         prompt = self._tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
@@ -166,19 +166,36 @@ class MLXInferenceBackend:
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
-        sampler = make_sampler(temp=temperature, top_p=top_p, min_tokens_to_keep=1)
+        sampler = make_sampler(
+            temp=temperature,
+            top_p=top_p,
+            top_k=int(top_k or 0),
+            min_tokens_to_keep=1,
+        )
+        # Only build a logits processor when we actually have a non-trivial
+        # repetition penalty (1.0 is the no-op value).
+        logits_processors = None
+        if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
+            logits_processors = make_logits_processors(
+                repetition_penalty=float(repetition_penalty),
+            )
 
         token_ids = []
         logger.info("Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
                      len(prompt), max_new_tokens, type(self._model).__name__, type(self._tokenizer).__name__)
         with self._generation_lock:
             try:
-                for response in stream_generate(
-                    self._model,
-                    self._tokenizer,
+                gen_kwargs = dict(
                     prompt=prompt,
                     max_tokens=max_new_tokens,
                     sampler=sampler,
+                )
+                if logits_processors is not None:
+                    gen_kwargs["logits_processors"] = logits_processors
+                for response in stream_generate(
+                    self._model,
+                    self._tokenizer,
+                    **gen_kwargs,
                 ):
                     token_ids.append(response.token)
                     # Decode full sequence with skip_special_tokens — same as GPU
@@ -212,14 +229,28 @@ class MLXInferenceBackend:
 
         cumulative = ""
         logger.info("VLM generating: prompt_len=%d, has_image=%s", len(prompt), image is not None)
+        # mlx_vlm.stream_generate forwards **kwargs into generate_step, which
+        # accepts temp/top_p/top_k/repetition_penalty (and builds the sampler
+        # + logits_processors internally). Pass them through.
+        # NOTE: mlx_vlm.generate_step expects ``temperature=`` (long form) —
+        # passing ``temp=`` silently falls into **kwargs and is ignored,
+        # leaving generation stuck at the default 0.0 (greedy).
+        vlm_kwargs = dict(
+            max_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=int(top_k or 0),
+        )
+        if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
+            vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
+
         with self._generation_lock:
             for response in vlm_stream(
                 self._model,
                 self._processor,
                 prompt,
                 images,
-                max_tokens=max_new_tokens,
-                temp=temperature,
+                **vlm_kwargs,
             ):
                 token_text = response.text if hasattr(response, "text") else str(response)
                 cumulative += token_text
