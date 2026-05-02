@@ -755,9 +755,7 @@ class TestTransformersIntrospection:
         import sys
         import types as _types
 
-        fake_auto = _types.ModuleType(
-            "transformers.models.auto.configuration_auto"
-        )
+        fake_auto = _types.ModuleType("transformers.models.auto.configuration_auto")
         fake_auto.CONFIG_MAPPING_NAMES = fake_mapping
         fake_auto.CONFIG_MAPPING = _FakeLazyMapping(fake_mapping)
         monkeypatch.setitem(
@@ -777,18 +775,18 @@ class TestTransformersIntrospection:
         import sys
 
         # Remove the transformers auto-config module + block re-import.
-        orig_import = __builtins__["__import__"] if isinstance(
-            __builtins__, dict
-        ) else __builtins__.__import__
+        orig_import = (
+            __builtins__["__import__"]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
 
         def fake_import(name, *a, **kw):
             if name.startswith("transformers"):
                 raise ImportError("transformers not installed")
             return orig_import(name, *a, **kw)
 
-        monkeypatch.setattr(
-            "builtins.__import__", fake_import
-        )
+        monkeypatch.setattr("builtins.__import__", fake_import)
         # Drop any cached module so the next import raises.
         for k in list(sys.modules):
             if k.startswith("transformers"):
@@ -815,9 +813,7 @@ class TestTransformersIntrospection:
 
         # Spy on Tier 3 -- it must NOT be called.
         def boom(repo_id):
-            raise AssertionError(
-                "Tier 3 must not run when Tier 2.5 has the answer"
-            )
+            raise AssertionError("Tier 3 must not run when Tier 2.5 has the answer")
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
 

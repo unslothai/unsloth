@@ -320,7 +320,7 @@ def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
             src = inspect.getsource(cls)
         except (OSError, TypeError):
             continue
-        if (m := _SWA_PATTERN_SOURCE_RE.search(src)):
+        if m := _SWA_PATTERN_SOURCE_RE.search(src):
             period = int(m.group(1))
             if period > 0:
                 return period
