@@ -11,7 +11,9 @@ from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import json
+import os
 import sys
+import time
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
@@ -33,6 +35,25 @@ from loggers import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _safe_env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Parse an integer env var safely with fallback and optional lower bound."""
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        value = default
+    else:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid integer for %s=%r; using default %d",
+                name,
+                raw,
+                default,
+            )
+            value = default
+    return max(minimum, value)
 
 
 class HarmonyTextStreamer:
@@ -222,6 +243,23 @@ class InferenceBackend:
         self.default_models = get_default_models()
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
+        from core.wiki.manager import WikiManager
+        from core.wiki.ingestor import WikiIngestor
+        from pathlib import Path
+
+        self.vault_root = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
+        self.wiki_manager = WikiManager.create(self.vault_root, self._wiki_llm_fn)
+        self.wiki_ingestor = WikiIngestor(self.wiki_manager, self.vault_root / "raw")
+        # Wiki watcher lifecycle is owned by FastAPI app lifespan in main.py.
+        # Keeping it centralized prevents duplicate ingestion from multiple observers.
+        self.wiki_watcher = None
+        self._chat_history_flush_seconds = _safe_env_int(
+            "UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS",
+            600,
+            minimum = 0,
+        )
+        self._pending_chat_history_blocks: list[str] = []
+        self._chat_history_buffer_started_at: Optional[float] = None
 
         # Thread safety — _generation_lock serializes model.generate() calls.
         # Must be a regular Lock (NOT RLock) because in async FastAPI, multiple
@@ -232,6 +270,7 @@ class InferenceBackend:
 
         self._generation_lock = threading.Lock()
         self._model_state_lock = threading.Lock()
+        self._chat_history_lock = threading.Lock()
 
         logger.info(f"InferenceBackend initialized on {self.device}")
 
@@ -851,6 +890,7 @@ class InferenceBackend:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        enable_wiki_rag_history: bool = True,
     ) -> Generator[str, None, None]:
         """
         Generate response for text or vision models.
@@ -867,6 +907,7 @@ class InferenceBackend:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             cancel_event = cancel_event,
+            enable_wiki_rag_history = enable_wiki_rag_history,
         )
 
     def _generate_chat_response_inner(
@@ -881,6 +922,7 @@ class InferenceBackend:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        enable_wiki_rag_history: bool = True,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
         """
@@ -966,12 +1008,72 @@ class InferenceBackend:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
+        template_messages = list(messages)
         if system_prompt:
-            template_messages = [
-                {"role": "system", "content": system_prompt}
-            ] + messages
-        else:
-            template_messages = messages
+            template_messages.insert(0, {"role": "system", "content": system_prompt})
+
+        # --- RAG Injection + Chat History ---
+        if enable_wiki_rag_history:
+            last_user_query = ""
+            if messages:
+                for msg in reversed(messages):
+                    role = (
+                        msg.get("role")
+                        if isinstance(msg, dict)
+                        else getattr(msg, "role", None)
+                    )
+                    if role == "user":
+                        content = (
+                            msg.get("content")
+                            if isinstance(msg, dict)
+                            else getattr(msg, "content", "")
+                        )
+                        last_user_query = self._coerce_chat_history_content(content)
+                        break
+
+            rag_result = self._get_rag_context(
+                last_user_query,
+                return_debug = True,
+            )
+            rag_context = ""
+            rag_debug: dict[str, object] = {}
+            if isinstance(rag_result, tuple):
+                rag_context, rag_debug = rag_result
+            else:
+                rag_context = rag_result
+
+            selected_pages = [
+                str(item)
+                for item in rag_debug.get("selected_pages", [])
+                if str(item).strip()
+            ]
+            ranking_mode = str(rag_debug.get("ranking_mode", "unknown") or "unknown")
+            logger.info(
+                "RAG selection for transformer request: rank_mode=%s pages=%d chars=%d selected=%s query=%r",
+                ranking_mode,
+                len(selected_pages),
+                len(rag_context),
+                selected_pages,
+                last_user_query,
+            )
+            if rag_context:
+                logger.info("Injecting RAG context into prompt")
+                context_message = {
+                    "role": "system",
+                    "content": f"Use the following context to help answer the user's request:\n\n{rag_context}",
+                }
+                # Insert context after system prompt if it exists, or at the beginning
+                if system_prompt:
+                    template_messages.insert(1, context_message)
+                else:
+                    template_messages.insert(0, context_message)
+            else:
+                logger.info("RAG produced empty context for transformer request")
+
+            # Save history for future RAG.
+            self._save_chat_history_to_wiki(messages)
+        # ------------------------------------
+
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -2108,9 +2210,183 @@ class InferenceBackend:
                 f"No built-in chat template for {model_name}, will use generic formatting"
             )
 
-    def get_current_model(self) -> Optional[str]:
-        """Get currently active model name"""
-        return self.active_model_name
+    def _get_rag_context(
+        self,
+        query: str,
+        return_debug: bool = False,
+    ) -> str | Tuple[str, dict[str, object]]:
+        """
+        Retrieves relevant wiki snippets for the user query.
+        This path is retrieval-first and does not depend on the wiki LLM answer path.
+        """
+
+        def _empty_debug() -> dict[str, object]:
+            return {
+                "query": query,
+                "ranking_mode": "unknown",
+                "selected_pages": [],
+            }
+
+        def _finalize(
+            context: str,
+            debug_payload: dict[str, object],
+        ) -> str | Tuple[str, dict[str, object]]:
+            if return_debug:
+                return context, debug_payload
+            return context
+
+        if not self.wiki_manager:
+            return _finalize("", _empty_debug())
+        try:
+            result = self.wiki_manager.retrieve_context(query)
+            blocks = result.get("context_blocks", [])
+            ranking_mode = str(result.get("ranking_mode", "unknown") or "unknown")
+            if not blocks:
+                return _finalize(
+                    "",
+                    {
+                        "query": query,
+                        "ranking_mode": ranking_mode,
+                        "selected_pages": [],
+                    },
+                )
+
+            context_parts = []
+            selected_pages: list[str] = []
+            for block in blocks:
+                page = block.get("page", "unknown")
+                score = block.get("score", 0.0)
+                content = block.get("content", "")
+                selected_pages.append(str(page))
+                context_parts.append(
+                    f"PAGE: {page}\n" f"SCORE: {score:.4f}\n" f"CONTENT:\n{content}"
+                )
+
+            return _finalize(
+                "\n\n---\n\n".join(context_parts),
+                {
+                    "query": query,
+                    "ranking_mode": ranking_mode,
+                    "selected_pages": selected_pages,
+                },
+            )
+        except Exception as e:
+            logger.error(f"Error querying RAG context: {e}")
+            return _finalize("", _empty_debug())
+
+    def _wiki_llm_fn(self, prompt: str) -> str:
+        """
+        Fallback LLM function for WikiManager to summarize/process content.
+        In a real implementation, this would call a model.
+        For now, we return the prompt itself or a placeholder.
+        """
+        logger.info(f"Wiki LLM function called with prompt: {prompt[:100]}...")
+        return prompt
+
+    def _coerce_chat_history_content(self, content: object) -> str:
+        """Normalize message content of mixed shapes into a safe text snapshot."""
+
+        def _safe_json(value: object) -> str:
+            try:
+                encoded = json.dumps(value, ensure_ascii = True, sort_keys = True)
+            except Exception:
+                encoded = str(value)
+            if len(encoded) > 4000:
+                return encoded[:4000].rstrip() + "... [truncated]"
+            return encoded
+
+        def _flatten(value: object) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, list):
+                parts = []
+                for item in value:
+                    rendered = _flatten(item)
+                    if rendered:
+                        parts.append(rendered)
+                return "\n".join(parts).strip()
+            if isinstance(value, dict):
+                part_type = str(value.get("type", "")).lower()
+                if part_type == "text":
+                    text_value = value.get("text", value.get("content", ""))
+                    return str(text_value).strip()
+                if part_type == "image_url":
+                    image_url = value.get("image_url", "")
+                    if isinstance(image_url, dict):
+                        url = str(image_url.get("url", "")).strip()
+                    else:
+                        url = str(image_url).strip()
+                    if not url:
+                        return "[image]"
+                    if url.startswith("data:"):
+                        return "[image: inline data URL]"
+                    return f"[image: {url}]"
+                return _safe_json(value).strip()
+            return str(value).strip()
+
+        return _flatten(content)
+
+    def _save_chat_history_to_wiki(self, messages: list) -> None:
+        """
+        Buffers chat snapshots and flushes to disk on a cadence (default 10 minutes).
+        """
+        try:
+            import datetime
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            lines = [f"## Chat Snapshot - {timestamp}\n"]
+            for msg in messages:
+                if isinstance(msg, dict):
+                    role_raw = msg.get("role", "unknown")
+                    content_raw = msg.get("content", "")
+                else:
+                    role_raw = getattr(msg, "role", "unknown")
+                    content_raw = getattr(msg, "content", "")
+
+                role = str(role_raw).capitalize()
+                content = self._coerce_chat_history_content(content_raw)
+                if content:
+                    lines.append(f"### {role}\n{content}\n")
+            block = "\n".join(lines).strip()
+
+            now = time.time()
+            with self._chat_history_lock:
+                self._pending_chat_history_blocks.append(block)
+                if self._chat_history_buffer_started_at is None:
+                    self._chat_history_buffer_started_at = now
+
+                should_flush = self._chat_history_flush_seconds == 0
+                if (
+                    self._chat_history_buffer_started_at is not None
+                    and not should_flush
+                    and (now - self._chat_history_buffer_started_at)
+                    >= self._chat_history_flush_seconds
+                ):
+                    should_flush = True
+
+                if not should_flush:
+                    return
+
+                filename = f"chat_history_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                file_path = self.vault_root / "raw" / filename
+                file_path.parent.mkdir(parents = True, exist_ok = True)
+                content = "# Chat History Batch\n\n" + "\n\n---\n\n".join(
+                    self._pending_chat_history_blocks
+                )
+                file_path.write_text(content, encoding = "utf-8")
+                self._pending_chat_history_blocks.clear()
+                self._chat_history_buffer_started_at = None
+                if self.wiki_watcher is None:
+                    # Watcher may be disabled or failed to start; ingest directly.
+                    self.wiki_ingestor.ingest_file(
+                        file_path,
+                        contributor = "Unsloth Studio",
+                    )
+                logger.info(f"Saved buffered chat history to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save chat history to wiki: {e}")
 
     def is_model_loading(self) -> bool:
         """Check if any model is currently loading"""

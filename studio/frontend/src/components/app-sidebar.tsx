@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/features/auth";
 import {
   Book03Icon,
   ChefHatIcon,
@@ -41,7 +42,7 @@ import {
   MessageSearch01Icon,
   Search01Icon,
   NewReleasesIcon,
-  PowerIcon,
+  EcoPowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
@@ -55,7 +56,12 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useTrainingRuntimeStore } from "@/features/training";
+import {
+  useTrainingRuntimeStore,
+  useTrainingHistorySidebarItems,
+  deleteTrainingRun,
+  removeTrainingUnloadGuard,
+} from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { usePlatformStore } from "@/config/env";
@@ -63,15 +69,16 @@ import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
   useChatSidebarItems,
   deleteChatItem,
-} from "@/features/chat/hooks/use-chat-sidebar-items";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
-import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
-import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
+  useChatRuntimeStore,
+  useChatSearchStore,
+  ChatSearchDialog,
+} from "@/features/chat";
 import type { TrainingRunSummary } from "@/features/training";
 import { useEffect, useState } from "react";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
+import { WikiBehaviourDialog } from "@/components/wiki-behaviour-dialog";
+import { WikiDataDialog } from "@/components/wiki-data-dialog";
+import { toast } from "sonner";
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
@@ -114,6 +121,64 @@ function createNavigationNonce(): string {
     return globalThis.crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+type WikiLintResult = {
+  total_pages?: number;
+  orphans?: unknown[];
+  broken_links?: unknown[];
+  missing_concepts?: unknown[];
+  low_coverage_sources?: unknown[];
+};
+
+type WikiMaintenanceResult = {
+  applied_merges?: number;
+  rewritten_links?: number;
+  archived_pages?: unknown[];
+  errors?: unknown[];
+};
+
+type WikiRetryFallbackResult = {
+  fallback_pages_found?: number;
+  regenerated_pages?: number;
+  fallback_still?: number;
+  errors?: unknown[];
+};
+
+type WikiEnrichResult = {
+  scanned_pages?: number;
+  updated_pages?: number;
+  non_fallback_refresh?: {
+    enabled?: boolean;
+    requested_pages?: number;
+    refreshed_pages?: number;
+    skipped_no_question?: number;
+    skipped_refresh_fallback?: number;
+    errors?: unknown[];
+  };
+  analysis_link_repair?: {
+    enabled?: boolean;
+    repair_answer_links_enabled?: boolean;
+    repaired_pages?: number;
+    removed_links?: number;
+  };
+};
+
+type WikiMaintenanceMode = "with-web-fill" | "without-web-fill";
+
+async function parseApiErrorMessage(response: Response): Promise<string> {
+  try {
+    const payload = (await response.clone().json()) as { detail?: unknown };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail;
+    }
+    if (payload.detail !== undefined) {
+      return `Request failed (${response.status}): ${JSON.stringify(payload.detail)}`;
+    }
+  } catch {
+    // Ignore JSON parse errors and fall back to status text.
+  }
+  return `Request failed (${response.status})`;
 }
 
 function NavItem({
@@ -172,12 +237,19 @@ export function AppSidebar() {
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [wikiBehaviourOpen, setWikiBehaviourOpen] = useState(false);
+  const [wikiDataOpen, setWikiDataOpen] = useState(false);
 
   // Chat collapsible state — open by default, auto-expand on route entry
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
+  const [wikiOptionsOpen, setWikiOptionsOpen] = useState(false);
+  const [isRunningWikiLint, setIsRunningWikiLint] = useState(false);
+  const [isRunningWikiMaintenance, setIsRunningWikiMaintenance] = useState(false);
+  const [activeWikiMaintenanceMode, setActiveWikiMaintenanceMode] =
+    useState<WikiMaintenanceMode | null>(null);
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
   useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
@@ -212,6 +284,164 @@ export function AppSidebar() {
         search: { new: view.newThreadNonce },
       });
     });
+  }
+
+  async function handleWikiLint(): Promise<void> {
+    if (isRunningWikiLint || isRunningWikiMaintenance) return;
+
+    setIsRunningWikiLint(true);
+    try {
+      const response = await authFetch("/api/inference/wiki/lint", {
+        method: "GET",
+      });
+      if (!response.ok) {
+        throw new Error(await parseApiErrorMessage(response));
+      }
+
+      const result = (await response.json()) as WikiLintResult;
+      const totalPages = Number(result.total_pages ?? 0);
+      const orphans = Array.isArray(result.orphans) ? result.orphans.length : 0;
+      const broken = Array.isArray(result.broken_links)
+        ? result.broken_links.length
+        : 0;
+      const missingConcepts = Array.isArray(result.missing_concepts)
+        ? result.missing_concepts.length
+        : 0;
+      const lowCoverage = Array.isArray(result.low_coverage_sources)
+        ? result.low_coverage_sources.length
+        : 0;
+
+      toast.success("Wiki lint completed", {
+        description: `Pages: ${totalPages}, Orphans: ${orphans}, Broken links: ${broken}, Missing concepts: ${missingConcepts}, Low coverage: ${lowCoverage}`,
+      });
+      closeMobileIfOpen();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unexpected lint failure";
+      toast.error("Wiki lint failed", { description: message });
+    } finally {
+      setIsRunningWikiLint(false);
+    }
+  }
+
+  async function handleWikiMaintenance(
+    mode: WikiMaintenanceMode,
+  ): Promise<void> {
+    if (isRunningWikiMaintenance || isRunningWikiLint) return;
+
+    const fillGapsFromWeb = mode === "with-web-fill";
+
+    setIsRunningWikiMaintenance(true);
+    setActiveWikiMaintenanceMode(mode);
+    try {
+      const mergeResponse = await authFetch("/api/inference/wiki/merge-maintenance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dry_run: false }),
+      });
+      if (!mergeResponse.ok) {
+        throw new Error(
+          `Merge maintenance failed: ${await parseApiErrorMessage(mergeResponse)}`,
+        );
+      }
+
+      const retryResponse = await authFetch("/api/inference/wiki/retry-fallback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dry_run: false, max_analysis_pages: 256 }),
+      });
+      if (!retryResponse.ok) {
+        throw new Error(
+          `Fallback retry failed: ${await parseApiErrorMessage(retryResponse)}`,
+        );
+      }
+
+      const enrichResponse = await authFetch("/api/inference/wiki/enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dry_run: false,
+          max_analysis_pages: 256,
+          run_fallback_retry_first: false,
+          fill_gaps_from_web: fillGapsFromWeb,
+        }),
+      });
+      if (!enrichResponse.ok) {
+        throw new Error(
+          `Wiki enrichment failed: ${await parseApiErrorMessage(enrichResponse)}`,
+        );
+      }
+
+      const mergeResult = (await mergeResponse.json()) as WikiMaintenanceResult;
+      const retryResult = (await retryResponse.json()) as WikiRetryFallbackResult;
+      const enrichResult = (await enrichResponse.json()) as WikiEnrichResult;
+
+      const appliedMerges = Number(mergeResult.applied_merges ?? 0);
+      const rewrittenLinks = Number(mergeResult.rewritten_links ?? 0);
+      const archived = Array.isArray(mergeResult.archived_pages)
+        ? mergeResult.archived_pages.length
+        : 0;
+
+      const fallbackFound = Number(retryResult.fallback_pages_found ?? 0);
+      const fallbackRegenerated = Number(retryResult.regenerated_pages ?? 0);
+      const fallbackStill = Number(retryResult.fallback_still ?? 0);
+
+      const enrichScanned = Number(enrichResult.scanned_pages ?? 0);
+      const enrichUpdated = Number(enrichResult.updated_pages ?? 0);
+      const refreshResult = enrichResult.non_fallback_refresh;
+      const refreshEnabled = Boolean(refreshResult?.enabled);
+      const refreshRequested = Number(refreshResult?.requested_pages ?? 0);
+      const refreshRefreshed = Number(refreshResult?.refreshed_pages ?? 0);
+      const refreshSkippedNoQuestion = Number(refreshResult?.skipped_no_question ?? 0);
+      const refreshSkippedFallback = Number(refreshResult?.skipped_refresh_fallback ?? 0);
+      const refreshErrors = Array.isArray(refreshResult?.errors)
+        ? refreshResult.errors.length
+        : 0;
+
+      const linkRepairResult = enrichResult.analysis_link_repair;
+      const repairAnswerLinksEnabled = Boolean(
+        linkRepairResult?.repair_answer_links_enabled,
+      );
+      const repairedPages = Number(linkRepairResult?.repaired_pages ?? 0);
+      const removedBrokenLinks = Number(linkRepairResult?.removed_links ?? 0);
+
+      const mergeErrors = Array.isArray(mergeResult.errors)
+        ? mergeResult.errors.length
+        : 0;
+      const retryErrors = Array.isArray(retryResult.errors)
+        ? retryResult.errors.length
+        : 0;
+      const totalErrors = mergeErrors + retryErrors + refreshErrors;
+
+      const refreshSummary = refreshEnabled
+        ? ` Refreshed oldest non-fallback pages: ${refreshRefreshed}/${refreshRequested} (fallback skips: ${refreshSkippedFallback}, missing question: ${refreshSkippedNoQuestion}).`
+        : "";
+      const repairSummary =
+        repairedPages > 0 || removedBrokenLinks > 0
+          ? ` Repaired analysis links on ${repairedPages} page(s); removed broken links: ${removedBrokenLinks}${repairAnswerLinksEnabled ? " (including Answer sections)" : ""}.`
+          : repairAnswerLinksEnabled
+            ? " Answer-section link repair mode was enabled."
+            : "";
+
+      const maintenanceTitle = fillGapsFromWeb
+        ? "Wiki maintenance (with web fill) completed"
+        : "Wiki maintenance (without web fill) completed";
+
+      toast.success(maintenanceTitle, {
+        description:
+          `Fallbacks found: ${fallbackFound}, regenerated: ${fallbackRegenerated}, still fallback: ${fallbackStill}. ` +
+          `Applied merges: ${appliedMerges}, rewritten links: ${rewrittenLinks}, archived pages: ${archived}. ` +
+          `Enriched pages: ${enrichUpdated}/${enrichScanned}.${refreshSummary}${repairSummary} Errors: ${totalErrors}`,
+      });
+      closeMobileIfOpen();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unexpected maintenance failure";
+      toast.error("Wiki maintenance failed", { description: message });
+    } finally {
+      setIsRunningWikiMaintenance(false);
+      setActiveWikiMaintenanceMode(null);
+    }
   }
 
   return (
@@ -379,6 +609,104 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Wiki Options */}
+        <Collapsible open={wikiOptionsOpen} onOpenChange={setWikiOptionsOpen} asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden overflow-hidden px-2 py-0">
+            <SidebarGroupLabel className="pt-2 pb-1.5 pl-2.5 pr-2 text-[12.5px]! font-normal normal-case tracking-normal text-[#62605a] dark:text-[#9d9fa5] focus-visible:ring-0! focus-visible:outline-none" asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                Wiki Options
+                <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={handleWikiLint}
+                      disabled={isRunningWikiLint || isRunningWikiMaintenance}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        {isRunningWikiLint ? "Linting..." : "Run Lint"}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => {
+                        void handleWikiMaintenance("without-web-fill");
+                      }}
+                      disabled={isRunningWikiMaintenance || isRunningWikiLint}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        {isRunningWikiMaintenance
+                          && activeWikiMaintenanceMode === "without-web-fill"
+                          ? "Running..."
+                          : "Run Maintenance"}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => {
+                        void handleWikiMaintenance("with-web-fill");
+                      }}
+                      disabled={isRunningWikiMaintenance || isRunningWikiLint}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={NewReleasesIcon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        {isRunningWikiMaintenance
+                          && activeWikiMaintenanceMode === "with-web-fill"
+                          ? "Running..."
+                          : "Run Maintenance + Web Fill"}
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => {
+                        setWikiDataOpen(true);
+                        closeMobileIfOpen();
+                      }}
+                      disabled={isRunningWikiMaintenance || isRunningWikiLint}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        View/Edit Wiki Data
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => {
+                        setWikiBehaviourOpen(true);
+                        closeMobileIfOpen();
+                      }}
+                      disabled={isRunningWikiMaintenance || isRunningWikiLint}
+                      className="h-[32px] rounded-[10px] gap-[8.5px] px-2.5 font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                    >
+                      <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-[18px]! shrink-0" />
+                      <span className="text-[14px] leading-[18px] tracking-[0.01em]">
+                        Edit Wiki Behaviour
+                      </span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+        </Collapsible>
 
         {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
         {!isStudioRoute && chatItems.length > 0 && (
@@ -613,7 +941,7 @@ export function AppSidebar() {
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <HugeiconsIcon icon={EcoPowerIcon} className="size-4" />
                   <span>Shutdown</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -627,6 +955,14 @@ export function AppSidebar() {
       open={shutdownOpen}
       onOpenChange={setShutdownOpen}
       onAfterShutdown={removeTrainingUnloadGuard}
+    />
+    <WikiBehaviourDialog
+      open={wikiBehaviourOpen}
+      onOpenChange={setWikiBehaviourOpen}
+    />
+    <WikiDataDialog
+      open={wikiDataOpen}
+      onOpenChange={setWikiDataOpen}
     />
     </>
   );

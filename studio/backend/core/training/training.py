@@ -27,10 +27,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, Any
 
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+
+    _MATPLOTLIB_AVAILABLE = True
+except Exception:
+    plt = None  # type: ignore[assignment]
+    _MATPLOTLIB_AVAILABLE = False
 from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
+
+if not _MATPLOTLIB_AVAILABLE:
+    logger.warning(
+        "matplotlib is unavailable; training loss plot rendering is disabled"
+    )
 
 _CTX = mp.get_context("spawn")
 
@@ -370,7 +381,7 @@ class TrainingBackend:
         plot = self._create_loss_plot(progress, theme)
         return (plot, progress)
 
-    def refresh_plot_for_theme(self, theme: str) -> Optional[plt.Figure]:
+    def refresh_plot_for_theme(self, theme: str) -> Optional[Any]:
         """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
@@ -789,8 +800,11 @@ class TrainingBackend:
 
     def _create_loss_plot(
         self, progress: TrainingProgress, theme: str = "light"
-    ) -> plt.Figure:
+    ) -> Any:
         """Create training loss plot with theme-aware styling."""
+        if not _MATPLOTLIB_AVAILABLE or plt is None:
+            return None
+
         plt.close("all")
 
         LIGHT_STYLE = {

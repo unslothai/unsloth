@@ -242,6 +242,9 @@ _server = None
 # Shutdown event -- used to wake the main loop on signal
 _shutdown_event = None
 
+# Restart flag -- when true the main loop boots a fresh server instance.
+_restart_requested = False
+
 
 def run_server(
     host: str = "0.0.0.0",
@@ -249,6 +252,10 @@ def run_server(
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
     api_only: bool = False,
+    wiki_watcher: bool | None = None,
+    wiki_auto_query: bool | None = None,
+    wiki_lint_every: int | None = None,
+    wiki_auto_query_chat_history: bool | None = None,
     llama_parallel_slots: int = 1,
 ):
     """
@@ -289,6 +296,21 @@ def run_server(
     from threading import Thread, Event
     import time
     import uvicorn
+
+    # Allow CLI to override wiki watcher startup behavior.
+    # If not provided, main.py uses its own default.
+    if wiki_watcher is not None:
+        os.environ["UNSLOTH_WIKI_WATCHER"] = "true" if wiki_watcher else "false"
+    if wiki_auto_query is not None:
+        os.environ["UNSLOTH_WIKI_AUTO_QUERY_ON_INGEST"] = (
+            "true" if wiki_auto_query else "false"
+        )
+    if wiki_auto_query_chat_history is not None:
+        os.environ["UNSLOTH_WIKI_AUTO_QUERY_CHAT_HISTORY"] = (
+            "true" if wiki_auto_query_chat_history else "false"
+        )
+    if wiki_lint_every is not None:
+        os.environ["UNSLOTH_WIKI_AUTO_LINT_EVERY"] = str(max(0, int(wiki_lint_every)))
 
     from main import app, setup_frontend
     from utils.paths import ensure_studio_directories
@@ -361,11 +383,21 @@ def run_server(
     # Expose a shutdown callable via app.state so the /api/shutdown endpoint
     # can trigger graceful shutdown without circular imports.
     def _trigger_shutdown():
+        global _restart_requested
+        _restart_requested = False
+        _graceful_shutdown(_server)
+        if _shutdown_event is not None:
+            _shutdown_event.set()
+
+    def _trigger_restart():
+        global _restart_requested
+        _restart_requested = True
         _graceful_shutdown(_server)
         if _shutdown_event is not None:
             _shutdown_event.set()
 
     app.state.trigger_shutdown = _trigger_shutdown
+    app.state.trigger_restart = _trigger_restart
 
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
@@ -404,36 +436,83 @@ if __name__ == "__main__":
     parser.add_argument(
         "--api-only",
         action = "store_true",
-        help = "API server only, no frontend (for Tauri)",
+        help = "Run API server only, no frontend serving (for Tauri desktop app)",
     )
+    watcher_group = parser.add_mutually_exclusive_group()
+    watcher_group.add_argument(
+        "--wiki-watcher",
+        dest = "wiki_watcher",
+        action = "store_true",
+        help = "Enable wiki raw-folder watcher at startup",
+    )
+    watcher_group.add_argument(
+        "--no-wiki-watcher",
+        dest = "wiki_watcher",
+        action = "store_false",
+        help = "Disable wiki raw-folder watcher at startup",
+    )
+
+    auto_query_group = parser.add_mutually_exclusive_group()
+    auto_query_group.add_argument(
+        "--wiki-auto-query",
+        dest = "wiki_auto_query",
+        action = "store_true",
+        help = "Run wiki analysis query automatically after each ingested raw file",
+    )
+    auto_query_group.add_argument(
+        "--no-wiki-auto-query",
+        dest = "wiki_auto_query",
+        action = "store_false",
+        help = "Disable auto wiki analysis queries after ingest",
+    )
+
+    auto_query_chat_group = parser.add_mutually_exclusive_group()
+    auto_query_chat_group.add_argument(
+        "--wiki-auto-query-chat-history",
+        dest = "wiki_auto_query_chat_history",
+        action = "store_true",
+        help = "Include chat_history_* raw files in auto wiki analysis queries",
+    )
+    auto_query_chat_group.add_argument(
+        "--no-wiki-auto-query-chat-history",
+        dest = "wiki_auto_query_chat_history",
+        action = "store_false",
+        help = "Exclude chat_history_* raw files from auto wiki analysis queries",
+    )
+
+    parser.add_argument(
+        "--wiki-lint-every",
+        type = int,
+        default = None,
+        help = "Run wiki lint after this many auto analyses/queries (0 disables auto lint)",
+    )
+
+    parser.set_defaults(wiki_watcher = None)
+    parser.set_defaults(wiki_auto_query = None)
+    parser.set_defaults(wiki_auto_query_chat_history = None)
 
     args = parser.parse_args()
 
     kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        wiki_watcher = args.wiki_watcher,
+        wiki_auto_query = args.wiki_auto_query,
+        wiki_lint_every = args.wiki_lint_every,
+        wiki_auto_query_chat_history = args.wiki_auto_query_chat_history,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
 
-    try:
-        run_server(**kwargs)
-    except Exception:
-        sys.stderr.write("\n")
-        sys.stderr.write("=" * 60 + "\n")
-        sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
-        sys.stderr.write("=" * 60 + "\n")
-        traceback.print_exc(file = sys.stderr)
-        sys.stderr.write("\n")
-        sys.stderr.write(
-            "If a package is missing, try re-running: unsloth studio setup\n"
-        )
-        sys.stderr.flush()
-        sys.exit(1)
-
     # Signal handler -- ensures subprocess cleanup on Ctrl+C
     def _signal_handler(signum, frame):
+        global _restart_requested
+        _restart_requested = False
         _graceful_shutdown(_server)
-        _shutdown_event.set()
+        if _shutdown_event is not None:
+            _shutdown_event.set()
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
@@ -442,9 +521,31 @@ if __name__ == "__main__":
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
 
-    # Keep running until shutdown signal.
-    # NOTE: Event.wait() without a timeout blocks at the C level on Linux,
-    # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
-    # short timeout in a loop lets the interpreter process pending signals.
-    while not _shutdown_event.is_set():
-        _shutdown_event.wait(timeout = 1)
+    while True:
+        try:
+            run_server(**kwargs)
+        except Exception:
+            sys.stderr.write("\n")
+            sys.stderr.write("=" * 60 + "\n")
+            sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
+            sys.stderr.write("=" * 60 + "\n")
+            traceback.print_exc(file = sys.stderr)
+            sys.stderr.write("\n")
+            sys.stderr.write(
+                "If a package is missing, try re-running: unsloth studio setup\n"
+            )
+            sys.stderr.flush()
+            sys.exit(1)
+
+        # Keep running until shutdown signal.
+        # NOTE: Event.wait() without a timeout blocks at the C level on Linux,
+        # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
+        # short timeout in a loop lets the interpreter process pending signals.
+        while _shutdown_event is not None and not _shutdown_event.is_set():
+            _shutdown_event.wait(timeout = 1)
+
+        if _restart_requested:
+            logger.info("Backend restart requested -- launching fresh server instance")
+            _restart_requested = False
+            continue
+        break

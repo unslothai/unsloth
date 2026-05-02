@@ -203,6 +203,9 @@ resources/
 tmp/
 **/node_modules/
 auth.db
+.DS_Store
+**/.DS_Store
+._*
 
 # Tauri local build/generated output
 studio/src-tauri/target/

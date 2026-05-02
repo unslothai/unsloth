@@ -15,13 +15,19 @@ import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Block, type BlockProps, Streamdown } from "streamdown";
+import type { BundledTheme } from "shiki";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 
+const SHIKI_THEMES = [
+  unslothLightTheme,
+  unslothDarkTheme,
+] as unknown as [BundledTheme, BundledTheme];
+
 const math = createMathPlugin({ singleDollarTextMath: true });
 const code = createCodePlugin({
-  themes: [unslothLightTheme, unslothDarkTheme],
+  themes: SHIKI_THEMES,
 });
 const { withSmoothContextProvider } = INTERNAL;
 
@@ -434,7 +440,7 @@ const MarkdownTextImpl = () => {
             panZoom: true,
           },
         }}
-        shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+        shikiTheme={SHIKI_THEMES}
         BlockComponent={StreamdownBlock}
       >
         {processedText}

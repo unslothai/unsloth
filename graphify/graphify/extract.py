@@ -1,0 +1,1811 @@
+"""Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
+
+from __future__ import annotations
+import importlib
+import json
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Any
+from .cache import load_cached, save_cached
+
+
+def _make_id(*parts: str) -> str:
+    """Build a stable node ID from one or more name parts."""
+    combined = "_".join(p.strip("_.") for p in parts if p)
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", combined)
+    return cleaned.strip("_").lower()
+
+
+# ── LanguageConfig dataclass ─────────────────────────────────────────────────
+
+
+@dataclass
+class LanguageConfig:
+    ts_module: str  # e.g. "tree_sitter_python"
+    ts_language_fn: str = "language"  # attr to call: e.g. tslang.language()
+
+    class_types: frozenset = frozenset()
+    function_types: frozenset = frozenset()
+    import_types: frozenset = frozenset()
+    call_types: frozenset = frozenset()
+
+    # Name extraction
+    name_field: str = "name"
+    name_fallback_child_types: tuple = ()
+
+    # Body detection
+    body_field: str = "body"
+    body_fallback_child_types: tuple = ()  # e.g. ("declaration_list", "compound_statement")
+
+    # Call name extraction
+    call_function_field: str = "function"  # field on call node for callee
+    call_accessor_node_types: frozenset = frozenset()  # member/attribute nodes
+    call_accessor_field: str = "attribute"  # field on accessor for method name
+
+    # Stop recursion at these types in walk_calls
+    function_boundary_types: frozenset = frozenset()
+
+    # Import handler: called for import nodes instead of generic handling
+    import_handler: Callable | None = None
+
+    # Optional custom name resolver for functions (C, C++ declarator unwrapping)
+    resolve_function_name_fn: Callable | None = None
+
+    # Extra label formatting for functions: if True, functions get "name()" label
+    function_label_parens: bool = True
+
+    # Extra walk hook called after generic dispatch (for JS arrow functions, C# namespaces, etc.)
+    extra_walk_fn: Callable | None = None
+
+
+# ── Generic helpers ───────────────────────────────────────────────────────────
+
+
+def _read_text(node, source: bytes) -> str:
+    return source[node.start_byte : node.end_byte].decode("utf-8", errors = "replace")
+
+
+def _resolve_name(node, source: bytes, config: LanguageConfig) -> str | None:
+    """Get the name from a node using config.name_field, falling back to child types."""
+    if config.resolve_function_name_fn is not None:
+        # For C/C++ where the name is inside a declarator
+        return None  # caller handles this separately
+    n = node.child_by_field_name(config.name_field)
+    if n:
+        return _read_text(n, source)
+    for child in node.children:
+        if child.type in config.name_fallback_child_types:
+            return _read_text(child, source)
+    return None
+
+
+def _find_body(node, config: LanguageConfig):
+    """Find the body node using config.body_field, falling back to child types."""
+    b = node.child_by_field_name(config.body_field)
+    if b:
+        return b
+    for child in node.children:
+        if child.type in config.body_fallback_child_types:
+            return child
+    return None
+
+
+# ── Import handlers ───────────────────────────────────────────────────────────
+
+
+def _import_python(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    t = node.type
+    if t == "import_statement":
+        for child in node.children:
+            if child.type in ("dotted_name", "aliased_import"):
+                raw = _read_text(child, source)
+                module_name = raw.split(" as ")[0].strip().lstrip(".")
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+    elif t == "import_from_statement":
+        module_node = node.child_by_field_name("module_name")
+        if module_node:
+            raw = _read_text(module_node, source).lstrip(".")
+            tgt_nid = _make_id(raw)
+            edges.append(
+                {
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports_from",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "weight": 1.0,
+                }
+            )
+
+
+def _import_js(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    for child in node.children:
+        if child.type == "string":
+            raw = _read_text(child, source).strip("'\"` ")
+            module_name = raw.lstrip("./").split("/")[-1]
+            if module_name:
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports_from",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+            break
+
+
+def _import_java(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    def _walk_scoped(n) -> str:
+        parts: list[str] = []
+        cur = n
+        while cur:
+            if cur.type == "scoped_identifier":
+                name_node = cur.child_by_field_name("name")
+                if name_node:
+                    parts.append(_read_text(name_node, source))
+                cur = cur.child_by_field_name("scope")
+            elif cur.type == "identifier":
+                parts.append(_read_text(cur, source))
+                break
+            else:
+                break
+        parts.reverse()
+        return ".".join(parts)
+
+    for child in node.children:
+        if child.type in ("scoped_identifier", "identifier"):
+            path_str = _walk_scoped(child)
+            module_name = path_str.split(".")[-1].strip("*").strip(".") or (
+                path_str.split(".")[-2] if len(path_str.split(".")) > 1 else path_str
+            )
+            if module_name:
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+            break
+
+
+def _import_c(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    for child in node.children:
+        if child.type in ("string_literal", "system_lib_string", "string"):
+            raw = _read_text(child, source).strip('"<> ')
+            module_name = raw.split("/")[-1].split(".")[0]
+            if module_name:
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+            break
+
+
+def _import_csharp(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    for child in node.children:
+        if child.type in ("qualified_name", "identifier", "name_equals"):
+            raw = _read_text(child, source)
+            module_name = raw.split(".")[-1].strip()
+            if module_name:
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+            break
+
+
+def _import_kotlin(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    path_node = node.child_by_field_name("path")
+    if path_node:
+        raw = _read_text(path_node, source)
+        module_name = raw.split(".")[-1].strip()
+        if module_name:
+            tgt_nid = _make_id(module_name)
+            edges.append(
+                {
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "weight": 1.0,
+                }
+            )
+        return
+    # Fallback: find identifier child
+    for child in node.children:
+        if child.type == "identifier":
+            raw = _read_text(child, source)
+            tgt_nid = _make_id(raw)
+            edges.append(
+                {
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "weight": 1.0,
+                }
+            )
+            break
+
+
+def _import_scala(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    for child in node.children:
+        if child.type in ("stable_id", "identifier"):
+            raw = _read_text(child, source)
+            module_name = raw.split(".")[-1].strip("{} ")
+            if module_name and module_name != "_":
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+            break
+
+
+def _import_php(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str
+) -> None:
+    for child in node.children:
+        if child.type in ("qualified_name", "name", "identifier"):
+            raw = _read_text(child, source)
+            module_name = raw.split("\\")[-1].strip()
+            if module_name:
+                tgt_nid = _make_id(module_name)
+                edges.append(
+                    {
+                        "source": file_nid,
+                        "target": tgt_nid,
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    }
+                )
+            break
+
+
+# ── C/C++ function name helpers ───────────────────────────────────────────────
+
+
+def _get_c_func_name(node, source: bytes) -> str | None:
+    """Recursively unwrap declarator to find the innermost identifier (C)."""
+    if node.type == "identifier":
+        return _read_text(node, source)
+    decl = node.child_by_field_name("declarator")
+    if decl:
+        return _get_c_func_name(decl, source)
+    for child in node.children:
+        if child.type == "identifier":
+            return _read_text(child, source)
+    return None
+
+
+def _get_cpp_func_name(node, source: bytes) -> str | None:
+    """Recursively unwrap declarator to find the innermost identifier (C++)."""
+    if node.type == "identifier":
+        return _read_text(node, source)
+    if node.type == "qualified_identifier":
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            return _read_text(name_node, source)
+    decl = node.child_by_field_name("declarator")
+    if decl:
+        return _get_cpp_func_name(decl, source)
+    for child in node.children:
+        if child.type == "identifier":
+            return _read_text(child, source)
+    return None
+
+
+# ── JS/TS extra walk for arrow functions ──────────────────────────────────────
+
+
+def _js_extra_walk(
+    node,
+    source: bytes,
+    file_nid: str,
+    stem: str,
+    str_path: str,
+    nodes: list,
+    edges: list,
+    seen_ids: set,
+    function_bodies: list,
+    parent_class_nid: str | None,
+    add_node_fn,
+    add_edge_fn,
+) -> bool:
+    """Handle lexical_declaration (arrow functions) for JS/TS. Returns True if handled."""
+    if node.type == "lexical_declaration":
+        for child in node.children:
+            if child.type == "variable_declarator":
+                value = child.child_by_field_name("value")
+                if value and value.type == "arrow_function":
+                    name_node = child.child_by_field_name("name")
+                    if name_node:
+                        func_name = _read_text(name_node, source)
+                        line = child.start_point[0] + 1
+                        func_nid = _make_id(stem, func_name)
+                        add_node_fn(func_nid, f"{func_name}()", line)
+                        add_edge_fn(file_nid, func_nid, "contains", line)
+                        body = value.child_by_field_name("body")
+                        if body:
+                            function_bodies.append((func_nid, body))
+        return True
+    return False
+
+
+# ── C# extra walk for namespace declarations ──────────────────────────────────
+
+
+def _csharp_extra_walk(
+    node,
+    source: bytes,
+    file_nid: str,
+    stem: str,
+    str_path: str,
+    nodes: list,
+    edges: list,
+    seen_ids: set,
+    function_bodies: list,
+    parent_class_nid: str | None,
+    add_node_fn,
+    add_edge_fn,
+    walk_fn,
+) -> bool:
+    """Handle namespace_declaration for C#. Returns True if handled."""
+    if node.type == "namespace_declaration":
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            ns_name = _read_text(name_node, source)
+            ns_nid = _make_id(stem, ns_name)
+            line = node.start_point[0] + 1
+            add_node_fn(ns_nid, ns_name, line)
+            add_edge_fn(file_nid, ns_nid, "contains", line)
+        body = node.child_by_field_name("body")
+        if body:
+            for child in body.children:
+                walk_fn(child, parent_class_nid)
+        return True
+    return False
+
+
+# ── Language configs ──────────────────────────────────────────────────────────
+
+_PYTHON_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_python",
+    class_types = frozenset({"class_definition"}),
+    function_types = frozenset({"function_definition"}),
+    import_types = frozenset({"import_statement", "import_from_statement"}),
+    call_types = frozenset({"call"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"attribute"}),
+    call_accessor_field = "attribute",
+    function_boundary_types = frozenset({"function_definition"}),
+    import_handler = _import_python,
+)
+
+_JS_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_javascript",
+    class_types = frozenset({"class_declaration"}),
+    function_types = frozenset({"function_declaration", "method_definition"}),
+    import_types = frozenset({"import_statement"}),
+    call_types = frozenset({"call_expression"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"member_expression"}),
+    call_accessor_field = "property",
+    function_boundary_types = frozenset(
+        {"function_declaration", "arrow_function", "method_definition"}
+    ),
+    import_handler = _import_js,
+)
+
+_TS_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_typescript",
+    ts_language_fn = "language_typescript",
+    class_types = frozenset({"class_declaration"}),
+    function_types = frozenset({"function_declaration", "method_definition"}),
+    import_types = frozenset({"import_statement"}),
+    call_types = frozenset({"call_expression"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"member_expression"}),
+    call_accessor_field = "property",
+    function_boundary_types = frozenset(
+        {"function_declaration", "arrow_function", "method_definition"}
+    ),
+    import_handler = _import_js,
+)
+
+_JAVA_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_java",
+    class_types = frozenset({"class_declaration", "interface_declaration"}),
+    function_types = frozenset({"method_declaration", "constructor_declaration"}),
+    import_types = frozenset({"import_declaration"}),
+    call_types = frozenset({"method_invocation"}),
+    call_function_field = "name",
+    call_accessor_node_types = frozenset(),
+    function_boundary_types = frozenset(
+        {"method_declaration", "constructor_declaration"}
+    ),
+    import_handler = _import_java,
+)
+
+_C_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_c",
+    class_types = frozenset(),
+    function_types = frozenset({"function_definition"}),
+    import_types = frozenset({"preproc_include"}),
+    call_types = frozenset({"call_expression"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"field_expression"}),
+    call_accessor_field = "field",
+    function_boundary_types = frozenset({"function_definition"}),
+    import_handler = _import_c,
+    resolve_function_name_fn = _get_c_func_name,
+)
+
+_CPP_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_cpp",
+    class_types = frozenset({"class_specifier"}),
+    function_types = frozenset({"function_definition"}),
+    import_types = frozenset({"preproc_include"}),
+    call_types = frozenset({"call_expression"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"field_expression", "qualified_identifier"}),
+    call_accessor_field = "field",
+    function_boundary_types = frozenset({"function_definition"}),
+    import_handler = _import_c,
+    resolve_function_name_fn = _get_cpp_func_name,
+)
+
+_RUBY_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_ruby",
+    class_types = frozenset({"class"}),
+    function_types = frozenset({"method", "singleton_method"}),
+    import_types = frozenset(),
+    call_types = frozenset({"call"}),
+    call_function_field = "method",
+    call_accessor_node_types = frozenset(),
+    name_fallback_child_types = ("constant", "scope_resolution", "identifier"),
+    body_fallback_child_types = ("body_statement",),
+    function_boundary_types = frozenset({"method", "singleton_method"}),
+)
+
+_CSHARP_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_c_sharp",
+    class_types = frozenset({"class_declaration", "interface_declaration"}),
+    function_types = frozenset({"method_declaration"}),
+    import_types = frozenset({"using_directive"}),
+    call_types = frozenset({"invocation_expression"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"member_access_expression"}),
+    call_accessor_field = "name",
+    body_fallback_child_types = ("declaration_list",),
+    function_boundary_types = frozenset({"method_declaration"}),
+    import_handler = _import_csharp,
+)
+
+_KOTLIN_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_kotlin",
+    class_types = frozenset({"class_declaration", "object_declaration"}),
+    function_types = frozenset({"function_declaration"}),
+    import_types = frozenset({"import_header"}),
+    call_types = frozenset({"call_expression"}),
+    call_function_field = "",
+    call_accessor_node_types = frozenset({"navigation_expression"}),
+    call_accessor_field = "",
+    name_fallback_child_types = ("simple_identifier",),
+    body_fallback_child_types = ("function_body", "class_body"),
+    function_boundary_types = frozenset({"function_declaration"}),
+    import_handler = _import_kotlin,
+)
+
+_SCALA_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_scala",
+    class_types = frozenset({"class_definition", "object_definition"}),
+    function_types = frozenset({"function_definition"}),
+    import_types = frozenset({"import_declaration"}),
+    call_types = frozenset({"call_expression"}),
+    call_function_field = "",
+    call_accessor_node_types = frozenset({"field_expression"}),
+    call_accessor_field = "field",
+    name_fallback_child_types = ("identifier",),
+    body_fallback_child_types = ("template_body",),
+    function_boundary_types = frozenset({"function_definition"}),
+    import_handler = _import_scala,
+)
+
+_PHP_CONFIG = LanguageConfig(
+    ts_module = "tree_sitter_php",
+    ts_language_fn = "language_php",
+    class_types = frozenset({"class_declaration"}),
+    function_types = frozenset({"function_definition", "method_declaration"}),
+    import_types = frozenset({"namespace_use_clause"}),
+    call_types = frozenset({"function_call_expression", "member_call_expression"}),
+    call_function_field = "function",
+    call_accessor_node_types = frozenset({"member_call_expression"}),
+    call_accessor_field = "name",
+    name_fallback_child_types = ("name",),
+    body_fallback_child_types = ("declaration_list", "compound_statement"),
+    function_boundary_types = frozenset({"function_definition", "method_declaration"}),
+    import_handler = _import_php,
+)
+
+
+# ── Generic extractor ─────────────────────────────────────────────────────────
+
+
+def _extract_generic(path: Path, config: LanguageConfig) -> dict:
+    """Generic AST extractor driven by LanguageConfig."""
+    try:
+        mod = importlib.import_module(config.ts_module)
+        from tree_sitter import Language, Parser
+
+        lang_fn = getattr(mod, config.ts_language_fn, None)
+        if lang_fn is None:
+            # Fallback for PHP: try "language_php" then "language"
+            lang_fn = getattr(mod, "language", None)
+        if lang_fn is None:
+            return {
+                "nodes": [],
+                "edges": [],
+                "error": f"No language function in {config.ts_module}",
+            }
+        language = Language(lang_fn())
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": f"{config.ts_module} not installed"}
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    try:
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = path.stem
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    function_bodies: list[tuple[str, object]] = []
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append(
+                {
+                    "id": nid,
+                    "label": label,
+                    "file_type": "code",
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                }
+            )
+
+    def add_edge(
+        src: str,
+        tgt: str,
+        relation: str,
+        line: int,
+        confidence: str = "EXTRACTED",
+        weight: float = 1.0,
+    ) -> None:
+        edges.append(
+            {
+                "source": src,
+                "target": tgt,
+                "relation": relation,
+                "confidence": confidence,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "weight": weight,
+            }
+        )
+
+    file_nid = _make_id(stem)
+    add_node(file_nid, path.name, 1)
+
+    def walk(node, parent_class_nid: str | None = None) -> None:
+        t = node.type
+
+        # Import types
+        if t in config.import_types:
+            if config.import_handler:
+                config.import_handler(node, source, file_nid, stem, edges, str_path)
+            return
+
+        # Class types
+        if t in config.class_types:
+            # Resolve class name
+            name_node = node.child_by_field_name(config.name_field)
+            if name_node is None:
+                for child in node.children:
+                    if child.type in config.name_fallback_child_types:
+                        name_node = child
+                        break
+            if not name_node:
+                return
+            class_name = _read_text(name_node, source)
+            class_nid = _make_id(stem, class_name)
+            line = node.start_point[0] + 1
+            add_node(class_nid, class_name, line)
+            add_edge(file_nid, class_nid, "contains", line)
+
+            # Python-specific: inheritance
+            if config.ts_module == "tree_sitter_python":
+                args = node.child_by_field_name("superclasses")
+                if args:
+                    for arg in args.children:
+                        if arg.type == "identifier":
+                            base = _read_text(arg, source)
+                            base_nid = _make_id(stem, base)
+                            if base_nid not in seen_ids:
+                                base_nid = _make_id(base)
+                                if base_nid not in seen_ids:
+                                    nodes.append(
+                                        {
+                                            "id": base_nid,
+                                            "label": base,
+                                            "file_type": "code",
+                                            "source_file": "",
+                                            "source_location": "",
+                                        }
+                                    )
+                                    seen_ids.add(base_nid)
+                            add_edge(class_nid, base_nid, "inherits", line)
+
+            # Find body and recurse
+            body = _find_body(node, config)
+            if body:
+                for child in body.children:
+                    walk(child, parent_class_nid = class_nid)
+            return
+
+        # Function types
+        if t in config.function_types:
+            # Resolve function name
+            if config.resolve_function_name_fn is not None:
+                # C/C++ style: use declarator
+                declarator = node.child_by_field_name("declarator")
+                func_name: str | None = None
+                if declarator:
+                    func_name = config.resolve_function_name_fn(declarator, source)
+            else:
+                name_node = node.child_by_field_name(config.name_field)
+                if name_node is None:
+                    for child in node.children:
+                        if child.type in config.name_fallback_child_types:
+                            name_node = child
+                            break
+                func_name = _read_text(name_node, source) if name_node else None
+
+            if not func_name:
+                return
+
+            line = node.start_point[0] + 1
+            if parent_class_nid:
+                func_nid = _make_id(parent_class_nid, func_name)
+                add_node(func_nid, f".{func_name}()", line)
+                add_edge(parent_class_nid, func_nid, "method", line)
+            else:
+                func_nid = _make_id(stem, func_name)
+                add_node(func_nid, f"{func_name}()", line)
+                add_edge(file_nid, func_nid, "contains", line)
+
+            body = _find_body(node, config)
+            if body:
+                function_bodies.append((func_nid, body))
+            return
+
+        # JS/TS arrow functions and C# namespaces — language-specific extra handling
+        if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+            if _js_extra_walk(
+                node,
+                source,
+                file_nid,
+                stem,
+                str_path,
+                nodes,
+                edges,
+                seen_ids,
+                function_bodies,
+                parent_class_nid,
+                add_node,
+                add_edge,
+            ):
+                return
+
+        if config.ts_module == "tree_sitter_c_sharp":
+            if _csharp_extra_walk(
+                node,
+                source,
+                file_nid,
+                stem,
+                str_path,
+                nodes,
+                edges,
+                seen_ids,
+                function_bodies,
+                parent_class_nid,
+                add_node,
+                add_edge,
+                walk,
+            ):
+                return
+
+        # Default: recurse
+        for child in node.children:
+            walk(child, parent_class_nid = None)
+
+    walk(root)
+
+    # ── Call-graph pass ───────────────────────────────────────────────────────
+    label_to_nid: dict[str, str] = {}
+    for n in nodes:
+        raw = n["label"]
+        normalised = raw.strip("()").lstrip(".")
+        label_to_nid[normalised.lower()] = n["id"]
+
+    seen_call_pairs: set[tuple[str, str]] = set()
+
+    def walk_calls(node, caller_nid: str) -> None:
+        if node.type in config.function_boundary_types:
+            return
+
+        if node.type in config.call_types:
+            callee_name: str | None = None
+
+            # Special handling per language
+            if config.ts_module == "tree_sitter_kotlin":
+                # Kotlin: first child may be simple_identifier or navigation_expression
+                first = node.children[0] if node.children else None
+                if first:
+                    if first.type == "simple_identifier":
+                        callee_name = _read_text(first, source)
+                    elif first.type == "navigation_expression":
+                        for child in reversed(first.children):
+                            if child.type == "simple_identifier":
+                                callee_name = _read_text(child, source)
+                                break
+            elif config.ts_module == "tree_sitter_scala":
+                # Scala: first child
+                first = node.children[0] if node.children else None
+                if first:
+                    if first.type == "identifier":
+                        callee_name = _read_text(first, source)
+                    elif first.type == "field_expression":
+                        field = first.child_by_field_name("field")
+                        if field:
+                            callee_name = _read_text(field, source)
+                        else:
+                            for child in reversed(first.children):
+                                if child.type == "identifier":
+                                    callee_name = _read_text(child, source)
+                                    break
+            elif (
+                config.ts_module == "tree_sitter_c_sharp"
+                and node.type == "invocation_expression"
+            ):
+                # C#: try name field, then first named child
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    callee_name = _read_text(name_node, source)
+                else:
+                    for child in node.children:
+                        if child.is_named:
+                            raw = _read_text(child, source)
+                            if "." in raw:
+                                callee_name = raw.split(".")[-1]
+                            else:
+                                callee_name = raw
+                            break
+            elif config.ts_module == "tree_sitter_php":
+                # PHP: distinguish function_call_expression vs member_call_expression
+                if node.type == "function_call_expression":
+                    func_node = node.child_by_field_name("function")
+                    if func_node:
+                        callee_name = _read_text(func_node, source)
+                else:
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        callee_name = _read_text(name_node, source)
+            elif config.ts_module == "tree_sitter_cpp":
+                # C++: function field, then field_expression/qualified_identifier
+                func_node = (
+                    node.child_by_field_name(config.call_function_field)
+                    if config.call_function_field
+                    else None
+                )
+                if func_node:
+                    if func_node.type == "identifier":
+                        callee_name = _read_text(func_node, source)
+                    elif func_node.type in ("field_expression", "qualified_identifier"):
+                        name = func_node.child_by_field_name(
+                            "field"
+                        ) or func_node.child_by_field_name("name")
+                        if name:
+                            callee_name = _read_text(name, source)
+            else:
+                # Generic: get callee from call_function_field
+                func_node = (
+                    node.child_by_field_name(config.call_function_field)
+                    if config.call_function_field
+                    else None
+                )
+                if func_node:
+                    if func_node.type == "identifier":
+                        callee_name = _read_text(func_node, source)
+                    elif func_node.type in config.call_accessor_node_types:
+                        if config.call_accessor_field:
+                            attr = func_node.child_by_field_name(
+                                config.call_accessor_field
+                            )
+                            if attr:
+                                callee_name = _read_text(attr, source)
+                    else:
+                        # Try reading the node directly (e.g. Java name field is the callee)
+                        callee_name = _read_text(func_node, source)
+
+            if callee_name:
+                tgt_nid = label_to_nid.get(callee_name.lower())
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        line = node.start_point[0] + 1
+                        edges.append(
+                            {
+                                "source": caller_nid,
+                                "target": tgt_nid,
+                                "relation": "calls",
+                                "confidence": "INFERRED",
+                                "source_file": str_path,
+                                "source_location": f"L{line}",
+                                "weight": 0.8,
+                            }
+                        )
+
+        for child in node.children:
+            walk_calls(child, caller_nid)
+
+    for caller_nid, body_node in function_bodies:
+        walk_calls(body_node, caller_nid)
+
+    # ── Clean edges ───────────────────────────────────────────────────────────
+    valid_ids = seen_ids
+    clean_edges = []
+    for edge in edges:
+        src, tgt = edge["source"], edge["target"]
+        if src in valid_ids and (
+            tgt in valid_ids or edge["relation"] in ("imports", "imports_from")
+        ):
+            clean_edges.append(edge)
+
+    return {"nodes": nodes, "edges": clean_edges}
+
+
+# ── Python rationale extraction ───────────────────────────────────────────────
+
+_RATIONALE_PREFIXES = (
+    "# NOTE:",
+    "# IMPORTANT:",
+    "# HACK:",
+    "# WHY:",
+    "# RATIONALE:",
+    "# TODO:",
+    "# FIXME:",
+)
+
+
+def _extract_python_rationale(path: Path, result: dict) -> None:
+    """Post-pass: extract docstrings and rationale comments from Python source.
+    Mutates result in-place by appending to result['nodes'] and result['edges'].
+    """
+    try:
+        import tree_sitter_python as tspython
+        from tree_sitter import Language, Parser
+
+        language = Language(tspython.language())
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception:
+        return
+
+    stem = path.stem
+    str_path = str(path)
+    nodes = result["nodes"]
+    edges = result["edges"]
+    seen_ids = {n["id"] for n in nodes}
+    file_nid = _make_id(stem)
+
+    def _get_docstring(body_node) -> tuple[str, int] | None:
+        if not body_node:
+            return None
+        for child in body_node.children:
+            if child.type == "expression_statement":
+                for sub in child.children:
+                    if sub.type in ("string", "concatenated_string"):
+                        text = source[sub.start_byte : sub.end_byte].decode(
+                            "utf-8", errors = "replace"
+                        )
+                        text = text.strip("\"'").strip('"""').strip("'''").strip()
+                        if len(text) > 20:
+                            return text, child.start_point[0] + 1
+            break
+        return None
+
+    def _add_rationale(text: str, line: int, parent_nid: str) -> None:
+        label = text[:80].replace("\n", " ").strip()
+        rid = _make_id(stem, "rationale", str(line))
+        if rid not in seen_ids:
+            seen_ids.add(rid)
+            nodes.append(
+                {
+                    "id": rid,
+                    "label": label,
+                    "file_type": "rationale",
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                }
+            )
+        edges.append(
+            {
+                "source": rid,
+                "target": parent_nid,
+                "relation": "rationale_for",
+                "confidence": "EXTRACTED",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "weight": 1.0,
+            }
+        )
+
+    # Module-level docstring
+    ds = _get_docstring(root)
+    if ds:
+        _add_rationale(ds[0], ds[1], file_nid)
+
+    # Class and function docstrings
+    def walk_docstrings(node, parent_nid: str) -> None:
+        t = node.type
+        if t == "class_definition":
+            name_node = node.child_by_field_name("name")
+            body = node.child_by_field_name("body")
+            if name_node and body:
+                class_name = source[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors = "replace"
+                )
+                nid = _make_id(stem, class_name)
+                ds = _get_docstring(body)
+                if ds:
+                    _add_rationale(ds[0], ds[1], nid)
+                for child in body.children:
+                    walk_docstrings(child, nid)
+            return
+        if t == "function_definition":
+            name_node = node.child_by_field_name("name")
+            body = node.child_by_field_name("body")
+            if name_node and body:
+                func_name = source[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors = "replace"
+                )
+                nid = (
+                    _make_id(parent_nid, func_name)
+                    if parent_nid != file_nid
+                    else _make_id(stem, func_name)
+                )
+                ds = _get_docstring(body)
+                if ds:
+                    _add_rationale(ds[0], ds[1], nid)
+            return
+        for child in node.children:
+            walk_docstrings(child, parent_nid)
+
+    walk_docstrings(root, file_nid)
+
+    # Rationale comments (# NOTE:, # IMPORTANT:, etc.)
+    source_text = source.decode("utf-8", errors = "replace")
+    for lineno, line_text in enumerate(source_text.splitlines(), start = 1):
+        stripped = line_text.strip()
+        if any(stripped.startswith(p) for p in _RATIONALE_PREFIXES):
+            _add_rationale(stripped, lineno, file_nid)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+
+def extract_python(path: Path) -> dict:
+    """Extract classes, functions, and imports from a .py file via tree-sitter AST."""
+    result = _extract_generic(path, _PYTHON_CONFIG)
+    if "error" not in result:
+        _extract_python_rationale(path, result)
+    return result
+
+
+def extract_js(path: Path) -> dict:
+    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx file."""
+    config = _TS_CONFIG if path.suffix in (".ts", ".tsx") else _JS_CONFIG
+    return _extract_generic(path, config)
+
+
+def extract_java(path: Path) -> dict:
+    """Extract classes, interfaces, methods, constructors, and imports from a .java file."""
+    return _extract_generic(path, _JAVA_CONFIG)
+
+
+def extract_c(path: Path) -> dict:
+    """Extract functions and includes from a .c/.h file."""
+    return _extract_generic(path, _C_CONFIG)
+
+
+def extract_cpp(path: Path) -> dict:
+    """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file."""
+    return _extract_generic(path, _CPP_CONFIG)
+
+
+def extract_ruby(path: Path) -> dict:
+    """Extract classes, methods, singleton methods, and calls from a .rb file."""
+    return _extract_generic(path, _RUBY_CONFIG)
+
+
+def extract_csharp(path: Path) -> dict:
+    """Extract classes, interfaces, methods, namespaces, and usings from a .cs file."""
+    return _extract_generic(path, _CSHARP_CONFIG)
+
+
+def extract_kotlin(path: Path) -> dict:
+    """Extract classes, objects, functions, and imports from a .kt/.kts file."""
+    return _extract_generic(path, _KOTLIN_CONFIG)
+
+
+def extract_scala(path: Path) -> dict:
+    """Extract classes, objects, functions, and imports from a .scala file."""
+    return _extract_generic(path, _SCALA_CONFIG)
+
+
+def extract_php(path: Path) -> dict:
+    """Extract classes, functions, methods, namespace uses, and calls from a .php file."""
+    return _extract_generic(path, _PHP_CONFIG)
+
+
+# ── Go extractor (custom walk) ────────────────────────────────────────────────
+
+
+def extract_go(path: Path) -> dict:
+    """Extract functions, methods, type declarations, and imports from a .go file."""
+    try:
+        import tree_sitter_go as tsgo
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": "tree-sitter-go not installed"}
+
+    try:
+        language = Language(tsgo.language())
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = path.stem
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    function_bodies: list[tuple[str, object]] = []
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append(
+                {
+                    "id": nid,
+                    "label": label,
+                    "file_type": "code",
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                }
+            )
+
+    def add_edge(
+        src: str,
+        tgt: str,
+        relation: str,
+        line: int,
+        confidence: str = "EXTRACTED",
+        weight: float = 1.0,
+    ) -> None:
+        edges.append(
+            {
+                "source": src,
+                "target": tgt,
+                "relation": relation,
+                "confidence": confidence,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "weight": weight,
+            }
+        )
+
+    file_nid = _make_id(stem)
+    add_node(file_nid, path.name, 1)
+
+    def walk(node) -> None:
+        t = node.type
+
+        if t == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                func_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                func_nid = _make_id(stem, func_name)
+                add_node(func_nid, f"{func_name}()", line)
+                add_edge(file_nid, func_nid, "contains", line)
+                body = node.child_by_field_name("body")
+                if body:
+                    function_bodies.append((func_nid, body))
+            return
+
+        if t == "method_declaration":
+            receiver = node.child_by_field_name("receiver")
+            receiver_type: str | None = None
+            if receiver:
+                for param in receiver.children:
+                    if param.type == "parameter_declaration":
+                        type_node = param.child_by_field_name("type")
+                        if type_node:
+                            raw = _read_text(type_node, source).lstrip("*").strip()
+                            receiver_type = raw
+                        break
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                method_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                if receiver_type:
+                    parent_nid = _make_id(stem, receiver_type)
+                    add_node(parent_nid, receiver_type, line)
+                    method_nid = _make_id(parent_nid, method_name)
+                    add_node(method_nid, f".{method_name}()", line)
+                    add_edge(parent_nid, method_nid, "method", line)
+                else:
+                    method_nid = _make_id(stem, method_name)
+                    add_node(method_nid, f"{method_name}()", line)
+                    add_edge(file_nid, method_nid, "contains", line)
+                body = node.child_by_field_name("body")
+                if body:
+                    function_bodies.append((method_nid, body))
+            return
+
+        if t == "type_declaration":
+            for child in node.children:
+                if child.type == "type_spec":
+                    name_node = child.child_by_field_name("name")
+                    if name_node:
+                        type_name = _read_text(name_node, source)
+                        line = child.start_point[0] + 1
+                        type_nid = _make_id(stem, type_name)
+                        add_node(type_nid, type_name, line)
+                        add_edge(file_nid, type_nid, "contains", line)
+            return
+
+        if t == "import_declaration":
+            for child in node.children:
+                if child.type == "import_spec_list":
+                    for spec in child.children:
+                        if spec.type == "import_spec":
+                            path_node = spec.child_by_field_name("path")
+                            if path_node:
+                                raw = _read_text(path_node, source).strip('"')
+                                module_name = raw.split("/")[-1]
+                                tgt_nid = _make_id(module_name)
+                                add_edge(
+                                    file_nid,
+                                    tgt_nid,
+                                    "imports_from",
+                                    spec.start_point[0] + 1,
+                                )
+                elif child.type == "import_spec":
+                    path_node = child.child_by_field_name("path")
+                    if path_node:
+                        raw = _read_text(path_node, source).strip('"')
+                        module_name = raw.split("/")[-1]
+                        tgt_nid = _make_id(module_name)
+                        add_edge(
+                            file_nid, tgt_nid, "imports_from", child.start_point[0] + 1
+                        )
+            return
+
+        for child in node.children:
+            walk(child)
+
+    walk(root)
+
+    label_to_nid: dict[str, str] = {}
+    for n in nodes:
+        raw = n["label"]
+        normalised = raw.strip("()").lstrip(".")
+        label_to_nid[normalised.lower()] = n["id"]
+
+    seen_call_pairs: set[tuple[str, str]] = set()
+
+    def walk_calls(node, caller_nid: str) -> None:
+        if node.type in ("function_declaration", "method_declaration"):
+            return
+        if node.type == "call_expression":
+            func_node = node.child_by_field_name("function")
+            callee_name: str | None = None
+            if func_node:
+                if func_node.type == "identifier":
+                    callee_name = _read_text(func_node, source)
+                elif func_node.type == "selector_expression":
+                    field = func_node.child_by_field_name("field")
+                    if field:
+                        callee_name = _read_text(field, source)
+            if callee_name:
+                tgt_nid = label_to_nid.get(callee_name.lower())
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        line = node.start_point[0] + 1
+                        edges.append(
+                            {
+                                "source": caller_nid,
+                                "target": tgt_nid,
+                                "relation": "calls",
+                                "confidence": "INFERRED",
+                                "source_file": str_path,
+                                "source_location": f"L{line}",
+                                "weight": 0.8,
+                            }
+                        )
+        for child in node.children:
+            walk_calls(child, caller_nid)
+
+    for caller_nid, body_node in function_bodies:
+        walk_calls(body_node, caller_nid)
+
+    valid_ids = seen_ids
+    clean_edges = []
+    for edge in edges:
+        src, tgt = edge["source"], edge["target"]
+        if src in valid_ids and (
+            tgt in valid_ids or edge["relation"] in ("imports", "imports_from")
+        ):
+            clean_edges.append(edge)
+
+    return {"nodes": nodes, "edges": clean_edges}
+
+
+# ── Rust extractor (custom walk) ──────────────────────────────────────────────
+
+
+def extract_rust(path: Path) -> dict:
+    """Extract functions, structs, enums, traits, impl methods, and use declarations from a .rs file."""
+    try:
+        import tree_sitter_rust as tsrust
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": "tree-sitter-rust not installed"}
+
+    try:
+        language = Language(tsrust.language())
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = path.stem
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    function_bodies: list[tuple[str, object]] = []
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append(
+                {
+                    "id": nid,
+                    "label": label,
+                    "file_type": "code",
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                }
+            )
+
+    def add_edge(
+        src: str,
+        tgt: str,
+        relation: str,
+        line: int,
+        confidence: str = "EXTRACTED",
+        weight: float = 1.0,
+    ) -> None:
+        edges.append(
+            {
+                "source": src,
+                "target": tgt,
+                "relation": relation,
+                "confidence": confidence,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "weight": weight,
+            }
+        )
+
+    file_nid = _make_id(stem)
+    add_node(file_nid, path.name, 1)
+
+    def walk(node, parent_impl_nid: str | None = None) -> None:
+        t = node.type
+
+        if t == "function_item":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                func_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                if parent_impl_nid:
+                    func_nid = _make_id(parent_impl_nid, func_name)
+                    add_node(func_nid, f".{func_name}()", line)
+                    add_edge(parent_impl_nid, func_nid, "method", line)
+                else:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(file_nid, func_nid, "contains", line)
+                body = node.child_by_field_name("body")
+                if body:
+                    function_bodies.append((func_nid, body))
+            return
+
+        if t in ("struct_item", "enum_item", "trait_item"):
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                item_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                item_nid = _make_id(stem, item_name)
+                add_node(item_nid, item_name, line)
+                add_edge(file_nid, item_nid, "contains", line)
+            return
+
+        if t == "impl_item":
+            type_node = node.child_by_field_name("type")
+            impl_nid: str | None = None
+            if type_node:
+                type_name = _read_text(type_node, source).strip()
+                impl_nid = _make_id(stem, type_name)
+                add_node(impl_nid, type_name, node.start_point[0] + 1)
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    walk(child, parent_impl_nid = impl_nid)
+            return
+
+        if t == "use_declaration":
+            arg = node.child_by_field_name("argument")
+            if arg:
+                raw = _read_text(arg, source)
+                clean = raw.split("{")[0].rstrip(":").rstrip("*").rstrip(":")
+                module_name = clean.split("::")[-1].strip()
+                if module_name:
+                    tgt_nid = _make_id(module_name)
+                    add_edge(file_nid, tgt_nid, "imports_from", node.start_point[0] + 1)
+            return
+
+        for child in node.children:
+            walk(child, parent_impl_nid = None)
+
+    walk(root)
+
+    label_to_nid: dict[str, str] = {}
+    for n in nodes:
+        raw = n["label"]
+        normalised = raw.strip("()").lstrip(".")
+        label_to_nid[normalised.lower()] = n["id"]
+
+    seen_call_pairs: set[tuple[str, str]] = set()
+
+    def walk_calls(node, caller_nid: str) -> None:
+        if node.type == "function_item":
+            return
+        if node.type == "call_expression":
+            func_node = node.child_by_field_name("function")
+            callee_name: str | None = None
+            if func_node:
+                if func_node.type == "identifier":
+                    callee_name = _read_text(func_node, source)
+                elif func_node.type == "field_expression":
+                    field = func_node.child_by_field_name("field")
+                    if field:
+                        callee_name = _read_text(field, source)
+                elif func_node.type == "scoped_identifier":
+                    name = func_node.child_by_field_name("name")
+                    if name:
+                        callee_name = _read_text(name, source)
+            if callee_name:
+                tgt_nid = label_to_nid.get(callee_name.lower())
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        line = node.start_point[0] + 1
+                        edges.append(
+                            {
+                                "source": caller_nid,
+                                "target": tgt_nid,
+                                "relation": "calls",
+                                "confidence": "INFERRED",
+                                "source_file": str_path,
+                                "source_location": f"L{line}",
+                                "weight": 0.8,
+                            }
+                        )
+        for child in node.children:
+            walk_calls(child, caller_nid)
+
+    for caller_nid, body_node in function_bodies:
+        walk_calls(body_node, caller_nid)
+
+    valid_ids = seen_ids
+    clean_edges = []
+    for edge in edges:
+        src, tgt = edge["source"], edge["target"]
+        if src in valid_ids and (
+            tgt in valid_ids or edge["relation"] in ("imports", "imports_from")
+        ):
+            clean_edges.append(edge)
+
+    return {"nodes": nodes, "edges": clean_edges}
+
+
+# ── Cross-file import resolution ──────────────────────────────────────────────
+
+
+def _resolve_cross_file_imports(
+    per_file: list[dict],
+    paths: list[Path],
+) -> list[dict]:
+    """
+    Two-pass import resolution: turn file-level imports into class-level edges.
+
+    Pass 1 - build a global map: class/function name → node_id, per stem.
+    Pass 2 - for each `from .module import Name`, look up Name in the global
+              map and add a direct INFERRED edge from each class in the
+              importing file to the imported entity.
+
+    This turns:
+        auth.py --imports_from--> models.py          (obvious, filtered out)
+    Into:
+        DigestAuth --uses--> Response  [INFERRED]    (cross-file, interesting!)
+        BasicAuth  --uses--> Request   [INFERRED]
+    """
+    try:
+        import tree_sitter_python as tspython
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return []
+
+    language = Language(tspython.language())
+    parser = Parser(language)
+
+    # Pass 1: name → node_id across all files
+    # Map: stem → {ClassName: node_id}
+    stem_to_entities: dict[str, dict[str, str]] = {}
+    for file_result in per_file:
+        for node in file_result.get("nodes", []):
+            src = node.get("source_file", "")
+            if not src:
+                continue
+            stem = Path(src).stem
+            label = node.get("label", "")
+            nid = node.get("id", "")
+            # Only index real classes/functions (not file nodes, not method stubs)
+            if label and not label.endswith((")", ".py")) and "_" not in label[:1]:
+                stem_to_entities.setdefault(stem, {})[label] = nid
+
+    # Pass 2: for each file, find `from .X import A, B, C` and resolve
+    new_edges: list[dict] = []
+    stem_to_path: dict[str, Path] = {p.stem: p for p in paths}
+
+    for file_result, path in zip(per_file, paths):
+        stem = path.stem
+        str_path = str(path)
+
+        # Find all classes defined in this file (the importers)
+        local_classes = [
+            n["id"]
+            for n in file_result.get("nodes", [])
+            if n.get("source_file") == str_path
+            and not n["label"].endswith((")", ".py"))
+            and n["id"] != _make_id(stem)  # exclude file-level node
+        ]
+        if not local_classes:
+            continue
+
+        # Parse imports from this file
+        try:
+            source = path.read_bytes()
+            tree = parser.parse(source)
+        except Exception:
+            continue
+
+        def walk_imports(node) -> None:
+            if node.type == "import_from_statement":
+                # Find the module name - handles both absolute and relative imports.
+                # Relative: `from .models import X` → relative_import → dotted_name
+                # Absolute: `from models import X`  → module_name field
+                target_stem: str | None = None
+                for child in node.children:
+                    if child.type == "relative_import":
+                        # Dig into relative_import → dotted_name → identifier
+                        for sub in child.children:
+                            if sub.type == "dotted_name":
+                                raw = source[sub.start_byte : sub.end_byte].decode(
+                                    "utf-8", errors = "replace"
+                                )
+                                target_stem = raw.split(".")[-1]
+                                break
+                        break
+                    if child.type == "dotted_name" and target_stem is None:
+                        raw = source[child.start_byte : child.end_byte].decode(
+                            "utf-8", errors = "replace"
+                        )
+                        target_stem = raw.split(".")[-1]
+
+                if not target_stem or target_stem not in stem_to_entities:
+                    return
+
+                # Collect imported names: dotted_name children of import_from_statement
+                # that come AFTER the 'import' keyword token.
+                imported_names: list[str] = []
+                past_import_kw = False
+                for child in node.children:
+                    if child.type == "import":
+                        past_import_kw = True
+                        continue
+                    if not past_import_kw:
+                        continue
+                    if child.type == "dotted_name":
+                        imported_names.append(
+                            source[child.start_byte : child.end_byte].decode(
+                                "utf-8", errors = "replace"
+                            )
+                        )
+                    elif child.type == "aliased_import":
+                        # `import X as Y` - take the original name
+                        name_node = child.child_by_field_name("name")
+                        if name_node:
+                            imported_names.append(
+                                source[
+                                    name_node.start_byte : name_node.end_byte
+                                ].decode("utf-8", errors = "replace")
+                            )
+
+                line = node.start_point[0] + 1
+                for name in imported_names:
+                    tgt_nid = stem_to_entities[target_stem].get(name)
+                    if tgt_nid:
+                        for src_class_nid in local_classes:
+                            new_edges.append(
+                                {
+                                    "source": src_class_nid,
+                                    "target": tgt_nid,
+                                    "relation": "uses",
+                                    "confidence": "INFERRED",
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                    "weight": 0.8,
+                                }
+                            )
+            for child in node.children:
+                walk_imports(child)
+
+        walk_imports(tree.root_node)
+
+    return new_edges
+
+
+# ── Main extract and collect_files ────────────────────────────────────────────
+
+
+def extract(paths: list[Path]) -> dict:
+    """Extract AST nodes and edges from a list of code files.
+
+    Two-pass process:
+    1. Per-file structural extraction (classes, functions, imports)
+    2. Cross-file import resolution: turns file-level imports into
+       class-level INFERRED edges (DigestAuth --uses--> Response)
+    """
+    per_file: list[dict] = []
+
+    # Infer a common root for cache keys
+    try:
+        if not paths:
+            root = Path(".")
+        elif len(paths) == 1:
+            root = paths[0].parent
+        else:
+            common_len = sum(
+                1
+                for i in range(min(len(p.parts) for p in paths))
+                if len({p.parts[i] for p in paths}) == 1
+            )
+            root = Path(*paths[0].parts[:common_len]) if common_len else Path(".")
+    except Exception:
+        root = Path(".")
+
+    _DISPATCH: dict[str, Any] = {
+        ".py": extract_python,
+        ".js": extract_js,
+        ".ts": extract_js,
+        ".tsx": extract_js,
+        ".go": extract_go,
+        ".rs": extract_rust,
+        ".java": extract_java,
+        ".c": extract_c,
+        ".h": extract_c,
+        ".cpp": extract_cpp,
+        ".cc": extract_cpp,
+        ".cxx": extract_cpp,
+        ".hpp": extract_cpp,
+        ".rb": extract_ruby,
+        ".cs": extract_csharp,
+        ".kt": extract_kotlin,
+        ".kts": extract_kotlin,
+        ".scala": extract_scala,
+        ".php": extract_php,
+    }
+
+    for path in paths:
+        extractor = _DISPATCH.get(path.suffix)
+        if extractor is None:
+            continue
+        cached = load_cached(path, root)
+        if cached is not None:
+            per_file.append(cached)
+            continue
+        result = extractor(path)
+        if "error" not in result:
+            save_cached(path, result, root)
+        per_file.append(result)
+
+    all_nodes: list[dict] = []
+    all_edges: list[dict] = []
+    for result in per_file:
+        all_nodes.extend(result.get("nodes", []))
+        all_edges.extend(result.get("edges", []))
+
+    # Add cross-file class-level edges (Python only - uses Python parser internally)
+    py_paths = [p for p in paths if p.suffix == ".py"]
+    py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
+    cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
+    all_edges.extend(cross_file_edges)
+
+    return {
+        "nodes": all_nodes,
+        "edges": all_edges,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+
+def collect_files(target: Path) -> list[Path]:
+    if target.is_file():
+        return [target]
+    _EXTENSIONS = (
+        "*.py",
+        "*.js",
+        "*.ts",
+        "*.tsx",
+        "*.go",
+        "*.rs",
+        "*.java",
+        "*.c",
+        "*.h",
+        "*.cpp",
+        "*.cc",
+        "*.cxx",
+        "*.hpp",
+        "*.rb",
+        "*.cs",
+        "*.kt",
+        "*.kts",
+        "*.scala",
+        "*.php",
+    )
+    results: list[Path] = []
+    for pattern in _EXTENSIONS:
+        results.extend(
+            p
+            for p in target.rglob(pattern)
+            if not any(part.startswith(".") for part in p.parts)
+        )
+    return sorted(results)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python -m graphify.extract <file_or_dir> ...", file = sys.stderr)
+        sys.exit(1)
+
+    paths: list[Path] = []
+    for arg in sys.argv[1:]:
+        paths.extend(collect_files(Path(arg)))
+
+    result = extract(paths)
+    print(json.dumps(result, indent = 2))

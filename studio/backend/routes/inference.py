@@ -6,9 +6,11 @@ Inference API routes for model loading and text generation.
 """
 
 import os
+import shutil
 import sys
 import time
 import uuid
+import inspect
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
@@ -105,6 +107,29 @@ def _friendly_error(exc: Exception) -> str:
     return "An internal error occurred"
 
 
+_HISTORY_INTENT_PHRASES = (
+    "conversation history",
+    "chat history",
+    "earlier conversation",
+    "previous conversation",
+    "previous message",
+    "earlier message",
+    "last message",
+    "what did i say",
+    "what did we discuss",
+    "from our chat",
+    "in this chat",
+    "in our conversation",
+    "remember what i said",
+    "remind me what i said",
+)
+
+
+def _looks_like_history_intent(query: str) -> bool:
+    query_lower = query.lower()
+    return any(phrase in query_lower for phrase in _HISTORY_INTENT_PHRASES)
+
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -156,6 +181,33 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    RagContextDebugRequest,
+    RagContextDebugResponse,
+    RagContextSnippet,
+    WikiArchiveRequest,
+    WikiArchiveResponse,
+    WikiDeletePreviewRequest,
+    WikiDeleteApplyRequest,
+    WikiDeleteResponse,
+    WikiDataGraphResponse,
+    WikiDataGraphNode,
+    WikiDataGraphEdge,
+    WikiIngestRequest,
+    WikiIngestResponse,
+    WikiEnrichRequest,
+    WikiEnrichResponse,
+    WikiRetryFallbackRequest,
+    WikiRetryFallbackResponse,
+    WikiMergeMaintenanceRequest,
+    WikiMergeMaintenanceResponse,
+    WikiQueryRequest,
+    WikiQueryResponse,
+    WikiLintResponse,
+    WikiEnvConfigResponse,
+    WikiEnvSetRequest,
+    WikiEnvSetResponse,
+    WikiGraphifyExportRequest,
+    WikiGraphifyExportResponse,
     TextContentPart,
     ImageContentPart,
     ImageUrl,
@@ -193,6 +245,15 @@ import wave
 import base64
 import numpy as np
 from datetime import date as _date
+import datetime as _datetime
+
+from core.wiki.manager import WikiManager
+from core.wiki.ingestor import WikiIngestor
+from core.wiki.runtime_env import (
+    collect_wiki_env_state,
+    update_wiki_env_values,
+    wiki_env_overrides_file,
+)
 
 router = APIRouter()
 # Studio-only router (not mounted on /v1 OpenAI-compat).
@@ -332,12 +393,1332 @@ _TOOL_XML_RE = _re.compile(
 logger = get_logger(__name__)
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_WIKI_VAULT_ROOT = Path(os.getenv("UNSLOTH_WIKI_VAULT", "/tmp/unsloth_wiki"))
+_ROUTE_WIKI_MANAGER: Optional[WikiManager] = None
+_ROUTE_WIKI_INGESTOR: Optional[WikiIngestor] = None
+_RAG_MAX_PAGES = _env_int("UNSLOTH_WIKI_RAG_MAX_PAGES", 8)
+_RAG_MAX_CHARS_PER_PAGE = _env_int("UNSLOTH_WIKI_RAG_MAX_CHARS_PER_PAGE", 1800)
+_RAG_MAX_TOTAL_CHARS = _env_int("UNSLOTH_WIKI_RAG_MAX_TOTAL_CHARS", 12000)
+_RAG_INCLUDE_SOURCE_PAGES = os.getenv(
+    "UNSLOTH_WIKI_RAG_INCLUDE_SOURCE_PAGES", "true"
+).strip().lower() not in {"0", "false", "no", "off"}
+_RAG_LOG_INJECTED_CONTEXT = os.getenv(
+    "UNSLOTH_WIKI_LOG_INJECTED_CONTEXT", "true"
+).strip().lower() not in {"0", "false", "no", "off"}
+try:
+    _RAG_LOG_INJECTED_CONTEXT_MAX_CHARS = max(
+        0,
+        int(os.getenv("UNSLOTH_WIKI_LOG_INJECTED_CONTEXT_MAX_CHARS", "12000")),
+    )
+except ValueError:
+    _RAG_LOG_INJECTED_CONTEXT_MAX_CHARS = 12000
+_WIKI_LLM_MAX_TOKENS = int(os.getenv("UNSLOTH_WIKI_LLM_MAX_TOKENS", "1200"))
+_WIKI_AUTO_LINT_EVERY_QUERY = int(os.getenv("UNSLOTH_WIKI_AUTO_LINT_EVERY", "10"))
+try:
+    _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES = max(
+        0,
+        int(os.getenv("UNSLOTH_WIKI_AUTO_RETRY_FALLBACK_ANALYSES_MAX_PAGES", "24")),
+    )
+except ValueError:
+    _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES = 24
+_WIKI_QUERY_RUN_COUNT = 0
+_LAST_RAG_DEBUG: dict[str, Any] = {}
+_CHAT_HISTORY_FLUSH_SECONDS = max(
+    0,
+    int(os.getenv("UNSLOTH_WIKI_CHAT_HISTORY_FLUSH_SECONDS", "600")),
+)
+_WIKI_WATCHER_ENABLED = os.getenv(
+    "UNSLOTH_WIKI_WATCHER", "true"
+).strip().lower() not in {"0", "false", "no", "off"}
+_CHAT_HISTORY_PENDING_BLOCKS: list[str] = []
+_CHAT_HISTORY_BUFFER_STARTED_AT: Optional[_datetime.datetime] = None
+_CHAT_HISTORY_LOCK = threading.Lock()
+_PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS = max(
+    0,
+    int(os.getenv("UNSLOTH_WIKI_PENDING_INGEST_INTERVAL_SECONDS", "45")),
+)
+_PENDING_RAW_INGEST_MAX_FILES_PER_CHAT = max(
+    0,
+    int(os.getenv("UNSLOTH_WIKI_PENDING_INGEST_MAX_FILES_PER_CHAT", "1")),
+)
+_LAST_PENDING_RAW_INGEST_AT: Optional[float] = None
+
+
+def _loggable_rag_context(context: str) -> str:
+    if _RAG_LOG_INJECTED_CONTEXT_MAX_CHARS <= 0:
+        return context
+    if len(context) <= _RAG_LOG_INJECTED_CONTEXT_MAX_CHARS:
+        return context
+    return (
+        context[:_RAG_LOG_INJECTED_CONTEXT_MAX_CHARS].rstrip()
+        + "\n...[truncated by UNSLOTH_WIKI_LOG_INJECTED_CONTEXT_MAX_CHARS]"
+    )
+
+
+def _restart_supported(request: Request) -> bool:
+    return callable(getattr(request.app.state, "trigger_restart", None))
+
+
+def _schedule_backend_restart(request: Request) -> bool:
+    trigger_restart = getattr(request.app.state, "trigger_restart", None)
+    if not callable(trigger_restart):
+        return False
+
+    async def _delayed_restart() -> None:
+        await asyncio.sleep(0.2)
+        try:
+            trigger_restart()
+        except Exception as exc:
+            logger.warning("Failed to trigger backend restart: %s", exc)
+
+    request.app.state._restart_task = asyncio.create_task(_delayed_restart())
+    return True
+
+
+def _wiki_llm_available() -> bool:
+    try:
+        if get_llama_cpp_backend().is_loaded:
+            return True
+    except Exception:
+        pass
+    try:
+        backend = get_inference_backend()
+        return bool(getattr(backend, "active_model_name", None))
+    except Exception:
+        return False
+
+
+def _supports_enable_wiki_rag_history_arg(generate_fn: Any) -> bool:
+    try:
+        signature = inspect.signature(generate_fn)
+    except (TypeError, ValueError):
+        return False
+
+    if "enable_wiki_rag_history" in signature.parameters:
+        return True
+
+    return any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+
+def _merge_streamed_text_chunks(chunks: Any) -> str:
+    """Merge streamed text chunks that may be either deltas or cumulative snapshots."""
+    out = ""
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            continue
+        if not chunk:
+            continue
+
+        # Some backends stream cumulative snapshots ("a", "ab", "abc").
+        # Others stream deltas ("a", "b", "c"). Handle both.
+        if chunk.startswith(out):
+            out = chunk
+        else:
+            out += chunk
+    return out
+
+
+def _route_wiki_llm_stub(prompt: str) -> str:
+    """Best-effort wiki LLM function using whichever model backend is active."""
+    wants_structured_json = (
+        "Return strict JSON with keys:" in prompt or "JSON repair assistant" in prompt
+    )
+
+    temp = 0.0 if wants_structured_json else 0.2
+    top_p = 1.0 if wants_structured_json else 0.9
+    top_k = 1 if wants_structured_json else 20
+    min_p = 0.0
+
+    try:
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded:
+            chunks = llama_backend.generate_chat_completion(
+                messages = [{"role": "user", "content": prompt}],
+                temperature = temp,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_tokens = _WIKI_LLM_MAX_TOKENS,
+                repetition_penalty = 1.0,
+                presence_penalty = 0.0,
+                enable_thinking = False,
+            )
+            final = _merge_streamed_text_chunks(chunks)
+            if final.strip():
+                return final.strip()
+    except Exception as exc:
+        logger.warning(f"GGUF wiki LLM call failed, falling back: {exc}")
+
+    try:
+        backend = get_inference_backend()
+        if backend.active_model_name:
+            generate_kwargs = {
+                "messages": [{"role": "user", "content": prompt}],
+                "system_prompt": "",
+                "temperature": temp,
+                "top_p": top_p,
+                "top_k": (top_k if wants_structured_json else 40),
+                "min_p": min_p,
+                "max_new_tokens": _WIKI_LLM_MAX_TOKENS,
+                "repetition_penalty": 1.0,
+                "cancel_event": None,
+            }
+            if _supports_enable_wiki_rag_history_arg(backend.generate_chat_response):
+                generate_kwargs["enable_wiki_rag_history"] = True
+
+            out = _merge_streamed_text_chunks(
+                backend.generate_chat_response(**generate_kwargs)
+            )
+            if out.strip():
+                return out.strip()
+    except Exception as exc:
+        logger.warning(f"Transformer wiki LLM call failed, falling back: {exc}")
+
+    # Final fallback keeps ingestion resilient when no model is loaded.
+    return prompt
+
+
+def _get_route_wiki_components() -> tuple[WikiManager, WikiIngestor]:
+    global _ROUTE_WIKI_MANAGER, _ROUTE_WIKI_INGESTOR
+    if _ROUTE_WIKI_MANAGER is None or _ROUTE_WIKI_INGESTOR is None:
+        _ROUTE_WIKI_MANAGER = WikiManager.create(_WIKI_VAULT_ROOT, _route_wiki_llm_stub)
+        _ROUTE_WIKI_INGESTOR = WikiIngestor(
+            _ROUTE_WIKI_MANAGER, _WIKI_VAULT_ROOT / "raw"
+        )
+    return _ROUTE_WIKI_MANAGER, _ROUTE_WIKI_INGESTOR
+
+
+def _ingest_pending_raw_files(
+    max_files: int = 8,
+    respect_interval_gate: bool = True,
+) -> list[dict[str, Any]]:
+    global _LAST_PENDING_RAW_INGEST_AT
+    if (
+        respect_interval_gate
+        and _PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS > 0
+        and _LAST_PENDING_RAW_INGEST_AT
+    ):
+        elapsed = time.time() - _LAST_PENDING_RAW_INGEST_AT
+        if elapsed < _PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS:
+            logger.debug(
+                "Skipping pending raw ingest due to interval gate (elapsed=%.2fs, min=%ss)",
+                elapsed,
+                _PENDING_RAW_INGEST_MIN_INTERVAL_SECONDS,
+            )
+            return []
+
+    _, ingestor = _get_route_wiki_components()
+    results = ingestor.ingest_pending_raw_files(
+        max_files = max_files,
+        contributor = "Unsloth Studio",
+    )
+    _LAST_PENDING_RAW_INGEST_AT = time.time()
+    return results
+
+
+def _extract_source_ref(source_page: Path) -> Optional[str]:
+    text = source_page.read_text(encoding = "utf-8", errors = "ignore")
+    match = _re.search(r"(?mi)^source_ref:\s*(.+?)\s*$", text)
+    if not match:
+        return None
+    source_ref = match.group(1).strip()
+    return source_ref or None
+
+
+def _source_identity_key(
+    source_page: Path,
+    source_ref: Optional[str],
+    raw_dir: Path,
+) -> str:
+    """Build a stable source identity key for stale-page grouping.
+
+    Prefer full source_ref identity (including path/url), falling back to
+    source page stem only when source_ref is missing.
+    """
+    if not source_ref:
+        return source_page.stem
+
+    normalized_ref = source_ref.strip().replace("\\", "/")
+    if not normalized_ref:
+        return source_page.stem
+
+    try:
+        raw_root = raw_dir.resolve()
+        ref_path = Path(source_ref).expanduser()
+        if ref_path.exists():
+            resolved_ref = ref_path.resolve()
+            if resolved_ref == raw_root or raw_root in resolved_ref.parents:
+                return str(resolved_ref.relative_to(raw_root)).replace("\\", "/")
+            return str(resolved_ref).replace("\\", "/")
+    except Exception:
+        pass
+
+    return normalized_ref
+
+
+def _archive_stale_wiki_pages(
+    *,
+    dry_run: bool,
+    keep_recent_chat: int,
+    keep_recent_per_source: int,
+    move_raw_files: bool = False,
+) -> dict[str, Any]:
+    sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
+    archive_sources_dir = _WIKI_VAULT_ROOT / "wiki" / ".archive" / "sources"
+    raw_dir = _WIKI_VAULT_ROOT / "raw"
+    archive_raw_dir = raw_dir / ".archive"
+
+    report: dict[str, Any] = {
+        "dry_run": dry_run,
+        "archive_dir": str(archive_sources_dir),
+        "moved_count": 0,
+        "moved_sources": [],
+        "moved_raw": [],
+        "errors": [],
+    }
+
+    if not sources_dir.exists():
+        return report
+
+    source_pages = sorted(
+        [p for p in sources_dir.glob("*.md") if p.is_file()],
+        key = lambda p: p.stat().st_mtime,
+        reverse = True,
+    )
+    to_archive: dict[Path, Optional[str]] = {}
+
+    chat_pages = [p for p in source_pages if p.name.lower().startswith("chat-history-")]
+    for p in chat_pages[keep_recent_chat:]:
+        to_archive[p] = _extract_source_ref(p)
+
+    grouped: dict[str, list[tuple[Path, Optional[str]]]] = {}
+    non_chat_pages = [p for p in source_pages if p not in to_archive]
+    for p in non_chat_pages:
+        source_ref = _extract_source_ref(p)
+        source_key = _source_identity_key(p, source_ref, raw_dir)
+        grouped.setdefault(source_key, []).append((p, source_ref))
+
+    for entries in grouped.values():
+        entries.sort(key = lambda x: x[0].stat().st_mtime, reverse = True)
+        for stale_page, source_ref in entries[keep_recent_per_source:]:
+            to_archive[stale_page] = source_ref
+
+    for stale_page, source_ref in sorted(
+        to_archive.items(), key = lambda x: x[0].stat().st_mtime
+    ):
+        try:
+            target_name = stale_page.name
+            target = archive_sources_dir / target_name
+            if target.exists():
+                stamp = int(stale_page.stat().st_mtime)
+                target = (
+                    archive_sources_dir
+                    / f"{stale_page.stem}--{stamp}{stale_page.suffix}"
+                )
+
+            if not dry_run:
+                archive_sources_dir.mkdir(parents = True, exist_ok = True)
+                shutil.move(str(stale_page), str(target))
+
+            report["moved_sources"].append(str(target))
+
+            if move_raw_files and source_ref:
+                raw_path = Path(source_ref)
+                if raw_path.exists() and raw_dir in raw_path.parents:
+                    raw_target = archive_raw_dir / raw_path.name
+                    if raw_target.exists():
+                        stamp = int(raw_path.stat().st_mtime)
+                        raw_target = (
+                            archive_raw_dir
+                            / f"{raw_path.stem}--{stamp}{raw_path.suffix}"
+                        )
+                    if not dry_run:
+                        archive_raw_dir.mkdir(parents = True, exist_ok = True)
+                        shutil.move(str(raw_path), str(raw_target))
+                    report["moved_raw"].append(str(raw_target))
+        except Exception as exc:
+            report["errors"].append(f"{stale_page}: {exc}")
+
+    report["moved_count"] = len(report["moved_sources"])
+    return report
+
+
+def _to_rag_debug_response(payload: dict[str, Any]) -> RagContextDebugResponse:
+    source = str(payload.get("source", "live-query"))
+    if source not in {"live-query", "last-request"}:
+        source = "live-query"
+
+    selected = [
+        RagContextSnippet(
+            page = str(item.get("page", "unknown")),
+            score = float(item.get("score", 0.0)),
+            snippet = str(item.get("snippet", "")),
+        )
+        for item in payload.get("selected", [])
+    ]
+
+    applied_limits = payload.get("applied_limits", {})
+    if not isinstance(applied_limits, dict):
+        applied_limits = {}
+
+    return RagContextDebugResponse(
+        query = str(payload.get("query", "")),
+        source = source,
+        wants_history = bool(payload.get("wants_history", False)),
+        context = str(payload.get("context", "")),
+        context_characters = int(payload.get("context_characters", 0)),
+        pages_considered = int(payload.get("pages_considered", 0)),
+        selected = selected,
+        applied_limits = {
+            "max_pages": int(applied_limits.get("max_pages", _RAG_MAX_PAGES)),
+            "max_chars_per_page": int(
+                applied_limits.get("max_chars_per_page", _RAG_MAX_CHARS_PER_PAGE)
+            ),
+            "max_total_chars": int(
+                applied_limits.get("max_total_chars", _RAG_MAX_TOTAL_CHARS)
+            ),
+        },
+        generated_at = str(
+            payload.get(
+                "generated_at", _datetime.datetime.now().isoformat(timespec = "seconds")
+            )
+        ),
+    )
+
+
+def _get_route_rag_context(
+    query: str,
+    *,
+    return_debug: bool = False,
+    max_pages_override: Optional[int] = None,
+    max_chars_per_page_override: Optional[int] = None,
+    max_total_chars_override: Optional[int] = None,
+    debug_source: str = "live-query",
+) -> str | tuple[str, dict[str, Any]]:
+    manager, _ = _get_route_wiki_components()
+    query_lower = query.lower()
+    max_pages = max_pages_override or _RAG_MAX_PAGES
+    max_chars_per_page = max_chars_per_page_override or _RAG_MAX_CHARS_PER_PAGE
+    max_total_chars = max_total_chars_override or _RAG_MAX_TOTAL_CHARS
+
+    max_pages = max(1, min(max_pages, 32))
+    max_chars_per_page = max(200, min(max_chars_per_page, 12000))
+    max_total_chars = max(500, min(max_total_chars, 30000))
+
+    wants_history = _looks_like_history_intent(query)
+
+    result = manager.retrieve_context(
+        query,
+        max_pages = max(max_pages * 4, 12),
+        max_chars_per_page = max(max_chars_per_page * 6, 6000),
+        include_source_pages = _RAG_INCLUDE_SOURCE_PAGES,
+    )
+    ranking_mode = str(result.get("ranking_mode", "unknown") or "unknown")
+    blocks: list[dict] = result.get("context_blocks", [])
+    if not _RAG_INCLUDE_SOURCE_PAGES:
+        blocks = [
+            b
+            for b in blocks
+            if not str(b.get("page", "")).lower().startswith("sources/")
+        ]
+
+    query_terms = [
+        t
+        for t in _re.findall(r"[a-zA-Z0-9]{3,}", query_lower)
+        if t
+        not in {
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "how",
+            "from",
+            "into",
+            "about",
+            "tell",
+            "please",
+            "using",
+            "wiki",
+            "context",
+            "only",
+        }
+    ]
+
+    def _block_hit_score(block: dict) -> int:
+        page = str(block.get("page", "")).lower()
+        content = str(block.get("content", "")).lower()
+        sample = content[:4000]
+        if not query_terms:
+            return 0
+        score = 0
+        for term in query_terms:
+            score += page.count(term) * 3
+            score += sample.count(term)
+        return score
+
+    if wants_history:
+        chat_blocks = [
+            b for b in blocks if "chat-history" in str(b.get("page", "")).lower()
+        ]
+        non_chat = [
+            b for b in blocks if "chat-history" not in str(b.get("page", "")).lower()
+        ]
+        blocks = (chat_blocks + non_chat)[:max_pages]
+
+        sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
+        if _RAG_INCLUDE_SOURCE_PAGES and sources_dir.exists():
+            history_files = sorted(
+                [p for p in sources_dir.glob("chat-history-*.md")],
+                key = lambda p: p.stat().st_mtime,
+                reverse = True,
+            )
+            hint_terms = [
+                t
+                for t in _re.findall(r"[A-Za-z]{2,}-[A-Za-z0-9]{2,}", query)
+                if len(t) >= 5
+            ]
+
+            selected: list[dict] = []
+            for p in history_files:
+                text = p.read_text(encoding = "utf-8", errors = "ignore")
+                if hint_terms and not any(
+                    h.lower() in text.lower() for h in hint_terms
+                ):
+                    continue
+                selected.append(
+                    {
+                        "page": f"sources/{p.stem}.md",
+                        "score": 1.0,
+                        "content": text,
+                    }
+                )
+                if len(selected) >= max_pages:
+                    break
+
+            if not selected:
+                for p in history_files[:max_pages]:
+                    selected.append(
+                        {
+                            "page": f"sources/{p.stem}.md",
+                            "score": 1.0,
+                            "content": p.read_text(encoding = "utf-8", errors = "ignore"),
+                        }
+                    )
+
+            if selected:
+                blocks = selected
+    else:
+        rerank_enabled = bool(manager.engine.cfg.ranking_llm_rerank_enabled)
+        if rerank_enabled:
+            # Preserve planner-selected order when LLM reranking is enabled.
+            blocks = blocks[:max_pages]
+        else:
+            chat_blocks = [
+                b for b in blocks if "chat-history" in str(b.get("page", "")).lower()
+            ]
+            non_chat_blocks = [
+                b
+                for b in blocks
+                if "chat-history" not in str(b.get("page", "")).lower()
+            ]
+
+            best_non_chat_hit = max(
+                (_block_hit_score(b) for b in non_chat_blocks), default = 0
+            )
+            candidate_chat_hits = [b for b in chat_blocks if _block_hit_score(b) > 0]
+            candidate_chat_hits.sort(key = _block_hit_score, reverse = True)
+
+            # For non-history queries, still prefer non-chat pages by default, but if
+            # there is no lexical hit at all, keep matching chat-history pages instead
+            # of dropping them unconditionally.
+            blocks = list(non_chat_blocks)
+            if best_non_chat_hit <= 0 and candidate_chat_hits:
+                blocks = candidate_chat_hits + blocks
+
+            if "resume" in query_lower or ".pdf" in query_lower:
+                resume_blocks = [
+                    b for b in blocks if "resume" in str(b.get("page", "")).lower()
+                ]
+                other_blocks = [
+                    b for b in blocks if "resume" not in str(b.get("page", "")).lower()
+                ]
+                blocks = (resume_blocks + other_blocks)[:max_pages]
+            else:
+                blocks = blocks[:max_pages]
+
+    if not blocks and not wants_history and _RAG_INCLUDE_SOURCE_PAGES:
+        sources_dir = _WIKI_VAULT_ROOT / "wiki" / "sources"
+        if sources_dir.exists() and (
+            "resume" in query_lower
+            or ".pdf" in query_lower
+            or "document" in query_lower
+        ):
+            source_candidates = sorted(
+                [
+                    p
+                    for p in sources_dir.glob("*.md")
+                    if "chat-history" not in p.name.lower()
+                ],
+                key = lambda p: p.stat().st_mtime,
+                reverse = True,
+            )
+            resume_first = [p for p in source_candidates if "resume" in p.name.lower()]
+            ordered = resume_first + [
+                p for p in source_candidates if p not in resume_first
+            ]
+            for p in ordered[:max_pages]:
+                blocks.append(
+                    {
+                        "page": f"sources/{p.stem}.md",
+                        "score": 1.0,
+                        "content": p.read_text(encoding = "utf-8", errors = "ignore"),
+                    }
+                )
+
+    if not _RAG_INCLUDE_SOURCE_PAGES:
+        blocks = [
+            b
+            for b in blocks
+            if not str(b.get("page", "")).lower().startswith("sources/")
+        ]
+
+    def _select_snippet(page: str, content: str) -> str:
+        content = str(content)
+        page_lower = str(page).lower()
+
+        # Analysis pages often start with prompt metadata. Prefer the
+        # answer payload so injected context spends tokens on substance.
+        if page_lower.startswith("analysis/"):
+            answer_match = _re.search(r"(?ms)^## Answer\n(.+?)(?=\n## |\Z)", content)
+            if answer_match:
+                answer_text = answer_match.group(1).strip()
+                if answer_text:
+                    content = answer_text
+
+        if len(content) <= max_chars_per_page:
+            return content
+
+        terms = [
+            t
+            for t in _re.findall(r"[a-zA-Z0-9]{4,}", query_lower)
+            if t
+            not in {"using", "wiki", "context", "only", "from", "what", "which", "that"}
+        ]
+        lowered = content.lower()
+        for term in terms:
+            idx = lowered.find(term)
+            if idx >= 0:
+                half = max_chars_per_page // 2
+                start = max(0, idx - half)
+                end = min(len(content), start + max_chars_per_page)
+                start = max(0, end - max_chars_per_page)
+                return content[start:end]
+
+        return content[:max_chars_per_page]
+
+    context_parts = []
+    for block in blocks:
+        page = block.get("page", "unknown")
+        score = float(block.get("score", 0.0))
+        content = _select_snippet(page, block.get("content", ""))
+        context_parts.append(
+            f"PAGE: {page}\n" f"SCORE: {score:.4f}\n" f"CONTENT:\n{content}"
+        )
+    context = "\n\n---\n\n".join(context_parts)
+    if len(context) > max_total_chars:
+        context = context[:max_total_chars].rstrip() + "\n..."
+
+    debug_payload: dict[str, Any] = {
+        "query": query,
+        "source": debug_source,
+        "wants_history": wants_history,
+        "ranking_mode": ranking_mode,
+        "context": context,
+        "context_characters": len(context),
+        "pages_considered": len(blocks),
+        "selected": [
+            {
+                "page": str(block.get("page", "unknown")),
+                "score": float(block.get("score", 0.0)),
+                "snippet": _select_snippet(
+                    str(block.get("page", "unknown")),
+                    block.get("content", ""),
+                ),
+            }
+            for block in blocks
+        ],
+        "applied_limits": {
+            "max_pages": max_pages,
+            "max_chars_per_page": max_chars_per_page,
+            "max_total_chars": max_total_chars,
+        },
+        "generated_at": _datetime.datetime.now().isoformat(timespec = "seconds"),
+    }
+
+    if return_debug:
+        return context, debug_payload
+    return context
+
+
+def _save_chat_history_to_route_wiki(messages: list[dict]) -> None:
+    if not messages:
+        return
+
+    timestamp = _datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"## Chat Snapshot - {timestamp}\n"]
+    for msg in messages:
+        role = str(msg.get("role", "unknown")).capitalize()
+        content = str(msg.get("content", "")).strip()
+        if content:
+            lines.append(f"### {role}\n{content}\n")
+    block = "\n".join(lines).strip()
+
+    global _CHAT_HISTORY_BUFFER_STARTED_AT
+    now = _datetime.datetime.now()
+    with _CHAT_HISTORY_LOCK:
+        _CHAT_HISTORY_PENDING_BLOCKS.append(block)
+        if _CHAT_HISTORY_BUFFER_STARTED_AT is None:
+            _CHAT_HISTORY_BUFFER_STARTED_AT = now
+
+        should_flush = _CHAT_HISTORY_FLUSH_SECONDS == 0
+        if (
+            _CHAT_HISTORY_BUFFER_STARTED_AT is not None
+            and not should_flush
+            and (now - _CHAT_HISTORY_BUFFER_STARTED_AT).total_seconds()
+            >= _CHAT_HISTORY_FLUSH_SECONDS
+        ):
+            should_flush = True
+
+        if not should_flush:
+            return
+
+        filename = (
+            f"chat_history_{_datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.md"
+        )
+        file_path = _WIKI_VAULT_ROOT / "raw" / filename
+        file_path.parent.mkdir(parents = True, exist_ok = True)
+        payload = "# Chat History Batch\n\n" + "\n\n---\n\n".join(
+            _CHAT_HISTORY_PENDING_BLOCKS
+        )
+
+        try:
+            file_path.write_text(payload, encoding = "utf-8")
+            if _WIKI_WATCHER_ENABLED:
+                logger.debug(
+                    "Chat history batch written to raw/ and left for watcher ingest: %s",
+                    file_path,
+                )
+            else:
+                _, ingestor = _get_route_wiki_components()
+                ingestor.ingest_file(file_path, contributor = "Unsloth Studio")
+            _CHAT_HISTORY_PENDING_BLOCKS.clear()
+            _CHAT_HISTORY_BUFFER_STARTED_AT = None
+        except Exception as exc:
+            logger.warning("Failed to flush buffered chat history: %s", exc)
+
+
 # GGUF inference backend (llama-server)
 _llama_cpp_backend = LlamaCppBackend()
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
+
+
+@router.post("/rag/debug/context", response_model = RagContextDebugResponse)
+async def debug_rag_context(
+    payload: RagContextDebugRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview the exact wiki context pages/snippets selected for a query."""
+    if payload.include_pending_raw:
+        _ingest_pending_raw_files(respect_interval_gate = False)
+
+    _, debug_payload = _get_route_rag_context(
+        payload.query,
+        return_debug = True,
+        max_pages_override = payload.max_pages,
+        max_chars_per_page_override = payload.max_chars_per_page,
+        max_total_chars_override = payload.max_total_chars,
+        debug_source = "live-query",
+    )
+    return _to_rag_debug_response(debug_payload)
+
+
+@router.get("/rag/debug/last", response_model = RagContextDebugResponse)
+async def debug_rag_last_request(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the most recent RAG context used by /chat/completions."""
+    if not _LAST_RAG_DEBUG:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail = "No RAG debug record available yet.",
+        )
+    return _to_rag_debug_response(_LAST_RAG_DEBUG)
+
+
+@router.post("/wiki/archive/stale", response_model = WikiArchiveResponse)
+async def archive_stale_wiki_sources(
+    payload: WikiArchiveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Archive older duplicate/wiki-history source pages to reduce noisy retrieval."""
+    report = _archive_stale_wiki_pages(
+        dry_run = payload.dry_run,
+        keep_recent_chat = payload.keep_recent_chat,
+        keep_recent_per_source = payload.keep_recent_per_source,
+        move_raw_files = payload.move_raw_files,
+    )
+
+    if report["moved_count"] and not payload.dry_run:
+        manager, _ = _get_route_wiki_components()
+        manager.engine._rebuild_index()
+
+    return WikiArchiveResponse(
+        dry_run = bool(report["dry_run"]),
+        archive_dir = str(report["archive_dir"]),
+        moved_count = int(report["moved_count"]),
+        moved_sources = [str(x) for x in report["moved_sources"]],
+        moved_raw = [str(x) for x in report["moved_raw"]],
+        errors = [str(x) for x in report["errors"]],
+    )
+
+
+def _to_wiki_delete_response(report: dict[str, Any]) -> WikiDeleteResponse:
+    return WikiDeleteResponse(
+        status = str(report.get("status", "ok")),
+        dry_run = bool(report.get("dry_run", True)),
+        hard_delete = bool(report.get("hard_delete", False)),
+        entry_type = str(report.get("entry_type", "")),
+        cascade_orphan_knowledge = bool(report.get("cascade_orphan_knowledge", True)),
+        requested_entries = [str(item) for item in report.get("requested_entries", [])],
+        resolved_entries = [str(item) for item in report.get("resolved_entries", [])],
+        missing_entries = [str(item) for item in report.get("missing_entries", [])],
+        invalid_entries = [str(item) for item in report.get("invalid_entries", [])],
+        planned_source_pages = [
+            str(item) for item in report.get("planned_source_pages", [])
+        ],
+        planned_analysis_pages = [
+            str(item) for item in report.get("planned_analysis_pages", [])
+        ],
+        planned_entity_pages = [
+            str(item) for item in report.get("planned_entity_pages", [])
+        ],
+        planned_concept_pages = [
+            str(item) for item in report.get("planned_concept_pages", [])
+        ],
+        planned_total_pages = int(report.get("planned_total_pages", 0)),
+        archived_pages = [str(item) for item in report.get("archived_pages", [])],
+        deleted_pages = [str(item) for item in report.get("deleted_pages", [])],
+        errors = [str(item) for item in report.get("errors", [])],
+    )
+
+
+def _to_wiki_data_graph_response(report: dict[str, Any]) -> WikiDataGraphResponse:
+    valid_kinds = {"source", "analysis", "entity", "concept"}
+
+    nodes: list[WikiDataGraphNode] = []
+    for item in report.get("nodes", []):
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind not in valid_kinds:
+            continue
+        nodes.append(
+            WikiDataGraphNode(
+                id = str(item.get("id", "")),
+                kind = kind,
+                label = str(item.get("label", "")),
+                inbound_links = int(item.get("inbound_links", 0)),
+                outbound_links = int(item.get("outbound_links", 0)),
+            )
+        )
+
+    edges: list[WikiDataGraphEdge] = []
+    for item in report.get("edges", []):
+        if not isinstance(item, dict):
+            continue
+        edges.append(
+            WikiDataGraphEdge(
+                id = str(item.get("id", "")),
+                source = str(item.get("source", "")),
+                target = str(item.get("target", "")),
+            )
+        )
+
+    return WikiDataGraphResponse(
+        status = str(report.get("status", "ok")),
+        nodes = nodes,
+        edges = edges,
+    )
+
+
+@router.get("/wiki/data/graph", response_model = WikiDataGraphResponse)
+async def wiki_data_graph(
+    include_analysis: bool = True,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return wiki graph data (sources/entities/concepts and optional analysis)."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.get_wiki_data_graph(include_analysis = include_analysis)
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki data graph failed: {exc}",
+        )
+
+    return _to_wiki_data_graph_response(report)
+
+
+@router.post("/wiki/delete/preview", response_model = WikiDeleteResponse)
+async def wiki_delete_preview(
+    payload: WikiDeletePreviewRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview wiki entry deletion impact including orphan knowledge cascade."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.delete_wiki_entries(
+            entry_type = payload.entry_type,
+            entries = payload.entries,
+            dry_run = True,
+            cascade_orphan_knowledge = payload.cascade_orphan_knowledge,
+            hard_delete = False,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki delete preview failed: {exc}",
+        )
+
+    return _to_wiki_delete_response(report)
+
+
+@router.post("/wiki/delete/apply", response_model = WikiDeleteResponse)
+async def wiki_delete_apply(
+    payload: WikiDeleteApplyRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Apply wiki entry deletion with archive-first default and optional hard delete."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.delete_wiki_entries(
+            entry_type = payload.entry_type,
+            entries = payload.entries,
+            dry_run = False,
+            cascade_orphan_knowledge = payload.cascade_orphan_knowledge,
+            hard_delete = payload.hard_delete,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki delete apply failed: {exc}",
+        )
+
+    return _to_wiki_delete_response(report)
+
+
+@router.post("/wiki/ingest", response_model = WikiIngestResponse)
+async def wiki_ingest(
+    payload: WikiIngestRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Ingest a specific file or pending raw files into the maintained wiki."""
+    _, ingestor = _get_route_wiki_components()
+
+    if payload.source_path:
+        source_path = Path(payload.source_path).expanduser()
+        if not source_path.exists() or not source_path.is_file():
+            raise HTTPException(
+                status_code = status.HTTP_400_BAD_REQUEST,
+                detail = f"File not found: {source_path}",
+            )
+        result = ingestor.ingest_file(source_path, contributor = "Unsloth Studio")
+        if not result:
+            raise HTTPException(
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail = f"Failed to ingest file: {source_path}",
+            )
+        return WikiIngestResponse(
+            status = "ok",
+            processed_files = 1,
+            results = [{"source_path": str(source_path), "result": result}],
+        )
+
+    results = _ingest_pending_raw_files(
+        max_files = payload.max_pending_raw_files,
+        respect_interval_gate = False,
+    )
+    return WikiIngestResponse(
+        status = "ok",
+        processed_files = len(results),
+        results = results,
+    )
+
+
+@router.post("/wiki/enrich", response_model = WikiEnrichResponse)
+async def wiki_enrich(
+    payload: WikiEnrichRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Enrich wiki analysis pages by prepending an index-driven Enrichment section."""
+    manager, _ = _get_route_wiki_components()
+
+    run_fallback_retry_first = (
+        _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES > 0
+        if payload.run_fallback_retry_first is None
+        else bool(payload.run_fallback_retry_first)
+    )
+
+    # Keep manual enrichment behavior aligned with scheduled maintenance by
+    # optionally retrying fallback pages first.
+    if run_fallback_retry_first:
+        try:
+            retry_report = manager.retry_fallback_analysis_pages(
+                dry_run = payload.dry_run,
+                max_analysis_pages = payload.max_analysis_pages,
+            )
+            logger.info(
+                "Fallback-retry before /wiki/enrich: scanned=%d fallback_found=%d regenerated=%d still_fallback=%d",
+                int(retry_report.get("scanned_pages", 0)),
+                int(retry_report.get("fallback_pages_found", 0)),
+                int(retry_report.get("regenerated_pages", 0)),
+                int(retry_report.get("fallback_still", 0)),
+            )
+        except Exception as exc:
+            logger.warning("Fallback-retry before /wiki/enrich failed: %s", exc)
+
+    try:
+        report = manager.enrich_analysis_pages(
+            dry_run = payload.dry_run,
+            max_analysis_pages = payload.max_analysis_pages,
+            fill_gaps_from_web = payload.fill_gaps_from_web,
+            max_web_gap_queries = payload.max_web_gap_queries,
+            refresh_non_fallback_oldest_pages = payload.refresh_non_fallback_oldest_pages,
+            repair_answer_links = payload.repair_answer_links,
+            compact_knowledge_pages = payload.compact_knowledge_pages,
+            max_incremental_updates = payload.max_incremental_updates,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki enrichment failed: {exc}",
+        )
+
+    return WikiEnrichResponse(
+        status = str(report.get("status", "ok")),
+        dry_run = bool(report.get("dry_run", payload.dry_run)),
+        scanned_pages = int(report.get("scanned_pages", 0)),
+        updated_pages = int(report.get("updated_pages", 0)),
+        changes = [dict(item) for item in report.get("changes", [])],
+        web_gap_fill = dict(report.get("web_gap_fill", {})),
+        non_fallback_refresh = dict(report.get("non_fallback_refresh", {})),
+        analysis_link_repair = dict(report.get("analysis_link_repair", {})),
+        knowledge_compaction = dict(report.get("knowledge_compaction", {})),
+    )
+
+
+@router.post("/wiki/retry-fallback", response_model = WikiRetryFallbackResponse)
+async def wiki_retry_fallback(
+    payload: WikiRetryFallbackRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Retry analysis pages that were previously generated via extractive fallback."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.retry_fallback_analysis_pages(
+            dry_run = payload.dry_run,
+            max_analysis_pages = payload.max_analysis_pages,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki fallback retry failed: {exc}",
+        )
+
+    return WikiRetryFallbackResponse(
+        status = str(report.get("status", "ok")),
+        dry_run = bool(report.get("dry_run", payload.dry_run)),
+        scanned_pages = int(report.get("scanned_pages", 0)),
+        fallback_pages_found = int(report.get("fallback_pages_found", 0)),
+        retried_pages = int(report.get("retried_pages", 0)),
+        regenerated_pages = int(report.get("regenerated_pages", 0)),
+        fallback_still = int(report.get("fallback_still", 0)),
+        skipped_no_question = int(report.get("skipped_no_question", 0)),
+        errors = [str(item) for item in report.get("errors", [])],
+        results = [dict(item) for item in report.get("results", [])],
+    )
+
+
+@router.post(
+    "/wiki/merge-maintenance",
+    response_model = WikiMergeMaintenanceResponse,
+)
+async def wiki_merge_maintenance(
+    payload: WikiMergeMaintenanceRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Merge duplicate entity/concept pages and rewrite links to canonical pages."""
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        report = manager.merge_duplicate_knowledge_pages(
+            dry_run = payload.dry_run,
+            include_entities = payload.include_entities,
+            include_concepts = payload.include_concepts,
+            similarity_threshold = payload.similarity_threshold,
+            max_merges = payload.max_merges,
+            semantic_concept_merge = payload.semantic_concept_merge,
+            semantic_merge_writeback = payload.semantic_merge_writeback,
+            compact_knowledge_pages = payload.compact_knowledge_pages,
+            max_incremental_updates = payload.max_incremental_updates,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki merge maintenance failed: {exc}",
+        )
+
+    return WikiMergeMaintenanceResponse(
+        status = str(report.get("status", "ok")),
+        dry_run = bool(report.get("dry_run", payload.dry_run)),
+        entity_candidates = int(report.get("entity_candidates", 0)),
+        concept_candidates = int(report.get("concept_candidates", 0)),
+        semantic_concept_merge_enabled = bool(
+            report.get("semantic_concept_merge_enabled", payload.semantic_concept_merge)
+        ),
+        semantic_merge_writeback_enabled = bool(
+            report.get(
+                "semantic_merge_writeback_enabled", payload.semantic_merge_writeback
+            )
+        ),
+        semantic_concept_candidates = int(report.get("semantic_concept_candidates", 0)),
+        scanned_candidates = int(report.get("scanned_candidates", 0)),
+        planned_merges = int(report.get("planned_merges", 0)),
+        applied_merges = int(report.get("applied_merges", 0)),
+        rewritten_pages = int(report.get("rewritten_pages", 0)),
+        rewritten_links = int(report.get("rewritten_links", 0)),
+        archived_pages = [str(item) for item in report.get("archived_pages", [])],
+        skipped = [dict(item) for item in report.get("skipped", [])],
+        merges = [dict(item) for item in report.get("merges", [])],
+        errors = [str(item) for item in report.get("errors", [])],
+        knowledge_compaction = dict(report.get("knowledge_compaction", {})),
+    )
+
+
+@router.post("/wiki/query", response_model = WikiQueryResponse)
+async def wiki_query(
+    payload: WikiQueryRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Query the maintained wiki and optionally file answers into wiki/analysis."""
+    if not _wiki_llm_available():
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "No active model loaded for wiki query synthesis. Load a model first.",
+        )
+
+    manager, _ = _get_route_wiki_components()
+
+    try:
+        result = manager.engine.query(payload.question, save_answer = payload.save_answer)
+    except Exception as exc:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f"Wiki query failed: {exc}",
+        )
+
+    global _WIKI_QUERY_RUN_COUNT
+    _WIKI_QUERY_RUN_COUNT += 1
+    if (
+        _WIKI_AUTO_LINT_EVERY_QUERY > 0
+        and _WIKI_QUERY_RUN_COUNT % _WIKI_AUTO_LINT_EVERY_QUERY == 0
+    ):
+        try:
+            lint_report = manager.engine.lint()
+            logger.info(
+                "Auto lint after wiki query #%d: orphans=%d stale=%d broken=%d",
+                _WIKI_QUERY_RUN_COUNT,
+                len(lint_report.get("orphans", [])),
+                len(lint_report.get("stale_pages", [])),
+                len(lint_report.get("broken_links", [])),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auto lint after query #%d failed: %s", _WIKI_QUERY_RUN_COUNT, exc
+            )
+
+        if _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES > 0:
+            try:
+                retry_report = manager.retry_fallback_analysis_pages(
+                    dry_run = False,
+                    max_analysis_pages = _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES,
+                )
+                logger.info(
+                    "Auto fallback-retry after wiki query #%d: scanned=%d fallback_found=%d regenerated=%d still_fallback=%d",
+                    _WIKI_QUERY_RUN_COUNT,
+                    int(retry_report.get("scanned_pages", 0)),
+                    int(retry_report.get("fallback_pages_found", 0)),
+                    int(retry_report.get("regenerated_pages", 0)),
+                    int(retry_report.get("fallback_still", 0)),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Auto fallback-retry after query #%d failed: %s",
+                    _WIKI_QUERY_RUN_COUNT,
+                    exc,
+                )
+
+        try:
+            enrich_report = manager.enrich_analysis_pages(dry_run = False)
+            logger.info(
+                "Auto enrichment after wiki query #%d: scanned=%d updated=%d",
+                _WIKI_QUERY_RUN_COUNT,
+                int(enrich_report.get("scanned_pages", 0)),
+                int(enrich_report.get("updated_pages", 0)),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auto enrichment after query #%d failed: %s", _WIKI_QUERY_RUN_COUNT, exc
+            )
+
+    return WikiQueryResponse(
+        status = str(result.get("status", "ok")),
+        answer = str(result.get("answer", "")),
+        answer_page = result.get("answer_page"),
+        context_pages = [str(p) for p in result.get("context_pages", [])],
+    )
+
+
+@router.get("/wiki/lint", response_model = WikiLintResponse)
+async def wiki_lint(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Run a wiki health-check report (orphans, stale pages, links, gaps)."""
+    manager, _ = _get_route_wiki_components()
+
+    # Keep manual lint behavior aligned with scheduled maintenance.
+    if _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES > 0:
+        try:
+            retry_report = manager.retry_fallback_analysis_pages(
+                dry_run = False,
+                max_analysis_pages = _WIKI_AUTO_RETRY_FALLBACK_MAX_PAGES,
+            )
+            logger.info(
+                "Fallback-retry before /wiki/lint: scanned=%d fallback_found=%d regenerated=%d still_fallback=%d",
+                int(retry_report.get("scanned_pages", 0)),
+                int(retry_report.get("fallback_pages_found", 0)),
+                int(retry_report.get("regenerated_pages", 0)),
+                int(retry_report.get("fallback_still", 0)),
+            )
+        except Exception as exc:
+            logger.warning("Fallback-retry before /wiki/lint failed: %s", exc)
+
+    report = manager.engine.lint()
+
+    return WikiLintResponse(
+        status = str(report.get("status", "ok")),
+        orphans = [str(x) for x in report.get("orphans", [])],
+        stale_pages = [dict(x) for x in report.get("stale_pages", [])],
+        broken_links = [dict(x) for x in report.get("broken_links", [])],
+        missing_concepts = [str(x) for x in report.get("missing_concepts", [])],
+        low_coverage_sources = [str(x) for x in report.get("low_coverage_sources", [])],
+        entity_merge_candidates = [
+            dict(x) for x in report.get("entity_merge_candidates", [])
+        ],
+        concept_merge_candidates = [
+            dict(x) for x in report.get("concept_merge_candidates", [])
+        ],
+        total_pages = int(report.get("total_pages", 0)),
+        graphify_insights = dict(report.get("graphify_insights", {})),
+    )
+
+
+@router.get("/wiki/env", response_model = WikiEnvConfigResponse)
+async def wiki_env_config(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return editable wiki runtime environment settings."""
+    return WikiEnvConfigResponse(
+        status = "ok",
+        variables = collect_wiki_env_state(),
+        overrides_file = str(wiki_env_overrides_file()),
+        restart_supported = _restart_supported(request),
+    )
+
+
+@router.post("/wiki/env", response_model = WikiEnvSetResponse)
+async def wiki_env_set(
+    payload: WikiEnvSetRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Apply wiki runtime environment edits and optionally restart the backend."""
+    result = update_wiki_env_values(payload.values)
+
+    changed = bool(result.get("updated") or result.get("cleared"))
+    restart_supported = _restart_supported(request)
+    restart_scheduled = False
+    if payload.restart_backend and changed:
+        restart_scheduled = _schedule_backend_restart(request)
+
+    status_value = "partial" if result.get("invalid") else "ok"
+    return WikiEnvSetResponse(
+        status = status_value,
+        updated = [str(item) for item in result.get("updated", [])],
+        cleared = [str(item) for item in result.get("cleared", [])],
+        invalid = dict(result.get("invalid", {})),
+        overrides_file = str(result.get("overrides_file", wiki_env_overrides_file())),
+        restart_supported = restart_supported,
+        restart_scheduled = restart_scheduled,
+    )
+
+
+@router.post(
+    "/wiki/export/graphify-wiki",
+    response_model = WikiGraphifyExportResponse,
+)
+async def wiki_export_graphify_wiki(
+    payload: WikiGraphifyExportRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Export the current maintained wiki into graphify-style markdown articles."""
+    manager, _ = _get_route_wiki_components()
+    report = manager.engine.export_graphify_wiki(output_subdir = payload.output_subdir)
+
+    return WikiGraphifyExportResponse(
+        status = str(report.get("status", "error")),
+        reason = report.get("reason"),
+        output_dir = report.get("output_dir"),
+        index_file = report.get("index_file"),
+        articles_written = int(report.get("articles_written", 0)),
+        communities = int(report.get("communities", 0)),
+        god_nodes = int(report.get("god_nodes", 0)),
+    )
 
 
 @router.post("/load", response_model = LoadResponse)
@@ -1273,6 +2654,30 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+def _looks_like_title_generation_request(
+    system_prompt: str,
+    chat_messages: list[dict],
+) -> bool:
+    prompt = str(system_prompt or "").strip().lower()
+    if not prompt:
+        return False
+
+    # Frontend auto-title requests use this explicit instruction template.
+    if "write 1 concise chat title for the user's message" not in prompt:
+        return False
+    if "output title only" not in prompt:
+        return False
+
+    # Keep detection strict so ordinary user requests that mention "title"
+    # still receive normal RAG behavior.
+    user_messages = [
+        msg
+        for msg in chat_messages
+        if str(msg.get("role", "")) == "user" and str(msg.get("content", "")).strip()
+    ]
+    return len(chat_messages) <= 2 and len(user_messages) == 1
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1555,6 +2960,78 @@ async def openai_chat_completions(
                 raise HTTPException(
                     status_code = 400, detail = f"Failed to process image: {e}"
                 )
+
+        # RAG context + chat history persistence for GGUF path.
+        is_title_generation_request = _looks_like_title_generation_request(
+            system_prompt,
+            chat_messages,
+        )
+        try:
+            if is_title_generation_request:
+                logger.debug(
+                    "Skipping GGUF RAG/wiki-history hooks for auto-title request"
+                )
+            else:
+                if _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT > 0:
+                    _ingest_pending_raw_files(
+                        max_files = _PENDING_RAW_INGEST_MAX_FILES_PER_CHAT,
+                    )
+                if chat_messages:
+                    last_user_msg = next(
+                        (m for m in reversed(chat_messages) if m.get("role") == "user"),
+                        None,
+                    )
+                    last_user_text = (
+                        str(last_user_msg.get("content", "")).strip()
+                        if last_user_msg
+                        else ""
+                    )
+                    if last_user_text:
+                        rag_context, rag_debug = _get_route_rag_context(
+                            last_user_text,
+                            return_debug = True,
+                            debug_source = "last-request",
+                        )
+                        global _LAST_RAG_DEBUG
+                        _LAST_RAG_DEBUG = rag_debug
+                        selected_pages = [
+                            str(item.get("page", "unknown"))
+                            for item in rag_debug.get("selected", [])
+                        ]
+                        ranking_mode = str(
+                            rag_debug.get("ranking_mode", "unknown") or "unknown"
+                        )
+                        logger.info(
+                            "RAG selection for GGUF request: rank_mode=%s pages=%d chars=%d selected=%s query=%r",
+                            ranking_mode,
+                            len(selected_pages),
+                            len(rag_context),
+                            selected_pages,
+                            last_user_text,
+                        )
+                        if rag_context:
+                            logger.info("Injecting RAG context into GGUF prompt")
+                            if _RAG_LOG_INJECTED_CONTEXT:
+                                logger.info(
+                                    "Injected RAG context:\n%s",
+                                    _loggable_rag_context(rag_context),
+                                )
+                            rag_block = (
+                                "Use the following context to help answer the user's request:\n\n"
+                                f"{rag_context}"
+                            )
+                            if system_prompt:
+                                system_prompt = (
+                                    system_prompt.rstrip() + "\n\n" + rag_block
+                                )
+                            else:
+                                system_prompt = rag_block
+                        else:
+                            logger.info("RAG produced empty context for GGUF request")
+
+                    _save_chat_history_to_route_wiki(chat_messages)
+        except Exception as e:
+            logger.warning(f"Failed to apply GGUF RAG/wiki history hooks: {e}")
 
         # Build message list with system prompt prepended
         gguf_messages = []

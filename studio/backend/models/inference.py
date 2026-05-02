@@ -7,11 +7,45 @@ Pydantic schemas for Inference API
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+
+
+def _env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+_WIKI_MERGE_MAINTENANCE_MAX_MERGES_DEFAULT = _env_int(
+    "UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES",
+    512,
+    minimum = 1,
+    maximum = 512,
+)
+_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES_DEFAULT = _env_int(
+    "UNSLOTH_WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES",
+    48,
+    minimum = 1,
+    maximum = 256,
+)
 
 
 class LoadRequest(BaseModel):
@@ -607,6 +641,486 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+
+
+class RagContextDebugRequest(BaseModel):
+    """Request payload for previewing wiki/RAG context selection."""
+
+    query: str = Field(..., min_length = 1, description = "User query to inspect")
+    include_pending_raw: bool = Field(
+        True,
+        description = "Ingest pending files from raw/ before retrieval",
+    )
+    max_pages: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 32,
+        description = "Optional override for max context pages",
+    )
+    max_chars_per_page: Optional[int] = Field(
+        None,
+        ge = 200,
+        le = 12000,
+        description = "Optional override for max chars per selected page",
+    )
+    max_total_chars: Optional[int] = Field(
+        None,
+        ge = 500,
+        le = 30000,
+        description = "Optional override for max total context characters",
+    )
+
+
+class RagContextSnippet(BaseModel):
+    """One selected page/snippet in a debug context response."""
+
+    page: str
+    score: float
+    snippet: str
+
+
+class RagContextDebugResponse(BaseModel):
+    """Debug details for selected wiki/RAG context."""
+
+    query: str
+    source: Literal["live-query", "last-request"]
+    wants_history: bool
+    context: str
+    context_characters: int
+    pages_considered: int
+    selected: list[RagContextSnippet]
+    applied_limits: Dict[str, int]
+    generated_at: str
+
+
+class WikiArchiveRequest(BaseModel):
+    """Archive stale wiki source pages while keeping recent canonical pages."""
+
+    dry_run: bool = Field(
+        False,
+        description = "If true, only report files that would be moved",
+    )
+    keep_recent_chat: int = Field(
+        16,
+        ge = 0,
+        le = 500,
+        description = "How many latest chat-history pages to keep",
+    )
+    keep_recent_per_source: int = Field(
+        1,
+        ge = 1,
+        le = 10,
+        description = "How many newest pages to keep per source_ref bucket",
+    )
+    move_raw_files: bool = Field(
+        False,
+        description = "If true, also move referenced raw files into raw/.archive. Disabled by default to keep raw immutable.",
+    )
+
+
+class WikiArchiveResponse(BaseModel):
+    """Result of a stale wiki source archival operation."""
+
+    dry_run: bool
+    archive_dir: str
+    moved_count: int
+    moved_sources: list[str]
+    moved_raw: list[str]
+    errors: list[str]
+
+
+class WikiDeletePreviewRequest(BaseModel):
+    """Request payload for previewing wiki entry deletion and cascades."""
+
+    entry_type: Literal["source", "analysis", "entity", "concept"] = Field(
+        ...,
+        description = "Entry type to delete (source, analysis, entity, or concept)",
+    )
+    entries: list[str] = Field(
+        ...,
+        min_length = 1,
+        max_length = 256,
+        description = "Wiki entries to delete (for example sources/foo, analysis/bar, entities/baz, concepts/qux)",
+    )
+    cascade_orphan_knowledge: bool = Field(
+        True,
+        description = "When true, remove entity/concept pages only if they become orphaned after the requested deletions",
+    )
+
+    @model_validator(mode = "before")
+    @classmethod
+    def _normalize_delete_payload(cls, raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+
+        payload = dict(raw)
+        entry_type = payload.get("entry_type")
+        if isinstance(entry_type, str):
+            payload["entry_type"] = entry_type.strip().lower()
+
+        # Accept a single-entry payload shape for backwards compatibility.
+        if "entries" not in payload and "entry" in payload:
+            payload["entries"] = payload.get("entry")
+
+        entries = payload.get("entries")
+        if isinstance(entries, str):
+            payload["entries"] = [entries]
+
+        return payload
+
+
+class WikiDeleteApplyRequest(WikiDeletePreviewRequest):
+    """Request payload for applying wiki entry deletion and cascades."""
+
+    hard_delete: bool = Field(
+        False,
+        description = "If true, permanently delete files instead of moving them into wiki/.archive",
+    )
+
+
+class WikiDeleteResponse(BaseModel):
+    """Result of previewing or applying wiki entry deletion."""
+
+    status: str
+    dry_run: bool
+    hard_delete: bool
+    entry_type: str
+    cascade_orphan_knowledge: bool
+    requested_entries: list[str]
+    resolved_entries: list[str]
+    missing_entries: list[str]
+    invalid_entries: list[str]
+    planned_source_pages: list[str]
+    planned_analysis_pages: list[str]
+    planned_entity_pages: list[str]
+    planned_concept_pages: list[str]
+    planned_total_pages: int
+    archived_pages: list[str]
+    deleted_pages: list[str]
+    errors: list[str]
+
+
+class WikiDataGraphNode(BaseModel):
+    """A wiki graph node used by the edit-data graph UI."""
+
+    id: str
+    kind: Literal["source", "analysis", "entity", "concept"]
+    label: str
+    inbound_links: int
+    outbound_links: int
+
+
+class WikiDataGraphEdge(BaseModel):
+    """A directed wiki graph edge between two wiki nodes."""
+
+    id: str
+    source: str
+    target: str
+
+
+class WikiDataGraphResponse(BaseModel):
+    """Wiki graph payload for visual editing and delete preview flows."""
+
+    status: str
+    nodes: list[WikiDataGraphNode]
+    edges: list[WikiDataGraphEdge]
+
+
+class WikiIngestRequest(BaseModel):
+    """Request payload for manual wiki ingestion operations."""
+
+    source_path: Optional[str] = Field(
+        None,
+        description = "Optional local file path to ingest",
+    )
+    max_pending_raw_files: int = Field(
+        8,
+        ge = 1,
+        le = 128,
+        description = "How many pending files to ingest from raw/ when source_path is not set",
+    )
+
+
+class WikiIngestResponse(BaseModel):
+    """Result of a manual wiki ingestion operation."""
+
+    status: str
+    processed_files: int
+    results: list[Dict[str, Any]]
+
+
+class WikiEnrichRequest(BaseModel):
+    """Request payload for index-driven enrichment of analysis pages."""
+
+    dry_run: bool = Field(
+        False,
+        description = "If true, report changes without writing files",
+    )
+    max_analysis_pages: int = Field(
+        64,
+        ge = 1,
+        le = 1000,
+        description = "Maximum number of analysis pages to scan",
+    )
+    run_fallback_retry_first: Optional[bool] = Field(
+        None,
+        description = "Optional override for running fallback retry before enrichment (null inherits env/runtime default)",
+    )
+    fill_gaps_from_web: Optional[bool] = Field(
+        None,
+        description = "Optional override for lint-driven web gap filling (null inherits env/runtime default)",
+    )
+    max_web_gap_queries: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 100,
+        description = "Optional override for max lint gaps searched during one enrich run (null inherits env/runtime default)",
+    )
+    refresh_non_fallback_oldest_pages: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 1000,
+        description = "Optional override for how many oldest non-fallback analysis pages to refresh before enrichment (0 disables)",
+    )
+    repair_answer_links: Optional[bool] = Field(
+        None,
+        description = "Optional override for repairing unresolved wiki links in analysis Answer sections (null inherits env/runtime default)",
+    )
+    compact_knowledge_pages: bool = Field(
+        False,
+        description = "If true, trim oversized Incremental Updates sections in entity/concept pages after enrichment",
+    )
+    max_incremental_updates: int = Field(
+        _WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES_DEFAULT,
+        ge = 1,
+        le = 256,
+        description = "Maximum Incremental Updates blocks retained per entity/concept page during compaction",
+    )
+
+
+class WikiEnrichResponse(BaseModel):
+    """Result of enriching wiki analysis pages."""
+
+    status: str
+    dry_run: bool
+    scanned_pages: int
+    updated_pages: int
+    changes: list[Dict[str, Any]]
+    web_gap_fill: Dict[str, Any]
+    non_fallback_refresh: Dict[str, Any]
+    analysis_link_repair: Dict[str, Any]
+    knowledge_compaction: Dict[str, Any]
+
+
+class WikiRetryFallbackRequest(BaseModel):
+    """Request payload for retrying fallback-generated analysis pages."""
+
+    dry_run: bool = Field(
+        False,
+        description = "If true, report retry outcomes without writing new analysis pages",
+    )
+    max_analysis_pages: int = Field(
+        24,
+        ge = 1,
+        le = 1000,
+        description = "Maximum number of recent analysis pages to inspect for fallback retries",
+    )
+
+
+class WikiRetryFallbackResponse(BaseModel):
+    """Result of retrying fallback-generated analysis pages."""
+
+    status: str
+    dry_run: bool
+    scanned_pages: int
+    fallback_pages_found: int
+    retried_pages: int
+    regenerated_pages: int
+    fallback_still: int
+    skipped_no_question: int
+    errors: list[str]
+    results: list[Dict[str, Any]]
+
+
+class WikiMergeMaintenanceRequest(BaseModel):
+    """Request payload for duplicate entity/concept merge maintenance."""
+
+    dry_run: bool = Field(
+        True,
+        description = "If true, report merge actions without writing files",
+    )
+    include_entities: bool = Field(
+        True,
+        description = "Whether entity page merge candidates are considered",
+    )
+    include_concepts: bool = Field(
+        True,
+        description = "Whether concept page merge candidates are considered",
+    )
+    similarity_threshold: float = Field(
+        0.75,
+        ge = 0.5,
+        le = 1.0,
+        description = "Minimum candidate similarity required for merge planning",
+    )
+    max_merges: int = Field(
+        _WIKI_MERGE_MAINTENANCE_MAX_MERGES_DEFAULT,
+        ge = 1,
+        le = 512,
+        description = "Maximum number of merges to plan/apply in a single run (default from UNSLOTH_WIKI_MERGE_MAINTENANCE_MAX_MERGES)",
+    )
+    semantic_concept_merge: bool = Field(
+        True,
+        description = "Use an LLM semantic pass to propose concept merges in addition to lexical title overlap",
+    )
+    semantic_merge_writeback: bool = Field(
+        True,
+        description = "Use an LLM semantic synthesis pass to update canonical concept Summary/Facts/Contradictions/Sources during merge",
+    )
+    compact_knowledge_pages: bool = Field(
+        False,
+        description = "If true, trim oversized Incremental Updates sections in entity/concept pages after merge maintenance",
+    )
+    max_incremental_updates: int = Field(
+        _WIKI_KNOWLEDGE_MAX_INCREMENTAL_UPDATES_DEFAULT,
+        ge = 1,
+        le = 256,
+        description = "Maximum Incremental Updates blocks retained per entity/concept page during compaction",
+    )
+
+
+class WikiMergeMaintenanceResponse(BaseModel):
+    """Result of duplicate entity/concept merge maintenance."""
+
+    status: str
+    dry_run: bool
+    entity_candidates: int
+    concept_candidates: int
+    semantic_concept_merge_enabled: bool
+    semantic_merge_writeback_enabled: bool
+    semantic_concept_candidates: int
+    scanned_candidates: int
+    planned_merges: int
+    applied_merges: int
+    rewritten_pages: int
+    rewritten_links: int
+    archived_pages: list[str]
+    skipped: list[Dict[str, Any]]
+    merges: list[Dict[str, Any]]
+    errors: list[str]
+    knowledge_compaction: Dict[str, Any]
+
+
+class WikiQueryRequest(BaseModel):
+    """Request payload for querying the maintained wiki."""
+
+    question: str = Field(..., min_length = 1)
+    save_answer: bool = Field(
+        True,
+        description = "Whether to file the answer into wiki/analysis",
+    )
+
+
+class WikiQueryResponse(BaseModel):
+    """Result of a wiki query operation."""
+
+    status: str
+    answer: str
+    answer_page: Optional[str]
+    context_pages: list[str]
+
+
+class WikiLintResponse(BaseModel):
+    """Health report for the maintained wiki."""
+
+    status: str
+    orphans: list[str]
+    stale_pages: list[Dict[str, Any]]
+    broken_links: list[Dict[str, str]]
+    missing_concepts: list[str]
+    low_coverage_sources: list[str]
+    entity_merge_candidates: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Suggested duplicate entity pages that can be merged during maintenance",
+    )
+    concept_merge_candidates: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Suggested duplicate concept pages that can be merged during maintenance",
+    )
+    total_pages: int
+    graphify_insights: Dict[str, Any]
+
+
+class WikiEnvVariable(BaseModel):
+    """One editable wiki environment variable in runtime config responses."""
+
+    name: str
+    kind: Literal["bool", "int", "float", "string"]
+    description: str
+    default_value: str
+    current_value: str
+    source: Literal["environment", "default"]
+    has_override: bool
+    override_value: Optional[str] = None
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+
+
+class WikiEnvConfigResponse(BaseModel):
+    """Runtime wiki environment metadata and current values."""
+
+    status: str
+    variables: list[WikiEnvVariable]
+    overrides_file: str
+    restart_supported: bool
+
+
+class WikiEnvSetRequest(BaseModel):
+    """Patch wiki environment values, optionally triggering restart."""
+
+    values: Dict[str, Optional[str]] = Field(
+        default_factory = dict,
+        description = "Map of wiki env variable names to values; null/empty clears a persisted override",
+    )
+    restart_backend: bool = Field(
+        True,
+        description = "If true, schedule backend restart after applying changes",
+    )
+
+
+class WikiEnvSetResponse(BaseModel):
+    """Result of applying wiki environment updates."""
+
+    status: str
+    updated: list[str]
+    cleared: list[str]
+    invalid: Dict[str, str]
+    overrides_file: str
+    restart_supported: bool
+    restart_scheduled: bool
+
+
+class WikiGraphifyExportRequest(BaseModel):
+    """Request payload for exporting graphify-style wiki articles."""
+
+    output_subdir: str = Field(
+        "graphify-wiki",
+        min_length = 1,
+        max_length = 120,
+        description = "Subdirectory under wiki/ where graphify markdown articles are written",
+    )
+
+
+class WikiGraphifyExportResponse(BaseModel):
+    """Result of a graphify wiki export operation."""
+
+    status: str
+    reason: Optional[str] = None
+    output_dir: Optional[str] = None
+    index_file: Optional[str] = None
+    articles_written: int = 0
+    communities: int = 0
+    god_nodes: int = 0
 
 
 # =====================================================================

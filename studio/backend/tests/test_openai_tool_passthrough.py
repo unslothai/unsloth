@@ -35,7 +35,11 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
-from routes.inference import _build_passthrough_payload, _friendly_error
+from routes.inference import (
+    _build_passthrough_payload,
+    _friendly_error,
+    _looks_like_history_intent,
+)
 
 
 # =====================================================================
@@ -423,6 +427,33 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
+
+
+# =====================================================================
+# _looks_like_history_intent — explicit phrase detection
+# =====================================================================
+
+
+class TestHistoryIntentDetection:
+    def test_explicit_chat_history_phrase_detected(self):
+        assert _looks_like_history_intent("Use chat history to answer this") is True
+
+    def test_previous_message_phrase_detected(self):
+        assert (
+            _looks_like_history_intent("What did I ask in the previous message?")
+            is True
+        )
+
+    def test_tokenization_query_not_treated_as_history(self):
+        query = "Explain tokenization and token limits for this model"
+        assert _looks_like_history_intent(query) is False
+
+    def test_api_token_query_not_treated_as_history(self):
+        query = "How should I rotate an API token safely?"
+        assert _looks_like_history_intent(query) is False
+
+    def test_remember_without_history_phrase_is_not_history(self):
+        assert _looks_like_history_intent("Remember to include caveats") is False
 
 
 # =====================================================================
