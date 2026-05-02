@@ -236,9 +236,9 @@ class TestArchSwaPatternDefaults:
             },
         )
         expected_pattern = [(i + 1) % expected_period != 0 for i in range(n_layers)]
-        assert b._sliding_window_pattern == expected_pattern, (
-            f"{arch} should expand to period={expected_period}"
-        )
+        assert (
+            b._sliding_window_pattern == expected_pattern
+        ), f"{arch} should expand to period={expected_period}"
 
     def test_unknown_arch_no_default(self):
         """Architectures not in the table fall through to the legacy
@@ -270,12 +270,22 @@ class TestArchSwaPatternDefaults:
                 "attention.sliding_window": 512,
                 # Per-layer override (would NOT match the period=6 default).
                 "attention.sliding_window_pattern": [
-                    True, False, True, False, True, False,
+                    True,
+                    False,
+                    True,
+                    False,
+                    True,
+                    False,
                 ],
             },
         )
         assert b._sliding_window_pattern == [
-            True, False, True, False, True, False,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False,
         ]
 
     def test_no_sliding_window_no_pattern(self):
