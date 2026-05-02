@@ -26,6 +26,7 @@ export interface TrainingStatusResponse {
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
+    output_dir?: string;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -93,6 +94,7 @@ export interface TrainingRuntimeState {
   etaSeconds: number | null;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
@@ -131,6 +133,7 @@ export interface TrainingViewData {
   currentGradNorm: number | null;
   currentEpoch: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;

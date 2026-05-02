@@ -13,7 +13,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
-import { deleteTrainingRun, listTrainingRuns } from "@/features/training";
+import {
+  deleteTrainingRun,
+  listTrainingRuns,
+  useTrainingActions,
+  useTrainingRuntimeStore,
+} from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
@@ -133,10 +138,12 @@ function formatRelativeTime(isoDate: string): string {
 
 interface HistoryCardGridProps {
   onSelectRun: (runId: string) => void;
+  onResumeStarted?: () => void;
 }
 
 export function HistoryCardGrid({
   onSelectRun,
+  onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -144,7 +151,10 @@ export function HistoryCardGrid({
   const [error, setError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
+  const { resumeTrainingRunFromHistory } = useTrainingActions();
+  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -233,6 +243,18 @@ export function HistoryCardGrid({
     setDeleteTarget(null);
   };
 
+  const handleResume = async (runId: string) => {
+    setResumeTarget(runId);
+    try {
+      const ok = await resumeTrainingRunFromHistory(runId);
+      if (ok) {
+        onResumeStarted?.();
+      }
+    } finally {
+      setResumeTarget(null);
+    }
+  };
+
   if (!loading && error && runs.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-16 text-center">
@@ -266,16 +288,19 @@ export function HistoryCardGrid({
         {runs.map((run) => {
           const badge = statusBadge[run.status] ?? statusBadge.error;
           const isRunning = run.status === "running";
+          const canResume = run.can_resume;
+          const isResuming = resumeTarget === run.id;
           return (
             <div
               role="button"
               tabIndex={0}
               key={run.id}
               className={cn(
-                "group relative flex cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
+                "group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
                 isRunning
                   ? "border-blue-400/50 dark:border-blue-500/30"
                   : "border-border/60",
+                canResume && "gap-2",
               )}
               onClick={() => onSelectRun(run.id)}
               onKeyDown={(e) => {
@@ -299,6 +324,21 @@ export function HistoryCardGrid({
                   {formatRelativeTime(run.started_at)}
                 </span>
               </div>
+              {canResume && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  disabled={isStarting || isResuming}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleResume(run.id);
+                  }}
+                >
+                  {isResuming ? "Resuming..." : "Resume training"}
+                </Button>
+              )}
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
@@ -311,7 +351,9 @@ export function HistoryCardGrid({
                 </p>
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                <Sparkline values={run.loss_sparkline} id={run.id} />
+                <div className={cn(canResume && "h-7 overflow-hidden")}>
+                  <Sparkline values={run.loss_sparkline} id={run.id} />
+                </div>
               )}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                 <span>
