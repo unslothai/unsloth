@@ -756,7 +756,11 @@ def run_training_process(
 
         # Generate output dir
         resume_from_checkpoint = config.get("resume_from_checkpoint")
-        output_dir = config.get("output_dir") or resume_from_checkpoint
+        output_dir = config.get("output_dir") or (
+            os.path.dirname(resume_from_checkpoint)
+            if resume_from_checkpoint
+            else None
+        )
         if not output_dir:
             output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
         output_dir = str(resolve_output_dir(output_dir))
@@ -1113,7 +1117,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     resume_from_checkpoint = config.get("resume_from_checkpoint")
-    output_dir = config.get("output_dir") or resume_from_checkpoint
+    output_dir = config.get("output_dir") or (
+        os.path.dirname(resume_from_checkpoint)
+        if resume_from_checkpoint
+        else None
+    )
     if not output_dir:
         output_dir = str(
             resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}")
