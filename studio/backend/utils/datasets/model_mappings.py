@@ -366,6 +366,8 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "Qwen/Qwen3-30B-A3B-Thinking-2507",
         "Qwen/Qwen3.6-35B-A3B",
         "unsloth/Qwen3.6-35B-A3B",
+        "Qwen/Qwen3.6-27B",
+        "unsloth/Qwen3.6-27B",
     ),
     "qwen3.5": (
         "unsloth/Qwen3.5-0.8B",
@@ -373,9 +375,7 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3.5-4B",
         "unsloth/Qwen3.5-9B",
         "unsloth/Qwen3.5-27B",
-        "unsloth/Qwen3.5-35B-A3B",
-        "Qwen/Qwen3.6-27B",
-        "unsloth/Qwen3.6-27B",
+        "unsloth/Qwen3.5-35B-A3B",   
     ),
     "zephyr": (
         "unsloth/zephyr-sft-bnb-4bit",
