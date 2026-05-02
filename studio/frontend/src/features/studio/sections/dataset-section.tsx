@@ -1053,9 +1053,9 @@ export function DatasetSection() {
               >
                 <HugeiconsIcon
                   icon={CloudUploadIcon}
-                  className="size-4 shrink-0 text-indigo-500"
+                  className="pointer-events-none size-4 shrink-0 text-indigo-500"
                 />
-                <span className="min-w-0">
+                <span className="pointer-events-none min-w-0">
                   <span className="block text-xs font-medium text-foreground">
                     Drop 1 file here or click to upload
                   </span>
