@@ -304,7 +304,9 @@ class TestArchSwaPatternDefaults:
         )
         assert b._sliding_window_pattern is None
 
-    @pytest.mark.parametrize("arch", ["llama", "qwen2", "qwen3", "mistral", "mistral3", "glm4", "llama4"])
+    @pytest.mark.parametrize(
+        "arch", ["llama", "qwen2", "qwen3", "mistral", "mistral3", "glm4", "llama4"]
+    )
     def test_non_swa_arch_uses_full_attention_path(self, arch):
         """Pure-GQA architectures must NOT receive a synthetic SWA
         pattern, even though several of them set `sliding_window` in
