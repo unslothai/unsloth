@@ -70,4 +70,3 @@ def can_resume_run(run: dict) -> bool:
         and has_remaining_steps
         and has_resume_state(run.get("output_dir"))
     )
-
