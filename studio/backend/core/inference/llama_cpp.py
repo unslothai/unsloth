@@ -80,30 +80,39 @@ _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
 # Most GGUF converters do not propagate `sliding_window_pattern`
 # (or `layer_types`) into GGUF metadata even when the source HF config
 # sets it. When a GGUF reports a sliding window but no per-layer
-# pattern, we resolve the pattern through a 4-tier lookup so newly
+# pattern, we resolve the pattern through a 5-tier lookup so newly
 # released models work without any code change here:
 #
-#   Tier 0: GGUF metadata directly (handled by the parser before this
-#           resolver runs -- both the BOOL array and the scalar period
-#           paths). If the converter ever starts emitting the pattern,
-#           we use it verbatim.
+#   Tier 0:   GGUF metadata directly (handled by the parser before this
+#             resolver runs -- both the BOOL array and the scalar
+#             period paths). If the converter ever starts emitting the
+#             pattern, we use it verbatim.
 #
-#   Tier 1: On-disk cache at $UNSLOTH_STUDIO_HOME/swa_cache.json.
-#           Populated from previous Tier 3 fetches. Survives restarts.
+#   Tier 1:   On-disk cache at $UNSLOTH_STUDIO_HOME/swa_cache.json.
+#             Populated by Tier 2.5 / Tier 3 results. Survives
+#             restarts.
 #
-#   Tier 2: Bootstrap defaults shipped with Studio
-#           (`_BOOTSTRAP_SWA_DEFAULTS`). Covers the popular SWA arches
-#           in the unsloth/* catalogue today and lets fully-offline
-#           installs work for them with zero network. Sourced from a
-#           survey of every unsloth/* model on HF (1334 repos).
+#   Tier 2:   Bootstrap defaults shipped with Studio
+#             (`_BOOTSTRAP_SWA_DEFAULTS`). Covers the popular SWA
+#             arches in the unsloth/* catalogue today and lets
+#             fully-offline installs work for them with zero network
+#             AND zero transformers introspection cost.
 #
-#   Tier 3: HF Hub config.json fetch. Pulls the source repo's
-#           `sliding_window_pattern` (int) or `text_config.layer_types`
-#           (string array) directly. Result is cached to Tier 1.
-#           Disabled by `UNSLOTH_STUDIO_OFFLINE=1` and gracefully
-#           swallows network errors (offline installs never break).
+#   Tier 2.5: Locally-installed `transformers` package introspection.
+#             Tries default-instantiating the matching `Config` class
+#             and reading `sliding_window_pattern` / `layer_types`;
+#             falls back to `inspect.getsource` regex on the class
+#             source when the constructor raises. Offline-friendly,
+#             covers any arch transformers already knows about.
 #
-#   Tier 4: Caller falls back to the legacy 1/4-global SWA estimate.
+#   Tier 3:   HF Hub `config.json` fetch. Pulls the source repo's
+#             `sliding_window_pattern` (int) or
+#             `text_config.layer_types` (string array) directly.
+#             Result is cached to Tier 1. Disabled by
+#             `UNSLOTH_STUDIO_OFFLINE=1` and gracefully swallows
+#             network errors so offline installs never break.
+#
+#   Tier 4:   Caller falls back to the legacy 1/4-global SWA estimate.
 #
 # Period semantics match `transformers` (and the metadata array path):
 # for period N, layer i is sliding-window iff (i + 1) % N != 0.
@@ -223,6 +232,101 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     return None
 
 
+def _arch_aliases(arch: str) -> tuple:
+    """Return likely transformers `model_type` strings for a GGUF arch.
+    GGUF and HF mostly agree but some converters use hyphens
+    (`falcon-h1`) where HF uses underscores (`falcon_h1`)."""
+    seen = []
+    for a in (arch, arch.replace("-", "_"), arch.replace("_", "-")):
+        if a and a not in seen:
+            seen.append(a)
+    return tuple(seen)
+
+
+def _swa_entry_from_config_obj(cfg) -> Optional[object]:
+    """Pull a sliding_window_pattern (int) or layer_types-derived value
+    off an instantiated transformers config object. Drills into
+    `text_config` for multimodal wrappers."""
+    src = getattr(cfg, "text_config", None) or cfg
+    period = getattr(src, "sliding_window_pattern", None)
+    if isinstance(period, int) and period > 0:
+        return period
+    lt = getattr(src, "layer_types", None)
+    if isinstance(lt, list) and lt:
+        p = _period_from_layer_types(lt)
+        if p is not None:
+            return p
+        return ["full" not in str(t).lower() for t in lt]
+    return None
+
+
+# Catches `sliding_window_pattern: int = 6` and `sliding_window_pattern=6`.
+_SWA_PATTERN_SOURCE_RE = re.compile(
+    r"sliding_window_pattern\s*(?::\s*[\w\[\], ]*)?\s*=\s*(\d+)"
+)
+
+
+def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
+    """Tier 2.5: ask the locally-installed transformers package.
+
+    Two strategies, in order:
+      a. Default-instantiate the config class and read attributes.
+      b. Regex-parse the class source via `inspect.getsource` (handles
+         configs whose default constructor raises or whose
+         `sliding_window_pattern` lives only in __init__ signature).
+
+    Both are local-only -- no network. Returns the same kind of entry
+    `_fetch_swa_entry_from_hf` does (int period, list[bool] mask, or
+    None) so it slots into the cache the same way."""
+    try:
+        from transformers.models.auto.configuration_auto import (
+            CONFIG_MAPPING,
+            CONFIG_MAPPING_NAMES,
+        )
+    except Exception:
+        return None
+
+    cfg_class = None
+    for alias in _arch_aliases(arch):
+        if alias in CONFIG_MAPPING_NAMES:
+            try:
+                cfg_class = CONFIG_MAPPING[alias]
+                break
+            except Exception:
+                cfg_class = None
+    if cfg_class is None:
+        return None
+
+    # Strategy a: default-instantiate.
+    try:
+        cfg = cfg_class()
+        entry = _swa_entry_from_config_obj(cfg)
+        if entry is not None:
+            return entry
+    except Exception:
+        pass  # fall through to source parsing
+
+    # Strategy b: regex on the class source. Walks the MRO so wrappers
+    # that delegate to a TextConfig still get inspected. Also probes
+    # the config's module file in case the constant is module-level.
+    import inspect
+
+    candidates = [cfg_class]
+    text_cfg_class = getattr(cfg_class, "sub_configs", {}).get("text_config")
+    if text_cfg_class is not None:
+        candidates.append(text_cfg_class)
+    for cls in candidates:
+        try:
+            src = inspect.getsource(cls)
+        except (OSError, TypeError):
+            continue
+        if (m := _SWA_PATTERN_SOURCE_RE.search(src)):
+            period = int(m.group(1))
+            if period > 0:
+                return period
+    return None
+
+
 def _resolve_swa_pattern(
     arch: Optional[str],
     n_layers: Optional[int],
@@ -252,6 +356,11 @@ def _resolve_swa_pattern(
             return [bool(entry[i % len(entry)]) for i in range(n_layers)]
         return None
 
+    def _persist(entry):
+        with _SWA_CACHE_LOCK:
+            cache[arch] = entry
+        _save_swa_cache(cache)
+
     # Tier 1: persistent cache
     if (entry := cache.get(arch)) is not None:
         if (mask := _entry_to_mask(entry)) is not None:
@@ -261,6 +370,15 @@ def _resolve_swa_pattern(
     if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
         return _entry_to_mask(entry)
 
+    # Tier 2.5: introspect the locally-installed transformers package.
+    # Offline-friendly: works for any arch whose Config class is
+    # importable, no network. Result is cached so subsequent loads
+    # skip even the import overhead.
+    entry = _resolve_swa_entry_from_transformers(arch)
+    if entry is not None:
+        _persist(entry)
+        return _entry_to_mask(entry)
+
     # Tier 3: live HF fetch (with persistent caching of the result)
     if allow_network:
         for repo_id in source_repo_candidates:
@@ -268,9 +386,7 @@ def _resolve_swa_pattern(
                 continue
             entry = _fetch_swa_entry_from_hf(repo_id)
             if entry is not None:
-                with _SWA_CACHE_LOCK:
-                    cache[arch] = entry
-                _save_swa_cache(cache)
+                _persist(entry)
                 return _entry_to_mask(entry)
 
     return None

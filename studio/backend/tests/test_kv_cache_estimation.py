@@ -670,6 +670,11 @@ class TestDynamicSwaResolver:
         from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: None)
+        # Block Tier 2.5 too -- this test specifically exercises the
+        # Tier 3 failure path.
+        monkeypatch.setattr(
+            lc, "_resolve_swa_entry_from_transformers", lambda arch: None
+        )
         b = _backend_from_gguf(
             "newmodel",
             {
@@ -687,6 +692,155 @@ class TestDynamicSwaResolver:
         assert b._sliding_window_pattern is None
         # Cache file must NOT be created on failed lookup.
         assert not (tmp_path / "swa_cache.json").exists()
+
+
+class TestTransformersIntrospection:
+    """Tier 2.5: ask the locally-installed transformers package via
+    default-init plus inspect.getsource fallback. Offline-friendly."""
+
+    def _isolate_cache(self, monkeypatch, tmp_path):
+        from core.inference import llama_cpp as lc
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+        monkeypatch.setattr(lc, "_SWA_CACHE", None)
+        return tmp_path
+
+    def test_arch_aliases_normalises_hyphen_underscore(self):
+        from core.inference.llama_cpp import _arch_aliases
+
+        # Most arches collapse to a single form because there's no
+        # hyphen/underscore to swap. Order matters: original first.
+        aliases = _arch_aliases("falcon-h1")
+        assert aliases[0] == "falcon-h1"
+        assert "falcon_h1" in aliases
+        # Identity case: only the original is returned.
+        assert _arch_aliases("gemma3") == ("gemma3",)
+        # Empty input returns empty tuple.
+        assert _arch_aliases("") == ()
+
+    def test_resolves_real_transformers_arches(self, monkeypatch):
+        """Smoke against the live transformers install. Each of these
+        arches has a Config class with a known
+        `sliding_window_pattern` default."""
+        from core.inference.llama_cpp import _resolve_swa_entry_from_transformers
+
+        # Sanity: matches the bootstrap defaults we shipped.
+        assert _resolve_swa_entry_from_transformers("gemma3") == 6
+        assert _resolve_swa_entry_from_transformers("gemma2") == 2
+        assert _resolve_swa_entry_from_transformers("cohere2") == 4
+
+    def test_falls_back_to_inspect_when_default_init_raises(self, monkeypatch):
+        """When the Config class can't be default-instantiated (e.g.
+        requires arguments), we still recover the period by parsing
+        the class source."""
+        from core.inference import llama_cpp as lc
+
+        class _FakeBrokenConfig:
+            """Class that cannot be default-instantiated.
+            sliding_window_pattern: int = 7
+            """
+
+            def __init__(self, required_arg):
+                raise TypeError("requires an argument")
+
+        fake_mapping = {"brokenarch": "FakeBroken"}
+
+        class _FakeLazyMapping(dict):
+            def __getitem__(self, k):
+                if k == "brokenarch":
+                    return _FakeBrokenConfig
+                raise KeyError(k)
+
+        # Patch the auto-config plumbing so our fake class is used.
+        import sys
+        import types as _types
+
+        fake_auto = _types.ModuleType(
+            "transformers.models.auto.configuration_auto"
+        )
+        fake_auto.CONFIG_MAPPING_NAMES = fake_mapping
+        fake_auto.CONFIG_MAPPING = _FakeLazyMapping(fake_mapping)
+        monkeypatch.setitem(
+            sys.modules,
+            "transformers.models.auto.configuration_auto",
+            fake_auto,
+        )
+        # The class source contains "sliding_window_pattern: int = 7"
+        # in its docstring; the regex picks it up.
+        assert lc._resolve_swa_entry_from_transformers("brokenarch") == 7
+
+    def test_returns_none_when_transformers_unavailable(self, monkeypatch):
+        """Catastrophic failure (transformers not installed at all) is
+        not an error; resolver returns None so the estimator falls
+        back to the legacy 1/4 estimate."""
+        from core.inference import llama_cpp as lc
+        import sys
+
+        # Remove the transformers auto-config module + block re-import.
+        orig_import = __builtins__["__import__"] if isinstance(
+            __builtins__, dict
+        ) else __builtins__.__import__
+
+        def fake_import(name, *a, **kw):
+            if name.startswith("transformers"):
+                raise ImportError("transformers not installed")
+            return orig_import(name, *a, **kw)
+
+        monkeypatch.setattr(
+            "builtins.__import__", fake_import
+        )
+        # Drop any cached module so the next import raises.
+        for k in list(sys.modules):
+            if k.startswith("transformers"):
+                monkeypatch.delitem(sys.modules, k, raising = False)
+
+        assert lc._resolve_swa_entry_from_transformers("gemma3") is None
+
+    def test_returns_none_for_arch_unknown_to_transformers(self):
+        from core.inference.llama_cpp import _resolve_swa_entry_from_transformers
+
+        assert _resolve_swa_entry_from_transformers("totally-fake-arch-xyz") is None
+
+    def test_full_resolver_uses_transformers_before_hf_fetch(
+        self, monkeypatch, tmp_path
+    ):
+        """Tier 2.5 must fire BEFORE Tier 3 when bootstrap doesn't
+        cover the arch. This avoids unnecessary network calls when
+        transformers already knows the answer."""
+        self._isolate_cache(monkeypatch, tmp_path)
+        from core.inference import llama_cpp as lc
+
+        # Make the bootstrap empty so Tier 2 misses.
+        monkeypatch.setattr(lc, "_BOOTSTRAP_SWA_DEFAULTS", {})
+
+        # Spy on Tier 3 -- it must NOT be called.
+        def boom(repo_id):
+            raise AssertionError(
+                "Tier 3 must not run when Tier 2.5 has the answer"
+            )
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", boom)
+
+        b = _backend_from_gguf(
+            "gemma3",
+            {
+                "block_count": 18,
+                "attention.head_count": 4,
+                "attention.head_count_kv": 1,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 512,
+            },
+            general = {
+                "general.source.huggingface.repository": "google/gemma-3-1b-it",
+            },
+        )
+        # Period=6 from transformers Gemma3TextConfig.
+        assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(18)]
+        # Result was persisted to cache.
+        with open(tmp_path / "swa_cache.json") as f:
+            cache = json.load(f)
+        assert cache == {"gemma3": 6}
 
 
 class TestGGUFParserReset:
