@@ -980,6 +980,14 @@ def install_python_stack() -> int:
                 local_repo,
                 constrain = False,
             )
+            pip_install(
+                "Overlaying unsloth-zoo from git main",
+                "--no-cache-dir",
+                "--no-deps",
+                "--force-reinstall",
+                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+                constrain = False,
+            )
     elif local_repo:
         # Local dev install: update deps from base.txt, then overlay the
         # local checkout as an editable install (--no-deps so torch is
@@ -1000,6 +1008,14 @@ def install_python_stack() -> int:
             "--no-deps",
             "-e",
             local_repo,
+            constrain = False,
+        )
+        pip_install(
+            "Overlaying unsloth-zoo from git main",
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
             constrain = False,
         )
     elif package_name != "unsloth":

@@ -8,6 +8,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Parse flags ──
+# --local: install from the local repo checkout (overlays unsloth as editable
+# and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
+# path that runs setup.sh directly without going through install.sh.
+for _arg in "$@"; do
+    case "$_arg" in
+        --local)
+            export STUDIO_LOCAL_INSTALL=1
+            export STUDIO_LOCAL_REPO="$REPO_ROOT"
+            ;;
+    esac
+done
+
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
