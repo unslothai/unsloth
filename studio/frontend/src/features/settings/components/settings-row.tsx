@@ -20,7 +20,7 @@ export function SettingsRow({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-6 py-3",
+        "flex items-center justify-between gap-6 py-3 max-sm:flex-col max-sm:items-start max-sm:gap-2",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}

@@ -83,7 +83,7 @@ export function SettingsDialog() {
           Manage your Unsloth Studio preferences.
         </DialogDescription>
         <div className="flex h-full min-h-0">
-          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
+          <aside className="font-heading flex w-[200px] max-sm:w-[56px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
             <nav className="flex flex-col gap-0.5">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;
@@ -93,7 +93,7 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-[30px] items-center gap-2.5 rounded-[8px] px-2.5 text-sm font-medium transition-colors",
+                      "relative flex h-[30px] items-center gap-2.5 rounded-[8px] px-2.5 text-sm font-medium transition-colors max-sm:justify-center max-sm:px-0",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"
@@ -121,7 +121,7 @@ export function SettingsDialog() {
                       strokeWidth={1.5}
                       className="relative z-10 size-[18px]"
                     />
-                    <span className="relative z-10">{tab.label}</span>
+                    <span className="relative z-10 max-sm:sr-only">{tab.label}</span>
                   </button>
                 );
               })}
