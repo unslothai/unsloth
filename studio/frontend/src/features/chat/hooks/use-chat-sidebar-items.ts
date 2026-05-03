@@ -4,6 +4,7 @@
 import { db, useLiveQuery } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
+import { markChatThreadDeleted } from "../utils/chat-thread-tombstones";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -80,6 +81,7 @@ export async function deleteChatItem(
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
   for (const id of threadIds) cancelIfRunning(id);
+  for (const id of threadIds) markChatThreadDeleted(id);
 
   await db.transaction("rw", db.threads, db.messages, async () => {
     for (const id of threadIds) {
