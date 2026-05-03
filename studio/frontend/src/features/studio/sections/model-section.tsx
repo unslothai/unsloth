@@ -67,6 +67,7 @@ const METHOD_DOTS: Record<string, string> = {
   qlora: "bg-emerald-400",
   lora: "bg-blue-400",
   full: "bg-amber-400",
+  cpt: "bg-purple-400",
 };
 
 const DARK_TRIGGER =
@@ -570,7 +571,9 @@ export function ModelSection() {
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
                   QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
-                  16-bit. Full updates all weights.{" "}
+                  16-bit. Full updates all weights. CPT (Continued Pretraining)
+                  trains on raw text to adapt the model to a new domain without
+                  chat formatting.{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
@@ -615,6 +618,14 @@ export function ModelSection() {
                       className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
                     />
                     Full Fine-tune
+                  </span>
+                </SelectItem>
+                <SelectItem value="cpt">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.cpt}`}
+                    />
+                    Continued Pretraining
                   </span>
                 </SelectItem>
               </SelectContent>

@@ -154,6 +154,7 @@ class TrainingBackend:
             "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
+            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
             "batch_size": kwargs.get("batch_size", 2),
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
@@ -189,8 +190,9 @@ class TrainingBackend:
             "gpu_ids": kwargs.get("gpu_ids"),
         }
 
-        # Derive load_in_4bit from training_type
-        if config["training_type"] != "LoRA/QLoRA":
+        # Full finetuning always runs in 16-bit. LoRA/QLoRA and CPT preserve the
+        # explicit request so 4-bit adapter/raw-text runs remain possible.
+        if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
         # Spawn subprocess — use locals so state is untouched on failure

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import structlog
 from loggers import get_logger
+import math
 import os
 import shutil
 import sys
@@ -571,6 +572,8 @@ def run_training_process(
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")
         hf_dataset = config.get("hf_dataset", "")
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        _is_cpt_for_dataset = training_type == "Continued Pretraining"
         dataset_result = trainer.load_and_format_dataset(
             dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
             format_type = config.get("format_type", ""),
@@ -583,6 +586,7 @@ def run_training_process(
             eval_steps = config.get("eval_steps", 0.00),
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
+            is_cpt = _is_cpt_for_dataset,
         )
 
         if isinstance(dataset_result, tuple):
@@ -668,7 +672,9 @@ def run_training_process(
         _tqdm_thread.start()
 
         training_type = config.get("training_type", "LoRA/QLoRA")
-        use_lora = training_type == "LoRA/QLoRA"
+        is_cpt = training_type == "Continued Pretraining"
+        use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
+        cpt_trains_embeddings = False
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
@@ -700,8 +706,41 @@ def run_training_process(
                 )
             return
 
-        # ── 4d. Prepare model (LoRA or full finetuning) ──
-        if use_lora:
+        # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
+        if is_cpt:
+            _send_status(event_queue, "Configuring LoRA for continued pretraining...")
+            # embed_tokens (if the user included it) goes to modules_to_save —
+            # trained full-precision at embedding_learning_rate. lm_head stays as
+            # a LoRA target for merge compatibility (see unsloth PR #4106).
+            _user_modules = config.get("target_modules") or []
+            wants_embed = "embed_tokens" in _user_modules
+            cpt_trains_embeddings = wants_embed
+            cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
+            if not cpt_target_modules:
+                cpt_target_modules = [
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                    "lm_head",
+                ]
+            success = trainer.prepare_model_for_training(
+                use_lora = True,
+                target_modules = cpt_target_modules,
+                modules_to_save = ["embed_tokens"] if wants_embed else None,
+                lora_r = config.get("lora_r", 128),
+                lora_alpha = config.get("lora_alpha", 32),
+                lora_dropout = config.get("lora_dropout", 0.0),
+                use_gradient_checkpointing = config.get(
+                    "gradient_checkpointing", "unsloth"
+                ),
+                use_rslora = config.get("use_rslora", False),
+                use_loftq = config.get("use_loftq", False),
+            )
+        elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
                 use_lora = True,
@@ -742,9 +781,9 @@ def run_training_process(
                 )
             return
 
-        # Convert learning rate
+        lr_default = "5e-5" if is_cpt else "2e-4"
         try:
-            lr_value = float(config.get("learning_rate", "2e-4"))
+            lr_value = float(config.get("learning_rate", lr_default))
         except ValueError:
             event_queue.put(
                 {
@@ -755,6 +794,25 @@ def run_training_process(
                 }
             )
             return
+
+        # embedding_learning_rate is validated by the Pydantic model (Optional[float],
+        # gt=0, lt=1.0); if present it is already a finite float in range.
+        embedding_lr_value = config.get("embedding_learning_rate")
+        if is_cpt:
+            if cpt_trains_embeddings:
+                if embedding_lr_value is None:
+                    # Default embedding_learning_rate = lr/10 per Unsloth's CPT notebook.
+                    embedding_lr_value = lr_value / 10.0
+                    logger.info(
+                        f"CPT: using default embedding_learning_rate={embedding_lr_value:.1e} "
+                        f"(lr/10). Set explicitly to override.\n"
+                    )
+            elif embedding_lr_value is not None:
+                logger.warning(
+                    "CPT: embedding_learning_rate was provided but embed_tokens is "
+                    "not being trained; ignoring the override.\n"
+                )
+                embedding_lr_value = None
 
         # Generate output dir
         output_dir = config.get("output_dir")
@@ -785,6 +843,7 @@ def run_training_process(
             output_dir = output_dir,
             num_epochs = config.get("num_epochs", 3),
             learning_rate = lr_value,
+            embedding_learning_rate = embedding_lr_value,
             batch_size = config.get("batch_size", 2),
             gradient_accumulation_steps = config.get("gradient_accumulation_steps", 4),
             warmup_steps = config.get("warmup_steps"),
@@ -794,7 +853,9 @@ def run_training_process(
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
-            train_on_completions = config.get("train_on_completions", False),
+            train_on_completions = False
+            if is_cpt
+            else config.get("train_on_completions", False),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),
             wandb_token = config.get("wandb_token"),
@@ -805,6 +866,7 @@ def run_training_process(
             max_seq_length = config.get("max_seq_length", 2048),
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
+            is_cpt = is_cpt,
         )
 
         _tqdm_stop.set()
