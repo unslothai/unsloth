@@ -348,12 +348,14 @@ class ExportBackend:
                 ensure_dir(Path(save_directory))
 
                 if _IS_MLX:
-                    # MLX: UI's "Merged Model" option always means full
-                    # 16-bit. LoRA and GGUF go through separate export
-                    # functions (export_lora_adapter / export_gguf).
+                    # Map UI's format_type to MLX save_method. LoRA and
+                    # GGUF go through separate export functions.
+                    mlx_save_method = (
+                        "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+                    )
                     self.current_model.save_pretrained_merged(
                         save_directory, self.current_tokenizer,
-                        save_method = "merged_16bit",
+                        save_method = mlx_save_method,
                     )
                 else:
                     # GPU: determine save method from format_type
@@ -384,9 +386,13 @@ class ExportBackend:
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
 
                 if _IS_MLX:
+                    # Reuse the local save_directory we just wrote to, so
+                    # push_to_hub_merged doesn't re-save under a relative
+                    # "username/model" directory in cwd.
                     self.current_model.push_to_hub_merged(
                         repo_id,
                         self.current_tokenizer,
+                        save_directory = save_directory,
                         token = hf_token,
                         private = private,
                     )
@@ -470,9 +476,12 @@ class ExportBackend:
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
                 if _IS_MLX:
+                    # Reuse the local save_directory to avoid a redundant
+                    # re-save under a relative "username/model" path.
                     self.current_model.push_to_hub_merged(
                         repo_id,
                         self.current_tokenizer,
+                        save_directory = save_directory,
                         token = hf_token,
                         private = private,
                     )
