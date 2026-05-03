@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
+from core.training.resume import can_resume_run
 from models import (
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
@@ -34,7 +35,10 @@ async def list_training_runs(
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
     return TrainingRunListResponse(
-        runs = [TrainingRunSummary(**r) for r in result["runs"]],
+        runs = [
+            TrainingRunSummary(**{**r, "can_resume": can_resume_run(r)})
+            for r in result["runs"]
+        ],
         total = result["total"],
     )
 
@@ -58,7 +62,12 @@ async def get_training_run_detail(
     metrics_data = get_run_metrics(run_id)
 
     return TrainingRunDetailResponse(
-        run = TrainingRunSummary(**{k: v for k, v in run.items() if k != "config_json"}),
+        run = TrainingRunSummary(
+            **{
+                **{k: v for k, v in run.items() if k != "config_json"},
+                "can_resume": can_resume_run(run),
+            }
+        ),
         config = config,
         metrics = TrainingRunMetrics(**metrics_data),
     )
