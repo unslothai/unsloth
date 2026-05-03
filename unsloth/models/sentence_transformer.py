@@ -1073,13 +1073,24 @@ class FastSentenceTransformer(FastModel):
                 AutoProcessor.from_pretrained = return_existing_processor
                 AutoTokenizer.from_pretrained = return_existing_tokenizer
 
+                transformer_init_params = inspect.signature(
+                    Transformer.__init__
+                ).parameters
+                trust_remote_code_kwargs = {"trust_remote_code": trust_remote_code}
+                transformer_kwargs = {"max_seq_length": max_seq_length}
+                if "model_kwargs" in transformer_init_params:
+                    transformer_kwargs["model_kwargs"] = trust_remote_code_kwargs
+                    transformer_kwargs["config_kwargs"] = trust_remote_code_kwargs
+                else:
+                    transformer_kwargs["model_args"] = trust_remote_code_kwargs
+                    transformer_kwargs["config_args"] = trust_remote_code_kwargs
+                if "processor_kwargs" in transformer_init_params:
+                    transformer_kwargs["processor_kwargs"] = trust_remote_code_kwargs
+                elif "tokenizer_args" in transformer_init_params:
+                    transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs
+
                 # Initialize Transformer
-                transformer_module = Transformer(
-                    model_name,
-                    max_seq_length = max_seq_length,
-                    model_args = {"trust_remote_code": trust_remote_code},
-                    config_args = {"trust_remote_code": trust_remote_code},
-                )
+                transformer_module = Transformer(model_name, **transformer_kwargs)
             finally:
                 # Restore original functionality immediately
                 AutoModel.from_pretrained = original_model_from_pretrained
