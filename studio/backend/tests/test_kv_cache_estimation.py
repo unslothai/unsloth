@@ -1631,8 +1631,7 @@ class TestSharedKVLayers:
         kv_per = 4 * (256 + 256) * 2
         swa_cells = min(ctx, 2 * 1024)
         expected = (
-            full_in_unshared * ctx * kv_per
-            + sliding_in_unshared * swa_cells * kv_per
+            full_in_unshared * ctx * kv_per + sliding_in_unshared * swa_cells * kv_per
         )
         assert b._estimate_kv_cache_bytes(ctx, "f16") == expected
 
@@ -1677,9 +1676,7 @@ class TestSharedKVLayers:
     def test_composes_with_n_parallel(self):
         b = self._gemma3n_backend()
         single = b._estimate_kv_cache_bytes(8192, "f16")
-        triple = b._estimate_kv_cache_bytes(
-            8192, "f16", n_parallel = 3, kv_unified = False
-        )
+        triple = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 3, kv_unified = False)
         assert triple == single * 3
 
     def test_composes_with_ctx_checkpoints(self):
