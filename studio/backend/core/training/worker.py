@@ -35,6 +35,13 @@ from utils.wheel_utils import (
 )
 
 
+def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> str | None:
+    if not resume_from_checkpoint:
+        return None
+    path = Path(resume_from_checkpoint)
+    return str(path.parent if path.name.startswith("checkpoint-") else path)
+
+
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
@@ -758,8 +765,8 @@ def run_training_process(
 
         # Generate output dir
         resume_from_checkpoint = config.get("resume_from_checkpoint")
-        output_dir = config.get("output_dir") or (
-            os.path.dirname(resume_from_checkpoint) if resume_from_checkpoint else None
+        output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+            resume_from_checkpoint
         )
         if not output_dir:
             output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
@@ -1117,8 +1124,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     resume_from_checkpoint = config.get("resume_from_checkpoint")
-    output_dir = config.get("output_dir") or (
-        os.path.dirname(resume_from_checkpoint) if resume_from_checkpoint else None
+    output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
     )
     if not output_dir:
         output_dir = str(
