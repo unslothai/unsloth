@@ -994,7 +994,14 @@ class LlamaCppBackend:
         return fallback
 
     def _estimate_kv_cache_bytes(
-        self, n_ctx: int, cache_type_kv: Optional[str] = None
+        self,
+        n_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        ctx_checkpoints: int = 0,
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
 
@@ -1004,6 +1011,19 @@ class LlamaCppBackend:
           3. SWA      -- sliding-window layers cache min(ctx, window) tokens
           4. GQA      -- standard full KV with explicit key/value dimensions
           5. Legacy   -- fallback using embed // n_heads
+
+        Server-flag knobs (mirror llama-server's CLI):
+          swa_full        -- ``--swa-full``: force SWA layers to cache the
+                             full ``n_ctx`` (collapses path 3 to path 4
+                             sizing for the SWA layers).
+          n_parallel      -- ``--parallel``: number of server slots.
+          kv_unified      -- ``--kv-unified`` (default on): single shared
+                             KV buffer across slots. When False, allocates
+                             one buffer per slot (multiplies KV by
+                             ``n_parallel``).
+          ctx_checkpoints -- ``--ctx-checkpoints``: SWA snapshot count per
+                             slot (PR #15293). Each snapshot stores one
+                             sliding-window of state per SWA layer.
 
         Returns 0 if metadata is insufficient for estimation.
         """
@@ -1026,6 +1046,9 @@ class LlamaCppBackend:
             "iq4_nl": 0.5625,
         }.get(cache_type_kv or "f16", 2.0)
 
+        # Per-slot replication when slots don't share the unified buffer.
+        slot_factor = max(1, n_parallel) if not kv_unified else 1
+
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # MLA stores one compressed KV latent per token/layer (shared across heads).
         # V is reconstructed from the latent on the fly -- no separate V cache.
@@ -1036,7 +1059,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe)
+            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe * slot_factor)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -1050,9 +1073,11 @@ class LlamaCppBackend:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
-                return int(n_attn * n_ctx * n_kv * (key_len + val_len) * bpe)
+                return int(
+                    n_attn * n_ctx * n_kv * (key_len + val_len) * bpe * slot_factor
+                )
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-            return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
+            return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe * slot_factor)
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
         # Pattern is filled in by the resolver at parse time; if absent,
@@ -1060,8 +1085,11 @@ class LlamaCppBackend:
         # llama.cpp double-buffers the SWA cache (so it can keep the
         # current and next windows during the shift) -- it allocates
         # `2 * sliding_window` cells per SWA layer, capped at n_ctx.
-        # Verified via `llama_kv_cache_iswa: ... SWA KV cache,
-        # size = N cells` log line on Gemma-3 270m / 1b GGUFs.
+        # ``--swa-full`` forces full n_ctx for SWA layers instead.
+        # ``--ctx-checkpoints N`` adds N snapshots per SWA layer (one
+        # sliding-window of state each) per slot for context-shift
+        # recovery; only meaningful when SWA layers don't already cache
+        # n_ctx.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -1069,11 +1097,12 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
-            swa_cells = min(n_ctx, 2 * swa)
+            swa_cells = n_ctx if swa_full else min(n_ctx, 2 * swa)
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
             if self._sliding_window_pattern is not None:
                 total = 0.0
+                checkpoint_extra = 0.0
                 for layer_idx in range(n_layers):
                     layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                     is_swa = (
@@ -1086,21 +1115,38 @@ class LlamaCppBackend:
                     total += (
                         layer_ctx * layer_n_kv * (layer_key_len + layer_val_len) * bpe
                     )
-                return int(total)
+                    if is_swa and ctx_checkpoints > 0 and not swa_full:
+                        checkpoint_extra += (
+                            ctx_checkpoints
+                            * swa
+                            * layer_n_kv
+                            * (layer_key_len + layer_val_len)
+                            * bpe
+                        )
+                return int((total + checkpoint_extra) * slot_factor)
             n_global = max(1, n_layers // 4)
             n_swa = n_layers - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
-            return int(
-                n_global * n_ctx * kv_per_token + n_swa * swa_cells * kv_per_token
+            kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
+            base = (
+                n_global * n_ctx * kv_per_token + n_swa * swa_cells * kv_per_token_swa
             )
+            checkpoint_extra = (
+                ctx_checkpoints * n_swa * swa * kv_per_token_swa
+                if ctx_checkpoints > 0 and not swa_full
+                else 0.0
+            )
+            return int((base + checkpoint_extra) * slot_factor)
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            return int(n_layers * n_ctx * n_kv * (key_len + val_len) * bpe)
+            return int(
+                n_layers * n_ctx * n_kv * (key_len + val_len) * bpe * slot_factor
+            )
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-        return int(2 * n_kv * head_dim * n_layers * n_ctx * bpe)
+        return int(2 * n_kv * head_dim * n_layers * n_ctx * bpe * slot_factor)
 
     def _fit_context_to_vram(
         self,
@@ -1109,6 +1155,12 @@ class LlamaCppBackend:
         model_size_bytes: int,
         cache_type_kv: Optional[str] = None,
         min_ctx: int = 4096,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        ctx_checkpoints: int = 0,
+        kv_on_gpu: bool = True,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
@@ -1116,6 +1168,11 @@ class LlamaCppBackend:
         threshold -- 10% reserved for compute buffers, CUDA context,
         scratch space, flash-attn workspace, etc.).
         If the model weights alone don't fit, returns min_ctx unchanged.
+
+        ``kv_on_gpu`` mirrors ``--kv-offload`` (default on). When False
+        the KV cache lives in CPU RAM and doesn't compete with weights
+        for VRAM; the requested context is honored verbatim. The other
+        keyword args mirror ``_estimate_kv_cache_bytes``.
         """
         if not self._can_estimate_kv():
             logger.debug(
@@ -1125,11 +1182,22 @@ class LlamaCppBackend:
             )
             return requested_ctx
 
+        # KV lives off-GPU: no VRAM accounting needed for the cache itself.
+        if not kv_on_gpu:
+            return requested_ctx
+
+        kv_kwargs = dict(
+            swa_full = swa_full,
+            n_parallel = n_parallel,
+            kv_unified = kv_unified,
+            ctx_checkpoints = ctx_checkpoints,
+        )
+
         budget_bytes = available_mib * 1024 * 1024 * 0.90
         model_footprint = model_size_bytes
 
         # Check if requested context already fits
-        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
+        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv, **kv_kwargs)
         if model_footprint + kv <= budget_bytes:
             return requested_ctx
 
@@ -1151,7 +1219,7 @@ class LlamaCppBackend:
         best = effective_min
         while lo <= hi:
             mid = (lo + hi) // 2
-            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
+            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv, **kv_kwargs)
             if kv <= remaining:
                 best = mid
                 lo = mid + 1

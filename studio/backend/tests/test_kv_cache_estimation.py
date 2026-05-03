@@ -1303,6 +1303,235 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# J2. Server-flag knobs (--swa-full, --kv-unified/--parallel,
+#     --ctx-checkpoints, --kv-offload)
+# ---------------------------------------------------------------------------
+
+
+class TestServerFlags:
+    """Estimator should mirror llama-server CLI flags that change KV size."""
+
+    def _swa_backend(self, **overrides):
+        defaults = {
+            "_n_layers": 26,
+            "_n_kv_heads": 4,
+            "_n_heads": 8,
+            "_embedding_length": 1152,
+            "_kv_key_length": 256,
+            "_kv_value_length": 256,
+            "_sliding_window": 512,
+            "_sliding_window_pattern": [True, True, True, True, True, False] * 4
+            + [True, True],
+        }
+        defaults.update(overrides)
+        b = LlamaCppBackend()
+        for k, v in defaults.items():
+            setattr(b, k, v)
+        return b
+
+    def _gqa_backend(self, **overrides):
+        defaults = {
+            "_n_layers": 28,
+            "_n_kv_heads": 8,
+            "_n_heads": 16,
+            "_embedding_length": 1024,
+            "_kv_key_length": 128,
+            "_kv_value_length": 128,
+        }
+        defaults.update(overrides)
+        b = LlamaCppBackend()
+        for k, v in defaults.items():
+            setattr(b, k, v)
+        return b
+
+    # ── --swa-full ──────────────────────────────────────────────────
+
+    def test_swa_full_collapses_pattern_path_to_full_ctx(self):
+        b = self._swa_backend()
+        ctx = 32_768
+        flagged = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
+        # With swa_full, every layer caches n_ctx -- equals path 4 sizing.
+        kv_per_token = 4 * (256 + 256) * 2  # n_kv_heads * (k+v) * f16
+        expected = 26 * ctx * kv_per_token
+        assert flagged == expected
+        assert flagged > b._estimate_kv_cache_bytes(ctx, "f16")
+
+    def test_swa_full_collapses_legacy_path_to_full_ctx(self):
+        # No per-layer pattern -> 1/4-global heuristic; swa_full overrides.
+        b = self._swa_backend(_sliding_window_pattern = None)
+        ctx = 16_384
+        flagged = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
+        n_global = max(1, 26 // 4)
+        n_swa = 26 - n_global
+        kv_per = 4 * (256 + 256) * 2
+        # swa_cells == n_ctx when swa_full=True
+        expected = n_global * ctx * kv_per + n_swa * ctx * kv_per
+        assert flagged == expected
+
+    def test_swa_full_no_op_for_non_swa_model(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        flagged = b._estimate_kv_cache_bytes(8192, "f16", swa_full = True)
+        assert flagged == baseline
+
+    def test_swa_full_suppresses_checkpoint_term(self):
+        b = self._swa_backend()
+        with_cp = b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 8)
+        with_cp_full = b._estimate_kv_cache_bytes(
+            8192, "f16", ctx_checkpoints = 8, swa_full = True
+        )
+        no_cp_full = b._estimate_kv_cache_bytes(8192, "f16", swa_full = True)
+        # Checkpoints only matter when SWA layers don't already keep n_ctx.
+        assert with_cp_full == no_cp_full
+        assert with_cp > b._estimate_kv_cache_bytes(8192, "f16")
+
+    # ── --parallel + --kv-unified ──────────────────────────────────
+
+    def test_unified_kv_ignores_n_parallel(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(4096, "f16")
+        for slots in (1, 2, 4, 8):
+            assert (
+                b._estimate_kv_cache_bytes(
+                    4096, "f16", n_parallel = slots, kv_unified = True
+                )
+                == baseline
+            )
+
+    def test_non_unified_multiplies_kv_by_n_parallel(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(4096, "f16")
+        for slots in (1, 2, 4, 8):
+            scaled = b._estimate_kv_cache_bytes(
+                4096, "f16", n_parallel = slots, kv_unified = False
+            )
+            assert scaled == baseline * slots
+
+    def test_non_unified_with_zero_parallel_floors_at_one(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(4096, "f16")
+        scaled = b._estimate_kv_cache_bytes(
+            4096, "f16", n_parallel = 0, kv_unified = False
+        )
+        assert scaled == baseline
+
+    def test_non_unified_scales_swa_path(self):
+        b = self._swa_backend()
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        scaled = b._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 3, kv_unified = False
+        )
+        assert scaled == baseline * 3
+
+    def test_non_unified_scales_mla_path(self):
+        b = LlamaCppBackend()
+        b._n_layers = 60
+        b._n_kv_heads = 1
+        b._kv_lora_rank = 512
+        b._key_length_mla = 64
+        b._kv_key_length = 576
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        scaled = b._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 4, kv_unified = False
+        )
+        assert scaled == baseline * 4
+
+    # ── --ctx-checkpoints ──────────────────────────────────────────
+
+    def test_ctx_checkpoints_zero_is_no_op(self):
+        b = self._swa_backend()
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        assert b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 0) == baseline
+
+    def test_ctx_checkpoints_no_op_for_non_swa(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        assert b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 32) == baseline
+
+    def test_ctx_checkpoints_pattern_path_adds_known_bytes(self):
+        b = self._swa_backend()
+        ctx = 8192
+        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
+        flagged = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
+        # 22 SWA layers * 4 checkpoints * 512 cells * 4 heads * (256+256) * 2 bytes
+        n_swa_layers = sum(
+            1 for f in [True, True, True, True, True, False] * 4 + [True, True] if f
+        )
+        per_layer = 4 * 512 * 4 * (256 + 256) * 2
+        assert flagged == baseline + n_swa_layers * per_layer
+
+    def test_ctx_checkpoints_legacy_path_adds_known_bytes(self):
+        b = self._swa_backend(_sliding_window_pattern = None)
+        ctx = 8192
+        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
+        flagged = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
+        n_global = max(1, 26 // 4)
+        n_swa = 26 - n_global
+        kv_per = 4 * (256 + 256) * 2
+        extra = 4 * n_swa * 512 * kv_per  # ctx_checkpoints * n_swa * sliding * kv_per
+        assert flagged == baseline + extra
+
+    def test_ctx_checkpoints_compose_with_n_parallel(self):
+        b = self._swa_backend()
+        ctx = 8192
+        single = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
+        triple = b._estimate_kv_cache_bytes(
+            ctx, "f16", ctx_checkpoints = 4, n_parallel = 3, kv_unified = False
+        )
+        assert triple == single * 3
+
+    # ── --kv-offload (kv_on_gpu) ───────────────────────────────────
+
+    def test_fit_returns_requested_when_kv_off_gpu(self):
+        b = self._gqa_backend()
+        # Tiny VRAM budget -- normally would force a reduction.
+        fitted = b._fit_context_to_vram(
+            requested_ctx = 32_768,
+            available_mib = 1,
+            model_size_bytes = 100,
+            cache_type_kv = "f16",
+            kv_on_gpu = False,
+        )
+        assert fitted == 32_768
+
+    def test_fit_reduces_when_kv_on_gpu(self):
+        b = self._gqa_backend()
+        fitted = b._fit_context_to_vram(
+            requested_ctx = 32_768,
+            available_mib = 64,
+            model_size_bytes = 1024 * 1024,  # 1 MiB
+            cache_type_kv = "f16",
+            kv_on_gpu = True,
+        )
+        assert fitted < 32_768
+
+    def test_fit_threads_swa_full_through_estimator(self):
+        # SWA model, generous budget; both should fit but cache size differs.
+        b = self._swa_backend()
+        ctx = 8192
+        kv_default = b._estimate_kv_cache_bytes(ctx, "f16")
+        kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
+        assert kv_full > kv_default
+        # Budget = model + kv_default (rounded up) -- swa_full should not fit.
+        budget_mib = (1024 * 1024 + kv_default) / (1024 * 1024) / 0.90 + 1
+        fitted_default = b._fit_context_to_vram(
+            requested_ctx = ctx,
+            available_mib = int(budget_mib),
+            model_size_bytes = 1024 * 1024,
+            cache_type_kv = "f16",
+        )
+        fitted_full = b._fit_context_to_vram(
+            requested_ctx = ctx,
+            available_mib = int(budget_mib),
+            model_size_bytes = 1024 * 1024,
+            cache_type_kv = "f16",
+            swa_full = True,
+        )
+        assert fitted_default == ctx
+        assert fitted_full < ctx
+
+
+# ---------------------------------------------------------------------------
 # K. Lifecycle Tests
 # ---------------------------------------------------------------------------
 
