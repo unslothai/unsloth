@@ -18,13 +18,19 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 
-export type { LoraModelOption, ModelOption, ModelSelectorChangeMeta } from "./model-selector/types";
+export type {
+  DeletedModelRef,
+  LoraModelOption,
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "./model-selector/types";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -35,6 +41,8 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -109,6 +117,8 @@ function ModelSelectorContent({
   onSelect,
   onEject,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   className,
   dataTour,
 }: {
@@ -118,6 +128,8 @@ function ModelSelectorContent({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
 }) {
@@ -151,6 +163,8 @@ function ModelSelectorContent({
               loraModels={loraModels}
               value={value}
               onSelect={onSelect}
+              onModelsChange={onModelsChange}
+              deleteDisabled={deleteDisabled}
             />
           </TabsContent>
         </Tabs>
@@ -182,6 +196,8 @@ export function ModelSelector({
   onValueChange,
   onEject,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   variant = "outline",
   size = "default",
   className,
@@ -276,6 +292,8 @@ export function ModelSelector({
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
+        deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
       />
