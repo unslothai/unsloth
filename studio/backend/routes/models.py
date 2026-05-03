@@ -1769,6 +1769,12 @@ async def delete_finetuned_model(
     if not model_path or not model_path.strip():
         raise HTTPException(status_code = 400, detail = "model_path is required")
 
+    if export_type == "gguf" and not gguf_variant:
+        raise HTTPException(
+            status_code = 400,
+            detail = "gguf_variant is required when export_type is 'gguf'",
+        )
+
     raw_path = Path(model_path).expanduser()
     if source == "training":
         target_path = raw_path
@@ -1872,7 +1878,13 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.debug("Could not check llama.cpp loaded model before delete: %s", e)
+        logger.warning(
+            "Could not check llama.cpp loaded model before delete: %s", e
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify model load status before deleting",
+        ) from e
 
     try:
         inference_backend = get_inference_backend()
@@ -1897,9 +1909,13 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.debug(
+        logger.warning(
             "Could not check inference backend loaded model before delete: %s", e
         )
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify model load status before deleting",
+        ) from e
 
     try:
         if export_type == "gguf" and gguf_variant:
