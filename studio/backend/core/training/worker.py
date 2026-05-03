@@ -35,6 +35,15 @@ from utils.wheel_utils import (
 )
 
 
+def _output_dir_from_resume_checkpoint(
+    resume_from_checkpoint: str | None,
+) -> str | None:
+    if not resume_from_checkpoint:
+        return None
+    path = Path(resume_from_checkpoint)
+    return str(path.parent if path.name.startswith("checkpoint-") else path)
+
+
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
@@ -757,7 +766,10 @@ def run_training_process(
             return
 
         # Generate output dir
-        output_dir = config.get("output_dir")
+        resume_from_checkpoint = config.get("resume_from_checkpoint")
+        output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+            resume_from_checkpoint
+        )
         if not output_dir:
             output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
         output_dir = str(resolve_output_dir(output_dir))
@@ -805,6 +817,7 @@ def run_training_process(
             max_seq_length = config.get("max_seq_length", 2048),
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
+            resume_from_checkpoint = resume_from_checkpoint,
         )
 
         _tqdm_stop.set()
@@ -821,10 +834,13 @@ def run_training_process(
                 }
             )
         else:
+            saved_output_dir = (
+                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+            )
             event_queue.put(
                 {
                     "type": "complete",
-                    "output_dir": output_dir,
+                    "output_dir": saved_output_dir,
                     "status_message": progress.status_message or "Training completed",
                     "ts": time.time(),
                 }
@@ -1109,11 +1125,15 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    output_dir = config.get("output_dir")
+    resume_from_checkpoint = config.get("resume_from_checkpoint")
+    output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
     if not output_dir:
         output_dir = str(
             resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}")
         )
+    output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)
@@ -1221,7 +1241,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             callbacks = [_EmbeddingProgressCallback()],
         )
 
-        trainer.train()
+        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
     except Exception as e:
         event_queue.put(
             {
@@ -1247,6 +1267,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _send_status(event_queue, "Saving model...")
     try:
+        if _should_stop and _save_on_stop:
+            trainer._save_checkpoint(trainer.model, trial = None)
         model.save_pretrained(output_dir)
         model.tokenizer.save_pretrained(output_dir)
         logger.info("Embedding model saved to %s", output_dir)

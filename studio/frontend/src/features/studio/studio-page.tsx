@@ -209,6 +209,9 @@ export function StudioPage(): ReactElement {
                   } else {
                     setSelectedHistoryRunId(runId);
                   }
+                }} onResumeStarted={() => {
+                  setSelectedHistoryRunId(null);
+                  handleTabChange("current-run");
                 }} />
               )}
             </TabsContent>
