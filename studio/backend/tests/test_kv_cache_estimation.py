@@ -1394,40 +1394,68 @@ class TestServerFlags:
         assert with_cp > b._estimate_kv_cache_bytes(8192, "f16")
 
     # ── --parallel + --kv-unified ──────────────────────────────────
+    # Empirically verified against llama-server: non-SWA caches partition
+    # n_ctx across slots (total memory constant); SWA layers are the only
+    # portion that scales with --parallel.  --kv-unified is currently a
+    # no-op for memory math (kept for API forward-compat).
 
-    def test_unified_kv_ignores_n_parallel(self):
+    def test_gqa_kv_constant_across_parallel(self):
         b = self._gqa_backend()
         baseline = b._estimate_kv_cache_bytes(4096, "f16")
         for slots in (1, 2, 4, 8):
+            for unified in (True, False):
+                assert (
+                    b._estimate_kv_cache_bytes(
+                        4096, "f16", n_parallel = slots, kv_unified = unified
+                    )
+                    == baseline
+                )
+
+    def test_zero_parallel_floors_at_one(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(4096, "f16")
+        for unified in (True, False):
             assert (
                 b._estimate_kv_cache_bytes(
-                    4096, "f16", n_parallel = slots, kv_unified = True
+                    4096, "f16", n_parallel = 0, kv_unified = unified
                 )
                 == baseline
             )
 
-    def test_non_unified_multiplies_kv_by_n_parallel(self):
-        b = self._gqa_backend()
-        baseline = b._estimate_kv_cache_bytes(4096, "f16")
-        for slots in (1, 2, 4, 8):
-            scaled = b._estimate_kv_cache_bytes(
-                4096, "f16", n_parallel = slots, kv_unified = False
-            )
-            assert scaled == baseline * slots
-
-    def test_non_unified_with_zero_parallel_floors_at_one(self):
-        b = self._gqa_backend()
-        baseline = b._estimate_kv_cache_bytes(4096, "f16")
-        scaled = b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 0, kv_unified = False)
-        assert scaled == baseline
-
-    def test_non_unified_scales_swa_path(self):
+    def test_swa_path_scales_only_swa_portion(self):
         b = self._swa_backend()
-        baseline = b._estimate_kv_cache_bytes(8192, "f16")
-        scaled = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 3, kv_unified = False)
-        assert scaled == baseline * 3
+        ctx = 8192
+        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
+        # Decompose baseline by walking the same loop the estimator does.
+        swa = b._sliding_window
+        per_token_global = 4 * (256 + 256) * 2  # n_kv * (k+v) * f16
+        per_token_swa = 4 * (256 + 256) * 2     # k_swa/val_swa fall back
+        per_slot_swa_cells = min(ctx, 2 * swa)  # not clamped at parallel=1
+        global_bytes = sum(
+            ctx * per_token_global
+            for f in b._sliding_window_pattern[: b._n_layers] if not f
+        )
+        swa_bytes_per_slot = sum(
+            per_slot_swa_cells * per_token_swa
+            for f in b._sliding_window_pattern[: b._n_layers] if f
+        )
+        # Sanity: parallel=1 reproduces baseline exactly
+        assert global_bytes + swa_bytes_per_slot == baseline
+        # Only SWA portion scales by parallel
+        for slots in (1, 2, 3, 4):
+            scaled = b._estimate_kv_cache_bytes(
+                ctx, "f16", n_parallel = slots, kv_unified = False
+            )
+            # SWA cells get clamped to per_slot_ctx when ctx/slots < 2*swa
+            per_slot_ctx = max(1, ctx // slots)
+            cells = min(ctx, 2 * swa, per_slot_ctx)
+            swa_bps = sum(
+                cells * per_token_swa
+                for f in b._sliding_window_pattern[: b._n_layers] if f
+            )
+            assert scaled == global_bytes + slots * swa_bps
 
-    def test_non_unified_scales_mla_path(self):
+    def test_mla_kv_constant_across_parallel(self):
         b = LlamaCppBackend()
         b._n_layers = 60
         b._n_kv_heads = 1
@@ -1435,8 +1463,14 @@ class TestServerFlags:
         b._key_length_mla = 64
         b._kv_key_length = 576
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
-        scaled = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 4, kv_unified = False)
-        assert scaled == baseline * 4
+        for slots in (1, 2, 4, 8):
+            for unified in (True, False):
+                assert (
+                    b._estimate_kv_cache_bytes(
+                        8192, "f16", n_parallel = slots, kv_unified = unified
+                    )
+                    == baseline
+                )
 
     # ── --ctx-checkpoints ──────────────────────────────────────────
 
@@ -1474,13 +1508,28 @@ class TestServerFlags:
         assert flagged == baseline + extra
 
     def test_ctx_checkpoints_compose_with_n_parallel(self):
+        # Only the SWA + checkpoint portion scales by n_parallel; the
+        # global-layer portion stays constant.
         b = self._swa_backend()
         ctx = 8192
-        single = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
-        triple = b._estimate_kv_cache_bytes(
-            ctx, "f16", ctx_checkpoints = 4, n_parallel = 3, kv_unified = False
+        swa = b._sliding_window
+        per_token = 4 * (256 + 256) * 2
+        global_bytes = sum(
+            ctx * per_token
+            for f in b._sliding_window_pattern[: b._n_layers] if not f
         )
-        assert triple == single * 3
+        n_swa_layers = sum(
+            1 for f in b._sliding_window_pattern[: b._n_layers] if f
+        )
+        slots = 3
+        per_slot_ctx = max(1, ctx // slots)
+        swa_cells = min(ctx, 2 * swa, per_slot_ctx)
+        swa_bytes_per_slot = n_swa_layers * swa_cells * per_token
+        cp_extra_per_slot = n_swa_layers * 4 * swa * per_token  # 4 checkpoints
+        flagged = b._estimate_kv_cache_bytes(
+            ctx, "f16", ctx_checkpoints = 4, n_parallel = slots, kv_unified = False
+        )
+        assert flagged == global_bytes + slots * (swa_bytes_per_slot + cp_extra_per_slot)
 
     # ── --kv-offload (kv_on_gpu) ───────────────────────────────────
 
@@ -1531,6 +1580,239 @@ class TestServerFlags:
         )
         assert fitted_default == ctx
         assert fitted_full < ctx
+
+
+# ---------------------------------------------------------------------------
+# J2.5. --parallel N memory accounting (per-layer-type scaling rule)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelSWAScaling:
+    """Verifies the per-layer-type scaling rule against the closed form
+    measured from llama-server. Empirical formula on Gemma-3 270m at
+    ctx=8192: total_kv = 24 + parallel * 15 (MiB).
+
+    Rule (verified vs ``llama-server`` log on real GGUFs):
+      * non-SWA layers: total cells = n_ctx, partitioned across slots,
+        memory CONSTANT in n_parallel.
+      * SWA layers: per-slot cells = 2 * sliding_window (clamped at
+        n_ctx and at per_slot_ctx); memory LINEAR in n_parallel.
+      * --kv-unified is a no-op for memory math; both modes yield the
+        same total in measured cases.
+    """
+
+    def _gqa_backend(self, **overrides):
+        defaults = {
+            "_n_layers": 28,
+            "_n_kv_heads": 8,
+            "_n_heads": 16,
+            "_embedding_length": 1024,
+            "_kv_key_length": 128,
+            "_kv_value_length": 128,
+        }
+        defaults.update(overrides)
+        b = LlamaCppBackend()
+        for k, v in defaults.items():
+            setattr(b, k, v)
+        return b
+
+    def _swa_backend(self, **overrides):
+        defaults = {
+            "_n_layers": 18,
+            "_n_kv_heads": 1,
+            "_n_heads": 4,
+            "_embedding_length": 1024,
+            "_kv_key_length": 256,
+            "_kv_value_length": 256,
+            "_sliding_window": 512,
+            # 15 SWA + 3 global, mirrors gemma-3-270m
+            "_sliding_window_pattern": [
+                t == "swa"
+                for t in (["swa"] * 5 + ["global"]) * 3
+            ],
+        }
+        defaults.update(overrides)
+        b = LlamaCppBackend()
+        for k, v in defaults.items():
+            setattr(b, k, v)
+        return b
+
+    # ── non-SWA paths: constant ────────────────────────────────────
+
+    def test_pure_gqa_constant_across_parallel(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        for slots in (1, 2, 4, 8):
+            for unified in (True, False):
+                assert (
+                    b._estimate_kv_cache_bytes(
+                        8192, "f16", n_parallel = slots, kv_unified = unified
+                    )
+                    == baseline
+                )
+
+    def test_mla_constant_across_parallel(self):
+        b = LlamaCppBackend()
+        b._n_layers = 60
+        b._n_kv_heads = 1
+        b._kv_lora_rank = 512
+        b._key_length_mla = 64
+        b._kv_key_length = 576
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        for slots in (1, 2, 4, 8):
+            assert (
+                b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
+                == baseline
+            )
+
+    def test_hybrid_constant_across_parallel(self):
+        b = LlamaCppBackend()
+        b._n_layers = 64
+        b._n_kv_heads = 16
+        b._n_heads = 32
+        b._embedding_length = 4096
+        b._kv_key_length = 128
+        b._kv_value_length = 128
+        b._ssm_inner_size = 4096
+        b._full_attention_interval = 4
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        for slots in (1, 2, 4, 8):
+            assert (
+                b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
+                == baseline
+            )
+
+    def test_legacy_constant_across_parallel(self):
+        b = LlamaCppBackend()
+        b._n_layers = 32
+        b._n_kv_heads = 8
+        b._n_heads = 8
+        b._embedding_length = 4096
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        for slots in (1, 2, 4, 8):
+            assert (
+                b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
+                == baseline
+            )
+
+    # ── SWA paths: scale only the SWA portion ──────────────────────
+
+    def test_swa_pattern_scales_only_swa_portion(self):
+        b = self._swa_backend()
+        ctx = 8192
+        swa = b._sliding_window
+        per_token = 1 * (256 + 256) * 2  # n_kv * (k+v) * f16
+        n_global = sum(1 for f in b._sliding_window_pattern if not f)
+        n_swa = sum(1 for f in b._sliding_window_pattern if f)
+        global_bytes = n_global * ctx * per_token
+        for slots in (1, 2, 4, 8):
+            per_slot_ctx = max(1, ctx // slots)
+            cells = min(ctx, 2 * swa, per_slot_ctx)
+            swa_bps = n_swa * cells * per_token
+            for unified in (True, False):
+                got = b._estimate_kv_cache_bytes(
+                    ctx, "f16", n_parallel = slots, kv_unified = unified
+                )
+                assert got == global_bytes + slots * swa_bps
+
+    def test_swa_fallback_scales_only_swa_portion(self):
+        # No per-layer pattern -> 1/4-global heuristic.
+        b = self._swa_backend(_sliding_window_pattern = None)
+        ctx = 8192
+        swa = b._sliding_window
+        n_layers = 18
+        n_global = max(1, n_layers // 4)
+        n_swa = n_layers - n_global
+        per_token = 1 * (256 + 256) * 2
+        global_bytes = n_global * ctx * per_token
+        for slots in (1, 2, 4, 8):
+            per_slot_ctx = max(1, ctx // slots)
+            cells = min(ctx, 2 * swa, per_slot_ctx)
+            swa_bps = n_swa * cells * per_token
+            got = b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = slots)
+            assert got == global_bytes + slots * swa_bps
+
+    def test_swa_per_slot_clamped_when_ctx_lt_slots_x_2window(self):
+        # ctx=4096 / slots=8 -> per_slot_ctx=512, but 2*sliding=1024.
+        # SWA cells should clamp at per_slot_ctx (512), not 2*sliding.
+        b = self._swa_backend()
+        ctx = 4096
+        per_slot_ctx_at_8 = ctx // 8
+        assert per_slot_ctx_at_8 < 2 * b._sliding_window
+        # Build expected with the clamped formula
+        n_swa = sum(1 for f in b._sliding_window_pattern if f)
+        n_global = sum(1 for f in b._sliding_window_pattern if not f)
+        per_token = 1 * (256 + 256) * 2
+        global_bytes = n_global * ctx * per_token
+        cells = min(ctx, 2 * b._sliding_window, per_slot_ctx_at_8)
+        assert cells == per_slot_ctx_at_8
+        expected = global_bytes + 8 * (n_swa * cells * per_token)
+        assert b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = 8) == expected
+
+    def test_swa_full_does_not_scale_under_parallel(self):
+        # swa_full forces every layer to n_ctx; result is the all-global
+        # GQA-style total, which is constant in parallel.
+        b = self._swa_backend()
+        ctx = 8192
+        baseline = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
+        for slots in (1, 2, 4, 8):
+            assert (
+                b._estimate_kv_cache_bytes(
+                    ctx, "f16", swa_full = True, n_parallel = slots
+                )
+                == baseline
+            )
+
+    # ── kv_unified: no-op for memory math ──────────────────────────
+
+    def test_kv_unified_is_no_op_for_memory_math(self):
+        # Both unified=True and unified=False must produce the same
+        # total bytes for every backend type and every parallel value.
+        backends = [
+            ("gqa", self._gqa_backend()),
+            ("swa", self._swa_backend()),
+        ]
+        for label, b in backends:
+            for slots in (1, 2, 4, 8):
+                u = b._estimate_kv_cache_bytes(
+                    8192, "f16", n_parallel = slots, kv_unified = True
+                )
+                nu = b._estimate_kv_cache_bytes(
+                    8192, "f16", n_parallel = slots, kv_unified = False
+                )
+                assert u == nu, f"{label} parallel={slots} unified-mismatch"
+
+    # ── Empirical Gemma-3 270m formula ─────────────────────────────
+
+    def test_matches_empirical_gemma3_270m_formula(self):
+        """Exact match against the formula measured from llama-server:
+        total_kv = 24 + parallel * 15 (MiB) at ctx=8192.
+
+        Geometry: 18 layers (3 global + 15 SWA), n_kv=1, head_dim=256,
+        sliding=512, f16.
+        """
+        b = LlamaCppBackend()
+        b._n_layers = 18
+        b._n_kv_heads = 1
+        b._n_heads = 4
+        b._embedding_length = 1024
+        b._kv_key_length = 256
+        b._kv_value_length = 256
+        b._sliding_window = 512
+        # 5-period [swa,swa,swa,swa,full] * 3 + [swa,swa,swa]: mirrors the
+        # bootstrap-resolved pattern for gemma3 (period 6) on an 18-layer
+        # model (15 SWA, 3 global).
+        b._sliding_window_pattern = [(i + 1) % 6 != 0 for i in range(18)]
+        n_global = 3
+        n_swa = 15
+        # Confirm pattern shape
+        assert sum(b._sliding_window_pattern) == n_swa
+        for slots, expected_mib in [(1, 39), (2, 54), (4, 84)]:
+            got_bytes = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
+            got_mib = got_bytes / (1024 * 1024)
+            assert got_mib == expected_mib, (
+                f"slots={slots}: got {got_mib} MiB, expected {expected_mib} MiB"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1682,10 +1964,24 @@ class TestSharedKVLayers:
         assert b._estimate_kv_cache_bytes(ctx, "f16") == 1 * ctx * kv_per
 
     def test_composes_with_n_parallel(self):
+        # Only the SWA portion of the unshared layers scales by n_parallel;
+        # the global portion stays constant.
         b = self._gemma3n_backend()
-        single = b._estimate_kv_cache_bytes(8192, "f16")
-        triple = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 3, kv_unified = False)
-        assert triple == single * 3
+        ctx = 8192
+        swa = b._sliding_window
+        per_token = 4 * (256 + 256) * 2
+        unshared_pattern = b._sliding_window_pattern[:20]  # 35 - 15 shared
+        sliding_in_unshared = sum(unshared_pattern)
+        global_in_unshared = len(unshared_pattern) - sliding_in_unshared
+        global_bytes = global_in_unshared * ctx * per_token
+        slots = 3
+        per_slot_ctx = max(1, ctx // slots)
+        swa_cells = min(ctx, 2 * swa, per_slot_ctx)
+        swa_bytes_per_slot = sliding_in_unshared * swa_cells * per_token
+        flagged = b._estimate_kv_cache_bytes(
+            ctx, "f16", n_parallel = slots, kv_unified = False
+        )
+        assert flagged == global_bytes + slots * swa_bytes_per_slot
 
     def test_composes_with_ctx_checkpoints(self):
         b = self._gemma3n_backend()

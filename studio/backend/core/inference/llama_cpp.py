@@ -1020,10 +1020,14 @@ class LlamaCppBackend:
                              full ``n_ctx`` (collapses path 3 to path 4
                              sizing for the SWA layers).
           n_parallel      -- ``--parallel``: number of server slots.
-          kv_unified      -- ``--kv-unified`` (default on): single shared
-                             KV buffer across slots. When False, allocates
-                             one buffer per slot (multiplies KV by
-                             ``n_parallel``).
+                             Verified empirically against llama-server:
+                             non-SWA layers stay constant (cells split
+                             across slots), SWA layers scale linearly
+                             (per-slot window).
+          kv_unified      -- ``--kv-unified`` (default on): retained for
+                             API forward-compat. Currently a no-op for
+                             memory math because the unified buffer total
+                             matches per-slot buffers in measured cases.
           ctx_checkpoints -- ``--ctx-checkpoints``: SWA snapshot count per
                              slot (PR #15293). Each snapshot stores one
                              sliding-window of state per SWA layer.
@@ -1054,8 +1058,7 @@ class LlamaCppBackend:
             "iq4_nl": 0.5625,
         }.get(cache_type_kv or "f16", 2.0)
 
-        # Per-slot replication when slots don't share the unified buffer.
-        slot_factor = max(1, n_parallel) if not kv_unified else 1
+        slots = max(1, n_parallel)
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # MLA stores one compressed KV latent per token/layer (shared across heads).
@@ -1067,7 +1070,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers_kv * n_ctx * n_kv_mla * key_len * bpe * slot_factor)
+            return int(n_layers_kv * n_ctx * n_kv_mla * key_len * bpe)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -1081,23 +1084,23 @@ class LlamaCppBackend:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
-                return int(
-                    n_attn * n_ctx * n_kv * (key_len + val_len) * bpe * slot_factor
-                )
+                return int(n_attn * n_ctx * n_kv * (key_len + val_len) * bpe)
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-            return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe * slot_factor)
+            return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
         # Pattern is filled in by the resolver at parse time; if absent,
         # falls through to the legacy 1/4-global heuristic below.
-        # llama.cpp double-buffers the SWA cache (so it can keep the
-        # current and next windows during the shift) -- it allocates
-        # `2 * sliding_window` cells per SWA layer, capped at n_ctx.
+        # Per-layer-type ``--parallel N`` accounting (verified empirically
+        # against ``llama-server``):
+        #   * non-SWA layers:    total cells = n_ctx, partitioned across
+        #                         slots -> total memory CONSTANT in slots.
+        #   * SWA layers:         per-slot cells = 2 * sliding_window
+        #                         (capped at n_ctx and at per_slot_ctx
+        #                         when ctx is split among many slots) ->
+        #                         total memory grows LINEARLY in slots.
         # ``--swa-full`` forces full n_ctx for SWA layers instead.
-        # ``--ctx-checkpoints N`` adds N snapshots per SWA layer (one
-        # sliding-window of state each) per slot for context-shift
-        # recovery; only meaningful when SWA layers don't already cache
-        # n_ctx.
+        # ``--ctx-checkpoints N`` adds N snapshots per SWA layer per slot.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -1105,12 +1108,21 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
-            swa_cells = n_ctx if swa_full else min(n_ctx, 2 * swa)
+            per_slot_ctx = max(1, n_ctx // slots)
+            # ``--swa-full`` makes SWA layers cache the full context just
+            # like non-SWA: cells get partitioned across slots, so per-slot
+            # cells = per_slot_ctx and the slots*per-slot product collapses
+            # back to the constant ``n_ctx`` total.  Otherwise SWA caches
+            # 2*sliding_window per slot, clamped at the per-slot ctx.
+            swa_cells_per_slot = (
+                per_slot_ctx if swa_full else min(n_ctx, 2 * swa, per_slot_ctx)
+            )
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
             if self._sliding_window_pattern is not None:
-                total = 0.0
-                checkpoint_extra = 0.0
+                global_bytes = 0.0          # constant across slots
+                swa_bytes_per_slot = 0.0    # multiplied by slots
+                checkpoint_extra_per_slot = 0.0
                 # Iterate only over layers that allocate their own KV;
                 # the trailing ``shared`` layers reuse earlier caches.
                 for layer_idx in range(n_layers_kv):
@@ -1119,44 +1131,52 @@ class LlamaCppBackend:
                         layer_idx < len(self._sliding_window_pattern)
                         and self._sliding_window_pattern[layer_idx]
                     )
-                    layer_ctx = swa_cells if is_swa else n_ctx
-                    layer_key_len = key_len_swa if is_swa else key_len
-                    layer_val_len = val_len_swa if is_swa else val_len
-                    total += (
-                        layer_ctx * layer_n_kv * (layer_key_len + layer_val_len) * bpe
-                    )
-                    if is_swa and ctx_checkpoints > 0 and not swa_full:
-                        checkpoint_extra += (
-                            ctx_checkpoints
-                            * swa
+                    if is_swa:
+                        swa_bytes_per_slot += (
+                            swa_cells_per_slot
                             * layer_n_kv
-                            * (layer_key_len + layer_val_len)
+                            * (key_len_swa + val_len_swa)
                             * bpe
                         )
-                return int((total + checkpoint_extra) * slot_factor)
+                        if ctx_checkpoints > 0 and not swa_full:
+                            checkpoint_extra_per_slot += (
+                                ctx_checkpoints
+                                * swa
+                                * layer_n_kv
+                                * (key_len_swa + val_len_swa)
+                                * bpe
+                            )
+                    else:
+                        global_bytes += (
+                            n_ctx * layer_n_kv * (key_len + val_len) * bpe
+                        )
+                return int(
+                    global_bytes
+                    + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
+                )
             n_global = max(1, n_layers_kv // 4)
             n_swa = n_layers_kv - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
             kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
-            base = (
-                n_global * n_ctx * kv_per_token + n_swa * swa_cells * kv_per_token_swa
-            )
-            checkpoint_extra = (
+            global_bytes = n_global * n_ctx * kv_per_token
+            swa_bytes_per_slot = n_swa * swa_cells_per_slot * kv_per_token_swa
+            checkpoint_extra_per_slot = (
                 ctx_checkpoints * n_swa * swa * kv_per_token_swa
                 if ctx_checkpoints > 0 and not swa_full
                 else 0.0
             )
-            return int((base + checkpoint_extra) * slot_factor)
+            return int(
+                global_bytes
+                + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
+            )
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            return int(
-                n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe * slot_factor
-            )
+            return int(n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe)
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-        return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe * slot_factor)
+        return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
 
     def _fit_context_to_vram(
         self,
@@ -1972,8 +1992,11 @@ class LlamaCppBackend:
                                 pool_mib,
                                 model_size,
                                 cache_type_kv,
+                                n_parallel = n_parallel,
                             )
-                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv, n_parallel = n_parallel
+                            )
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.90:
                                 best_cap = max(best_cap, capped)
@@ -1997,7 +2020,7 @@ class LlamaCppBackend:
                         # have surfaced the "might be slower" warning before
                         # the user submitted a ctx above the fit ceiling.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv
+                            effective_ctx, cache_type_kv, n_parallel = n_parallel
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
                         # No silent shrink: effective_ctx stays == n_ctx.
@@ -2012,8 +2035,11 @@ class LlamaCppBackend:
                                 pool_mib,
                                 model_size,
                                 cache_type_kv,
+                                n_parallel = n_parallel,
                             )
-                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv, n_parallel = n_parallel
+                            )
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.90:
                                 effective_ctx = capped
@@ -2046,7 +2072,9 @@ class LlamaCppBackend:
                         )
 
                 if effective_ctx < original_ctx:
-                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                    kv_est = self._estimate_kv_cache_bytes(
+                        effective_ctx, cache_type_kv, n_parallel = n_parallel
+                    )
                     logger.info(
                         f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
                         f"(model: {model_size / (1024**3):.1f} GB, "
@@ -2054,7 +2082,7 @@ class LlamaCppBackend:
                     )
 
                 kv_cache_bytes = self._estimate_kv_cache_bytes(
-                    effective_ctx, cache_type_kv
+                    effective_ctx, cache_type_kv, n_parallel = n_parallel
                 )
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
