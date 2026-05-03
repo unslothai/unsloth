@@ -30,8 +30,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { DEFAULT_THREAD_KEY, sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { db, useLiveQuery } from "@/features/chat/db";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { usePromptEvalStore } from "@/features/chat/stores/use-prompt-eval-store";
+import {
+  downloadPromptEvalCsv,
+  downloadPromptEvalJsonl,
+} from "@/features/chat/prompt-eval/utils/export-prompt-eval";
+import { PromptStorageDialog } from "@/features/chat/prompt-eval/prompt-storage-dialog";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -53,6 +60,7 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  FlaskConicalIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -65,6 +73,7 @@ import {
   LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
+  BookmarkIcon,
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -87,10 +96,12 @@ export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
+  onPromptEvalSend?: (text: string) => void;
 }> = ({
   hideComposer,
   hideWelcome,
   targetThreadId,
+  onPromptEvalSend,
 }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
@@ -126,7 +137,7 @@ export const Thread: FC<{
         >
           {!hideWelcome && (
             <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
-              <ThreadWelcome hideComposer={hideComposer} />
+              <ThreadWelcome hideComposer={hideComposer} onPromptEvalSend={onPromptEvalSend} />
             </AuiIf>
           )}
 
@@ -170,7 +181,7 @@ export const Thread: FC<{
               />
               <div className="relative px-5 pb-2">
                 <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                  <ComposerAnimated disabled={isComposerAttachPending} />
+                  <ComposerAnimated disabled={isComposerAttachPending} onPromptEvalSend={onPromptEvalSend} />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
                   LLMs can make mistakes. Double-check all responses.
@@ -208,7 +219,7 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
-const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+const ThreadWelcome: FC<{ hideComposer?: boolean; onPromptEvalSend?: (text: string) => void }> = ({ hideComposer, onPromptEvalSend }) => {
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
@@ -227,7 +238,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
             </p>
           </div>
           <GeneratingSpinner />
-          {!hideComposer && <ComposerAnimated />}
+          {!hideComposer && <ComposerAnimated onPromptEvalSend={onPromptEvalSend} />}
         </div>
       </div>
     </div>
@@ -249,7 +260,7 @@ const GeneratingSpinner: FC = () => {
   );
 };
 
-const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAnimated: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => void }> = ({ disabled, onPromptEvalSend }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <motion.div
@@ -258,7 +269,7 @@ const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
         transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
         className="relative z-10 w-full"
       >
-        <Composer disabled={disabled} />
+        <Composer disabled={disabled} onPromptEvalSend={onPromptEvalSend} />
       </motion.div>
     </div>
   );
@@ -288,38 +299,112 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const Composer: FC<{ disabled?: boolean; onPromptEvalSend?: (text: string) => void }> = ({ disabled, onPromptEvalSend }) => {
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalName = usePromptEvalStore((s) => s.promptEvalName);
+  const setPromptEvalName = usePromptEvalStore((s) => s.setPromptEvalName);
+  const pendingComposerText = usePromptEvalStore((s) => s.pendingComposerText);
+  const setPendingComposerText = usePromptEvalStore((s) => s.setPendingComposerText);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+
+  // Detect if a different thread (not the currently visible one) is generating.
+  // In that case we block send but keep typing/uploads/prompt-storage enabled.
+  // We check both the assistant-ui isRunning flag AND the store's runningByThreadId
+  // so that the eval hidden host's generation (which uses its own ChatRuntimeProvider)
+  // is recognised as "this thread running" when the visible thread is the same DB thread.
+  const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const thisThreadInStore = useChatRuntimeStore((s) =>
+    Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
+  );
+  const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
+  const anotherThreadRunning = !thisThreadIsRunning && !thisThreadInStore && anyRunning;
+
+  // When a prompt is loaded from Prompt Storage, inject it into the textarea.
+  // Only inject into a VISIBLE textarea (offsetParent !== null) so that the
+  // hidden background eval SingleContent doesn't consume the event.
+  useEffect(() => {
+    if (!pendingComposerText) return;
+    // Find the first visible .aui-composer-input (not inside display:none).
+    const all = document.querySelectorAll<HTMLTextAreaElement>(".aui-composer-input");
+    let textarea: HTMLTextAreaElement | null = null;
+    for (const el of all) {
+      if (el.offsetParent !== null) { textarea = el; break; }
+    }
+    if (textarea) {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      if (nativeSetter) {
+        nativeSetter.call(textarea, pendingComposerText);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.focus();
+      }
+    }
+    setPendingComposerText(null);
+  }, [pendingComposerText, setPendingComposerText]);
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled) {
+      if (disabled || anotherThreadRunning) {
         event.preventDefault();
+        return;
+      }
+      if (promptEvalMode && onPromptEvalSend) {
+        const textarea = event.currentTarget.querySelector('textarea') as HTMLTextAreaElement | null;
+        const text = textarea?.value?.trim() ?? "";
+        if (text) {
+          event.preventDefault();
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+          if (nativeSetter && textarea) {
+            nativeSetter.call(textarea, '');
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          onPromptEvalSend(text);
+        } else {
+          event.preventDefault();
+        }
       }
     },
-    [disabled],
+    [disabled, anotherThreadRunning, promptEvalMode, onPromptEvalSend],
   );
 
   return (
-    <ComposerPrimitive.Root
-      className="aui-composer-root relative flex w-full flex-col"
-      aria-disabled={disabled}
-      onSubmit={handleSubmit}
-    >
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-        <ComposerAttachments />
-        <PendingAudioChip />
-        <ToolStatusDisplay />
-        <ComposerPrimitive.Input
-          placeholder="Send a message..."
-          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
-          minRows={1}
-          maxRows={6}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label="Message input"
-        />
-        <ComposerAction disabled={disabled} />
-      </ComposerPrimitive.AttachmentDropzone>
-    </ComposerPrimitive.Root>
+    <>
+      {promptEvalMode && (
+        <PromptStorageDialog open={promptStorageOpen} onOpenChange={setPromptStorageOpen} />
+      )}
+      <ComposerPrimitive.Root
+        className="aui-composer-root relative flex w-full flex-col"
+        aria-disabled={disabled}
+        onSubmit={handleSubmit}
+      >
+        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          {anotherThreadRunning && (
+            <div className="mb-2 flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-3 py-2 mx-2 mt-1">
+              <label className="text-xs font-medium text-primary whitespace-nowrap">Prompt Eval name:</label>
+              <input
+                value={promptEvalName}
+                onChange={(e) => setPromptEvalName(e.target.value)}
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                placeholder="Prompt Eval name..."
+              />
+            </div>
+          )}
+          <ComposerAttachments />
+          <PendingAudioChip />
+          <ToolStatusDisplay />
+          <ComposerPrimitive.Input
+            placeholder={promptEvalMode ? "Send prompt to all selected models..." : "Send a message..."}
+            className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+            minRows={1}
+            maxRows={6}
+            autoFocus={!disabled}
+            disabled={disabled}
+            aria-label="Message input"
+          />
+          <ComposerAction disabled={disabled} sendDisabled={anotherThreadRunning} onOpenPromptStorage={promptEvalMode ? () => setPromptStorageOpen(true) : undefined} />
+        </ComposerPrimitive.AttachmentDropzone>
+      </ComposerPrimitive.Root>
+    </>
   );
 };
 
@@ -618,7 +703,142 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const PromptEvalToggle: FC = () => {
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const togglePromptEvalMode = usePromptEvalStore((s) => s.togglePromptEvalMode);
+  const toggleModelSelection = usePromptEvalStore((s) => s.toggleModelSelection);
+
+  const handleToggle = () => {
+    // When enabling Prompt Eval mode, auto-add the currently loaded model
+    if (!promptEvalMode) {
+      const { params, activeGgufVariant } = useChatRuntimeStore.getState();
+      const checkpoint = params.checkpoint;
+      if (checkpoint) {
+        const storeId = activeGgufVariant ? `${checkpoint}::${activeGgufVariant}` : checkpoint;
+        const currentIds = usePromptEvalStore.getState().promptEvalSelectedModelIds;
+        if (!currentIds.includes(storeId)) {
+          toggleModelSelection(storeId);
+        }
+      }
+    }
+    togglePromptEvalMode();
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleToggle}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        promptEvalMode
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
+          : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={promptEvalMode ? "Disable Prompt Eval mode" : "Enable Prompt Eval mode"}
+    >
+      <FlaskConicalIcon className="size-3.5" />
+      <span>Prompt Eval</span>
+    </button>
+  );
+};
+
+const ExportPromptEvalButton: FC = () => {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const thread = useLiveQuery(
+    () => (activeThreadId ? db.threads.get(activeThreadId) : Promise.resolve(undefined)),
+    [activeThreadId],
+  );
+  const [open, setOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const promptEvalId = thread?.promptEvalId;
+
+  if (!promptEvalId) return null;
+
+  const handleExport = async (format: "jsonl" | "csv") => {
+    setExporting(true);
+    try {
+      if (format === "jsonl") {
+        await downloadPromptEvalJsonl(promptEvalId);
+      } else {
+        await downloadPromptEvalCsv(promptEvalId);
+      }
+    } catch {
+      // user cancelled file picker — ignore
+    } finally {
+      setExporting(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <TooltipIconButton
+        tooltip="Export Prompt Eval"
+        variant="ghost"
+        className="size-8 rounded-full text-muted-foreground"
+        onClick={() => setOpen((v) => !v)}
+        type="button"
+      >
+        <DownloadIcon className="size-4" />
+      </TooltipIconButton>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-10 right-0 z-50 flex flex-col gap-1 rounded-xl border border-border bg-popover p-2 shadow-md">
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={() => { void handleExport("jsonl"); }}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium hover:bg-accent"
+            >
+              <DownloadIcon className="size-3.5" />
+              Export JSONL
+            </button>
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={() => { void handleExport("csv"); }}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium hover:bg-accent"
+            >
+              <DownloadIcon className="size-3.5" />
+              Export CSV
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean; onOpenPromptStorage?: () => void }> = ({ disabled, sendDisabled, onOpenPromptStorage }) => {
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalSendFn = usePromptEvalStore((s) => s.promptEvalSendFn);
+  // Custom send handler for prompt eval mode.
+  // ComposerPrimitive.Send's own onClick bypasses our form's onSubmit (it calls
+  // the runtime directly), so in eval mode we replace it with a plain button
+  // that reads the textarea value and fires the eval runner.
+  const handleEvalSend = useCallback(() => {
+    if (!promptEvalSendFn) return;
+    const textarea = document.querySelector<HTMLTextAreaElement>(".aui-composer-input:not(.hidden *)");
+    // Fall back to any visible composer input (not inside a display:none container)
+    const visibleTextarea = (() => {
+      const all = document.querySelectorAll<HTMLTextAreaElement>(".aui-composer-input");
+      for (const el of all) {
+        if (el.offsetParent !== null) return el;
+      }
+      return textarea;
+    })();
+    const text = visibleTextarea?.value?.trim() ?? "";
+    if (!text) return;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (nativeSetter && visibleTextarea) {
+      nativeSetter.call(visibleTextarea, "");
+      visibleTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    promptEvalSendFn([text]);
+  }, [promptEvalSendFn]);
+
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
@@ -628,8 +848,21 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <PreserveThinkingToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
+        <PromptEvalToggle />
+        {onOpenPromptStorage && (
+          <TooltipIconButton
+            tooltip="Prompt Storage"
+            variant="ghost"
+            className="size-8 rounded-full text-muted-foreground"
+            onClick={onOpenPromptStorage}
+            type="button"
+          >
+            <BookmarkIcon className="size-4" />
+          </TooltipIconButton>
+        )}
       </div>
       <div className="flex items-center gap-1">
+        <ExportPromptEvalButton />
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
@@ -653,20 +886,39 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
           </ComposerPrimitive.StopDictation>
         </ComposerPrimitive.If>
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <ComposerPrimitive.Send asChild={true}>
+          {promptEvalMode ? (
+            // In Prompt Eval mode, bypass ComposerPrimitive.Send entirely —
+            // its onClick calls the runtime directly, skipping our onSubmit.
+            // This plain button reads the textarea and fires the eval runner.
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={sendDisabled ? "Another model is generating" : "Send to all selected models"}
               side="bottom"
-              type="submit"
+              type="button"
               variant="default"
               size="icon"
-              disabled={disabled}
+              disabled={disabled || sendDisabled}
               className="aui-composer-send size-8 rounded-full"
-              aria-label="Send message"
+              aria-label="Send to all selected models"
+              onClick={handleEvalSend}
             >
               <ArrowUpIcon className="aui-composer-send-icon size-4" />
             </TooltipIconButton>
-          </ComposerPrimitive.Send>
+          ) : (
+            <ComposerPrimitive.Send asChild={true}>
+              <TooltipIconButton
+                tooltip={sendDisabled ? "Another model is generating" : "Send message"}
+                side="bottom"
+                type="submit"
+                variant="default"
+                size="icon"
+                disabled={disabled || sendDisabled}
+                className="aui-composer-send size-8 rounded-full"
+                aria-label="Send message"
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          )}
         </AuiIf>
         <AuiIf condition={({ thread }) => thread.isRunning}>
           <ComposerPrimitive.Cancel asChild={true}>

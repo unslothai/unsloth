@@ -6,7 +6,7 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 
 export interface SidebarItem {
-  type: "single" | "compare";
+  type: "single" | "compare" | "promptEval";
   id: string;
   title: string;
   createdAt: number;
@@ -15,9 +15,22 @@ export interface SidebarItem {
 export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
   const items: SidebarItem[] = [];
   const seenPairs = new Set<string>();
+  const seenPromptEvals = new Set<string>();
 
   for (const t of threads) {
     if (t.archived) {
+      continue;
+    }
+    // Benchmark folders — handled before pairId so child threads don't fall through
+    if (t.promptEvalId) {
+      if (seenPromptEvals.has(t.promptEvalId)) continue;
+      seenPromptEvals.add(t.promptEvalId);
+      items.push({
+        type: "promptEval",
+        id: t.promptEvalId,
+        title: t.promptEvalName ?? "Benchmark",
+        createdAt: t.createdAt,
+      });
       continue;
     }
     if (t.pairId) {
@@ -31,7 +44,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         title: t.title,
         createdAt: t.createdAt,
       });
-    } else if (!t.pairId) {
+    } else {
       items.push({
         type: "single",
         id: t.id,
@@ -50,7 +63,11 @@ export function useChatSidebarItems() {
       (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
     );
     const rows = await db.threads.orderBy("createdAt").reverse().toArray();
-    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
+    // Include prompt eval child threads even before they have messages so the
+    // prompt eval folder appears in the sidebar as soon as the run begins.
+    return rows.filter(
+      (t) => !t.archived && (threadIdsWithMessage.has(t.id) || Boolean(t.promptEvalId)),
+    );
   }, []);
   const items = groupThreads(allThreads ?? []);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
@@ -73,9 +90,9 @@ export async function deleteChatItem(
   const threadIds: string[] =
     item.type === "single"
       ? [item.id]
-      : (await db.threads.where("pairId").equals(item.id).toArray()).map(
-          (t) => t.id,
-        );
+      : item.type === "promptEval"
+        ? (await db.threads.where("promptEvalId").equals(item.id).toArray()).map((t) => t.id)
+        : (await db.threads.where("pairId").equals(item.id).toArray()).map((t) => t.id);
 
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
@@ -88,7 +105,8 @@ export async function deleteChatItem(
     }
   });
 
-  if (activeId === item.id) {
+  // For benchmark items, activeId is a child threadId, not the promptEvalId itself
+  if (activeId === item.id || threadIds.includes(activeId ?? "")) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }

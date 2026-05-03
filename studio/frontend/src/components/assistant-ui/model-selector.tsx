@@ -43,6 +43,14 @@ interface ModelSelectorProps {
   onOpenChange?: (open: boolean) => void;
   triggerDataTour?: string;
   contentDataTour?: string;
+  /** When true, clicking models toggles their benchmark selection instead of loading them */
+  promptEvalMode?: boolean;
+  /** Model IDs currently selected for the benchmark */
+  promptEvalSelectedIds?: string[];
+  /** Called when a model is toggled in Prompt Eval mode */
+  onPromptEvalToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  /** Called when the user confirms Prompt Eval model selection */
+  onPromptEvalConfirm?: () => void;
 }
 
 function ModelSelectorTrigger({
@@ -111,6 +119,10 @@ function ModelSelectorContent({
   onFoldersChange,
   className,
   dataTour,
+  promptEvalMode,
+  promptEvalSelectedIds,
+  onPromptEvalToggle,
+  onPromptEvalConfirm,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -120,9 +132,14 @@ function ModelSelectorContent({
   onFoldersChange?: () => void;
   className?: string;
   dataTour?: string;
+  promptEvalMode?: boolean;
+  promptEvalSelectedIds?: string[];
+  onPromptEvalToggle?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onPromptEvalConfirm?: () => void;
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const selectedCount = promptEvalSelectedIds?.length ?? 0;
 
   return (
     <PopoverContent
@@ -134,7 +151,15 @@ function ModelSelectorContent({
       )}
     >
       {chatOnly ? (
-        <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+        <HubModelPicker
+          models={models}
+          value={value}
+          onSelect={onSelect}
+          onFoldersChange={onFoldersChange}
+          promptEvalMode={promptEvalMode}
+          promptEvalSelectedIds={promptEvalSelectedIds}
+          onPromptEvalToggle={onPromptEvalToggle}
+        />
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
@@ -143,7 +168,15 @@ function ModelSelectorContent({
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+            <HubModelPicker
+              models={models}
+              value={value}
+              onSelect={onSelect}
+              onFoldersChange={onFoldersChange}
+              promptEvalMode={promptEvalMode}
+              promptEvalSelectedIds={promptEvalSelectedIds}
+              onPromptEvalToggle={onPromptEvalToggle}
+            />
           </TabsContent>
 
           <TabsContent value="lora" className="m-0">
@@ -156,6 +189,28 @@ function ModelSelectorContent({
         </Tabs>
       )}
 
+      {/* Benchmark confirmation button — only when Prompt Eval mode is active */}
+      {promptEvalMode && (
+        <div className="mt-2 border-t border-border/70 pt-2">
+          <button
+            type="button"
+            onClick={onPromptEvalConfirm}
+            disabled={selectedCount === 0}
+            className={cn(
+              "flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              selectedCount === 0
+                ? "cursor-not-allowed opacity-40 text-muted-foreground"
+                : "text-primary hover:bg-primary/10",
+            )}
+          >
+            {selectedCount > 0
+              ? `Load ${selectedCount} selected model${selectedCount !== 1 ? "s" : ""} for benchmark`
+              : "Select models above for Prompt Eval"}
+          </button>
+        </div>
+      )}
+
+      {/* Eject button */}
       {hasSelection && onEject ? (
         <div className="mt-2 border-t border-border/70 pt-2">
           <button
@@ -190,6 +245,10 @@ export function ModelSelector({
   onOpenChange,
   triggerDataTour,
   contentDataTour,
+  promptEvalMode,
+  promptEvalSelectedIds,
+  onPromptEvalToggle,
+  onPromptEvalConfirm,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -259,11 +318,24 @@ export function ModelSelector({
     setOpen(false);
   }
 
+  function handlePromptEvalConfirm() {
+    onPromptEvalConfirm?.();
+    setOpen(false);
+  }
+
+  // In Prompt Eval mode show the count of selected models in the trigger
+  const promptEvalCount = promptEvalSelectedIds?.length ?? 0;
+  const promptEvalTriggerModel: ModelOption | undefined = promptEvalMode
+    ? promptEvalCount > 0
+      ? { id: "__bench__", name: `${promptEvalCount} model${promptEvalCount !== 1 ? "s" : ""} selected` }
+      : { id: "__bench__", name: "Select models" }
+    : undefined;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
-        currentModel={currentModel}
-        isLoaded={isLoaded}
+        currentModel={promptEvalTriggerModel ?? currentModel}
+        isLoaded={promptEvalMode ? promptEvalCount > 0 : isLoaded}
         variant={variant}
         size={size}
         className={className}
@@ -278,6 +350,10 @@ export function ModelSelector({
         onFoldersChange={onFoldersChange}
         className={contentClassName}
         dataTour={contentDataTour}
+        promptEvalMode={promptEvalMode}
+        promptEvalSelectedIds={promptEvalSelectedIds}
+        onPromptEvalToggle={onPromptEvalToggle}
+        onPromptEvalConfirm={handlePromptEvalConfirm}
       />
     </Popover>
   );

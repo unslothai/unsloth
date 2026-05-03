@@ -37,6 +37,8 @@ export type CompareMessagePart =
   | { type: "audio"; audio: string };
 
 export interface CompareHandle {
+  /** DB thread ID this handle is bound to. Used by waitForHandle to reject stale handles. */
+  threadId?: string;
   append: (content: CompareMessagePart[]) => void;
   /** Append a user message without triggering generation. */
   appendMessage: (content: CompareMessagePart[]) => void;
@@ -140,8 +142,10 @@ export function CompareHandlesProvider({
 
 export function RegisterCompareHandle({
   name,
+  threadId,
 }: {
   name: string;
+  threadId?: string;
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
   const aui = useAui();
@@ -152,6 +156,7 @@ export function RegisterCompareHandle({
     }
     const currentHandles = handlesRef.current;
     currentHandles[name] = {
+      threadId,
       // fixes occasional reorder on reload.
       append: (content) =>
         aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
@@ -166,21 +171,40 @@ export function RegisterCompareHandle({
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
-          let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
-              unsub();
-              resolve();
+          const WAIT_START_TIMEOUT_MS = 10_000;
+          const startDeadline = Date.now() + WAIT_START_TIMEOUT_MS;
+
+          // Phase A: poll until this specific thread's run starts (or times out).
+          // append() schedules the run asynchronously, so isRunning may still be
+          // false when waitForRunEnd() is first called.
+          function waitForStart(): void {
+            if (aui.thread().getState().isRunning) {
+              waitForEnd();
+              return;
             }
-          });
+            if (Date.now() > startDeadline) {
+              resolve(); // thread never started — unblock runner
+              return;
+            }
+            setTimeout(waitForStart, 50);
+          }
+
+          // Phase B: poll until this thread's run completes.
+          function waitForEnd(): void {
+            if (!aui.thread().getState().isRunning) {
+              resolve();
+              return;
+            }
+            setTimeout(waitForEnd, 50);
+          }
+
+          waitForStart();
         }),
     };
     return () => {
       delete currentHandles[name];
     };
-  }, [handlesRef, name, aui]);
+  }, [handlesRef, name, aui, threadId]);
 
   return null;
 }

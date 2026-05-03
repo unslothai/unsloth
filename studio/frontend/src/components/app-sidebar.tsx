@@ -53,7 +53,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ChevronsUpDown, Moon, Sun } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsUpDown, Moon, Sun } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTrainingRuntimeStore } from "@/features/training";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -64,12 +64,14 @@ import {
   useChatSidebarItems,
   deleteChatItem,
 } from "@/features/chat/hooks/use-chat-sidebar-items";
+import type { SidebarItem } from "@/features/chat/hooks/use-chat-sidebar-items";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import { db, useLiveQuery } from "@/features/chat/db";
 import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
 import { useTrainingHistorySidebarItems, deleteTrainingRun } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 
@@ -150,6 +152,119 @@ function NavItem({
       </div>
       {children}
     </SidebarMenuItem>
+  );
+}
+
+function PromptEvalFolderItem({
+  item,
+  activeThreadId,
+  onNavigate,
+  onDelete,
+}: {
+  item: SidebarItem & { type: "promptEval" };
+  activeThreadId: string | undefined;
+  onNavigate: (threadId: string) => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [editTitle, setEditTitle] = useState(item.title);
+  const children = useLiveQuery(
+    () => db.threads.where("promptEvalId").equals(item.id).sortBy("createdAt"),
+    [item.id],
+  );
+  const anyActive = children?.some((t) => t.id === activeThreadId);
+
+  const saveRename = useCallback(async () => {
+    if (editTitle.trim() && editTitle !== item.title) {
+      await db.threads
+        .where("promptEvalId")
+        .equals(item.id)
+        .modify({ promptEvalName: editTitle.trim() });
+    }
+    setIsRenaming(false);
+  }, [editTitle, item.id, item.title]);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <SidebarMenuItem className="group/eval-folder">
+        <CollapsibleTrigger asChild>
+          <SidebarMenuButton
+            isActive={anyActive}
+            className="h-[32px] rounded-[10px] pl-2 pr-7 text-[14px] leading-[18px] tracking-[0.01em] font-medium text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+          >
+            <ChevronRight
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground transition-transform duration-150",
+                open && "rotate-90",
+              )}
+            />
+            {isRenaming ? (
+              <input
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onBlur={() => { void saveRename(); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { void saveRename(); }
+                  if (e.key === "Escape") setIsRenaming(false);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+                className="flex-1 bg-transparent text-sm outline-none"
+              />
+            ) : (
+              <span
+                className="flex-1 truncate"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditTitle(item.title);
+                  setIsRenaming(true);
+                }}
+              >
+                {item.title}
+              </span>
+            )}
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 ml-1">
+              eval
+            </span>
+          </SidebarMenuButton>
+        </CollapsibleTrigger>
+        {/* Hover actions: delete */}
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover/eval-folder:opacity-100">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            title="Delete Prompt Eval"
+            className="flex size-5 items-center justify-center rounded-[8px] text-sidebar-foreground/55 hover:bg-destructive/12 hover:text-destructive"
+          >
+            <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
+          </button>
+        </div>
+      </SidebarMenuItem>
+      <CollapsibleContent>
+        <SidebarMenu className="ml-5 border-l border-border/40 pl-2 py-0.5">
+          {children?.map((t) => (
+            <SidebarMenuItem key={t.id} className="group/eval-child">
+              <SidebarMenuButton
+                isActive={t.id === activeThreadId}
+                className="h-[30px] rounded-[10px] pl-2 pr-2 text-[13px] leading-[18px] font-normal text-[#383835] dark:text-[#c7c7c4] hover:bg-[#f0f0f0]! dark:hover:bg-[#2a2c2f]! hover:text-black! dark:hover:text-white! data-active:bg-[#f0f0f0]! dark:data-active:bg-[#2a2c2f]! data-active:text-black! dark:data-active:text-white!"
+                onClick={() => onNavigate(t.id)}
+              >
+                <span className="truncate">{t.title}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+          {(!children || children.length === 0) && (
+            <p className="px-2 py-1 text-xs italic text-muted-foreground">
+              Running…
+            </p>
+          )}
+        </SidebarMenu>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -393,7 +508,19 @@ export function AppSidebar() {
             <CollapsibleContent>
             <SidebarGroupContent>
               <SidebarMenu>
-                {chatItems.map((item) => (
+                {chatItems.map((item) =>
+                  item.type === "promptEval" ? (
+                    <PromptEvalFolderItem
+                      key={item.id}
+                      item={item as SidebarItem & { type: "promptEval" }}
+                      activeThreadId={activeThreadId}
+                      onNavigate={(threadId) => {
+                        navigate({ to: "/chat", search: { thread: threadId } });
+                        closeMobileIfOpen();
+                      }}
+                      onDelete={() => handleDeleteThread(item)}
+                    />
+                  ) : (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
                       isActive={activeThreadId === item.id}
@@ -423,7 +550,8 @@ export function AppSidebar() {
                       <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
                     </button>
                   </SidebarMenuItem>
-                ))}
+                  ),
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
             </CollapsibleContent>

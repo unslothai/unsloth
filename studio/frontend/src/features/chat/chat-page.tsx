@@ -45,8 +45,11 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { usePromptEvalStore } from "./stores/use-prompt-eval-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import { PromptEvalProgressPill } from "./prompt-eval/prompt-eval-progress-pill";
+import { usePromptEvalRunner } from "./prompt-eval/use-prompt-eval-runner";
 
 type LoraCandidate = {
   id: string;
@@ -109,7 +112,12 @@ function messageHasImage(message: MessageRecord): boolean {
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
-}: { threadId?: string; newThreadNonce?: string }): ReactElement {
+  onPromptEvalSend,
+}: {
+  threadId?: string;
+  newThreadNonce?: string;
+  onPromptEvalSend?: (text: string) => void;
+}): ReactElement {
   return (
     <ChatRuntimeProvider
       modelType="base"
@@ -117,9 +125,38 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} onPromptEvalSend={onPromptEvalSend} />
       </div>
     </ChatRuntimeProvider>
+  );
+});
+
+/**
+ * Persistent hidden host for the current eval model's thread.
+ * Mounted for the duration of each model's eval run, independently of which
+ * thread the user is currently viewing in the sidebar. Its ChatRuntimeProvider
+ * is the one that actually drives generation (via handle.append()). The
+ * visible SingleContent above shows the same thread's DB content.
+ *
+ * Key is evalActiveThreadId so it remounts when the runner moves to the next
+ * model — triggering waitForHandle's Phase 1 (stale handle clears) then
+ * Phase 2 (new handle registers).
+ */
+const EvalHandleHost = memo(function EvalHandleHost({
+  threadId,
+  handlesRef,
+}: {
+  threadId: string;
+  handlesRef: CompareHandles;
+}): ReactElement {
+  return (
+    <div className="hidden" aria-hidden="true">
+      <ChatRuntimeProvider modelType="base" initialThreadId={threadId}>
+        <CompareHandlesProvider handlesRef={handlesRef}>
+          <RegisterCompareHandle name="eval" threadId={threadId} />
+        </CompareHandlesProvider>
+      </ChatRuntimeProvider>
+    </div>
   );
 });
 
@@ -550,6 +587,77 @@ export function ChatPage(): ReactElement {
     return Boolean(inferenceParams.checkpoint);
   }, [inferenceParams.checkpoint]);
 
+  // Prompt Eval runner
+  const promptEvalMode = usePromptEvalStore((s) => s.promptEvalMode);
+  const promptEvalSelectedModelIds = usePromptEvalStore((s) => s.promptEvalSelectedModelIds);
+  const toggleModelSelection = usePromptEvalStore((s) => s.toggleModelSelection);
+  const setPromptEvalSendFn = usePromptEvalStore((s) => s.setPromptEvalSendFn);
+  const {
+    run: runPromptEval,
+    cancel: cancelPromptEval,
+    progress: promptEvalProgress,
+    running: promptEvalRunning,
+    activeThreadId: evalActiveThreadId,
+  } = usePromptEvalRunner();
+  // Stable ref into which SingleContent registers the visible thread's handle.
+  // When SingleContent remounts for a new thread (key changes), the old handle
+  // is deleted on unmount and a fresh one is registered on mount. The two-phase
+  // waitForHandle in the runner relies on this lifecycle to detect the stale
+  // → fresh transition correctly (fixes double-send and no-live-display).
+  const singleChatHandlesRef = useRef<Record<string, CompareHandle>>({}) as CompareHandles;
+
+  const onPromptEvalSend = useCallback(
+    (text: string) => {
+      void runPromptEval(
+        [text],
+        () => singleChatHandlesRef.current["eval"] ?? null,
+        (threadId: string) =>
+          navigate({ to: "/chat", search: { thread: threadId } }),
+      );
+    },
+    [navigate, runPromptEval],
+  );
+
+  const onPromptEvalRunMultiple = useCallback(
+    (texts: string[]) => {
+      void runPromptEval(
+        texts,
+        () => singleChatHandlesRef.current["eval"] ?? null,
+        (threadId: string) =>
+          navigate({ to: "/chat", search: { thread: threadId } }),
+      );
+    },
+    [navigate, runPromptEval],
+  );
+
+  useEffect(() => {
+    setPromptEvalSendFn(onPromptEvalRunMultiple);
+    return () => setPromptEvalSendFn(null);
+  }, [onPromptEvalRunMultiple, setPromptEvalSendFn]);
+
+  // Retro-fit: when Prompt Eval mode is enabled on an existing open thread,
+  // tag it immediately with a promptEvalId so the sidebar folder appears at
+  // once — without needing to send a first message to trigger thread creation.
+  const setActiveBenchmark = usePromptEvalStore((s) => s.setActiveBenchmark);
+  useEffect(() => {
+    if (!promptEvalMode) return;
+    if (usePromptEvalStore.getState().activePromptEvalId) return;
+    const currentThreadId = useChatRuntimeStore.getState().activeThreadId;
+    if (!currentThreadId || currentThreadId.startsWith("__LOCALID_")) return;
+    const checkpoint = useChatRuntimeStore.getState().params.checkpoint;
+    if (!checkpoint) return;
+    const ggufVariant = useChatRuntimeStore.getState().activeGgufVariant;
+    const fullModelId = ggufVariant ? `${checkpoint}::${ggufVariant}` : checkpoint;
+    const newEvalId = crypto.randomUUID();
+    const evalName = usePromptEvalStore.getState().promptEvalName;
+    void db.threads.update(currentThreadId, {
+      promptEvalId: newEvalId,
+      promptEvalName: evalName,
+    });
+    setActiveBenchmark(newEvalId, { [fullModelId]: currentThreadId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptEvalMode]);
+
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
     if (search.compare) {
@@ -883,9 +991,21 @@ export function ChatPage(): ReactElement {
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
+                promptEvalMode={promptEvalMode}
+                promptEvalSelectedIds={promptEvalSelectedModelIds}
+                onPromptEvalToggle={(id, meta) => {
+                  const storeId = meta?.ggufVariant ? `${id}::${meta.ggufVariant}` : id;
+                  toggleModelSelection(storeId);
+                }}
+                onPromptEvalConfirm={closeModelSelector}
               />
             )}
-            {loadingModel && loadToastDismissed ? (
+            {promptEvalRunning && promptEvalProgress ? (
+              <PromptEvalProgressPill
+                progress={promptEvalProgress}
+                onCancel={cancelPromptEval}
+              />
+            ) : loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
                 label={
                   loadProgress?.phase === "starting"
@@ -950,11 +1070,27 @@ export function ChatPage(): ReactElement {
         </div>
 
         {view.mode === "single" ? (
-          <SingleContent
-            key={view.threadId ?? "single"}
-            threadId={view.threadId}
-            newThreadNonce={view.newThreadNonce}
-          />
+          <>
+            {/* Persistent eval handle host — always mounted while running, keyed
+                to the active eval thread so it remounts on model transitions.
+                Drives generation via handle.append(); the visible SingleContent
+                below shows the same DB content. Survives user sidebar navigation
+                because its lifecycle is independent of view.threadId. */}
+            {promptEvalRunning && evalActiveThreadId && (
+              <EvalHandleHost
+                key={evalActiveThreadId}
+                threadId={evalActiveThreadId}
+                handlesRef={singleChatHandlesRef}
+              />
+            )}
+            {/* Visible thread — display-only, follows user navigation */}
+            <SingleContent
+              key={view.threadId ?? "single"}
+              threadId={view.threadId}
+              newThreadNonce={view.newThreadNonce}
+              onPromptEvalSend={onPromptEvalSend}
+            />
+          </>
         ) : (
           <CompareContent
             key={view.pairId}
@@ -984,6 +1120,7 @@ export function ChatPage(): ReactElement {
           }
         }}
       />
+
     </div>
   );
 }
