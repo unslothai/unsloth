@@ -1034,7 +1034,7 @@ class FastSentenceTransformer(FastModel):
 
         # In sentence-transformers >= 5.0, 'tokenizer' is a read-only property
         # that reads from 'self.processor', so we must set 'processor' directly.
-        if isinstance(getattr(type(transformer_module), 'tokenizer', None), property):
+        if isinstance(getattr(type(transformer_module), "tokenizer", None), property):
             transformer_module.processor = tokenizer
         else:
             transformer_module.tokenizer = tokenizer
