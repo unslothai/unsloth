@@ -715,9 +715,8 @@ class InferenceOrchestrator:
             )
             self._shutdown_subprocess(timeout = 0.5)
             self.loading_models.discard(model_name)
-            self.models.pop(model_name, None)
-            if self.active_model_name == model_name:
-                self.active_model_name = None
+            self.active_model_name = None
+            self.models.clear()
             return True
 
         if not self._ensure_subprocess_alive():
