@@ -652,6 +652,7 @@ function ThreadHistoryProvider({
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
         if (isChatThreadDeleted(remoteId)) {
+          await deleteThreadRows(remoteId);
           return;
         }
         // Keep single-chat runtime state in sync once a new chat is first
