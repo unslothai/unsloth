@@ -1434,8 +1434,13 @@ class LlamaCppBackend:
                                     self._n_kv_heads_by_layer = [int(x) for x in val_a]
                                     if self._n_kv_heads is None and val_a:
                                         self._n_kv_heads = max(int(x) for x in val_a)
-                                elif attr == "sliding_window_pattern" and val_a is not None:
-                                    self._sliding_window_pattern = [bool(x) for x in val_a]
+                                elif (
+                                    attr == "sliding_window_pattern"
+                                    and val_a is not None
+                                ):
+                                    self._sliding_window_pattern = [
+                                        bool(x) for x in val_a
+                                    ]
                                     sliding_window_pattern_period = None
                             else:
                                 self._gguf_skip_value(f, vtype)
