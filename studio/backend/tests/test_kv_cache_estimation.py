@@ -1410,17 +1410,13 @@ class TestServerFlags:
     def test_non_unified_with_zero_parallel_floors_at_one(self):
         b = self._gqa_backend()
         baseline = b._estimate_kv_cache_bytes(4096, "f16")
-        scaled = b._estimate_kv_cache_bytes(
-            4096, "f16", n_parallel = 0, kv_unified = False
-        )
+        scaled = b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 0, kv_unified = False)
         assert scaled == baseline
 
     def test_non_unified_scales_swa_path(self):
         b = self._swa_backend()
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
-        scaled = b._estimate_kv_cache_bytes(
-            8192, "f16", n_parallel = 3, kv_unified = False
-        )
+        scaled = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 3, kv_unified = False)
         assert scaled == baseline * 3
 
     def test_non_unified_scales_mla_path(self):
@@ -1431,9 +1427,7 @@ class TestServerFlags:
         b._key_length_mla = 64
         b._kv_key_length = 576
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
-        scaled = b._estimate_kv_cache_bytes(
-            8192, "f16", n_parallel = 4, kv_unified = False
-        )
+        scaled = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 4, kv_unified = False)
         assert scaled == baseline * 4
 
     # ── --ctx-checkpoints ──────────────────────────────────────────
