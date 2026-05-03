@@ -1730,6 +1730,35 @@ def _loading_model_matches_deleted_path(
     return _loaded_model_matches_deleted_path(str(loading_model), deleted_path)
 
 
+def _prune_empty_parents(start: Path, stop_at: Path) -> None:
+    """Remove empty ancestor directories of ``start`` up to (but not including) ``stop_at``.
+
+    Used after deleting a model checkpoint so the enclosing run directory does
+    not linger as an empty entry in scan results.
+    """
+    try:
+        stop_resolved = stop_at.resolve()
+    except OSError:
+        return
+    parent = start.parent
+    while True:
+        try:
+            parent_resolved = parent.resolve()
+        except OSError:
+            return
+        if parent_resolved == stop_resolved:
+            return
+        try:
+            parent_resolved.relative_to(stop_resolved)
+        except ValueError:
+            return
+        try:
+            parent.rmdir()
+        except OSError:
+            return
+        parent = parent.parent
+
+
 def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_count = 0
     deleted_bytes = 0
@@ -1939,6 +1968,12 @@ async def delete_finetuned_model(
                     status_code = 404,
                     detail = f"Variant {gguf_variant} not found on disk",
                 )
+            try:
+                if not any(target_path.iterdir()):
+                    target_path.rmdir()
+                    _prune_empty_parents(target_path, allowed_root)
+            except OSError:
+                pass
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
                 deleted_count,
@@ -1956,6 +1991,14 @@ async def delete_finetuned_model(
             target_path.unlink()
         else:
             shutil.rmtree(target_path)
+
+        if target_path.exists() or target_path.is_symlink():
+            raise HTTPException(
+                status_code = 500,
+                detail = "Deletion incomplete; some files could not be removed",
+            )
+
+        _prune_empty_parents(target_path, allowed_root)
 
         logger.info("Deleted fine-tuned model at %s", target_path)
         return {"status": "deleted", "path": str(target_path)}
