@@ -369,6 +369,45 @@ def get_run_by_output_dir(output_dir: str) -> Optional[dict]:
         conn.close()
 
 
+def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT r.*,
+                   0 AS resumed_later
+            FROM training_runs r
+            WHERE r.output_dir = ?
+              AND r.status = 'stopped'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM training_runs newer
+                  WHERE newer.output_dir = r.output_dir
+                    AND newer.status IN ('stopped', 'completed')
+                    AND newer.started_at > r.started_at
+              )
+            ORDER BY r.started_at DESC
+            LIMIT 1
+            """,
+            (output_dir,),
+        ).fetchone()
+        if row is None:
+            return None
+        run = dict(row)
+        sparkline = run.get("loss_sparkline")
+        if sparkline:
+            try:
+                run["loss_sparkline"] = json.loads(sparkline)
+            except (json.JSONDecodeError, TypeError):
+                logger.debug(
+                    "Failed to parse loss_sparkline for output_dir %s", output_dir
+                )
+                run["loss_sparkline"] = None
+        return run
+    finally:
+        conn.close()
+
+
 def get_run_metrics(id: str) -> dict:
     """Return metric arrays for a run, using paired step arrays per metric."""
     conn = get_connection()

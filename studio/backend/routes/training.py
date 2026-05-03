@@ -30,7 +30,7 @@ try:
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_run_by_output_dir
+    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -44,7 +44,7 @@ except ImportError:
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_run_by_output_dir
+    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -173,7 +173,7 @@ async def start_training(
             except ValueError as e:
                 raise HTTPException(status_code = 400, detail = str(e))
 
-            resume_run = get_run_by_output_dir(resume_output_dir)
+            resume_run = get_resumable_run_by_output_dir(resume_output_dir)
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,
