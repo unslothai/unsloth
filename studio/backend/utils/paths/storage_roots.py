@@ -193,10 +193,17 @@ def _setup_cache_env() -> None:
     Works on Linux, macOS, and Windows.
     """
     root = cache_root()
-    xdg_cache = Path(
-        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
-    ).expanduser()
-    hf_default = xdg_cache / "huggingface"
+    # Local source install (UNSLOTH_STUDIO_HOME set by install-source.sh)
+    # keeps every cache inside the checkout so nothing leaks into ~/.cache.
+    # Standard installs follow the platform default (~/.cache/huggingface or
+    # XDG_CACHE_HOME) so models stay shared with other HF tooling.
+    if os.environ.get("UNSLOTH_STUDIO_HOME"):
+        hf_default = root / "huggingface"
+    else:
+        xdg_cache = Path(
+            os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+        ).expanduser()
+        hf_default = xdg_cache / "huggingface"
     defaults: dict[str, str] = {
         "HF_HOME": str(hf_default),
         "HF_HUB_CACHE": str(hf_default / "hub"),
