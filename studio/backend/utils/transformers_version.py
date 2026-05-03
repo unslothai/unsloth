@@ -94,6 +94,7 @@ TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 # Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
 
+
 def _studio_home() -> Path:
     if root := os.environ.get("UNSLOTH_STUDIO_HOME"):
         return Path(root).expanduser().resolve()

@@ -497,6 +497,7 @@ _VLM_MODEL_TYPES = {
     "minicpmv",
 }
 
+
 def _studio_home() -> Path:
     if root := os.environ.get("UNSLOTH_STUDIO_HOME"):
         return Path(root).expanduser().resolve()

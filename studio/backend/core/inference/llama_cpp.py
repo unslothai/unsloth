@@ -530,7 +530,9 @@ class LlamaCppBackend:
             if local_bin.is_file():
                 return str(local_bin)
             if sys.platform == "win32":
-                local_win = local_studio_home / "build" / "bin" / "Release" / binary_name
+                local_win = (
+                    local_studio_home / "build" / "bin" / "Release" / binary_name
+                )
                 if local_win.is_file():
                     return str(local_win)
 
