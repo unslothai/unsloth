@@ -1057,6 +1057,11 @@ class LlamaCppBackend:
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
         # Pattern is filled in by the resolver at parse time; if absent,
         # falls through to the legacy 1/4-global heuristic below.
+        # llama.cpp double-buffers the SWA cache (so it can keep the
+        # current and next windows during the shift) -- it allocates
+        # `2 * sliding_window` cells per SWA layer, capped at n_ctx.
+        # Verified via `llama_kv_cache_iswa: ... SWA KV cache,
+        # size = N cells` log line on Gemma-3 270m / 1b GGUFs.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -1064,6 +1069,7 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
+            swa_cells = min(n_ctx, 2 * swa)
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
             if self._sliding_window_pattern is not None:
@@ -1074,7 +1080,7 @@ class LlamaCppBackend:
                         layer_idx < len(self._sliding_window_pattern)
                         and self._sliding_window_pattern[layer_idx]
                     )
-                    layer_ctx = min(n_ctx, swa) if is_swa else n_ctx
+                    layer_ctx = swa_cells if is_swa else n_ctx
                     layer_key_len = key_len_swa if is_swa else key_len
                     layer_val_len = val_len_swa if is_swa else val_len
                     total += (
@@ -1085,7 +1091,7 @@ class LlamaCppBackend:
             n_swa = n_layers - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
             return int(
-                n_global * n_ctx * kv_per_token + n_swa * min(n_ctx, swa) * kv_per_token
+                n_global * n_ctx * kv_per_token + n_swa * swa_cells * kv_per_token
             )
 
         # Path 4: Standard GQA with explicit key/value dimensions

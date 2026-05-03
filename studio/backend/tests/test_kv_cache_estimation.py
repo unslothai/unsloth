@@ -945,7 +945,9 @@ class TestSlidingWindowEstimation:
         n_global = max(1, 62 // 4)  # 15
         n_swa = 62 - n_global  # 47
         kv_per = 16 * (128 + 128) * 2
-        expected = int(n_global * 131072 * kv_per + n_swa * min(131072, 1024) * kv_per)
+        # SWA cache is double-buffered: 2 * sliding_window cells, capped at n_ctx.
+        swa_cells = min(131072, 2 * 1024)
+        expected = int(n_global * 131072 * kv_per + n_swa * swa_cells * kv_per)
         assert b._estimate_kv_cache_bytes(131072, "f16") == expected
 
     def test_gpt_oss(self):
@@ -962,7 +964,8 @@ class TestSlidingWindowEstimation:
         n_global = max(1, 24 // 4)  # 6
         n_swa = 24 - n_global  # 18
         kv_per = 8 * (64 + 64) * 2
-        expected = int(n_global * 131072 * kv_per + n_swa * min(131072, 128) * kv_per)
+        swa_cells = min(131072, 2 * 128)
+        expected = int(n_global * 131072 * kv_per + n_swa * swa_cells * kv_per)
         assert b._estimate_kv_cache_bytes(131072, "f16") == expected
 
     def test_gemma4_per_layer_swa_metadata(self):
@@ -985,30 +988,28 @@ class TestSlidingWindowEstimation:
 
         def expected(ctx):
             full = full_layers * ctx * 2 * (512 + 512) * 2
-            sliding = sliding_layers * min(ctx, 1024) * 8 * (256 + 256) * 2
+            sliding = sliding_layers * min(ctx, 2 * 1024) * 8 * (256 + 256) * 2
             return int(full + sliding)
 
         for ctx in (4096, 46500, 262144):
             assert b._estimate_kv_cache_bytes(ctx, "f16") == expected(ctx)
 
     def test_ctx_smaller_than_window(self):
-        """When context < sliding_window, SWA layers use full context anyway."""
+        """When context < 2 * sliding_window, SWA cache caps at ctx."""
         b = self._swa_backend(_sliding_window = 8192)
         n_global = max(1, 62 // 4)  # 15
         n_swa = 62 - n_global  # 47
         kv_per = 16 * (128 + 128) * 2
         ctx = 4096
-        expected = int(n_global * ctx * kv_per + n_swa * min(ctx, 8192) * kv_per)
-        # min(4096, 8192) = 4096, so both pools use full ctx
+        expected = int(n_global * ctx * kv_per + n_swa * min(ctx, 2 * 8192) * kv_per)
         assert b._estimate_kv_cache_bytes(ctx, "f16") == expected
 
     def test_odd_layer_count(self):
-        """Odd layer count: n_global = max(1, n//4), n_swa = n - n_global."""
         b = self._swa_backend(_n_layers = 63)
         n_global = max(1, 63 // 4)  # 15
         n_swa = 63 - n_global  # 48
         kv_per = 16 * (128 + 128) * 2
-        expected = int(n_global * 1000 * kv_per + n_swa * min(1000, 1024) * kv_per)
+        expected = int(n_global * 1000 * kv_per + n_swa * min(1000, 2 * 1024) * kv_per)
         assert b._estimate_kv_cache_bytes(1000, "f16") == expected
 
 
@@ -1415,15 +1416,14 @@ class TestLifecycle:
         )
         assert b._can_estimate_kv()
         result = b._estimate_kv_cache_bytes(131072, "f16")
-        # Gemma-3 uses period=6 (1 global per 6 layers) -- the GGUF
-        # converter doesn't propagate this so the parser falls back to
-        # `_SWA_PATTERN_DEFAULTS_BY_ARCH["gemma3"] = 6`.
+        # gemma3 -> period 6 from the bootstrap table, SWA cache
+        # double-buffered to 2 * sliding_window cells.
         period = 6
         kv_per = 16 * 256 * 2
         expected = 0
         for i in range(62):
             is_swa = (i + 1) % period != 0
-            layer_ctx = 1024 if is_swa else 131072
+            layer_ctx = min(131072, 2 * 1024) if is_swa else 131072
             expected += layer_ctx * kv_per
         assert result == expected
 
