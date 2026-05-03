@@ -1035,16 +1035,26 @@ class FastSentenceTransformer(FastModel):
             if requested is None:
                 return False
 
-            requested = os.fspath(requested)
-            expected = os.fspath(model_name)
+            try:
+                requested = os.fspath(requested)
+                expected = os.fspath(model_name)
+            except (TypeError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not normalize SentenceTransformer model path: %s",
+                    exception,
+                )
+                return False
             if requested == expected:
                 return True
 
             try:
                 if os.path.exists(requested) or os.path.exists(expected):
                     return os.path.abspath(requested) == os.path.abspath(expected)
-            except:
-                pass
+            except (OSError, TypeError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not compare SentenceTransformer model paths: %s",
+                    exception,
+                )
             return False
 
         with _CREATE_TRANSFORMER_MODULE_LOCK:
@@ -1153,10 +1163,13 @@ class FastSentenceTransformer(FastModel):
             from sentence_transformers.util import import_from_string
 
             module_class = import_from_string(class_ref)
-            return isinstance(module_class, type) and issubclass(
-                module_class, Transformer
+            return module_class is Transformer
+        except (ImportError, AttributeError, TypeError, ValueError) as exception:
+            logging.debug(
+                "Unsloth: Could not resolve SentenceTransformer module ref %r: %s",
+                class_ref,
+                exception,
             )
-        except:
             return False
 
     @staticmethod
