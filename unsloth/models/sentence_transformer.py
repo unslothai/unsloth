@@ -1032,7 +1032,12 @@ class FastSentenceTransformer(FastModel):
             # Restore original functionality immediately
             AutoModel.from_pretrained = original_from_pretrained
 
-        transformer_module.tokenizer = tokenizer
+        # In sentence-transformers >= 5.0, 'tokenizer' is a read-only property
+        # that reads from 'self.processor', so we must set 'processor' directly.
+        if isinstance(getattr(type(transformer_module), 'tokenizer', None), property):
+            transformer_module.processor = tokenizer
+        else:
+            transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
         # sentence-transformers only passes along known keys to model.forward
