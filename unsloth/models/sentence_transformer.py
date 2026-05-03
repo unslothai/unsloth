@@ -1100,7 +1100,9 @@ class FastSentenceTransformer(FastModel):
         # On sentence-transformers >=5.4 `tokenizer` is a read-only property backed
         # by `self.processor` (already wired via the redirect above). On older
         # versions it's a regular attribute and the explicit assignment is required.
-        if not isinstance(getattr(type(transformer_module), "tokenizer", None), property):
+        if not isinstance(
+            getattr(type(transformer_module), "tokenizer", None), property
+        ):
             transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
@@ -1151,9 +1153,8 @@ class FastSentenceTransformer(FastModel):
             from sentence_transformers.util import import_from_string
 
             module_class = import_from_string(class_ref)
-            return (
-                isinstance(module_class, type)
-                and issubclass(module_class, Transformer)
+            return isinstance(module_class, type) and issubclass(
+                module_class, Transformer
             )
         except:
             return False
@@ -2030,7 +2031,9 @@ class FastSentenceTransformer(FastModel):
                 # Re-assign the peft model back to the transformer module.
                 # On sentence-transformers >=5.4 `auto_model` is a read-only property
                 # backed by `self.model`, so write to the backing attribute there.
-                if isinstance(getattr(type(transformer_module), "auto_model", None), property):
+                if isinstance(
+                    getattr(type(transformer_module), "auto_model", None), property
+                ):
                     transformer_module.model = peft_model
                 else:
                     transformer_module.auto_model = peft_model
@@ -2082,7 +2085,9 @@ class FastSentenceTransformer(FastModel):
             # re-assign the peft model back to the transformer module.
             # On sentence-transformers >=5.4 `auto_model` is a read-only property
             # backed by `self.model`, so write to the backing attribute there.
-            if isinstance(getattr(type(transformer_module), "auto_model", None), property):
+            if isinstance(
+                getattr(type(transformer_module), "auto_model", None), property
+            ):
                 transformer_module.model = peft_model
             else:
                 transformer_module.auto_model = peft_model
