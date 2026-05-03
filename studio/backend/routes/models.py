@@ -1866,15 +1866,23 @@ async def delete_finetuned_model(
                 status_code = 409,
                 detail = "Cannot delete a model while it is loading",
             )
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            if _loaded_model_matches_deleted_path(
+        if (
+            llama_backend.is_loaded
+            and llama_backend.model_identifier
+            and _loaded_model_matches_deleted_path(
                 llama_backend.model_identifier,
                 target_path,
-            ):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
-                )
+            )
+            and (
+                not gguf_variant
+                or not llama_backend.hf_variant
+                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+            )
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Unload the model before deleting",
+            )
     except HTTPException:
         raise
     except Exception as e:
