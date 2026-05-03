@@ -24,6 +24,7 @@ interface ModelDeleteActionProps {
   loadingLabel?: string;
   buttonClassName?: string;
   iconClassName?: string;
+  disabled?: boolean;
   onConfirm: () => Promise<void> | void;
   onDeleted?: () => void;
 }
@@ -36,6 +37,7 @@ export function ModelDeleteAction({
   loadingLabel = "Deleting...",
   buttonClassName,
   iconClassName,
+  disabled = false,
   onConfirm,
   onDeleted,
 }: ModelDeleteActionProps) {
@@ -64,11 +66,14 @@ export function ModelDeleteAction({
         type="button"
         onClick={(e) => {
           e.stopPropagation();
+          if (disabled) return;
           setOpen(true);
         }}
         aria-label={ariaLabel}
+        disabled={disabled}
         className={cn(
           "shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+          disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
           buttonClassName,
         )}
       >

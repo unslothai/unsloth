@@ -1693,6 +1693,17 @@ def _is_path_under(path: Path, root: Path) -> bool:
         return False
 
 
+def _is_path_under_lexically(path: Path, root: Path) -> bool:
+    """Check containment without resolving the final path's symlink target."""
+    try:
+        absolute_path = Path(os.path.abspath(str(path)))
+        absolute_root = Path(os.path.abspath(str(root)))
+        absolute_path.relative_to(absolute_root)
+        return True
+    except ValueError:
+        return False
+
+
 def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) -> bool:
     try:
         active = Path(active_model).expanduser().resolve()
@@ -1708,6 +1719,15 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
         return active_lower == target_lower or active_lower.startswith(
             f"{target_lower}{os.sep}"
         )
+
+
+def _loading_model_matches_deleted_path(
+    loading_model: object,
+    deleted_path: Path,
+) -> bool:
+    if not loading_model:
+        return False
+    return _loaded_model_matches_deleted_path(str(loading_model), deleted_path)
 
 
 def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
@@ -1761,10 +1781,32 @@ async def delete_finetuned_model(
             else raw_path
         )
 
-    target_path = target_path.resolve()
     allowed_root = allowed_root.resolve()
+    delete_path = Path(os.path.abspath(str(target_path)))
+    delete_path_is_symlink = delete_path.is_symlink()
 
-    if not _is_path_under(target_path, allowed_root):
+    if delete_path_is_symlink:
+        if not _is_path_under_lexically(delete_path, allowed_root):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Model path is outside Studio storage",
+            )
+        if export_type == "gguf" and gguf_variant:
+            target_path = delete_path.resolve()
+            if not _is_path_under(target_path, allowed_root):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Model path is outside Studio storage",
+                )
+        else:
+            target_path = delete_path
+    else:
+        target_path = target_path.resolve()
+
+    should_check_resolved_path = not delete_path_is_symlink or (
+        export_type == "gguf" and gguf_variant
+    )
+    if should_check_resolved_path and not _is_path_under(target_path, allowed_root):
         raise HTTPException(
             status_code = 400,
             detail = "Model path is outside Studio storage",
@@ -1800,6 +1842,24 @@ async def delete_finetuned_model(
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
+        if (
+            llama_backend.is_active
+            and not llama_backend.is_loaded
+            and llama_backend.model_identifier
+            and _loaded_model_matches_deleted_path(
+                llama_backend.model_identifier,
+                target_path,
+            )
+            and (
+                not gguf_variant
+                or not llama_backend.hf_variant
+                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+            )
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         if llama_backend.is_loaded and llama_backend.model_identifier:
             if _loaded_model_matches_deleted_path(
                 llama_backend.model_identifier,
@@ -1816,6 +1876,15 @@ async def delete_finetuned_model(
 
     try:
         inference_backend = get_inference_backend()
+        loading_models = getattr(inference_backend, "loading_models", set())
+        if any(
+            _loading_model_matches_deleted_path(loading_model, target_path)
+            for loading_model in loading_models
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         if inference_backend.active_model_name:
             if _loaded_model_matches_deleted_path(
                 inference_backend.active_model_name,

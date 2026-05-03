@@ -52,6 +52,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
@@ -207,6 +208,7 @@ function GgufVariantExpander({
   deleteVariantTitle = "Delete cached model?",
   renderDeleteVariantDescription,
   getDeleteVariantSuccessMessage,
+  deleteDisabled = false,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -217,6 +219,7 @@ function GgufVariantExpander({
   deleteVariantTitle?: string;
   renderDeleteVariantDescription?: (quant: string) => ReactNode;
   getDeleteVariantSuccessMessage?: (quant: string) => string;
+  deleteDisabled?: boolean;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -428,6 +431,7 @@ function GgufVariantExpander({
                 }
                 buttonClassName="p-1"
                 iconClassName="size-3"
+                disabled={deleteDisabled}
                 onConfirm={() => onDeleteVariant(v.quant)}
               />
             )}
@@ -1413,11 +1417,13 @@ export function LoraModelPicker({
   value,
   onSelect,
   onModelsChange,
+  deleteDisabled = false,
 }: {
   loraModels: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
-  onModelsChange?: (deletedModelId?: string) => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
@@ -1583,6 +1589,7 @@ export function LoraModelPicker({
                               </>
                             }
                             successMessage={`Deleted ${adapter.name}`}
+                            disabled={deleteDisabled}
                             onConfirm={() =>
                               deleteFineTunedModel({
                                 modelPath: adapter.id,
@@ -1590,7 +1597,9 @@ export function LoraModelPicker({
                                 exportType: adapter.exportType,
                               })
                             }
-                            onDeleted={() => onModelsChange?.(adapter.id)}
+                            onDeleted={() =>
+                              onModelsChange?.({ id: adapter.id })
+                            }
                           />
                         )}
                       </div>
@@ -1616,6 +1625,7 @@ export function LoraModelPicker({
                           getDeleteVariantSuccessMessage={(quant) =>
                             `Deleted ${adapter.name} ${quant}`
                           }
+                          deleteDisabled={deleteDisabled}
                           onDeleteVariant={
                             isExportedGguf
                               ? async (quant) => {
@@ -1625,7 +1635,10 @@ export function LoraModelPicker({
                                     exportType: "gguf",
                                     ggufVariant: quant,
                                   });
-                                  onModelsChange?.(adapter.id);
+                                  onModelsChange?.({
+                                    id: adapter.id,
+                                    ggufVariant: quant,
+                                  });
                                 }
                               : undefined
                           }
