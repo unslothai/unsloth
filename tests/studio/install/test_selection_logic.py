@@ -420,6 +420,10 @@ class TestPickWindowsCudaRuntime:
         host = make_host(driver_cuda_version = (13, 1))
         assert pick_windows_cuda_runtime(host) == "13.1"
 
+    def test_driver_13_0_uses_cuda13_line(self):
+        host = make_host(driver_cuda_version = (13, 0))
+        assert pick_windows_cuda_runtime(host) == "13.1"
+
 
 class TestCompatibleWindowsRuntimeLines:
     def test_no_driver(self):
@@ -432,6 +436,10 @@ class TestCompatibleWindowsRuntimeLines:
 
     def test_driver_13_1(self):
         host = make_host(driver_cuda_version = (13, 1))
+        assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
+
+    def test_driver_13_0_uses_cuda13_line(self):
+        host = make_host(driver_cuda_version = (13, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
 
 
@@ -1768,6 +1776,15 @@ class TestWindowsCudaAttempts:
         assert len(result) == 2
         assert result[0].runtime_line == "cuda13"
         assert result[1].runtime_line == "cuda12"
+
+    def test_driver_13_0_cuda13_dlls_selects_cuda13_asset(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 0))
+        assets = self._upstream("13.1", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert len(result) == 1
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip"
 
     def test_preferred_reorders(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
