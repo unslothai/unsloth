@@ -1120,8 +1120,8 @@ class LlamaCppBackend:
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
             if self._sliding_window_pattern is not None:
-                global_bytes = 0.0          # constant across slots
-                swa_bytes_per_slot = 0.0    # multiplied by slots
+                global_bytes = 0.0  # constant across slots
+                swa_bytes_per_slot = 0.0  # multiplied by slots
                 checkpoint_extra_per_slot = 0.0
                 # Iterate only over layers that allocate their own KV;
                 # the trailing ``shared`` layers reuse earlier caches.
@@ -1147,9 +1147,7 @@ class LlamaCppBackend:
                                 * bpe
                             )
                     else:
-                        global_bytes += (
-                            n_ctx * layer_n_kv * (key_len + val_len) * bpe
-                        )
+                        global_bytes += n_ctx * layer_n_kv * (key_len + val_len) * bpe
                 return int(
                     global_bytes
                     + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
@@ -1166,8 +1164,7 @@ class LlamaCppBackend:
                 else 0.0
             )
             return int(
-                global_bytes
-                + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
+                global_bytes + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
             )
 
         # Path 4: Standard GQA with explicit key/value dimensions

@@ -1429,15 +1429,17 @@ class TestServerFlags:
         # Decompose baseline by walking the same loop the estimator does.
         swa = b._sliding_window
         per_token_global = 4 * (256 + 256) * 2  # n_kv * (k+v) * f16
-        per_token_swa = 4 * (256 + 256) * 2     # k_swa/val_swa fall back
+        per_token_swa = 4 * (256 + 256) * 2  # k_swa/val_swa fall back
         per_slot_swa_cells = min(ctx, 2 * swa)  # not clamped at parallel=1
         global_bytes = sum(
             ctx * per_token_global
-            for f in b._sliding_window_pattern[: b._n_layers] if not f
+            for f in b._sliding_window_pattern[: b._n_layers]
+            if not f
         )
         swa_bytes_per_slot = sum(
             per_slot_swa_cells * per_token_swa
-            for f in b._sliding_window_pattern[: b._n_layers] if f
+            for f in b._sliding_window_pattern[: b._n_layers]
+            if f
         )
         # Sanity: parallel=1 reproduces baseline exactly
         assert global_bytes + swa_bytes_per_slot == baseline
@@ -1451,7 +1453,8 @@ class TestServerFlags:
             cells = min(ctx, 2 * swa, per_slot_ctx)
             swa_bps = sum(
                 cells * per_token_swa
-                for f in b._sliding_window_pattern[: b._n_layers] if f
+                for f in b._sliding_window_pattern[: b._n_layers]
+                if f
             )
             assert scaled == global_bytes + slots * swa_bps
 
@@ -1515,12 +1518,9 @@ class TestServerFlags:
         swa = b._sliding_window
         per_token = 4 * (256 + 256) * 2
         global_bytes = sum(
-            ctx * per_token
-            for f in b._sliding_window_pattern[: b._n_layers] if not f
+            ctx * per_token for f in b._sliding_window_pattern[: b._n_layers] if not f
         )
-        n_swa_layers = sum(
-            1 for f in b._sliding_window_pattern[: b._n_layers] if f
-        )
+        n_swa_layers = sum(1 for f in b._sliding_window_pattern[: b._n_layers] if f)
         slots = 3
         per_slot_ctx = max(1, ctx // slots)
         swa_cells = min(ctx, 2 * swa, per_slot_ctx)
@@ -1529,7 +1529,9 @@ class TestServerFlags:
         flagged = b._estimate_kv_cache_bytes(
             ctx, "f16", ctx_checkpoints = 4, n_parallel = slots, kv_unified = False
         )
-        assert flagged == global_bytes + slots * (swa_bytes_per_slot + cp_extra_per_slot)
+        assert flagged == global_bytes + slots * (
+            swa_bytes_per_slot + cp_extra_per_slot
+        )
 
     # ── --kv-offload (kv_on_gpu) ───────────────────────────────────
 
@@ -1627,8 +1629,7 @@ class TestParallelSWAScaling:
             "_sliding_window": 512,
             # 15 SWA + 3 global, mirrors gemma-3-270m
             "_sliding_window_pattern": [
-                t == "swa"
-                for t in (["swa"] * 5 + ["global"]) * 3
+                t == "swa" for t in (["swa"] * 5 + ["global"]) * 3
             ],
         }
         defaults.update(overrides)
@@ -1660,10 +1661,7 @@ class TestParallelSWAScaling:
         b._kv_key_length = 576
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         for slots in (1, 2, 4, 8):
-            assert (
-                b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
-                == baseline
-            )
+            assert b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots) == baseline
 
     def test_hybrid_constant_across_parallel(self):
         b = LlamaCppBackend()
@@ -1677,10 +1675,7 @@ class TestParallelSWAScaling:
         b._full_attention_interval = 4
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         for slots in (1, 2, 4, 8):
-            assert (
-                b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
-                == baseline
-            )
+            assert b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots) == baseline
 
     def test_legacy_constant_across_parallel(self):
         b = LlamaCppBackend()
@@ -1690,10 +1685,7 @@ class TestParallelSWAScaling:
         b._embedding_length = 4096
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         for slots in (1, 2, 4, 8):
-            assert (
-                b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
-                == baseline
-            )
+            assert b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots) == baseline
 
     # ── SWA paths: scale only the SWA portion ──────────────────────
 
@@ -1757,9 +1749,7 @@ class TestParallelSWAScaling:
         baseline = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
         for slots in (1, 2, 4, 8):
             assert (
-                b._estimate_kv_cache_bytes(
-                    ctx, "f16", swa_full = True, n_parallel = slots
-                )
+                b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True, n_parallel = slots)
                 == baseline
             )
 
@@ -1810,9 +1800,9 @@ class TestParallelSWAScaling:
         for slots, expected_mib in [(1, 39), (2, 54), (4, 84)]:
             got_bytes = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots)
             got_mib = got_bytes / (1024 * 1024)
-            assert got_mib == expected_mib, (
-                f"slots={slots}: got {got_mib} MiB, expected {expected_mib} MiB"
-            )
+            assert (
+                got_mib == expected_mib
+            ), f"slots={slots}: got {got_mib} MiB, expected {expected_mib} MiB"
 
 
 # ---------------------------------------------------------------------------
