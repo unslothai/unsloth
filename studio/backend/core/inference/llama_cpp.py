@@ -462,6 +462,9 @@ class LlamaCppBackend:
         self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
         self._ssm_state_size: Optional[int] = None
+        # Last N layers reuse KV from earlier layers and don't allocate
+        # their own cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
+        self._shared_kv_layers: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -1031,6 +1034,11 @@ class LlamaCppBackend:
             return 0
 
         n_layers = self._n_layers  # type: ignore[assignment]
+        # Gemma 3n / Gemma 4 reuse KV from earlier layers in the last
+        # ``shared_kv_layers`` blocks -- those don't allocate their own
+        # cache.  Floor at 1 so a misconfigured GGUF can't zero out KV.
+        shared = self._shared_kv_layers or 0
+        n_layers_kv = max(1, n_layers - shared)
         n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
 
         # Bytes per element depends on KV cache quantization
@@ -1059,7 +1067,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe * slot_factor)
+            return int(n_layers_kv * n_ctx * n_kv_mla * key_len * bpe * slot_factor)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -1103,7 +1111,9 @@ class LlamaCppBackend:
             if self._sliding_window_pattern is not None:
                 total = 0.0
                 checkpoint_extra = 0.0
-                for layer_idx in range(n_layers):
+                # Iterate only over layers that allocate their own KV;
+                # the trailing ``shared`` layers reuse earlier caches.
+                for layer_idx in range(n_layers_kv):
                     layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                     is_swa = (
                         layer_idx < len(self._sliding_window_pattern)
@@ -1124,8 +1134,8 @@ class LlamaCppBackend:
                             * bpe
                         )
                 return int((total + checkpoint_extra) * slot_factor)
-            n_global = max(1, n_layers // 4)
-            n_swa = n_layers - n_global
+            n_global = max(1, n_layers_kv // 4)
+            n_swa = n_layers_kv - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
             kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
             base = (
@@ -1141,12 +1151,12 @@ class LlamaCppBackend:
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
             return int(
-                n_layers * n_ctx * n_kv * (key_len + val_len) * bpe * slot_factor
+                n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe * slot_factor
             )
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-        return int(2 * n_kv * head_dim * n_layers * n_ctx * bpe * slot_factor)
+        return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe * slot_factor)
 
     def _fit_context_to_vram(
         self,
@@ -1397,6 +1407,7 @@ class LlamaCppBackend:
         self._kv_value_length_swa = None
         self._ssm_inner_size = None
         self._ssm_state_size = None
+        self._shared_kv_layers = None
 
         try:
             WANTED = {
@@ -1476,6 +1487,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.key_length_mla": "key_length_mla",
                                         f"{arch}.attention.key_length_swa": "kv_key_length_swa",
                                         f"{arch}.attention.value_length_swa": "kv_value_length_swa",
+                                        f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
                                     }
@@ -2474,6 +2486,7 @@ class LlamaCppBackend:
             self._kv_value_length_swa = None
             self._ssm_inner_size = None
             self._ssm_state_size = None
+            self._shared_kv_layers = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:

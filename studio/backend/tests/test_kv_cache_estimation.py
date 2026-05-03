@@ -1526,6 +1526,180 @@ class TestServerFlags:
 
 
 # ---------------------------------------------------------------------------
+# J3. shared_kv_layers (Gemma 3n / Gemma 4)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedKVLayers:
+    """``<arch>.attention.shared_kv_layers`` reduces the layer count that
+    actually allocates KV.  The trailing ``shared_kv_layers`` blocks reuse
+    earlier caches (Gemma 3n: 35 layers, 15 shared -> 20 allocate; Gemma 4
+    same field).  Unset on every other arch -> no behavioural change."""
+
+    def _gemma3n_backend(self, **overrides):
+        # Mirrors google/gemma-3n-E4B-it: 35 layers, 15 shared,
+        # SWA window 1024, period 5 (4 sliding + 1 full repeating).
+        defaults = {
+            "_n_layers": 35,
+            "_n_kv_heads": 4,
+            "_n_heads": 8,
+            "_embedding_length": 2048,
+            "_kv_key_length": 256,
+            "_kv_value_length": 256,
+            "_sliding_window": 1024,
+            "_sliding_window_pattern": [
+                t == "sliding_attention"
+                for t in (["sliding_attention"] * 4 + ["full_attention"]) * 7
+            ],
+            "_shared_kv_layers": 15,
+        }
+        defaults.update(overrides)
+        b = LlamaCppBackend()
+        for k, v in defaults.items():
+            setattr(b, k, v)
+        return b
+
+    def _gqa_backend(self, **overrides):
+        defaults = {
+            "_n_layers": 28,
+            "_n_kv_heads": 8,
+            "_n_heads": 16,
+            "_embedding_length": 1024,
+            "_kv_key_length": 128,
+            "_kv_value_length": 128,
+        }
+        defaults.update(overrides)
+        b = LlamaCppBackend()
+        for k, v in defaults.items():
+            setattr(b, k, v)
+        return b
+
+    def test_field_initialises_to_none(self):
+        b = LlamaCppBackend()
+        assert b._shared_kv_layers is None
+
+    def test_unset_field_is_noop(self):
+        b = self._gqa_backend()
+        baseline = b._estimate_kv_cache_bytes(8192, "f16")
+        b._shared_kv_layers = None
+        assert b._estimate_kv_cache_bytes(8192, "f16") == baseline
+        b._shared_kv_layers = 0
+        assert b._estimate_kv_cache_bytes(8192, "f16") == baseline
+
+    def test_path4_drops_shared_layers(self):
+        b = self._gqa_backend(_shared_kv_layers = 4)
+        ctx = 4096
+        kv_per = 8 * (128 + 128) * 2
+        # 28 - 4 = 24 layers actually allocate
+        assert b._estimate_kv_cache_bytes(ctx, "f16") == 24 * ctx * kv_per
+
+    def test_path5_drops_shared_layers(self):
+        b = LlamaCppBackend()
+        b._n_layers = 32
+        b._n_kv_heads = 8
+        b._n_heads = 8
+        b._embedding_length = 4096
+        b._shared_kv_layers = 8
+        ctx = 4096
+        head_dim = 4096 // 8  # 512
+        # 32 - 8 = 24 layers
+        expected = 2 * 8 * head_dim * 24 * ctx * 2
+        assert b._estimate_kv_cache_bytes(ctx, "f16") == expected
+
+    def test_path1_mla_drops_shared_layers(self):
+        b = LlamaCppBackend()
+        b._n_layers = 60
+        b._n_kv_heads = 1
+        b._kv_lora_rank = 512
+        b._key_length_mla = 64
+        b._kv_key_length = 576
+        b._shared_kv_layers = 10
+        ctx = 8192
+        # 60 - 10 = 50
+        assert b._estimate_kv_cache_bytes(ctx, "f16") == 50 * ctx * 1 * 576 * 2
+
+    def test_path3_pattern_loops_only_unshared_layers(self):
+        b = self._gemma3n_backend()
+        ctx = 8192
+        # First 20 layers contribute; layers 20..34 are skipped.
+        # Pattern: [s,s,s,s,F] repeated.  In layers 0..19:
+        #   sliding: 16, full: 4
+        sliding_in_unshared = sum(b._sliding_window_pattern[:20])
+        full_in_unshared = 20 - sliding_in_unshared
+        assert sliding_in_unshared == 16
+        assert full_in_unshared == 4
+        kv_per = 4 * (256 + 256) * 2
+        swa_cells = min(ctx, 2 * 1024)
+        expected = (
+            full_in_unshared * ctx * kv_per
+            + sliding_in_unshared * swa_cells * kv_per
+        )
+        assert b._estimate_kv_cache_bytes(ctx, "f16") == expected
+
+    def test_shared_layers_reduces_estimate(self):
+        b = self._gemma3n_backend()
+        with_shared = b._estimate_kv_cache_bytes(8192, "f16")
+        b._shared_kv_layers = 0
+        without_shared = b._estimate_kv_cache_bytes(8192, "f16")
+        # 20/35 = 0.571 of the work; expect ~43% reduction.
+        ratio = with_shared / without_shared
+        assert 0.5 < ratio < 0.65
+
+    def test_path3_pattern_with_swa_full_and_shared(self):
+        b = self._gemma3n_backend()
+        ctx = 8192
+        flagged = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
+        # Every unshared layer caches n_ctx; equals path-4-style sizing
+        # over only the 20 unshared layers.
+        kv_per = 4 * (256 + 256) * 2
+        assert flagged == 20 * ctx * kv_per
+
+    def test_path3_fallback_uses_unshared_count(self):
+        # No per-layer pattern -> 1/4-global heuristic over n_layers_kv,
+        # not n_layers.
+        b = self._gemma3n_backend(_sliding_window_pattern = None)
+        ctx = 8192
+        n_layers_kv = 35 - 15  # 20
+        n_global = max(1, n_layers_kv // 4)  # 5
+        n_swa = n_layers_kv - n_global  # 15
+        kv_per = 4 * (256 + 256) * 2
+        swa_cells = min(ctx, 2 * 1024)
+        expected = n_global * ctx * kv_per + n_swa * swa_cells * kv_per
+        assert b._estimate_kv_cache_bytes(ctx, "f16") == expected
+
+    def test_shared_floors_at_one_layer(self):
+        # Pathological: shared >= n_layers should not zero out the cache.
+        b = self._gqa_backend(_shared_kv_layers = 99)
+        ctx = 4096
+        kv_per = 8 * (128 + 128) * 2
+        assert b._estimate_kv_cache_bytes(ctx, "f16") == 1 * ctx * kv_per
+
+    def test_composes_with_n_parallel(self):
+        b = self._gemma3n_backend()
+        single = b._estimate_kv_cache_bytes(8192, "f16")
+        triple = b._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 3, kv_unified = False
+        )
+        assert triple == single * 3
+
+    def test_composes_with_ctx_checkpoints(self):
+        b = self._gemma3n_backend()
+        ctx = 8192
+        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
+        with_cp = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
+        # Checkpoints only count over UNSHARED SWA layers (16 of them).
+        sliding_in_unshared = sum(b._sliding_window_pattern[:20])
+        per_cp_layer = 4 * 1024 * 4 * (256 + 256) * 2  # cps * swa * heads * (k+v) * bpe
+        assert with_cp == baseline + sliding_in_unshared * per_cp_layer
+
+    def test_unload_resets_shared_kv_layers(self):
+        b = LlamaCppBackend()
+        b._shared_kv_layers = 12
+        b.unload_model()
+        assert b._shared_kv_layers is None
+
+
+# ---------------------------------------------------------------------------
 # K. Lifecycle Tests
 # ---------------------------------------------------------------------------
 
@@ -1547,6 +1721,7 @@ class TestLifecycle:
             "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
+            "_shared_kv_layers",
         ]:
             assert getattr(b, attr) is None
         assert b._n_kv_heads_by_layer is None
@@ -1563,6 +1738,7 @@ class TestLifecycle:
         b._kv_value_length_swa = 64
         b._ssm_inner_size = 4096
         b._full_attention_interval = 4
+        b._shared_kv_layers = 8
         b.unload_model()
         for attr in [
             "_kv_key_length",
@@ -1576,6 +1752,7 @@ class TestLifecycle:
             "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
+            "_shared_kv_layers",
         ]:
             assert getattr(b, attr) is None
         assert b._n_kv_heads_by_layer is None
@@ -1649,6 +1826,35 @@ class TestLifecycle:
             layer_ctx = min(131072, 2 * 1024) if is_swa else 131072
             expected += layer_ctx * kv_per
         assert result == expected
+
+    def test_end_to_end_synthetic_shared_kv_round_trip(self):
+        # Mirrors gemma3n_text: 35 layers, 15 shared, sliding_window=1024.
+        b = _backend_from_gguf(
+            "gemma3n_text",
+            {
+                "context_length": 32768,
+                "block_count": 35,
+                "attention.head_count_kv": 4,
+                "attention.head_count": 8,
+                "embedding_length": 2048,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+                "attention.sliding_window": 1024,
+                "attention.shared_kv_layers": 15,
+            },
+        )
+        assert b._can_estimate_kv()
+        assert b._shared_kv_layers == 15
+        # Bootstrap table for gemma3n_text -> period 5; the resolver
+        # synthesises a 35-entry bool array.  The first 20 entries
+        # (n_layers - shared) are the only ones that allocate KV.
+        result = b._estimate_kv_cache_bytes(8192, "f16")
+        assert result > 0
+        # Sanity: setting shared back to 0 must produce a strictly larger
+        # estimate (more layers allocate).
+        b._shared_kv_layers = 0
+        unshared = b._estimate_kv_cache_bytes(8192, "f16")
+        assert unshared > result
 
     def test_end_to_end_synthetic_gqa(self):
         b = _backend_from_gguf(
