@@ -35,7 +35,9 @@ from utils.wheel_utils import (
 )
 
 
-def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> str | None:
+def _output_dir_from_resume_checkpoint(
+    resume_from_checkpoint: str | None,
+) -> str | None:
     if not resume_from_checkpoint:
         return None
     path = Path(resume_from_checkpoint)
