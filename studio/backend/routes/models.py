@@ -1878,9 +1878,7 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(
-            "Could not check llama.cpp loaded model before delete: %s", e
-        )
+        logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
