@@ -30,7 +30,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { DEFAULT_THREAD_KEY, sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
@@ -289,13 +289,21 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const thisThreadIsRunning = useAuiState(({ thread }) => thread.isRunning);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const thisThreadInStore = useChatRuntimeStore((s) =>
+    Boolean(s.runningByThreadId[threadId ?? DEFAULT_THREAD_KEY]),
+  );
+  const anyRunning = useChatRuntimeStore((s) => Object.values(s.runningByThreadId).some(Boolean));
+  const anotherThreadRunning = !thisThreadIsRunning && !thisThreadInStore && anyRunning;
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled) {
+      if (disabled || anotherThreadRunning) {
         event.preventDefault();
       }
     },
-    [disabled],
+    [disabled, anotherThreadRunning],
   );
 
   return (
@@ -317,7 +325,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
           disabled={disabled}
           aria-label="Message input"
         />
-        <ComposerAction disabled={disabled} />
+        <ComposerAction disabled={disabled} sendDisabled={anotherThreadRunning} />
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
@@ -618,7 +626,7 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAction: FC<{ disabled?: boolean; sendDisabled?: boolean }> = ({ disabled, sendDisabled }) => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <div className="flex items-center gap-1">
@@ -660,7 +668,7 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
               type="submit"
               variant="default"
               size="icon"
-              disabled={disabled}
+              disabled={disabled || sendDisabled}
               className="aui-composer-send size-8 rounded-full"
               aria-label="Send message"
             >
