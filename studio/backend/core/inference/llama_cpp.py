@@ -1361,74 +1361,91 @@ class LlamaCppBackend:
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
 
                 for _ in range(kv_count):
-                    key_len = struct.unpack("<Q", f.read(8))[0]
-                    key = f.read(key_len).decode("utf-8")
-                    vtype = struct.unpack("<I", f.read(4))[0]
+                    # Tolerate truncated input (e.g., a partial header
+                    # fetched via HTTP byte-range): bail out gracefully
+                    # so the resolver fallback still runs on whatever
+                    # we did manage to parse.
+                    try:
+                        key_len_bytes = f.read(8)
+                        if len(key_len_bytes) < 8:
+                            break
+                        key_len = struct.unpack("<Q", key_len_bytes)[0]
+                        key_bytes = f.read(key_len)
+                        if len(key_bytes) < key_len:
+                            break
+                        key = key_bytes.decode("utf-8")
+                        vtype_bytes = f.read(4)
+                        if len(vtype_bytes) < 4:
+                            break
+                        vtype = struct.unpack("<I", vtype_bytes)[0]
+                    except (struct.error, UnicodeDecodeError):
+                        break
 
-                    if key in WANTED or key in arch_keys:
-                        # Read this value
-                        if vtype == 8:  # STRING
-                            slen = struct.unpack("<Q", f.read(8))[0]
-                            val_s = f.read(slen).decode("utf-8")
-                            if (
-                                key.startswith("general.")
-                                and key != "general.architecture"
-                            ):
-                                general[key] = val_s
-                            if key == "general.architecture":
-                                arch = val_s
-                                # Register arch-specific keys to look for
-                                arch_keys = {
-                                    f"{arch}.context_length": "context_length",
-                                    f"{arch}.block_count": "n_layers",
-                                    f"{arch}.attention.head_count_kv": "n_kv_heads",
-                                    f"{arch}.attention.head_count": "n_heads",
-                                    f"{arch}.embedding_length": "embedding_length",
-                                    # Architecture-aware KV cache fields
-                                    f"{arch}.attention.key_length": "kv_key_length",
-                                    f"{arch}.attention.value_length": "kv_value_length",
-                                    f"{arch}.attention.sliding_window": "sliding_window",
-                                    f"{arch}.attention.sliding_window_pattern": "sliding_window_pattern",
-                                    f"{arch}.full_attention_interval": "full_attention_interval",
-                                    f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
-                                    f"{arch}.attention.key_length_mla": "key_length_mla",
-                                    f"{arch}.attention.key_length_swa": "kv_key_length_swa",
-                                    f"{arch}.attention.value_length_swa": "kv_value_length_swa",
-                                    f"{arch}.ssm.inner_size": "ssm_inner_size",
-                                    f"{arch}.ssm.state_size": "ssm_state_size",
-                                }
-                            elif key == "tokenizer.chat_template":
-                                self._chat_template = val_s
-                        elif vtype in (4, 10):  # UINT32 or UINT64
-                            val_i = (
-                                struct.unpack("<I", f.read(4))[0]
-                                if vtype == 4
-                                else struct.unpack("<Q", f.read(8))[0]
-                            )
-                            attr = arch_keys.get(key)
-                            if attr:
-                                if attr == "sliding_window_pattern":
-                                    sliding_window_pattern_period = val_i
-                                else:
-                                    setattr(self, f"_{attr}", val_i)
-                        elif vtype == 9:  # ARRAY
-                            atype = struct.unpack("<I", f.read(4))[0]
-                            alen = struct.unpack("<Q", f.read(8))[0]
-                            val_a = self._gguf_read_array_value(f, atype, alen)
-                            attr = arch_keys.get(key)
-                            if attr == "n_kv_heads" and val_a is not None:
-                                self._n_kv_heads_by_layer = [int(x) for x in val_a]
-                                # Mirror max into scalar so non-SWA paths
-                                # don't fall through to `n_heads`.
-                                if self._n_kv_heads is None and val_a:
-                                    self._n_kv_heads = max(int(x) for x in val_a)
-                            elif attr == "sliding_window_pattern" and val_a is not None:
-                                self._sliding_window_pattern = [bool(x) for x in val_a]
-                                sliding_window_pattern_period = None
+                    try:
+                        if key in WANTED or key in arch_keys:
+                            if vtype == 8:  # STRING
+                                slen = struct.unpack("<Q", f.read(8))[0]
+                                val_s = f.read(slen).decode("utf-8")
+                                if (
+                                    key.startswith("general.")
+                                    and key != "general.architecture"
+                                ):
+                                    general[key] = val_s
+                                if key == "general.architecture":
+                                    arch = val_s
+                                    arch_keys = {
+                                        f"{arch}.context_length": "context_length",
+                                        f"{arch}.block_count": "n_layers",
+                                        f"{arch}.attention.head_count_kv": "n_kv_heads",
+                                        f"{arch}.attention.head_count": "n_heads",
+                                        f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.attention.key_length": "kv_key_length",
+                                        f"{arch}.attention.value_length": "kv_value_length",
+                                        f"{arch}.attention.sliding_window": "sliding_window",
+                                        f"{arch}.attention.sliding_window_pattern": "sliding_window_pattern",
+                                        f"{arch}.full_attention_interval": "full_attention_interval",
+                                        f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
+                                        f"{arch}.attention.key_length_mla": "key_length_mla",
+                                        f"{arch}.attention.key_length_swa": "kv_key_length_swa",
+                                        f"{arch}.attention.value_length_swa": "kv_value_length_swa",
+                                        f"{arch}.ssm.inner_size": "ssm_inner_size",
+                                        f"{arch}.ssm.state_size": "ssm_state_size",
+                                    }
+                                elif key == "tokenizer.chat_template":
+                                    self._chat_template = val_s
+                            elif vtype in (4, 10):  # UINT32 or UINT64
+                                val_i = (
+                                    struct.unpack("<I", f.read(4))[0]
+                                    if vtype == 4
+                                    else struct.unpack("<Q", f.read(8))[0]
+                                )
+                                attr = arch_keys.get(key)
+                                if attr:
+                                    if attr == "sliding_window_pattern":
+                                        sliding_window_pattern_period = val_i
+                                    else:
+                                        setattr(self, f"_{attr}", val_i)
+                            elif vtype == 9:  # ARRAY
+                                atype = struct.unpack("<I", f.read(4))[0]
+                                alen = struct.unpack("<Q", f.read(8))[0]
+                                val_a = self._gguf_read_array_value(f, atype, alen)
+                                attr = arch_keys.get(key)
+                                if attr == "n_kv_heads" and val_a is not None:
+                                    self._n_kv_heads_by_layer = [int(x) for x in val_a]
+                                    if self._n_kv_heads is None and val_a:
+                                        self._n_kv_heads = max(int(x) for x in val_a)
+                                elif attr == "sliding_window_pattern" and val_a is not None:
+                                    self._sliding_window_pattern = [bool(x) for x in val_a]
+                                    sliding_window_pattern_period = None
+                            else:
+                                self._gguf_skip_value(f, vtype)
                         else:
                             self._gguf_skip_value(f, vtype)
-                    else:
-                        self._gguf_skip_value(f, vtype)
+                    except (struct.error, UnicodeDecodeError):
+                        # Truncated input (e.g., HTTP byte-range fetch
+                        # of just the GGUF header); break so the
+                        # resolver fallback still runs on what we have.
+                        break
 
             # Expand a scalar period straight from the GGUF first.
             if (
