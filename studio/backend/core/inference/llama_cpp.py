@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import os
 import re
 import struct
 import structlog
@@ -492,7 +493,10 @@ class LlamaCppBackend:
                     return str(win_bin)
 
         # 2–4. ~/.unsloth/llama.cpp (primary — setup.sh / setup.ps1 build here)
-        unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
+        if root := os.environ.get("UNSLOTH_STUDIO_HOME"):
+            unsloth_home = Path(root).expanduser().resolve() / "llama.cpp"
+        else:
+            unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
         # Root dir (make builds copy binaries here)
         home_root = unsloth_home / binary_name
         if home_root.is_file():
@@ -2078,7 +2082,10 @@ class LlamaCppBackend:
             install_roots: list[Path] = []
 
             # Primary install dir (setup.sh / prebuilt installer)
-            install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
+            if root := os.environ.get("UNSLOTH_STUDIO_HOME"):
+                install_roots.append(Path(root).expanduser().resolve() / "llama.cpp")
+            else:
+                install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
             # Legacy in-tree build dirs (older setup.sh versions)
             project_root = Path(__file__).resolve().parents[4]

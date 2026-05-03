@@ -126,7 +126,7 @@ function Install-UnslothStudio {
     }
 
     $PythonVersion = "3.13"
-    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+    $StudioHome = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { Join-Path $env:USERPROFILE ".unsloth\studio" }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
     $Rule = [string]::new([char]0x2500, 52)

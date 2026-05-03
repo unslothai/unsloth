@@ -29,6 +29,12 @@ from startup_banner import print_studio_access_banner
 logger = get_logger(__name__)
 
 
+def _studio_home() -> Path:
+    if root := os.environ.get("UNSLOTH_STUDIO_HOME"):
+        return Path(root).expanduser().resolve()
+    return Path.home() / ".unsloth" / "studio"
+
+
 def _resolve_external_ip() -> str:
     """
     Resolve the machine's external IP address.
@@ -159,7 +165,7 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
-_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+_PID_FILE = _studio_home() / "studio.pid"
 
 
 def _write_pid_file():

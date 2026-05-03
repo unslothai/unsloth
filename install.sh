@@ -219,7 +219,7 @@ _tauri_gpu_branch() {
 }
 
 PYTHON_VERSION=""  # resolved after platform detection
-STUDIO_HOME="$HOME/.unsloth/studio"
+STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
@@ -1793,37 +1793,45 @@ else
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
-# ── Make 'unsloth' available globally via ~/.local/bin ──
-mkdir -p "$HOME/.local/bin"
-ln -sf "$VENV_DIR/bin/unsloth" "$HOME/.local/bin/unsloth"
+# ── Make 'unsloth' available ──
+if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+    _LOCAL_BIN="$STUDIO_HOME/bin"
+    mkdir -p "$_LOCAL_BIN"
+    ln -sf "$VENV_DIR/bin/unsloth" "$_LOCAL_BIN/unsloth"
+    export PATH="$_LOCAL_BIN:$PATH"
+    step "path" "local launcher at $_LOCAL_BIN/unsloth"
+else
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$VENV_DIR/bin/unsloth" "$HOME/.local/bin/unsloth"
 
-_LOCAL_BIN="$HOME/.local/bin"
-case ":$PATH:" in
-    *":$_LOCAL_BIN:"*) ;;  # already on PATH
-    *)
-        _SHELL_PROFILE=""
-        if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
-            _SHELL_PROFILE="$HOME/.zshrc"
-        elif [ -f "$HOME/.bashrc" ]; then
-            _SHELL_PROFILE="$HOME/.bashrc"
-        elif [ -f "$HOME/.profile" ]; then
-            _SHELL_PROFILE="$HOME/.profile"
-        fi
-
-        if [ -n "$_SHELL_PROFILE" ]; then
-            if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
-                echo '' >> "$_SHELL_PROFILE"
-                echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
-                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
-                step "path" "added ~/.local/bin to PATH in $_SHELL_PROFILE"
+    _LOCAL_BIN="$HOME/.local/bin"
+    case ":$PATH:" in
+        *":$_LOCAL_BIN:"*) ;;  # already on PATH
+        *)
+            _SHELL_PROFILE=""
+            if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+                _SHELL_PROFILE="$HOME/.zshrc"
+            elif [ -f "$HOME/.bashrc" ]; then
+                _SHELL_PROFILE="$HOME/.bashrc"
+            elif [ -f "$HOME/.profile" ]; then
+                _SHELL_PROFILE="$HOME/.profile"
             fi
-        fi
-        export PATH="$_LOCAL_BIN:$PATH"
-        ;;
-esac
 
-# Non-Tauri installs keep shortcuts even if setup reports failure.
-if [ "$TAURI_MODE" != true ]; then
+            if [ -n "$_SHELL_PROFILE" ]; then
+                if ! grep -q '\.local/bin' "$_SHELL_PROFILE" 2>/dev/null; then
+                    echo '' >> "$_SHELL_PROFILE"
+                    echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
+                    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$_SHELL_PROFILE"
+                    step "path" "added ~/.local/bin to PATH in $_SHELL_PROFILE"
+                fi
+            fi
+            export PATH="$_LOCAL_BIN:$PATH"
+            ;;
+    esac
+fi
+
+# Non-Tauri global installs keep shortcuts even if setup reports failure.
+if [ "$TAURI_MODE" != true ] && [ -z "${UNSLOTH_STUDIO_HOME:-}" ]; then
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 

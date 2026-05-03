@@ -417,12 +417,11 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-STUDIO_HOME="$HOME/.unsloth/studio"
+STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 
-[ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
 [ -d "$REPO_ROOT/.venv_t5_530" ] && rm -rf "$REPO_ROOT/.venv_t5_530"
@@ -573,7 +572,11 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-UNSLOTH_HOME="$HOME/.unsloth"
+if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+    UNSLOTH_HOME="$STUDIO_HOME"
+else
+    UNSLOTH_HOME="$HOME/.unsloth"
+fi
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"

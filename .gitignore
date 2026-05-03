@@ -140,6 +140,12 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.uv-cache/
+.uv-python/
+.pip-cache/
+.npm-cache/
+.studio/
+.studio-home/
 env/
 venv/
 ENV/

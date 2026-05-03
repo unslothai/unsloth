@@ -1494,7 +1494,8 @@ substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
 # The venv must already exist (created by install.ps1).
 # This script (setup.ps1 / "unsloth studio update") only updates packages.
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
+$StudioHome = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { Join-Path $env:USERPROFILE ".unsloth\studio" }
+$VenvDir = Join-Path $StudioHome "unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, repair according to invocation context.
@@ -1759,9 +1760,9 @@ if ($stackExit -ne 0) {
 # ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
-$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
-$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
-$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+$VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
+$VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
+$VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 $_NeedT5Install = $false
 if (Test-Path $VenvT5Legacy) {
@@ -1851,7 +1852,7 @@ step "transformers" "5.5.0 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+$UnslothHome = if ($env:UNSLOTH_STUDIO_HOME) { $StudioHome } else { Join-Path $env:USERPROFILE ".unsloth" }
 if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false

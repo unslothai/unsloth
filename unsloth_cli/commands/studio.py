@@ -20,7 +20,14 @@ import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
-STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+
+def _studio_home() -> Path:
+    if root := os.environ.get("UNSLOTH_STUDIO_HOME"):
+        return Path(root).expanduser().resolve()
+    return Path.home() / ".unsloth" / "studio"
+
+
+STUDIO_HOME = _studio_home()
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"

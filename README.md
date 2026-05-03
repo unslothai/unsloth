@@ -102,6 +102,23 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 To see developer, nightly and uninstallation etc. instructions, see [advanced installation](#-advanced-installation).
 
 ### Unsloth Core (code-based)
+#### Install from source, local to this checkout:
+```bash
+git clone https://github.com/unslothai/unsloth
+cd unsloth
+./install-source.sh
+source .venv/bin/activate
+unsloth studio -H 127.0.0.1 -p 8888
+```
+```powershell
+git clone https://github.com/unslothai/unsloth.git
+cd unsloth
+.\install-source.ps1
+.\.venv\Scripts\Activate.ps1
+unsloth studio -H 127.0.0.1 -p 8888
+```
+This creates `./.venv`, `./.studio`, `./studio/frontend/dist`, and local package-manager caches (`./.uv-cache`, `./.uv-python`, `./.pip-cache`, `./.npm-cache`), so the source install stays inside the current project directory.
+
 #### Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
