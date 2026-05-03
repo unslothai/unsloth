@@ -66,6 +66,7 @@ const EMPTY_DOWNLOAD_STATE: DownloadState = {
 
 function coerceCachedStateReady(state: DownloadState): DownloadState {
   if (!state.cachePath) return state;
+  if (state.downloadedBytes > 0 && state.percent < 100) return state;
   const totalBytes =
     state.totalBytes > 0 ? state.totalBytes : state.downloadedBytes;
   if (totalBytes <= 0) {
