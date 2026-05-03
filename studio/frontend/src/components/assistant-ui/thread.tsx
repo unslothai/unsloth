@@ -471,7 +471,7 @@ const PreserveThinkingToggle: FC = () => {
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={
-        preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
+        preserveThinking ? "Disable preserve think" : "Enable preserve think"
       }
     >
       {preserveThinking && !disabled ? (
@@ -479,7 +479,7 @@ const PreserveThinkingToggle: FC = () => {
       ) : (
         <LightbulbOffIcon className="size-3.5" />
       )}
-      <span>Preserve Thinking</span>
+      <span>Preserve Think</span>
     </button>
   );
 };
