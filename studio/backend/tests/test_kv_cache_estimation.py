@@ -38,35 +38,43 @@ sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx
-_httpx_stub = _types.ModuleType("httpx")
-for _exc_name in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
+# httpx -- only stub when the real library isn't installed.  Stubbing
+# unconditionally would shadow ``HTTPError`` / ``Response`` etc. that
+# ``huggingface_hub.errors`` imports at module load time, which causes
+# the transformers introspection tier to silently return None inside
+# the test process.
+try:
+    import httpx as _httpx_real  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc_name in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+    ):
+        setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
 
+    class _FakeTimeout:
+        def __init__(self, *a, **kw):
+            pass
 
-class _FakeTimeout:
-    def __init__(self, *a, **kw):
-        pass
-
-
-_httpx_stub.Timeout = _FakeTimeout
-_httpx_stub.Client = type(
-    "Client",
-    (),
-    {
-        "__init__": lambda self, **kw: None,
-        "__enter__": lambda self: self,
-        "__exit__": lambda self, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+    _httpx_stub.Timeout = _FakeTimeout
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "Client",
+        (),
+        {
+            "__init__": lambda self, **kw: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import LlamaCppBackend
 
