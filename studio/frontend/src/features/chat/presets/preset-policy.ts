@@ -33,20 +33,10 @@ export const BUILTIN_PRESET_NAMES = new Set(
   BUILTIN_PRESETS.map((preset) => preset.name),
 );
 
-export type ChatPresetSource =
-  | "builtin-default"
-  | "builtin-fixed"
-  | "custom"
-  | "modified";
+export type ChatPresetSource = "builtin-default" | "custom" | "modified";
 
 export function getPresetSource(name: string): ChatPresetSource {
-  if (name === "Default") {
-    return "builtin-default";
-  }
-  if (BUILTIN_PRESET_NAMES.has(name)) {
-    return "builtin-fixed";
-  }
-  return "custom";
+  return name === "Default" ? "builtin-default" : "custom";
 }
 
 export function getUniquePresetName(

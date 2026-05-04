@@ -20,12 +20,10 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
   const [loaded, setLoaded] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
-  // Aborts any in-flight fetch before starting a new one so a slow
-  // poll cannot clobber a fast manual refresh — without this, a poll
-  // that started before a delete/rename can resurrect the stale row
-  // when its response lands after the user-action refresh.
   const fetchRuns = useCallback(async (): Promise<void> => {
-    controllerRef.current?.abort();
+    if (controllerRef.current && !controllerRef.current.signal.aborted) {
+      return;
+    }
     const controller = new AbortController();
     controllerRef.current = controller;
     try {
