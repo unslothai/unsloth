@@ -1553,8 +1553,27 @@ def save_to_gguf(
                         )
         print("Unsloth: Model files cleanup...")
         if quants_created:
-            all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink(missing_ok = True)
+            if first_conversion not in quantization_method:
+                # Remove all text intermediates from the returned list AND disk.
+                # For sharded outputs there may be multiple text shards; mmproj
+                # (if present) stays — it is not part of the text parts slice.
+                n_text = (len(initial_files) - 1) if is_vlm else len(initial_files)
+                for text_part in initial_files[:n_text]:
+                    all_saved_locations.remove(text_part)
+                    Path(text_part).unlink(missing_ok = True)
+            elif is_vlm:
+                # VLM case: initial_files = [text_part(s)..., mmproj], with quants
+                # appended after. For the trailing reverse() to yield the desired
+                # [quants_desc, text_parts_in_order, mmproj] we rebuild the list
+                # as [mmproj, text_parts_reversed, quants]. This generalises the
+                # non-sharded case (one text part) to multi-shard text outputs.
+                n_text = len(initial_files) - 1
+                text_parts = all_saved_locations[:n_text]
+                mmproj_file = all_saved_locations[n_text]
+                quants = all_saved_locations[len(initial_files) :]
+                all_saved_locations[:] = (
+                    [mmproj_file] + list(reversed(text_parts)) + quants
+                )
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
