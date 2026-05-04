@@ -17,12 +17,27 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
+import {
+  mergeBackendRecommendedInference,
+  resolveLoadMaxSeqLength,
+} from "../presets/preset-policy";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
-  InferenceParams,
 } from "../types/runtime";
+
+// The simplified Speculative Decoding control surfaces "default" (which
+// maps to llama.cpp's --spec-default) and "off". A backend status / load
+// response can still report the older manual modes (ngram-mod,
+// ngram-simple) when a model is loaded via the API or carried over from an
+// older Studio version. The Select would render an empty trigger for those
+// values, so coerce them to "default" -- llama.cpp's own --spec-default
+// picks an equivalent strategy and keeps the dropdown coherent.
+function normalizeSpeculativeType(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  if (v === "default" || v === "off") return v;
+  return "default";
+}
 
 type SelectedModelInput = {
   id: string;
@@ -119,44 +134,8 @@ function toLoraSummary(lora: {
   };
 }
 
-function toFiniteNumber(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return undefined;
-  }
-  return value;
-}
-
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
-}
-
-function mergeRecommendedInference(
-  current: InferenceParams,
-  response: LoadModelResponse | InferenceStatusResponse,
-  modelId: string,
-): InferenceParams {
-  const inference = response.inference;
-  // GGUF: use actual context length from GGUF metadata, fallback to 131072
-  // Non-GGUF: 4096
-  const defaultMaxTokens = response.is_gguf
-    ? (response.context_length ?? 131072)
-    : 4096;
-  return {
-    ...current,
-    checkpoint: modelId,
-    maxTokens: defaultMaxTokens,
-    temperature:
-      toFiniteNumber(inference?.temperature) ?? current.temperature,
-    topP: toFiniteNumber(inference?.top_p) ?? current.topP,
-    topK: toFiniteNumber(inference?.top_k) ?? current.topK,
-    minP: toFiniteNumber(inference?.min_p) ?? current.minP,
-    presencePenalty:
-      toFiniteNumber(inference?.presence_penalty) ?? current.presencePenalty,
-    trustRemoteCode:
-      typeof inference?.trust_remote_code === "boolean"
-        ? inference.trust_remote_code
-        : current.trustRemoteCode,
-  };
 }
 
 export function useChatModelRuntime() {
@@ -186,6 +165,7 @@ export function useChatModelRuntime() {
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
   const loadToastDismissedRef = useRef(false);
+  const cancelUnloadPendingRef = useRef(false);
 
   const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
     loadToastDismissedRef.current = dismissed;
@@ -199,7 +179,9 @@ export function useChatModelRuntime() {
     loadAbortRef.current = null;
     loadToastIdRef.current = null;
     setLoadToastDismissedState(false);
-    useChatRuntimeStore.getState().setModelLoading(false);
+    if (!cancelUnloadPendingRef.current) {
+      useChatRuntimeStore.getState().setModelLoading(false);
+    }
   }, [setLoadToastDismissedState]);
 
   const renderLoadDescription = useCallback(
@@ -238,33 +220,21 @@ export function useChatModelRuntime() {
         // Apply inference defaults on reconnect (page refresh with model already loaded)
         if (statusRes.inference) {
           const currentParams = useChatRuntimeStore.getState().params;
-          const reconnectResponse: LoadModelResponse = {
-            status: "already_loaded",
-            model: statusRes.active_model,
-            display_name: statusRes.active_model,
-            is_vision: statusRes.is_vision,
-            is_lora: false,
-            is_gguf: statusRes.is_gguf,
-            is_audio: statusRes.is_audio,
-            audio_type: statusRes.audio_type,
-            has_audio_input: statusRes.has_audio_input,
-            inference: statusRes.inference,
-            context_length: statusRes.context_length,
-            max_context_length: statusRes.max_context_length,
-            native_context_length: statusRes.native_context_length,
-            supports_reasoning: statusRes.supports_reasoning,
-            reasoning_always_on: statusRes.reasoning_always_on,
-            supports_tools: statusRes.supports_tools,
-            speculative_type: statusRes.speculative_type,
-          };
           setParams(
-            mergeRecommendedInference(currentParams, statusRes, statusRes.active_model),
+            mergeBackendRecommendedInference({
+              current: currentParams,
+              response: statusRes,
+              modelId: statusRes.active_model,
+              presetSource: useChatRuntimeStore.getState().activePresetSource,
+            }),
           );
         }
 
         // Restore reasoning/tools support flags and context length
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
+        const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
+        const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         const currentGgufContextLength = statusRes.is_gguf
           ? (statusRes.context_length ?? null)
@@ -275,16 +245,28 @@ export function useChatModelRuntime() {
         const ggufNativeContextLength = statusRes.is_gguf
           ? (statusRes.native_context_length ?? null)
           : null;
-        const currentSpecType = statusRes.speculative_type ?? null;
+        const currentSpecType = normalizeSpeculativeType(statusRes.speculative_type);
+        const nextDefaultChatTemplate =
+          statusRes.chat_template === undefined
+            ? useChatRuntimeStore.getState().defaultChatTemplate
+            : statusRes.chat_template;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
+          reasoningStyle,
+          supportsPreserveThinking,
           supportsTools,
+          // Reset per-turn reasoning flag so models that do not support
+          // reasoning do not inherit a stale off state from a prior model.
+          reasoningEnabled: supportsReasoning
+            ? useChatRuntimeStore.getState().reasoningEnabled
+            : true,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,
           modelRequiresTrustRemoteCode:
             statusRes.requires_trust_remote_code ?? false,
+          defaultChatTemplate: nextDefaultChatTemplate,
           speculativeType: currentSpecType,
           loadedSpeculativeType: currentSpecType,
         });
@@ -335,8 +317,18 @@ export function useChatModelRuntime() {
         ? undefined
         : "The current download may still finish in the background.",
     });
-    // Fire-and-forget: tell backend to stop, don't block UI
-    unloadModel({ model_path: model.id }).catch(() => {});
+    cancelUnloadPendingRef.current = true;
+    useChatRuntimeStore.getState().setModelLoading(true);
+    void (async () => {
+      try {
+        await unloadModel({ model_path: model.id }).catch(() => {});
+      } finally {
+        cancelUnloadPendingRef.current = false;
+        if (!loadingModelRef.current) {
+          useChatRuntimeStore.getState().setModelLoading(false);
+        }
+      }
+    })();
   }, [clearCheckpoint, setLoadToastDismissedState]);
 
   const selectModel = useCallback(
@@ -408,12 +400,19 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
-          const paramsBeforeLoad = useChatRuntimeStore.getState().params;
-          const trustRemoteCode = paramsBeforeLoad.trustRemoteCode ?? false;
-          const maxSeqLength = paramsBeforeLoad.maxSeqLength;
-          const hfToken = useChatRuntimeStore.getState().hfToken || null;
+          const stateBeforeUnload = useChatRuntimeStore.getState();
+          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
+          const previousIsGguf =
+            previousModel?.isGguf === true
+            || previousVariant != null
+            || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+          const rollbackMaxSeqLength = previousIsGguf
+            ? (stateBeforeUnload.ggufContextLength ?? 0)
+            : maxSeqLength;
+          const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
-            useChatRuntimeStore.getState().modelRequiresTrustRemoteCode;
+            stateBeforeUnload.modelRequiresTrustRemoteCode;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -428,19 +427,33 @@ export function useChatModelRuntime() {
             if (validation.requires_trust_remote_code && !trustRemoteCode) {
               throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
             }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
             if (currentCheckpoint) {
               await unloadModel({ model_path: currentCheckpoint });
               previousWasUnloaded = true;
             }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            const { chatTemplateOverride, kvCacheDtype, customContextLength, ggufContextLength, speculativeType } = useChatRuntimeStore.getState();
-            // GGUF: use custom context length, or 0 = model's native context
-            // Non-GGUF: use the Max Seq Length slider value
-            const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
-            const effectiveMaxSeqLength = customContextLength != null
-              ? customContextLength
-              : (ggufVariant != null || isDirectGgufFile) ? (ggufContextLength ?? 0) : maxSeqLength;
+            const {
+              chatTemplateOverride,
+              kvCacheDtype,
+              customContextLength,
+              ggufContextLength,
+              speculativeType,
+              activePresetSource,
+              activeGgufVariant,
+            } = useChatRuntimeStore.getState();
+            const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+              modelId,
+              ggufVariant,
+              customContextLength,
+              ggufContextLength,
+              currentCheckpoint,
+              activeGgufVariant,
+              maxSeqLength,
+              presetSource: activePresetSource,
+            });
             const loadResponse = await loadModel({
               model_path: modelId,
               hf_token: hfToken,
@@ -460,7 +473,12 @@ export function useChatModelRuntime() {
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
-              mergeRecommendedInference(currentParams, loadResponse, modelId),
+              mergeBackendRecommendedInference({
+                current: currentParams,
+                response: loadResponse,
+                modelId,
+                presetSource: useChatRuntimeStore.getState().activePresetSource,
+              }),
             );
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
@@ -474,7 +492,7 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
-            const loadedSpec = loadResponse.speculative_type ?? null;
+            const loadedSpec = normalizeSpeculativeType(loadResponse.speculative_type);
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -498,6 +516,8 @@ export function useChatModelRuntime() {
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
+              reasoningStyle: loadResponse.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: loadResponse.supports_tools ?? false,
               codeToolsEnabled: loadResponse.supports_tools ?? false,
@@ -512,12 +532,31 @@ export function useChatModelRuntime() {
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
               const store = useChatRuntimeStore.getState();
-              const mid = modelId.toLowerCase();
-              const needsPresencePenalty = mid.includes("qwen3.5") || mid.includes("qwen3.6");
-              const p = reasoningDefault
-                ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) }
-                : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0, ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}) };
-              store.setParams({ ...store.params, ...p });
+              if (store.activePresetSource === "builtin-default") {
+                const mid = modelId.toLowerCase();
+                const needsPresencePenalty =
+                  mid.includes("qwen3.5") || mid.includes("qwen3.6");
+                const p = reasoningDefault
+                  ? {
+                      temperature: 0.6,
+                      topP: 0.95,
+                      topK: 20,
+                      minP: 0.0,
+                      ...(needsPresencePenalty
+                        ? { presencePenalty: 1.5 }
+                        : {}),
+                    }
+                  : {
+                      temperature: 0.7,
+                      topP: 0.8,
+                      topK: 20,
+                      minP: 0.0,
+                      ...(needsPresencePenalty
+                        ? { presencePenalty: 1.5 }
+                        : {}),
+                    };
+                store.setParams({ ...store.params, ...p });
+              }
             }
             await refresh();
           } catch (error) {
@@ -529,7 +568,7 @@ export function useChatModelRuntime() {
                 await loadModel({
                   model_path: previousCheckpoint,
                   hf_token: hfToken,
-                  max_seq_length: maxSeqLength,
+                  max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,

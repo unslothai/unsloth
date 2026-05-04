@@ -9,16 +9,18 @@ import type {
 /**
  * assistant-ui does not expose a public `deleteMessage` on `ThreadRuntime` / `MessageRuntime`
  * in our version, but it already implements branch-safe deletion inside `MessageRepository`.
- * We import that helper from an **internal** package path (`runtime/utils/message-repository`).
+ * We import that helper from `@assistant-ui/core/internal`, the package's exported internal
+ * surface. Avoid importing the deeper `runtime/utils/message-repository` path directly: newer
+ * `@assistant-ui/core` releases no longer export arbitrary deep paths.
  *
  * **Maintainability:** treat this file as the only place that imports `MessageRepository` from
  * `@assistant-ui/core`. When bumping `@assistant-ui/react` / `@assistant-ui/core`, re-run chat
  * delete + reload smoke tests; the path or API may change without a semver signal on “public”
  * surface area.
  */
-import { MessageRepository } from "@assistant-ui/core/runtime/utils/message-repository";
-import { db } from "@/features/chat/db";
-import type { MessageRecord } from "@/features/chat/types";
+import { MessageRepository } from "@assistant-ui/core/internal";
+import { db } from "../db";
+import type { MessageRecord } from "../types";
 
 function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
   if (typeof content === "string") {
@@ -72,7 +74,7 @@ function exportedItemToRecord(
  * Persist the exact message list represented by `exp` for this thread, removing
  * Dexie rows that are no longer present (e.g. after a delete).
  */
-async function syncExportedRepositoryToDexie(
+export async function syncExportedRepositoryToDexie(
   remoteId: string,
   exp: ExportedMessageRepository,
 ): Promise<void> {

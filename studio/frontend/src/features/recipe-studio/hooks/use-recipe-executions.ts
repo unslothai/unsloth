@@ -3,7 +3,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { toast } from "sonner";
 import { toastError } from "@/shared/toast";
+import {
+  getInferenceStatus,
+  loadModel,
+} from "@/features/chat/api/chat-api";
 import {
   cancelRecipeJob,
   createRecipeJob,
@@ -39,10 +44,84 @@ import {
 } from "../stores/recipe-executions";
 import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
 
+/**
+ * Auto-load the local model before running a recipe that uses it.
+ *
+ * Looks at payload.recipe.model_providers for any provider with is_local=true,
+ * finds the bound model_configs and asks the backend to load whichever model
+ * the first local-bound model_config points at. Skips when the inference
+ * server already has that exact model active. This removes the "open /chat
+ * first" prerequisite that users kept tripping on.
+ */
+async function ensureLocalModelLoaded(
+  payload: RecipePayload,
+): Promise<string | null> {
+  const providers = Array.isArray(payload.recipe.model_providers)
+    ? (payload.recipe.model_providers as Array<Record<string, unknown>>)
+    : [];
+  const localProviderNames = new Set<string>();
+  for (const p of providers) {
+    if (p.is_local === true && typeof p.name === "string") {
+      localProviderNames.add(p.name);
+    }
+  }
+  if (localProviderNames.size === 0) {
+    return null;
+  }
+  const modelConfigs = Array.isArray(payload.recipe.model_configs)
+    ? (payload.recipe.model_configs as Array<Record<string, unknown>>)
+    : [];
+  const boundConfig = modelConfigs.find(
+    (c) => typeof c.provider === "string" && localProviderNames.has(c.provider),
+  );
+  const target =
+    typeof boundConfig?.model === "string" ? boundConfig.model.trim() : "";
+  if (!target) {
+    return null;
+  }
+
+  try {
+    const status = await getInferenceStatus();
+    if (
+      status.active_model &&
+      status.active_model.toLowerCase() === target.toLowerCase()
+    ) {
+      return null;
+    }
+  } catch {
+    // Fall through to load attempt; the backend will re-error if needed.
+  }
+
+  const toastId = toast.loading(`Loading ${target}…`, {
+    description: "Starting the local inference server for this recipe.",
+  });
+  try {
+    const isGguf = /gguf/i.test(target);
+    await loadModel({
+      model_path: target,
+      hf_token: null,
+      max_seq_length: isGguf ? 0 : 4096,
+      load_in_4bit: true,
+      is_lora: false,
+      gguf_variant: null,
+      trust_remote_code: false,
+      chat_template_override: null,
+      cache_type_kv: null,
+      speculative_type: null,
+    });
+    toast.success(`Loaded ${target}`, { id: toastId, duration: 2000 });
+    return null;
+  } catch (error) {
+    toast.dismiss(toastId);
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 type UseRecipeExecutionsParams = {
   recipeId: string;
   currentSignature: string;
   payloadResult: RecipePayloadResult;
+  initialRunRows?: number | null;
   onExecutionStart?: () => void;
   onPreviewSuccess?: () => void;
 };
@@ -101,6 +180,7 @@ export function useRecipeExecutions({
   recipeId,
   currentSignature,
   payloadResult,
+  initialRunRows,
   onExecutionStart,
   onPreviewSuccess,
 }: UseRecipeExecutionsParams): UseRecipeExecutionsResult {
@@ -181,6 +261,19 @@ export function useRecipeExecutions({
 
     resetForRecipe();
 
+    // Seed previewRows from the recipe's original run.rows (read from the
+    // loaded JSON, not the rebuilt payload (the builder hardcodes 5).
+    // Templates ship their own suggested preview size (e.g. GitHub Support
+    // Bot: 10); we honor it so users don't see a surprise 5.
+    if (
+      typeof initialRunRows === "number" &&
+      Number.isFinite(initialRunRows) &&
+      initialRunRows > 0 &&
+      initialRunRows !== 5
+    ) {
+      setPreviewRows(Math.floor(initialRunRows));
+    }
+
     async function hydrate(): Promise<void> {
       try {
         const records = await loadSortedRecipeExecutions(recipeId);
@@ -216,10 +309,12 @@ export function useRecipeExecutions({
       cancelled = true;
     };
   }, [
+    initialRunRows,
     onPreviewSuccess,
     recipeId,
     resetForRecipe,
     setExecutions,
+    setPreviewRows,
     setRunErrors,
     upsertAndPersist,
   ]);
@@ -340,6 +435,20 @@ export function useRecipeExecutions({
         return false;
       }
 
+      // Flip to the Runs pane BEFORE we run ensureLocalModelLoaded + validate.
+      // Validation re-crawls the seed (multiple seconds for the github_repo
+      // reader) and the user otherwise stares at a "Running..." button with
+      // nothing else changing. runExecution() later no-ops this callback if
+      // the view has already been flipped, so we fire it once here.
+      onExecutionStart?.();
+
+      const localLoadError = await ensureLocalModelLoaded(payload);
+      if (localLoadError) {
+        setRunErrors([localLoadError]);
+        toastError("Local model failed to load", localLoadError);
+        return false;
+      }
+
       const normalizedRows = sanitizeExecutionRows(rows, kind);
       const executionPayload = buildExecutionPayload({
         payload,
@@ -374,7 +483,13 @@ export function useRecipeExecutions({
         runName,
       });
     },
-    [readExecutablePayload, runExecution, runSettings, setRunErrors],
+    [
+      onExecutionStart,
+      readExecutablePayload,
+      runExecution,
+      runSettings,
+      setRunErrors,
+    ],
   );
 
   const runPreview = useCallback(async (): Promise<boolean> => {

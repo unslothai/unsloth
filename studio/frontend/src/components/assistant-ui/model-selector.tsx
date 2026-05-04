@@ -18,13 +18,19 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 
-export type { LoraModelOption, ModelOption, ModelSelectorChangeMeta } from "./model-selector/types";
+export type {
+  DeletedModelRef,
+  LoraModelOption,
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "./model-selector/types";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -35,6 +41,8 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -66,7 +74,7 @@ function ModelSelectorTrigger({
         type="button"
         data-tour={dataTour}
         className={cn(
-          "flex items-center gap-2 transition-colors",
+          "flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
           "rounded-[8px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
           variant === "ghost" && "rounded-[8px] hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
@@ -80,17 +88,23 @@ function ModelSelectorTrigger({
         {isLoaded && (
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
-        <span className="font-heading font-medium text-[16px] text-black dark:text-white">
-          {currentModel?.name ?? "Select model"}
+        <span className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+            {currentModel?.name ?? "Select model"}
+          </span>
+          {currentModel?.description && (
+            <span className="shrink-0 text-xs leading-none text-muted-foreground">
+              {currentModel.description}
+            </span>
+          )}
         </span>
-        {currentModel?.description && (
-          <span className="text-muted-foreground text-xs">{currentModel.description}</span>
-        )}
-        <HugeiconsIcon
-          icon={ArrowDown01Icon}
-          strokeWidth={1.75}
-          className="size-3.5 shrink-0 text-muted-foreground"
-        />
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            strokeWidth={1.75}
+            className="relative top-0.5 size-3.5 text-muted-foreground"
+          />
+        </span>
       </button>
     </PopoverTrigger>
   );
@@ -103,6 +117,8 @@ function ModelSelectorContent({
   onSelect,
   onEject,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   className,
   dataTour,
 }: {
@@ -112,6 +128,8 @@ function ModelSelectorContent({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
 }) {
@@ -145,6 +163,8 @@ function ModelSelectorContent({
               loraModels={loraModels}
               value={value}
               onSelect={onSelect}
+              onModelsChange={onModelsChange}
+              deleteDisabled={deleteDisabled}
             />
           </TabsContent>
         </Tabs>
@@ -176,6 +196,8 @@ export function ModelSelector({
   onValueChange,
   onEject,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   variant = "outline",
   size = "default",
   className,
@@ -270,6 +292,8 @@ export function ModelSelector({
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
+        deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
       />

@@ -32,6 +32,10 @@ import threading
 import yaml
 
 
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
 
 # ── Model size extraction ────────────────────────────────────
@@ -579,6 +583,7 @@ def _is_vision_model_subprocess(
             capture_output = True,
             text = True,
             timeout = 60,
+            **_windows_hidden_subprocess_kwargs(),
         )
 
         if result.returncode != 0:
@@ -1222,9 +1227,11 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
         return p
     if p.is_file() and p.suffix.lower() == ".gguf":
         parent = p.parent
-        if (parent / "config.json").exists() or (
-            parent / "adapter_config.json"
-        ).exists():
+        if (
+            (parent / "config.json").exists()
+            or (parent / "adapter_config.json").exists()
+            or (parent / "export_metadata.json").exists()
+        ):
             return parent
     return None
 

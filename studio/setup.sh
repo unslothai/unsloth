@@ -8,6 +8,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Parse flags ──
+# --local: install from the local repo checkout (overlays unsloth as editable
+# and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
+# path that runs setup.sh directly without going through install.sh.
+if [ "$#" -gt 0 ]; then
+    for _arg in "$@"; do
+        case "$_arg" in
+            --local)
+                export STUDIO_LOCAL_INSTALL=1
+                export STUDIO_LOCAL_REPO="$REPO_ROOT"
+                ;;
+        esac
+    done
+fi
+
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
@@ -170,6 +185,9 @@ _LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
 if [ "$_LLAMA_ONLY" = "1" ]; then
     substep "llama.cpp only mode"
 fi
+if [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
+    substep "local mode: overlaying $REPO_ROOT (editable) + unsloth-zoo from git main"
+fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
@@ -183,7 +201,13 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 if [ "$_LLAMA_ONLY" != "1" ]; then
-# ── Frontend ──
+# ── Detect whether frontend needs building ──
+# Skip if SKIP_STUDIO_FRONTEND=1 (Tauri desktop app bundles its own frontend),
+# or if dist/ exists AND no tracked input is newer than dist/.
+if [ "${SKIP_STUDIO_FRONTEND:-0}" = "1" ]; then
+    _NEED_FRONTEND_BUILD=false
+    step "frontend" "bundled (Tauri)"
+else
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
@@ -195,6 +219,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+fi  # end SKIP_STUDIO_FRONTEND guard
 
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     step "frontend" "up to date"
@@ -484,9 +509,9 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
-from importlib.metadata import version
-print(version('$_PKG_NAME'))
-" 2>/dev/null || echo "")
+import sys; from importlib.metadata import version
+print(version(sys.argv[1]))
+" "$_PKG_NAME" 2>/dev/null || echo "")
 
     LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
@@ -674,7 +699,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         case "$_pkg" in
             build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) command -v curl-config >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
         esac
     done

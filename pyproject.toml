@@ -53,6 +53,7 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
+    "backend/plugins/**/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
