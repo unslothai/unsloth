@@ -1115,6 +1115,35 @@ class FastModel(FastBaseModel):
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
         )
+        # why: PEFT auto_mapping can resolve to ["paligemma"] without exposing
+        # the inner gemma/gemma2 backbone, which downstream compile/load need.
+        if (
+            is_peft
+            and peft_config is not None
+            and "paligemma" in model_types
+            and not any(t in ("gemma", "gemma2") for t in model_types)
+        ):
+            try:
+                _base_config = AutoConfig.from_pretrained(
+                    peft_config.base_model_name_or_path,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
+                _base_model_types = get_transformers_model_type(
+                    _base_config,
+                    trust_remote_code = trust_remote_code,
+                )
+                model_types = sorted(set(model_types) | set(_base_model_types))
+            except ImportError:
+                raise
+            except Exception as _e:
+                logger.warning_once(
+                    "Unsloth: Could not inspect base model config for PaliGemma "
+                    f"adapter ({type(_e).__name__}: {_e}). "
+                    "Defaulting to PaliGemma 1 (Gemma backbone). If this is a "
+                    "PaliGemma 2 adapter, ensure the base model is accessible."
+                )
         model_types_all = ",".join(model_types) + ","
 
         # Save model types and loading method
@@ -1186,28 +1215,27 @@ class FastModel(FastBaseModel):
             if is_rdna():
                 os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         # PaliGemma (v1: Gemma backbone, v2: Gemma2 backbone)
-        # Must be checked before generic "gemma2"/"gemma" to apply fast kernels
-        # to the inner language_model via class-level patching.
+        # Validate transformers version and enable high-precision layernorm;
+        # downstream unsloth_compile_transformers handles the inner language
+        # backbone, so do not call FastGemma{,2}Model.pre_patch() here (those
+        # install class-level fast forwards designed for FastLanguageModel,
+        # not for VLMs whose outer model passes a per-layer mask mapping).
         elif "paligemma" in model_types_all:
-            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
             if "gemma2" in model_types_all:
-                # PaliGemma 2 — language_model is Gemma2ForCausalLM
                 if transformers_version < Version("4.42.3"):
                     raise RuntimeError(
                         "Unsloth: PaliGemma 2 requires transformers >= 4.42.3.\n"
                         'Try `pip install --upgrade "transformers>=4.42.3"`\n'
                         "to obtain the latest transformers build, then restart this session."
                     )
-                FastGemma2Model.pre_patch()
             else:
-                # PaliGemma 1 — language_model is GemmaForCausalLM
                 if not SUPPORTS_GEMMA:
                     raise RuntimeError(
                         "Unsloth: PaliGemma requires transformers >= 4.38.\n"
                         'Try `pip install --upgrade "transformers>=4.38"`\n'
                         "to obtain the latest transformers build, then restart this session."
                     )
-                FastGemmaModel.pre_patch()
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         # Cohere
         elif "cohere2" in model_types_all and transformers_version < Version(
             "4.50.0.dev0"
