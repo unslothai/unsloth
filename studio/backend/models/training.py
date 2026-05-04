@@ -43,6 +43,10 @@ class TrainingStartRequest(BaseModel):
     eval_split: Optional[str] = Field(
         None, description = "Eval split name. None = auto-detect"
     )
+    dataset_streaming: bool = Field(
+        False,
+        description = "Whether to load the Hugging Face dataset in streaming mode",
+    )
     eval_steps: float = Field(
         0.00, description = "Fraction of total steps between evals (0-1)"
     )

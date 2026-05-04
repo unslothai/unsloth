@@ -143,6 +143,12 @@ export function DatasetSection() {
     setDatasetSplit,
     datasetEvalSplit,
     setDatasetEvalSplit,
+    datasetStreaming,
+    setDatasetStreaming,
+    isVisionModel,
+    isAudioModel,
+    isDatasetImage,
+    isDatasetAudio,
     uploadedFile,
     uploadedEvalFile,
     setUploadedEvalFile,
@@ -166,6 +172,12 @@ export function DatasetSection() {
       setDatasetSplit: s.setDatasetSplit,
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
+      datasetStreaming: s.datasetStreaming,
+      setDatasetStreaming: s.setDatasetStreaming,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
+      isDatasetImage: s.isDatasetImage,
+      isDatasetAudio: s.isDatasetAudio,
       uploadedFile: s.uploadedFile,
       uploadedEvalFile: s.uploadedEvalFile,
       setUploadedEvalFile: s.setUploadedEvalFile,
@@ -177,6 +189,26 @@ export function DatasetSection() {
       setDatasetSliceEnd: s.setDatasetSliceEnd,
     })),
   );
+
+  // Streaming is only supported for Hugging Face text datasets.
+  // Hide the toggle for vision/audio models or datasets detected as multimodal,
+  // since downstream preprocessing (convert_to_vlm_format, audio collators)
+  // requires random access and would crash on an IterableDataset.
+  const isStreamingSupported =
+    datasetSource === "huggingface" &&
+    !isVisionModel &&
+    !isAudioModel &&
+    !isDatasetImage &&
+    !isDatasetAudio;
+
+  // If streaming was previously enabled but the config became incompatible
+  // (model switched to vision, dataset detected as image, etc.), clear it so
+  // the backend never receives a stale flag.
+  useEffect(() => {
+    if (datasetStreaming && !isStreamingSupported) {
+      setDatasetStreaming(false);
+    }
+  }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -916,6 +948,43 @@ export function DatasetSection() {
                     </SelectContent>
                   </Select>
                 </div>
+                {isStreamingSupported && (
+                  <div className="flex flex-col gap-2">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      Streaming Mode
+                      <Tooltip>
+                        <TooltipTrigger asChild={true}>
+                          <button
+                            type="button"
+                            className="text-foreground/70 hover:text-foreground"
+                          >
+                            <HugeiconsIcon
+                              icon={InformationCircleIcon}
+                              className="size-3"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Load Hugging Face datasets using streaming mode. Requires max_steps &gt; 0 and a separate eval split when evaluation is enabled.
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+
+                    <label className="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={datasetStreaming}
+                        onChange={(e) => setDatasetStreaming(e.target.checked)}
+                        className="h-4 w-4"
+                      />
+                      <span>Enable streaming</span>
+                    </label>
+
+                    <p className="text-[10px] text-muted-foreground/80">
+                      Only applies to Hugging Face text datasets.
+                    </p>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

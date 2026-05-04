@@ -1147,7 +1147,10 @@ def format_and_template_dataset(
         requires_manual = dataset_info.get("requires_manual_mapping", False)
         if final_format == "unknown" and template_result["success"]:
             out_ds = template_result["dataset"]
-            if hasattr(out_ds, "column_names") and "text" in out_ds.column_names:
+            # IterableDataset.column_names can be None after .map() loses features;
+            # guard to avoid `"text" in None` -> TypeError on streaming datasets.
+            out_columns = getattr(out_ds, "column_names", None)
+            if out_columns is not None and "text" in out_columns:
                 final_format = "chatml_conversations"
                 requires_manual = False
 
