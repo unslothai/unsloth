@@ -517,6 +517,36 @@ def studio_default(
 # ── unsloth studio run ───────────────────────────────────────────────
 
 
+def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
+    """Split ``org/name:variant`` HF-style identifiers into (repo, variant).
+
+    Mirrors llama.cpp's ``-hf <repo>:<quant>`` convention so users can
+    write ``unsloth/gpt-oss-20b-GGUF:UD-Q4_K_XL`` instead of passing
+    ``--gguf-variant`` separately. Local paths (absolute, ``./``,
+    ``~/``, Windows drive letters) and identifiers without a ``:``
+    suffix are returned verbatim.
+    """
+    s = model_arg.strip()
+    if not s:
+        return s, None
+    if s.startswith(("/", "./", "../", "~")) or s == ".":
+        return s, None
+    # Windows drive letter (e.g. "C:\\path" or "C:/path") -- the colon
+    # here is a path separator, not a variant suffix.
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        return s, None
+    if ":" not in s:
+        return s, None
+    repo, _, variant = s.rpartition(":")
+    if not repo or not variant:
+        return s, None
+    # A real quant label has no slashes; ``foo:bar/baz`` is not
+    # ``repo:variant`` syntax.
+    if "/" in variant:
+        return s, None
+    return repo, variant
+
+
 @studio_app.command(
     context_settings = {
         "allow_extra_args": True,
@@ -555,6 +585,23 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
     """
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # ── 0. Parse llama.cpp-style ``repo:variant`` syntax in --model. ───
+    # Lets users write ``--model unsloth/foo-GGUF:UD-Q4_K_XL`` instead
+    # of pairing ``--model`` with ``--gguf-variant``. If both are given
+    # and disagree, fail loudly instead of silently picking one.
+    parsed_repo, embedded_variant = _split_repo_variant(model)
+    if embedded_variant:
+        if gguf_variant and gguf_variant != embedded_variant:
+            typer.echo(
+                f"Error: --model embeds variant '{embedded_variant}' but "
+                f"--gguf-variant '{gguf_variant}' was also provided.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        model = parsed_repo
+        gguf_variant = gguf_variant or embedded_variant
+
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
