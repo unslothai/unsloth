@@ -359,7 +359,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        self.model.for_training()"""
+        self.model.for_training(use_gradient_checkpointing=getattr(self.args, 'gradient_checkpointing', True))"""
 
     function = function.replace(line_to_replace, replacement_lines)
 
