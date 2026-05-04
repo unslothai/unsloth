@@ -274,10 +274,28 @@ function InfoHint({ children }: { children: ReactNode }) {
  * slider value and the Context Length input so the click-to-edit
  * affordance is consistent across the panel.
  */
+function snapToStep(
+  value: number,
+  step: number,
+  min?: number,
+  max?: number,
+): number {
+  const lo = min ?? Number.NEGATIVE_INFINITY;
+  const hi = max ?? Number.POSITIVE_INFINITY;
+  const clamped = Math.min(Math.max(value, lo), hi);
+  const stepStr = String(step);
+  const decimals = stepStr.includes(".") ? stepStr.split(".")[1].length : 0;
+  const base = Number.isFinite(lo) ? lo : 0;
+  const snapped = base + Math.round((clamped - base) / step) * step;
+  const reclamped = Math.min(Math.max(snapped, lo), hi);
+  return Number(reclamped.toFixed(decimals));
+}
+
 function NumericValueInput({
   value,
   min,
   max,
+  step,
   onChange,
   displayValue,
   className,
@@ -287,6 +305,7 @@ function NumericValueInput({
   value: number;
   min?: number;
   max?: number;
+  step: number;
   onChange: (v: number) => void;
   displayValue?: string;
   className?: string;
@@ -298,12 +317,12 @@ function NumericValueInput({
 
   const commit = (raw: string) => {
     const parsed = Number.parseFloat(raw);
-    if (Number.isNaN(parsed)) return;
-    const lo = min ?? Number.NEGATIVE_INFINITY;
-    const hi = max ?? Number.POSITIVE_INFINITY;
-    const clamped = Math.min(Math.max(parsed, lo), hi);
-    if (clamped !== value) {
-      onChange(clamped);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    const final = snapToStep(parsed, step, min, max);
+    if (final !== value) {
+      onChange(final);
     }
   };
 
@@ -373,6 +392,7 @@ function ParamSlider({
           value={value}
           min={min}
           max={max}
+          step={step}
           onChange={onChange}
           displayValue={displayValue}
           ariaLabel={label}
@@ -384,7 +404,7 @@ function ParamSlider({
         max={max}
         step={step}
         value={[value]}
-        onValueChange={([v]) => onChange(v)}
+        onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
         className="panel-slider"
       />
     </div>
@@ -836,6 +856,7 @@ export function ChatSettingsPanel({
                       }
                       min={128}
                       max={ctxMaxValue ?? undefined}
+                      step={1}
                       onChange={(v) => {
                         setCustomContextLength(
                           v === (ggufContextLength ?? 0) ? null : v,
@@ -858,8 +879,9 @@ export function ChatSettingsPanel({
                       ),
                     ]}
                     onValueChange={([v]) => {
+                      const snapped = Math.round(v);
                       setCustomContextLength(
-                        v === (ggufContextLength ?? 0) ? null : v,
+                        snapped === (ggufContextLength ?? 0) ? null : snapped,
                       );
                     }}
                     className="panel-slider"

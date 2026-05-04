@@ -955,7 +955,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
         <button
           type="button"
           aria-label="Previous"
-          className="inline-flex size-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          className="aui-branch-chevron-btn"
         >
           <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
@@ -967,7 +967,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
         <button
           type="button"
           aria-label="Next"
-          className="inline-flex size-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          className="aui-branch-chevron-btn"
         >
           <ChevronRightIcon strokeWidth={1.25} className="size-[36px]" />
         </button>

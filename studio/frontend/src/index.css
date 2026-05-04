@@ -510,6 +510,14 @@
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-[10px] text-sidebar-foreground/55;
 	}
+
+	/* Branch picker chevron buttons sit beside action bar icon buttons
+	   (size-8, rounded-[10px]). Height + radius match for visual
+	   alignment, but width is tighter so the small chevron glyph reads
+	   as a compact control rather than a full-size icon button. */
+	.aui-branch-chevron-btn {
+		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply bg-nav-surface-hover text-nav-fg;
