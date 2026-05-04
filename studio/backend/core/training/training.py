@@ -197,6 +197,7 @@ class TrainingBackend:
 
         # Spawn subprocess — use locals so state is untouched on failure
         from utils.hardware import hardware as _hw
+
         if _hw.DEVICE == _hw.DeviceType.MLX:
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None

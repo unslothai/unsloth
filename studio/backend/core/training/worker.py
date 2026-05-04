@@ -432,7 +432,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     def _send(event_type, **kwargs):
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
-    _send("status", status_message="Loading MLX libraries...")
+    _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
     from unsloth_zoo.mlx_loader import FastMLXModel
@@ -453,7 +453,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
-        _send("error", error=message)
+        _send("error", error = message)
         raise NotImplementedError(message)
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
@@ -464,17 +464,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 1. Load model ──
     # Force text-only if the dataset is not an image dataset, even if the model
     # has vision capabilities (e.g. Qwen3.5-VL trained on plain alpaca text).
-    _send("status", status_message=f"Loading {model_name}...")
+    _send("status", status_message = f"Loading {model_name}...")
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
-        load_in_4bit=config.get("load_in_4bit", True),
-        full_finetuning=not use_lora,
-        text_only=None if is_dataset_image else True,
-        trust_remote_code=bool(config.get("trust_remote_code", False)),
-        random_state=config.get("random_seed", 3407),
+        load_in_4bit = config.get("load_in_4bit", True),
+        full_finetuning = not use_lora,
+        text_only = None if is_dataset_image else True,
+        trust_remote_code = bool(config.get("trust_remote_code", False)),
+        random_state = config.get("random_seed", 3407),
     )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
@@ -485,31 +485,45 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # get_peft_model and MLXTrainer both accept strings and handle them.
     gc_setting = config.get("gradient_checkpointing", "mlx")
     if isinstance(gc_setting, str):
-        use_grad_checkpoint = gc_setting if gc_setting.lower() not in ("false", "") else False
+        use_grad_checkpoint = (
+            gc_setting if gc_setting.lower() not in ("false", "") else False
+        )
     else:
         use_grad_checkpoint = gc_setting
 
     if use_lora:
-        _send("status", status_message="Configuring LoRA adapters...")
+        _send("status", status_message = "Configuring LoRA adapters...")
         peft_kwargs = dict(
-            r=config.get("lora_r", 16),
-            lora_alpha=config.get("lora_alpha", 16),
-            lora_dropout=config.get("lora_dropout", 0.0),
-            use_rslora=config.get("use_rslora", False),
-            init_lora_weights=config.get("init_lora_weights", True),
-            random_state=config.get("random_seed", 3407),
-            target_modules=config.get("target_modules") or [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
+            r = config.get("lora_r", 16),
+            lora_alpha = config.get("lora_alpha", 16),
+            lora_dropout = config.get("lora_dropout", 0.0),
+            use_rslora = config.get("use_rslora", False),
+            init_lora_weights = config.get("init_lora_weights", True),
+            random_state = config.get("random_seed", 3407),
+            target_modules = config.get("target_modules")
+            or [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
             ],
-            use_gradient_checkpointing=use_grad_checkpoint,
+            use_gradient_checkpointing = use_grad_checkpoint,
         )
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
-        finetune_vision = config.get("finetune_vision_layers", False) if is_vlm else False
+        finetune_vision = (
+            config.get("finetune_vision_layers", False) if is_vlm else False
+        )
 
-        if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
+        if (
+            (finetune_attention or finetune_mlp)
+            and not finetune_language
+            and not finetune_vision
+        ):
             finetune_language = True
 
         peft_kwargs["finetune_language_layers"] = finetune_language
@@ -520,7 +534,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
     # ── 3. Load dataset ──
-    _send("status", status_message="Loading dataset...")
+    _send("status", status_message = "Loading dataset...")
     hf_dataset = config.get("hf_dataset", "")
     subset = config.get("subset")
     train_split = config.get("train_split", "train") or "train"
@@ -543,6 +557,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
         from datasets import load_from_disk
+
         dataset = load_from_disk(config["local_datasets"][0])
         dataset = _slice(dataset)
     else:
@@ -557,10 +572,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         try:
             eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
         except Exception as e:
-            _send("status", status_message=f"Eval split load failed: {e}")
+            _send("status", status_message = f"Eval split load failed: {e}")
             eval_dataset = None
     elif config.get("local_eval_datasets"):
         from datasets import load_from_disk
+
         eval_dataset = load_from_disk(config["local_eval_datasets"][0])
 
     # ── 3b. Format dataset (VLM or text) ──
@@ -570,18 +586,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
     try:
         from utils.datasets import format_and_template_dataset
 
-        def _fmt_progress(status_message="", **_kw):
-            _send("status", status_message=status_message)
+        def _fmt_progress(status_message = "", **_kw):
+            _send("status", status_message = status_message)
 
         if is_vlm:
-            _send("status", status_message="Formatting VLM dataset...")
+            _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
-                model_name=model_name,
-                tokenizer=tokenizer,
-                is_vlm=True,
-                dataset_name=hf_dataset or "local",
-                progress_callback=_fmt_progress,
+                model_name = model_name,
+                tokenizer = tokenizer,
+                is_vlm = True,
+                dataset_name = hf_dataset or "local",
+                progress_callback = _fmt_progress,
             )
             if vlm_info.get("success"):
                 dataset = _adapt_for_mlx_vlm(vlm_info["dataset"])
@@ -592,31 +608,40 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
             if eval_dataset is not None:
                 ev_info = format_and_template_dataset(
-                    eval_dataset, model_name=model_name, tokenizer=tokenizer,
-                    is_vlm=True, dataset_name=hf_dataset or "local",
+                    eval_dataset,
+                    model_name = model_name,
+                    tokenizer = tokenizer,
+                    is_vlm = True,
+                    dataset_name = hf_dataset or "local",
                 )
                 if ev_info.get("success"):
                     eval_dataset = _adapt_for_mlx_vlm(ev_info["dataset"])
 
         elif format_type:
-            _send("status", status_message=f"Formatting dataset ({format_type})...")
+            _send("status", status_message = f"Formatting dataset ({format_type})...")
             info = format_and_template_dataset(
-                dataset, model_name=model_name, tokenizer=tokenizer,
-                is_vlm=False, format_type=format_type,
-                dataset_name=hf_dataset or "local",
+                dataset,
+                model_name = model_name,
+                tokenizer = tokenizer,
+                is_vlm = False,
+                format_type = format_type,
+                dataset_name = hf_dataset or "local",
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
-                    eval_dataset, model_name=model_name, tokenizer=tokenizer,
-                    is_vlm=False, format_type=format_type,
-                    dataset_name=hf_dataset or "local",
+                    eval_dataset,
+                    model_name = model_name,
+                    tokenizer = tokenizer,
+                    is_vlm = False,
+                    format_type = format_type,
+                    dataset_name = hf_dataset or "local",
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
     except ImportError:
-        _send("status", status_message="Format helper unavailable, using raw dataset")
+        _send("status", status_message = "Format helper unavailable, using raw dataset")
 
     # ── 4. Resolve training steps ──
     max_steps = config.get("max_steps", 0) or 0
@@ -647,6 +672,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
     # Resolve to ~/.unsloth/studio/outputs/ so the export page can find it
     from utils.paths import resolve_output_dir, ensure_dir
+
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
 
@@ -659,30 +685,30 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps_val = int(eval_steps_val)
 
     trainer = MLXTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=dataset,
-        eval_dataset=eval_dataset,
-        args=MLXTrainingConfig(
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=grad_accum,
-            max_steps=max_steps,
-            learning_rate=lr_value,
-            warmup_steps=warmup_steps,
-            lr_scheduler_type=lr_scheduler_type,
-            optim=optim_name,
-            weight_decay=float(config.get("weight_decay", 0.001) or 0.001),
-            logging_steps=1,
-            max_seq_length=max_seq_length,
-            seed=config.get("random_seed", 3407),
-            use_cce=True,
-            compile=True,
-            gradient_checkpointing=use_grad_checkpoint,
-            streaming=is_vlm,  
-            packing=bool(config.get("packing", False)),
-            output_dir=output_dir,
-            save_steps=int(config.get("save_steps", 0) or 0),
-            eval_steps=eval_steps_val,
+        model = model,
+        tokenizer = tokenizer,
+        train_dataset = dataset,
+        eval_dataset = eval_dataset,
+        args = MLXTrainingConfig(
+            per_device_train_batch_size = batch_size,
+            gradient_accumulation_steps = grad_accum,
+            max_steps = max_steps,
+            learning_rate = lr_value,
+            warmup_steps = warmup_steps,
+            lr_scheduler_type = lr_scheduler_type,
+            optim = optim_name,
+            weight_decay = float(config.get("weight_decay", 0.001) or 0.001),
+            logging_steps = 1,
+            max_seq_length = max_seq_length,
+            seed = config.get("random_seed", 3407),
+            use_cce = True,
+            compile = True,
+            gradient_checkpointing = use_grad_checkpoint,
+            streaming = is_vlm,
+            packing = bool(config.get("packing", False)),
+            output_dir = output_dir,
+            save_steps = int(config.get("save_steps", 0) or 0),
+            eval_steps = eval_steps_val,
         ),
     )
 
@@ -692,24 +718,32 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 7. Apply train_on_responses_only if requested ──
     if config.get("train_on_completions", False):
-        _send("status", status_message="Configuring response-only training...")
+        _send("status", status_message = "Configuring response-only training...")
         try:
             from utils.datasets import (
                 MODEL_TO_TEMPLATE_MAPPER,
                 TEMPLATE_TO_RESPONSES_MAPPER,
             )
+
             template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
+            markers = (
+                TEMPLATE_TO_RESPONSES_MAPPER.get(template_name)
+                if template_name
+                else None
+            )
             if markers:
                 trainer = train_on_responses_only(
                     trainer,
-                    instruction_part=markers["instruction"],
-                    response_part=markers["response"],
+                    instruction_part = markers["instruction"],
+                    response_part = markers["response"],
                 )
             else:
-                _send("status", status_message=f"train_on_completions skipped (no template for {model_name})")
+                _send(
+                    "status",
+                    status_message = f"train_on_completions skipped (no template for {model_name})",
+                )
         except Exception as e:
-            _send("status", status_message=f"train_on_completions failed: {e}")
+            _send("status", status_message = f"train_on_completions failed: {e}")
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -717,16 +751,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if config.get("enable_wandb", False):
         try:
             import wandb as _wandb
+
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
             wandb_run = _wandb.init(
-                project=config.get("wandb_project") or "unsloth-mlx",
-                config=dict(config),
-                reinit=True,
+                project = config.get("wandb_project") or "unsloth-mlx",
+                config = dict(config),
+                reinit = True,
             )
         except Exception as e:
-            _send("status", status_message=f"wandb init failed: {e}")
+            _send("status", status_message = f"wandb init failed: {e}")
     if config.get("enable_tensorboard", False):
         try:
             from tensorboardX import SummaryWriter
@@ -738,40 +773,47 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if SummaryWriter is not None:
             try:
                 tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
-                tb_writer = SummaryWriter(log_dir=tb_dir)
+                tb_writer = SummaryWriter(log_dir = tb_dir)
             except Exception as e:
-                _send("status", status_message=f"tensorboard init failed: {e}")
+                _send("status", status_message = f"tensorboard init failed: {e}")
         else:
-            _send("status", status_message="tensorboard unavailable (install tensorboardX)")
+            _send(
+                "status",
+                status_message = "tensorboard unavailable (install tensorboardX)",
+            )
 
     # ── 9. Real-time progress callback ──
-    _send("status", status_message=f"Training {model_name}...")
+    _send("status", status_message = f"Training {model_name}...")
 
     def _on_step(step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens):
         eta = (elapsed / step * (total - step)) if step > 0 else 0
-        _send("progress",
-            step=step,
-            epoch=round(step / total * num_epochs, 2) if total > 0 else 0,
-            loss=loss,
-            learning_rate=lr,
-            total_steps=total,
-            elapsed_seconds=elapsed,
-            eta_seconds=max(0, eta),
-            grad_norm=None,
-            num_tokens=num_tokens,
-            eval_loss=None,
-            status_message=None,
-            peak_memory_gb=peak_gb,
+        _send(
+            "progress",
+            step = step,
+            epoch = round(step / total * num_epochs, 2) if total > 0 else 0,
+            loss = loss,
+            learning_rate = lr,
+            total_steps = total,
+            elapsed_seconds = elapsed,
+            eta_seconds = max(0, eta),
+            grad_norm = None,
+            num_tokens = num_tokens,
+            eval_loss = None,
+            status_message = None,
+            peak_memory_gb = peak_gb,
         )
         if wandb_run is not None:
             try:
-                wandb_run.log({
-                    "train/loss": loss,
-                    "train/learning_rate": lr,
-                    "train/tokens_per_sec": tok_s,
-                    "train/peak_gb": peak_gb,
-                    "train/num_tokens": num_tokens,
-                }, step=step)
+                wandb_run.log(
+                    {
+                        "train/loss": loss,
+                        "train/learning_rate": lr,
+                        "train/tokens_per_sec": tok_s,
+                        "train/peak_gb": peak_gb,
+                        "train/num_tokens": num_tokens,
+                    },
+                    step = step,
+                )
             except Exception:
                 pass
         if tb_writer is not None:
@@ -786,10 +828,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     trainer.add_step_callback(_on_step)
 
     def _on_eval(step, eval_loss, perplexity):
-        _send("progress", step=step, eval_loss=eval_loss)
+        _send("progress", step = step, eval_loss = eval_loss)
         if wandb_run is not None:
             try:
-                wandb_run.log({"eval/loss": eval_loss, "eval/perplexity": perplexity}, step=step)
+                wandb_run.log(
+                    {"eval/loss": eval_loss, "eval/perplexity": perplexity}, step = step
+                )
             except Exception:
                 pass
         if tb_writer is not None:
@@ -807,7 +851,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     def _poll_stop():
         while True:
             try:
-                msg = stop_queue.get(timeout=1.0)
+                msg = stop_queue.get(timeout = 1.0)
                 if msg and msg.get("type") == "stop":
                     _stop_save[0] = msg.get("save", True)
                     trainer.stop_requested = True
@@ -815,7 +859,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             except (_queue.Empty, EOFError, OSError):
                 continue
 
-    stop_thread = threading.Thread(target=_poll_stop, daemon=True)
+    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
     stop_thread.start()
 
     # ── 11. Run training ──
@@ -826,12 +870,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 12. Save and finalize ──
     if trainer.stop_requested and not _stop_save[0]:
         # User clicked "Cancel" (save=False) — skip saving
-        _send("complete", output_dir=None, status_message="Training cancelled")
+        _send("complete", output_dir = None, status_message = "Training cancelled")
     else:
-        _send("status", status_message="Saving model...")
+        _send("status", status_message = "Saving model...")
         mx.synchronize()
         trainer.save_model(output_dir)
-        _send("complete", output_dir=output_dir, status_message="Training completed")
+        _send("complete", output_dir = output_dir, status_message = "Training completed")
 
     if tb_writer is not None:
         try:
@@ -886,15 +930,18 @@ def run_training_process(
         sys.path.insert(0, backend_path)
 
     from utils.hardware import hardware as _hw
+
     _hw.detect_hardware()
     if _hw.DEVICE == _hw.DeviceType.MLX:
         if config.get("is_dataset_audio"):
-            event_queue.put({
-                "type": "error",
-                "error": "Audio dataset training is not yet supported on Apple Silicon.",
-                "stack": "",
-                "ts": time.time(),
-            })
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": "Audio dataset training is not yet supported on Apple Silicon.",
+                    "stack": "",
+                    "ts": time.time(),
+                }
+            )
             return
         # Activate correct transformers version (Gemma-4 needs 5.5.0, etc.)
         # Must happen before any transformers/mlx-lm imports in _run_mlx_training.
@@ -905,12 +952,14 @@ def run_training_process(
         try:
             _run_mlx_training(event_queue, stop_queue, config)
         except Exception as exc:
-            event_queue.put({
-                "type": "error",
-                "error": str(exc),
-                "stack": traceback.format_exc(limit=20),
-                "ts": time.time(),
-            })
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
         return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──

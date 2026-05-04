@@ -338,7 +338,11 @@ class ExportBackend:
             return False, "No model loaded. Please select a checkpoint first.", None
 
         if not self.is_peft:
-            return False, "This is not a PEFT model. Use 'Export Base Model' instead.", None
+            return (
+                False,
+                "This is not a PEFT model. Use 'Export Base Model' instead.",
+                None,
+            )
 
         try:
             # Save locally if requested
@@ -351,10 +355,13 @@ class ExportBackend:
                     # Map UI's format_type to MLX save_method. LoRA and
                     # GGUF go through separate export functions.
                     mlx_save_method = (
-                        "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+                        "merged_4bit"
+                        if format_type == "4-bit (FP4)"
+                        else "merged_16bit"
                     )
                     self.current_model.save_pretrained_merged(
-                        save_directory, self.current_tokenizer,
+                        save_directory,
+                        self.current_tokenizer,
                         save_method = mlx_save_method,
                     )
                 else:
@@ -454,7 +461,8 @@ class ExportBackend:
                     # MLX: save_pretrained_merged handles non-LoRA models too
                     # (fuse() is a no-op when there are no LoRA layers)
                     self.current_model.save_pretrained_merged(
-                        save_directory, self.current_tokenizer,
+                        save_directory,
+                        self.current_tokenizer,
                     )
                 else:
                     self.current_model.save_pretrained(save_directory)
@@ -519,11 +527,17 @@ class ExportBackend:
                     # Upload model files
                     if save_directory:
                         hf_api.upload_folder(
-                            folder_path = save_directory, repo_id = repo_id, repo_type = "model"
+                            folder_path = save_directory,
+                            repo_id = repo_id,
+                            repo_type = "model",
                         )
                         logger.info(f"Model pushed successfully to {repo_id}")
                     else:
-                        return False, "Local save directory required for Hub upload", None
+                        return (
+                            False,
+                            "Local save directory required for Hub upload",
+                            None,
+                        )
 
             return True, "Model exported successfully", None
 
@@ -672,7 +686,11 @@ class ExportBackend:
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
-            return True, f"GGUF model exported successfully ({quantization_method})", None
+            return (
+                True,
+                f"GGUF model exported successfully ({quantization_method})",
+                None,
+            )
 
         except Exception as e:
             logger.error(f"Error exporting GGUF model: {e}")
@@ -731,16 +749,21 @@ class ExportBackend:
                 if _IS_MLX:
                     # Save locally first, then upload folder
                     import tempfile
+
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
                         hf_api = HfApi(token = hf_token)
                         hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         hf_api.upload_folder(
-                            folder_path = tmp_dir, repo_id = repo_id, repo_type = "model",
+                            folder_path = tmp_dir,
+                            repo_id = repo_id,
+                            repo_type = "model",
                         )
                 else:
-                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
+                    self.current_model.push_to_hub(
+                        repo_id, token = hf_token, private = private
+                    )
                     self.current_tokenizer.push_to_hub(
                         repo_id, token = hf_token, private = private
                     )

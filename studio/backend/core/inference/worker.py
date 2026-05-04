@@ -669,6 +669,7 @@ def run_inference_process(
         sys.path.insert(0, backend_path)
 
     from utils.hardware import hardware as _hw
+
     _hw.detect_hardware()
     if _hw.DEVICE == _hw.DeviceType.MLX:
         try:
@@ -677,23 +678,30 @@ def run_inference_process(
             pass
         try:
             from core.inference.mlx_inference import MLXInferenceBackend
+
             backend = MLXInferenceBackend()
-            _send_response(resp_queue, {"type": "status", "message": "Loading model...", "ts": time.time()})
+            _send_response(
+                resp_queue,
+                {"type": "status", "message": "Loading model...", "ts": time.time()},
+            )
             _handle_load(backend, config, resp_queue)
         except Exception as exc:
-            _send_response(resp_queue, {
-                "type": "error",
-                "error": f"MLX inference init failed: {exc}",
-                "stack": traceback.format_exc(limit=20),
-                "ts": time.time(),
-            })
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"MLX inference init failed: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                },
+            )
             return
 
         # Enter same command loop as GPU path
         logger.info("MLX inference subprocess ready, entering command loop")
         while True:
             try:
-                cmd = cmd_queue.get(timeout=1.0)
+                cmd = cmd_queue.get(timeout = 1.0)
             except _queue.Empty:
                 continue
             except (EOFError, OSError):
@@ -718,24 +726,33 @@ def run_inference_process(
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack", "ts": time.time()})
                 elif cmd_type == "status":
-                    _send_response(resp_queue, {
-                        "type": "status_response",
-                        "active_model": backend.active_model_name,
-                        "models": {k: {kk: vv for kk, vv in v.items() if kk != "model"} for k, v in backend.models.items()},
-                        "loading": list(backend.loading_models),
-                        "ts": time.time(),
-                    })
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "status_response",
+                            "active_model": backend.active_model_name,
+                            "models": {
+                                k: {kk: vv for kk, vv in v.items() if kk != "model"}
+                                for k, v in backend.models.items()
+                            },
+                            "loading": list(backend.loading_models),
+                            "ts": time.time(),
+                        },
+                    )
                 elif cmd_type == "shutdown":
                     return
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
-                _send_response(resp_queue, {
-                    "type": "gen_error" if cmd_type == "generate" else "error",
-                    "request_id": cmd.get("request_id"),
-                    "error": str(exc),
-                    "stack": traceback.format_exc(limit=20),
-                    "ts": time.time(),
-                })
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gen_error" if cmd_type == "generate" else "error",
+                        "request_id": cmd.get("request_id"),
+                        "error": str(exc),
+                        "stack": traceback.format_exc(limit = 20),
+                        "ts": time.time(),
+                    },
+                )
         return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──

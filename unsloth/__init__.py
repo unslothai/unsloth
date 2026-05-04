@@ -28,6 +28,7 @@ if _IS_MLX:
     from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
     from unsloth_zoo.mlx_loader import FastMLXModel
     from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
+
     __version__ = unsloth_zoo.__version__
     DEVICE_TYPE = "mlx"
 
@@ -69,6 +70,7 @@ if _IS_MLX:
     def is_bfloat16_supported():
         try:
             import mlx.core as mx
+
             name = mx.device_info().get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:
