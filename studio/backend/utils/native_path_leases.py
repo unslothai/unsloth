@@ -73,7 +73,11 @@ def child_env_without_native_path_secret(
 ) -> dict[str, str]:
     """Return a child-process env with the native path lease secret removed."""
 
-    cleaned = dict(os.environ if env is None else env)
+    if env is None:
+        with _NATIVE_PATH_ENV_LOCK:
+            cleaned = dict(os.environ)
+    else:
+        cleaned = dict(env)
     cleaned.pop(LEASE_SECRET_ENV, None)
     return cleaned
 
@@ -160,7 +164,7 @@ def verify_native_path_lease(
         source_kind = str(payload["source_kind"]),
         token_id_hash = str(payload["token_id_hash"]),
         display_label = str(payload.get("display_label") or resolved.name),
-        expires_at_ms = int(payload["expires_at_ms"]),
+        expires_at_ms = _required_int(payload, "expires_at_ms"),
         size_bytes = _optional_int(payload.get("size_bytes")),
         modified_ms = _optional_int(payload.get("modified_ms")),
     )
@@ -171,8 +175,8 @@ def verify_native_path_lease(
     if suffixes and resolved.suffix.lower() not in suffixes:
         raise NativePathLeaseError("Native path grant has an unsupported file type.")
 
-    _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
     _validate_current_stat(grant)
+    _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
     _remember_native_path_for_redaction(str(resolved), grant.display_label)
     return grant
 
@@ -270,18 +274,20 @@ def _validate_payload(
         raise NativePathLeaseError(
             "Native path grant payload is missing required fields."
         )
-    if int(payload["version"]) != 1:
+    if _required_int(payload, "version") != 1:
         raise NativePathLeaseError("Native path grant version is unsupported.")
     if payload["operation"] != operation:
         raise NativePathLeaseError("Native path grant operation is invalid.")
     if expected_kind and payload["path_kind"] != expected_kind:
         raise NativePathLeaseError("Native path grant kind is invalid.")
     now_ms = int(time.time() * 1000)
-    if int(payload["issued_at_ms"]) >= int(payload["expires_at_ms"]):
+    issued_at_ms = _required_int(payload, "issued_at_ms")
+    expires_at_ms = _required_int(payload, "expires_at_ms")
+    if issued_at_ms >= expires_at_ms:
         raise NativePathLeaseError("Native path grant timestamps are inconsistent.")
-    if int(payload["expires_at_ms"]) <= now_ms:
+    if expires_at_ms <= now_ms:
         raise NativePathLeaseError("Native path grant has expired.")
-    if int(payload["issued_at_ms"]) > now_ms + 30_000:
+    if issued_at_ms > now_ms + 30_000:
         raise NativePathLeaseError("Native path grant issue time is invalid.")
     for key in ("canonical_path", "nonce", "token_id_hash", "display_label"):
         raw = payload.get(key)
@@ -381,4 +387,19 @@ def _same_native_path(resolved: Path, signed: Path) -> bool:
 def _optional_int(value: Any) -> int | None:
     if value is None:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise NativePathLeaseError("Native path grant payload is invalid.") from exc
+
+
+def _required_int(payload: dict[str, Any], key: str) -> int:
+    raw = payload.get(key)
+    if raw is None:
+        raise NativePathLeaseError(
+            "Native path grant payload is missing required fields."
+        )
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise NativePathLeaseError("Native path grant payload is invalid.") from exc

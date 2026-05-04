@@ -607,6 +607,9 @@ export function useChatModelRuntime() {
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
                 });
+                useChatRuntimeStore.setState({
+                  activeNativePathToken: previousActiveNativePathToken ?? null,
+                });
                 await refresh();
               } catch {
                 // If rollback also fails, surface the original error.

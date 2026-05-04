@@ -875,6 +875,12 @@ async def validate_model(
     except HTTPException:
         raise
     except Exception as e:
+        not_supported_hints = [
+            "No config file found",
+            "not yet supported",
+            "is not supported",
+            "does not support",
+        ]
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))
             logger.error(
@@ -882,9 +888,12 @@ async def validate_model(
                 model_log_label,
                 redacted_msg,
             )
+            msg = redacted_msg
+            if any(h.lower() in msg.lower() for h in not_supported_hints):
+                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
             raise HTTPException(
                 status_code = 400,
-                detail = f"Invalid native model {model_log_label}: {redacted_msg}",
+                detail = f"Invalid native model {model_log_label}: {msg}",
             )
         logger.error(
             f"Error validating model identifier '{request.model_path}': {e}",
