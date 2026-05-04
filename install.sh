@@ -974,9 +974,7 @@ case "$OS" in
         fi
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
-        if command -v dpkg >/dev/null 2>&1; then
-            dpkg -s libcurl4-openssl-dev >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-        fi
+        command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
         ;;
 esac
 
