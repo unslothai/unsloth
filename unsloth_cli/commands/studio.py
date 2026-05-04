@@ -414,7 +414,7 @@ def _load_model_via_http(
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
     api_only: bool = typer.Option(
@@ -528,7 +528,7 @@ def run(
         "cli", "--api-key-name", help = "Label for the auto-generated API key"
     ),
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
 ):
