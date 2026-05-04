@@ -25,20 +25,45 @@ from core.inference.llama_server_args import (
 @pytest.mark.parametrize(
     "args",
     [
+        # Sampling
         ["--top-k", "20"],
         ["--top-p", "0.9", "--min-p", "0.05"],
         ["--seed", "-1"],  # negative value, not a flag
         ["--temp", "0.0"],
         ["--repeat-penalty", "1.05"],
         ["--mirostat", "2", "--mirostat-lr", "0.1"],
-        ["--cache-type-k", "q8_0"],  # tier-2: allowed pass-through
-        ["--cache-type-v", "q8_0"],
-        ["--chat-template-file", "/tmp/tpl.jinja"],
-        ["--spec-type", "ngram-mod"],
         ["--xtc-probability", "0.05", "--xtc-threshold", "0.1"],
         ["--dry-multiplier", "0.5"],
+        # Tier-2 knobs that map to LoadRequest fields
+        ["--cache-type-k", "q8_0"],
+        ["--cache-type-v", "q8_0"],
+        ["--chat-template-file", "/tmp/tpl.jinja"],
+        ["--chat-template-kwargs", '{"reasoning_effort":"high"}'],
+        ["--spec-type", "ngram-mod"],
+        ["--spec-default"],
+        # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
+        # Soft-managed flags the user may want to override on the CLI;
+        # llama.cpp's last-wins parsing means these win over Studio's
+        # auto-set version.
+        ["-c", "131072"],
+        ["--ctx-size", "8192"],
+        ["--parallel", "1"],
+        ["-np", "8"],
+        ["--flash-attn", "off"],
+        ["-fa", "on"],
+        ["--no-context-shift"],
+        ["--context-shift"],
+        ["--jinja"],
+        ["--no-jinja"],
+        ["-ngl", "-1"],
+        ["--gpu-layers", "32"],
+        ["-t", "16"],
+        ["--threads", "32"],
+        ["-fit", "off"],
+        ["--fit", "on"],
+        ["--fit-ctx", "8192"],
     ],
 )
 def test_pass_through_allowed(args):
@@ -82,35 +107,17 @@ def test_non_flag_token_passes_through():
         "-mm",
         "--mmproj",
         "--mmproj-url",
-        # Networking
+        # Networking (Studio binds + proxies)
         "--host",
         "--port",
         "--path",
         "--api-prefix",
+        "--reuse-port",
         # Auth / TLS
         "--api-key",
         "--api-key-file",
         "--ssl-key-file",
         "--ssl-cert-file",
-        # Forced perf / context
-        "-c",
-        "--ctx-size",
-        "-np",
-        "--parallel",
-        "-fa",
-        "--flash-attn",
-        "--no-context-shift",
-        "--context-shift",
-        "--jinja",
-        "--no-jinja",
-        # GPU placement
-        "-fit",
-        "--fit",
-        "-ngl",
-        "--gpu-layers",
-        "--n-gpu-layers",
-        "-t",
-        "--threads",
         # Single-model server
         "--webui",
         "--no-webui",
@@ -128,11 +135,11 @@ def test_denylist_rejects_equals_form():
         validate_extra_args(["--port=9000"])
 
 
-def test_denylist_rejects_short_form_when_long_is_managed():
-    # -c is the short form of the managed --ctx-size; rejecting only
+def test_denylist_rejects_short_form_when_long_is_denied():
+    # -m is the short form of the hard-denied --model; rejecting only
     # the long form would leave a trivial bypass.
-    with pytest.raises(ValueError, match = "-c"):
-        validate_extra_args(["-c", "8192"])
+    with pytest.raises(ValueError, match = "-m"):
+        validate_extra_args(["-m", "/some/other/path.gguf"])
 
 
 def test_denylist_message_names_offending_flag():
@@ -162,13 +169,21 @@ def test_negative_number_value_is_not_flag(value):
 # ── is_managed_flag helper ───────────────────────────────────────────
 
 
-def test_is_managed_flag_true_for_managed():
+def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--port") is True
-    assert is_managed_flag("-c") is True
-    assert is_managed_flag("--ctx-size") is True
+    assert is_managed_flag("--api-key") is True
+    assert is_managed_flag("-m") is True
+    assert is_managed_flag("--model") is True
 
 
 def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--top-k") is False
     assert is_managed_flag("--cache-type-k") is False
     assert is_managed_flag("--chat-template-file") is False
+    # Soft-managed flags pass through (last-wins override)
+    assert is_managed_flag("-c") is False
+    assert is_managed_flag("--ctx-size") is False
+    assert is_managed_flag("--parallel") is False
+    assert is_managed_flag("--flash-attn") is False
+    assert is_managed_flag("-ngl") is False
+    assert is_managed_flag("--threads") is False

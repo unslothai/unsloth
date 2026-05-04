@@ -4,17 +4,21 @@
 """Validator for user-supplied llama-server pass-through args.
 
 Studio runs llama-server as a managed subprocess and lets callers pass
-extra flags directly (CLI: ``unsloth studio run ... --top-k 20``;
-HTTP: ``LoadRequest.llama_extra_args``). This module is the security
-boundary that rejects flags Studio fundamentally controls -- the model
-identity, network endpoint, auth key, GPU placement, and anything that
-would break Studio's HTTP proxy or error reporting.
+extra flags directly (CLI: ``unsloth run ... --top-k 20``; HTTP:
+``LoadRequest.llama_extra_args``). This module is the boundary that
+rejects only flags Studio fundamentally cannot share with the user --
+model identity, the auth key, and the network endpoint Studio's HTTP
+proxy targets. Anything else passes through.
 
-Tier-2 knobs that have a sibling ``LoadRequest`` field
-(``--chat-template-file``, ``--cache-type-k/v``, ``--spec-type``,
-sampling, etc.) are intentionally NOT denied. User-supplied args are
-appended to ``cmd`` after Studio's auto-set flags, so llama.cpp's
-last-wins parsing makes the user's value override the auto-set one.
+User-supplied args are appended to ``cmd`` after Studio's auto-set
+flags, so llama.cpp's last-wins CLI parsing makes the user's value
+override the auto-set one. That covers tunable knobs the user might
+reasonably want to override -- ``-c``/``--ctx-size``,
+``-np``/``--parallel``, ``-fa``/``--flash-attn``,
+``-ngl``/``--gpu-layers``, ``-t``/``--threads``, ``-fit``/``--fit*``,
+``--cache-type-k/v``, ``--chat-template-file/-kwargs``,
+``--spec-*``, ``--jinja``/``--no-jinja``,
+``--no-context-shift``/``--context-shift``, sampling params, etc.
 
 Reference: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 """
@@ -24,12 +28,19 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 # Each group is the full set of aliases (short + long) for one
-# Studio-managed flag, taken from the llama-server README. If
-# llama.cpp adds a new alias for an existing managed flag, extend the
-# relevant group.
+# hard-denied flag, taken from the llama-server README. If llama.cpp
+# adds a new alias for an existing denied flag, extend the relevant
+# group.
+#
+# Flags NOT in this list (e.g. -c, --parallel, --flash-attn, -ngl,
+# -t/--threads, --jinja, --no-context-shift, --fit*, --cache-type-*,
+# --chat-template-*, --spec-*) pass through and override Studio's
+# auto-set version via llama.cpp's last-wins CLI parsing.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Model identity -- Studio resolves the model from LoadRequest and
-    # passes -m / mmproj after downloading from HF if needed.
+    # passes -m / mmproj after downloading from HF if needed. A second
+    # -m would point at a different model than the one Studio thinks
+    # is loaded.
     frozenset({"-m", "--model"}),
     frozenset({"-mu", "--model-url"}),
     frozenset({"-dr", "--docker-repo"}),
@@ -40,13 +51,14 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hft", "--hf-token"}),
     frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
-    # Networking -- Studio binds llama-server's port and proxies HTTP.
-    # Letting the user retarget host/port/path/prefix would orphan
-    # Studio's proxy.
+    # Networking -- Studio binds llama-server's port and reverse-proxies
+    # HTTP traffic to it. Retargeting host/port/path/prefix would
+    # orphan Studio's proxy and the UI would lose the server.
     frozenset({"--host"}),
     frozenset({"--port"}),
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
+    frozenset({"--reuse-port"}),
     # Auth / TLS -- Studio terminates auth at its own layer; an
     # upstream --api-key would shadow Studio's UNSLOTH_DIRECT_STREAM
     # key, and TLS on llama-server would break the local proxy hop.
@@ -54,30 +66,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--api-key-file"}),
     frozenset({"--ssl-key-file"}),
     frozenset({"--ssl-cert-file"}),
-    # Context length -- Studio computes effective_ctx from LoadRequest,
-    # GPU-fit logic, and metadata, then surfaces it to the UI. Letting
-    # the user pass -c would desync the UI's context slider from the
-    # actual server.
-    frozenset({"-c", "--ctx-size"}),
-    # Server slot count -- Studio uses this for parallel inference
-    # accounting and request scheduling.
-    frozenset({"-np", "--parallel"}),
-    # Forced perf / error-handling defaults that the rest of Studio
-    # depends on. --flash-attn off would silently halve throughput;
-    # --context-shift on would silently rotate the KV cache instead of
-    # surfacing the "increase context length" error to the UI.
-    frozenset({"-fa", "--flash-attn"}),
-    frozenset({"--no-context-shift", "--context-shift"}),
-    frozenset({"--jinja", "--no-jinja"}),
-    # GPU placement -- Studio's _select_gpus / --fit logic owns this.
-    frozenset({"-fit", "--fit"}),
-    frozenset({"-fitt", "--fit-target"}),
-    frozenset({"-fitc", "--fit-ctx"}),
-    frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"}),
-    frozenset({"-t", "--threads"}),
     # Single-model server -- Studio runs one model per llama-server
-    # process and serves its own UI. Multi-model / web-ui flags would
-    # change the surface llama-server exposes.
+    # process and serves its own UI. Enabling multi-model loading or
+    # llama-server's built-in web UI changes the surface clients see.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--models-dir"}),
     frozenset({"--models-preset"}),
