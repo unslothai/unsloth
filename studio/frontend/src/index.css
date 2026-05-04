@@ -63,7 +63,7 @@
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
 	--popover: oklch(1 0 0);
 	--popover-foreground: oklch(0.1281 0.0179 169.2764);
-	--primary: oklch(0.705 0.15 162.5);
+	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary: oklch(0.9596 0.0275 167.8295);
 	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
@@ -74,8 +74,8 @@
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
-	--ring: oklch(0.705 0.15 162.5);
-	--chart-1: oklch(0.705 0.15 162.5);
+	--ring: #17b88b;
+	--chart-1: #17b88b;
 	--chart-2: oklch(0.694 0.1395 136.6059);
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
@@ -83,12 +83,12 @@
 	--radius: 1.1rem;
 	--sidebar: #f9faf9;
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
-	--sidebar-primary: oklch(0.705 0.15 162.5);
+	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--sidebar-border: oklch(0.945 0.0101 164.8536);
-	--sidebar-ring: oklch(0.705 0.15 162.5);
+	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -181,7 +181,7 @@
 	--card-foreground: #ececee;
 	--popover: #2d2e32;
 	--popover-foreground: #ececee;
-	--primary: oklch(0.705 0.15 162.5);
+	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary: #2e3035;
 	--secondary-foreground: #ececee;
@@ -195,7 +195,7 @@
 	   tiles, quant chips) and keep subtle contrast on card. */
 	--border: #3a3d42;
 	--input: #3a3d42;
-	--ring: oklch(0.705 0.15 162.5);
+	--ring: #17b88b;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
@@ -203,12 +203,12 @@
 	--chart-5: oklch(0.799 0.1196 84.6633);
 	--sidebar: #18181a;
 	--sidebar-foreground: #ececee;
-	--sidebar-primary: oklch(0.705 0.15 162.5);
+	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2f2f31;
 	--sidebar-accent-foreground: #ececee;
 	--sidebar-border: #2d2d2f;
-	--sidebar-ring: oklch(0.705 0.15 162.5);
+	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;

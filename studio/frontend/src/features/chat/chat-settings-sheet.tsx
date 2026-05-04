@@ -1072,7 +1072,7 @@ export function ChatSettingsPanel({
                 className={cn(
                   "h-9 w-full rounded-[10px] text-[13px] font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
-                    "bg-primary/92 text-primary-foreground hover:bg-primary",
+                    "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
