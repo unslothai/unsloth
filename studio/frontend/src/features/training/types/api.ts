@@ -25,6 +25,7 @@ export interface TrainingStartRequest {
   gradient_accumulation_steps: number;
   warmup_steps: number | null;
   warmup_ratio: number | null;
+  max_prompt_length?: number | null;
   max_steps: number | null;
   save_steps: number;
   eval_steps: number;

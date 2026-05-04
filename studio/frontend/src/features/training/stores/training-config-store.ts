@@ -86,6 +86,7 @@ const initialState: TrainingConfigState = {
   isDatasetImage: null,
   isDatasetAudio: false,
   maxPositionEmbeddings: null,
+  maxPromptLength: null,
   ...DEFAULT_HYPERPARAMS,
 };
 

@@ -397,6 +397,61 @@ def _apply_user_mapping_alpaca(dataset, mapping: dict, batch_size: int = 1000):
     )
 
 
+def _apply_user_mapping_preference(dataset, mapping: dict, batch_size: int = 1000):
+    """
+    Apply user-provided column mapping to convert a dataset to preference format.
+
+    Expected target roles:
+      - prompt (optional -- omitted when unmapped so TRL can extract it)
+      - chosen (required)
+      - rejected (required)
+
+    Returns:
+        Dataset with chosen/rejected columns (and prompt when mapped).
+    """
+    # Filter out __-prefixed metadata keys (e.g. __label_mapping, __system_prompt)
+    column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
+
+    col_for: dict[str, str | None] = {
+        "prompt": None,
+        "chosen": None,
+        "rejected": None,
+    }
+    for col_name, role in column_roles.items():
+        if role in col_for:
+            col_for[role] = col_name
+
+    # Validate that required columns are mapped
+    missing = [f for f in ("chosen", "rejected") if col_for[f] is None]
+    if missing:
+        raise ValueError(
+            "Preference mapping requires columns for: " + ", ".join(missing)
+        )
+
+    has_prompt = col_for["prompt"] is not None
+
+    def _convert(examples):
+        num = len(next(iter(examples.values())))
+        out: dict[str, list] = {"chosen": [], "rejected": []}
+        if has_prompt:
+            out["prompt"] = []
+        for i in range(num):
+            for field in ("chosen", "rejected"):
+                val = examples[col_for[field]][i]
+                out[field].append("" if val is None else val)
+            if has_prompt:
+                val = examples[col_for["prompt"]][i]
+                out["prompt"].append("" if val is None else val)
+        return out
+
+    return dataset.map(
+        _convert,
+        batched = True,
+        batch_size = batch_size,
+        remove_columns = dataset.column_names,
+    )
+
+
 def format_dataset(
     dataset,
     format_type = "auto",
@@ -446,6 +501,12 @@ def format_dataset(
                 )
                 final_format = "alpaca"
                 chat_column = None
+            elif format_type == "preference":
+                mapped_dataset = _apply_user_mapping_preference(
+                    dataset, custom_format_mapping, batch_size
+                )
+                final_format = "preference"
+                chat_column = None
             else:
                 # auto / chatml / sharegpt / conversational — all produce chatml conversations
                 # (sharegpt is always standardized to role/content internally)
@@ -493,6 +554,19 @@ def format_dataset(
 
     # AUTO MODE: Keep format but standardize if needed
     if format_type == "auto":
+        if detected["format"] == "preference":
+            return {
+                "dataset": dataset,
+                "detected_format": "preference",
+                "final_format": "preference",
+                "chat_column": None,
+                "is_standardized": True,
+                "requires_manual_mapping": False,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_info": multimodal_info,
+                "warnings": [],
+            }
+
         # Alpaca - keep as is
         if detected["format"] == "alpaca":
             return {
@@ -657,6 +731,35 @@ def format_dataset(
                 "multimodal_info": multimodal_info,
                 "warnings": warnings,
             }
+
+    elif format_type == "preference":
+        if detected["format"] == "preference":
+            return {
+                "dataset": dataset,
+                "detected_format": "preference",
+                "final_format": "preference",
+                "chat_column": None,
+                "is_standardized": True,
+                "requires_manual_mapping": False,
+                "is_image": multimodal_info["is_image"],
+                "multimodal_info": multimodal_info,
+                "warnings": [],
+            }
+
+        warnings.append(
+            "Cannot convert dataset to preference format without prompt/chosen/rejected columns"
+        )
+        return {
+            "dataset": dataset,
+            "detected_format": detected["format"],
+            "final_format": "unknown",
+            "chat_column": detected["chat_column"],
+            "is_standardized": False,
+            "requires_manual_mapping": True,
+            "is_image": multimodal_info["is_image"],
+            "multimodal_info": multimodal_info,
+            "warnings": warnings,
+        }
 
     # ALPACA MODE: Convert to Alpaca
     elif format_type == "alpaca":
@@ -1104,6 +1207,25 @@ def format_and_template_dataset(
             batch_size = batch_size,
             num_proc = num_proc,
         )
+
+        if dataset_info["final_format"] == "preference":
+            summary = get_dataset_info_summary(dataset_info)
+            return {
+                "dataset": dataset_info["dataset"],
+                "detected_format": dataset_info["detected_format"],
+                "final_format": dataset_info["final_format"],
+                "chat_column": dataset_info.get("chat_column"),
+                "is_vlm": False,
+                "is_image": dataset_info.get("is_image", False),
+                "multimodal_info": dataset_info.get("multimodal_info"),
+                "success": True,
+                "requires_manual_mapping": dataset_info.get(
+                    "requires_manual_mapping", False
+                ),
+                "warnings": dataset_info.get("warnings", []),
+                "errors": [],
+                "summary": summary,
+            }
 
         # Step 2: Apply chat template
         detected = dataset_info.get("detected_format", "unknown")

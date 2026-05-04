@@ -80,6 +80,10 @@ class TrainingStartRequest(BaseModel):
     warmup_steps: Optional[int] = Field(None, description = "Warmup steps")
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
+    max_prompt_length: Optional[int] = Field(
+        None,
+        description = "Optional maximum prompt length for preference training",
+    )
     save_steps: int = Field(100, description = "Steps between checkpoints")
     weight_decay: float = Field(0.001, description = "Weight decay")
     random_seed: int = Field(42, description = "Random seed")

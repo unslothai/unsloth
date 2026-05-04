@@ -4,7 +4,8 @@
 """
 Format detection utilities for dataset processing.
 
-This module contains functions for detecting dataset formats (Alpaca, ShareGPT, ChatML),
+This module contains functions for detecting dataset formats (Alpaca, Preference,
+ShareGPT, ChatML),
 detecting multimodal/VLM dataset structures, and heuristic-based column mapping.
 """
 
@@ -25,15 +26,62 @@ def detect_dataset_format(dataset):
 
     Returns:
         dict: {
-            "format": "alpaca" | "sharegpt" | "chatml" | "unknown",
+            "format": "alpaca" | "preference" | "sharegpt" | "chatml" | "unknown",
             "chat_column": "messages" | "conversations" | None,
             "needs_standardization": bool,
             "sample_keys": list of keys found in messages (for debugging)
         }
     """
-    column_names = set(next(iter(dataset)).keys())
+    sample = next(iter(dataset))
+    column_names = set(sample.keys())
 
-    # Check for Alpaca
+    # Inspect chat-like columns first, but only commit to a chat format when
+    # the sample actually has a structured message list. This avoids
+    # misclassifying mixed-schema datasets, while still allowing plain string
+    # columns like `texts` to fall through to preference detection.
+    chat_column = None
+    if "messages" in column_names:
+        chat_column = "messages"
+    elif "conversations" in column_names:
+        chat_column = "conversations"
+    elif "texts" in column_names:
+        chat_column = "texts"
+
+    chat_error = None
+    chat_sample_keys = []
+    if chat_column:
+        try:
+            chat_data = sample[chat_column]
+            if (
+                isinstance(chat_data, list)
+                and len(chat_data) > 0
+                and isinstance(chat_data[0], dict)
+            ):
+                first_msg = chat_data[0]
+                msg_keys = set(first_msg.keys())
+                chat_sample_keys = list(msg_keys)
+
+                # ShareGPT uses "from" and "value"
+                if "from" in msg_keys or "value" in msg_keys:
+                    return {
+                        "format": "sharegpt",
+                        "chat_column": chat_column,
+                        "needs_standardization": True,
+                        "sample_keys": chat_sample_keys,
+                    }
+
+                # ChatML uses "role" and "content"
+                elif "role" in msg_keys and "content" in msg_keys:
+                    return {
+                        "format": "chatml",
+                        "chat_column": chat_column,
+                        "needs_standardization": False,
+                        "sample_keys": chat_sample_keys,
+                    }
+        except Exception as e:
+            chat_error = str(e)
+
+    # Check Alpaca first (most specific column names).
     alpaca_columns = {"instruction", "output"}
     if alpaca_columns.issubset(column_names):
         return {
@@ -43,59 +91,28 @@ def detect_dataset_format(dataset):
             "sample_keys": [],
         }
 
-    # Check for chat-based formats (messages or conversations)
-    chat_column = None
-    if "messages" in column_names:
-        chat_column = "messages"
-    elif "conversations" in column_names:
-        chat_column = "conversations"
-    elif "texts" in column_names:
-        chat_column = "texts"
+    # Check for preference datasets (chosen + rejected). This supports TRL's
+    # implicit-prompt format while still letting explicitly structured chat
+    # datasets be recognized above.
+    preference_columns = {"chosen", "rejected"}
+    if preference_columns.issubset(column_names):
+        return {
+            "format": "preference",
+            "chat_column": None,
+            "needs_standardization": False,
+            "sample_keys": [],
+        }
 
     if chat_column:
-        # Inspect the structure to determine if ShareGPT or ChatML
-        try:
-            sample = next(iter(dataset))
-            chat_data = sample[chat_column]
-
-            if chat_data and len(chat_data) > 0:
-                first_msg = chat_data[0]
-                msg_keys = set(first_msg.keys())
-
-                # ShareGPT uses "from" and "value"
-                if "from" in msg_keys or "value" in msg_keys:
-                    return {
-                        "format": "sharegpt",
-                        "chat_column": chat_column,
-                        "needs_standardization": True,
-                        "sample_keys": list(msg_keys),
-                    }
-
-                # ChatML uses "role" and "content"
-                elif "role" in msg_keys and "content" in msg_keys:
-                    return {
-                        "format": "chatml",
-                        "chat_column": chat_column,
-                        "needs_standardization": False,
-                        "sample_keys": list(msg_keys),
-                    }
-
-                # Unknown structure but has chat column
-                else:
-                    return {
-                        "format": "unknown",
-                        "chat_column": chat_column,
-                        "needs_standardization": None,
-                        "sample_keys": list(msg_keys),
-                    }
-        except Exception as e:
-            return {
-                "format": "unknown",
-                "chat_column": chat_column,
-                "needs_standardization": None,
-                "sample_keys": [],
-                "error": str(e),
-            }
+        unknown_result = {
+            "format": "unknown",
+            "chat_column": chat_column,
+            "needs_standardization": None,
+            "sample_keys": chat_sample_keys,
+        }
+        if chat_error is not None:
+            unknown_result["error"] = chat_error
+        return unknown_result
 
     # No recognized format
     return {
