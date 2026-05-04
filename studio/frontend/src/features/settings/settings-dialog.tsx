@@ -10,15 +10,16 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Key01Icon,
   Message01Icon,
   PaintBrush02Icon,
   Settings02Icon,
+  SourceCodeSquareIcon,
   SparklesIcon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
+import { useEffect, useRef } from "react";
 import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
@@ -39,7 +40,7 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "api-keys", label: "API Keys", icon: Key01Icon, badge: "New" },
+  { id: "api-keys", label: "Developer", icon: SourceCodeSquareIcon, badge: "New" },
   { id: "about", label: "Help", icon: SparklesIcon },
 ];
 
@@ -66,6 +67,22 @@ export function SettingsDialog() {
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const reduced = useReducedMotion();
+  const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
+    general: null,
+    profile: null,
+    appearance: null,
+    chat: null,
+    "api-keys": null,
+    about: null,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      tabButtonRefs.current[activeTab]?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, activeTab]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
@@ -91,6 +108,9 @@ export function SettingsDialog() {
                 return (
                   <button
                     key={tab.id}
+                    ref={(node) => {
+                      tabButtonRefs.current[tab.id] = node;
+                    }}
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
