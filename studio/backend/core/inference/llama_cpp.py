@@ -2743,6 +2743,7 @@ class LlamaCppBackend:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        synthesise_after_tool_result: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -2762,6 +2763,39 @@ class LlamaCppBackend:
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
+
+        # Flipped once a tool result has been appended to the conversation
+        # and the system message updated with a synthesise-now directive.
+        # Small models otherwise keep honouring the initial "prefer tools"
+        # nudge and loop on search forever, even when the result they need
+        # is already in context.
+        _synthesise_nudge_applied = False
+        # Phrased as a concrete action rather than an opt-out clause --
+        # the "do not call more tools" wording actively harmed small-model
+        # synthesis rate in our benchmarks.
+        _SYNTHESISE_NUDGE = (
+            " Tool results have been gathered. Now write the final answer to the"
+            " user's original question using what you have. Tool calls are no"
+            " longer needed for this turn."
+        )
+
+        def _apply_synthesise_nudge() -> None:
+            nonlocal _synthesise_nudge_applied
+            if _synthesise_nudge_applied:
+                return
+            for _msg in conversation:
+                if _msg.get("role") == "system":
+                    _content = _msg.get("content") or ""
+                    if _SYNTHESISE_NUDGE.strip() not in _content:
+                        _msg["content"] = _content.rstrip() + _SYNTHESISE_NUDGE
+                    _synthesise_nudge_applied = True
+                    return
+            # No system message yet: insert one
+            conversation.insert(
+                0,
+                {"role": "system", "content": _SYNTHESISE_NUDGE.lstrip()},
+            )
+            _synthesise_nudge_applied = True
 
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
@@ -3308,6 +3342,7 @@ class LlamaCppBackend:
                     assistant_msg["tool_calls"] = tool_calls
                 conversation.append(assistant_msg)
 
+                _any_tool_succeeded = False
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
@@ -3413,6 +3448,8 @@ class LlamaCppBackend:
                         _error_prefixes
                     )
                     _tool_call_history.append((_tc_key, _is_error))
+                    if not _is_error:
+                        _any_tool_succeeded = True
                     # Strip image sentinel before feeding result to the LLM
                     # (the full result with sentinel is still yielded via
                     # tool_end so the frontend can extract image paths).
@@ -3434,6 +3471,15 @@ class LlamaCppBackend:
                     if tool_call_id:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
+
+                # First successful tool result of the loop: tell the model
+                # to synthesise an answer rather than continue searching.
+                # Only enabled for small models (via synthesise_after_tool_result)
+                # since large models handle multi-step tool use well.
+                # Skip if every tool call in this batch errored -- let the
+                # model retry or try a different approach instead.
+                if synthesise_after_tool_result and _any_tool_succeeded:
+                    _apply_synthesise_nudge()
 
                 # Clear tool status badge before next generation iteration
                 yield {"type": "status", "text": ""}

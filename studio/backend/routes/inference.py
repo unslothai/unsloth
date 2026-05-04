@@ -340,6 +340,68 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
+# Softer variant for small models (<9B). The aggressive ALWAYS-CALL-TOOLS
+# phrasing above causes small models to pick web_search on every factual
+# question even when the answer sits in their training data, and to keep
+# calling search after each result instead of synthesising. See
+# tests/test_tool_loop_with_nudge.py for the measured behaviour.
+_TOOL_ACTION_NUDGE_SMALL = (
+    " Call tools only when you need current information or a specific"
+    " calculation. For questions within your knowledge, answer directly."
+    " Issue one tool call at a time rather than queuing several at once."
+)
+
+# Appended whenever the current conversation already contains a tool
+# result, to counteract the "prefer tools" nudge and push the model
+# toward synthesising a final answer from what it has. Matters most for
+# small models where the initial "prefer tools" directive is still
+# dominating on the second and subsequent turns.
+#
+# Phrasing matters a lot here -- "do not call more tools" as an opt-out
+# clause is actually worse than no nudge (measured 33% vs 57% synthesis
+# rate on Qwen3.5-4B UD-Q4_K_XL). Reframing as a concrete action ("write
+# the final answer to the user's original question using what you have")
+# is what moves the needle: the same bench run jumps to 90% synthesis.
+_TOOL_SYNTHESISE_NUDGE = (
+    " Tool results have been gathered. Now write the final answer to the"
+    " user's original question using what you have. Tool calls are no"
+    " longer needed for this turn."
+)
+
+
+_TOOL_ERROR_PREFIXES = (
+    "Error",
+    "Search failed",
+    "Execution error",
+    "Blocked:",
+    "Exit code",
+    "Failed to fetch",
+    "Failed to resolve",
+    "No query provided",
+)
+
+
+def _has_successful_tool_result_in_current_turn(messages: list[dict]) -> bool:
+    """Check if the current turn has at least one successful tool result.
+
+    Scans backwards from the end of the message list. Only returns True
+    when a non-error tool result appears after the last user message.
+    Error-only tool results (timeouts, failed fetches, etc.) return False
+    so the model can retry rather than being forced to synthesise.
+    """
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "tool":
+            content = (msg.get("content") or "").lstrip()
+            if not content.startswith(_TOOL_ERROR_PREFIXES):
+                return True
+            # Error tool result -- keep scanning for a successful one
+            continue
+        if role == "user":
+            return False
+    return False
+
+
 # Regex for stripping leaked tool-call XML from assistant messages/stream
 _TOOL_XML_RE = _re.compile(
     r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
@@ -1813,7 +1875,18 @@ async def openai_chat_completions(
                 _nudge = ""
 
             if _nudge:
-                _nudge += _TOOL_ACTION_NUDGE
+                _nudge += (
+                    _TOOL_ACTION_NUDGE_SMALL if _is_small_model else _TOOL_ACTION_NUDGE
+                )
+                # Small models loop on tool calls instead of answering.
+                # If the current turn already has a successful tool
+                # result, nudge the model to synthesise a final answer.
+                # Large models handle multi-step tool use well, so this
+                # is gated to small models only.
+                if _is_small_model and _has_successful_tool_result_in_current_turn(
+                    chat_messages
+                ):
+                    _nudge += _TOOL_SYNTHESISE_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
@@ -1857,6 +1930,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    synthesise_after_tool_result = _is_small_model,
                 )
 
             _tool_sentinel = object()
@@ -3580,7 +3654,17 @@ async def anthropic_messages(
             _nudge = ""
 
         if _nudge:
-            _nudge += _TOOL_ACTION_NUDGE
+            _nudge += (
+                _TOOL_ACTION_NUDGE_SMALL if _is_small_model else _TOOL_ACTION_NUDGE
+            )
+            # Only nudge small models to synthesise -- see comment in
+            # /chat/completions for rationale.  (The OpenAI-compat schema
+            # does not yet accept role="tool", so this branch is currently
+            # unreachable; kept for when the schema is extended.)
+            if _is_small_model and _has_successful_tool_result_in_current_turn(
+                openai_messages
+            ):
+                _nudge += _TOOL_SYNTHESISE_NUDGE
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
                 openai_messages[0]["content"] = (
@@ -3611,6 +3695,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                synthesise_after_tool_result = _is_small_model,
             )
 
         if payload.stream:
