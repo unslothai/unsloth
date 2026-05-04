@@ -8,6 +8,7 @@ Datasets API routes
 import base64
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -15,6 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 import re as _re
 import structlog
+import requests as http_requests
 from loggers import get_logger
 
 _VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -80,6 +82,9 @@ from models.datasets import (
     CheckFormatResponse,
     LocalDatasetItem,
     LocalDatasetsResponse,
+    SplitEntry,
+    SplitsRequest,
+    SplitsResponse,
     UploadDatasetResponse,
 )
 from utils.paths import (
@@ -351,6 +356,85 @@ def list_local_datasets(
     current_subject: str = Depends(get_current_subject),
 ) -> LocalDatasetsResponse:
     return LocalDatasetsResponse(datasets = _build_local_dataset_items())
+
+
+_HF_SPLITS_API = "https://datasets-server.huggingface.co/splits"
+
+
+@router.post("/splits", response_model = SplitsResponse)
+def get_splits(
+    request: SplitsRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Return the available configs (subsets) and splits for a HuggingFace dataset.
+
+    Proxied through the backend so the server-side ``HF_TOKEN`` environment
+    variable is used as a fallback when the caller does not supply a token,
+    which fixes private/gated dataset metadata loading.
+
+    Uses the HuggingFace datasets-server ``/splits`` endpoint which returns
+    all configs and splits in a single request.
+    """
+    token = (
+        (request.hf_token or "").strip()
+        or (os.environ.get("HF_TOKEN") or "").strip()
+        or None
+    )
+
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        resp = http_requests.get(
+            _HF_SPLITS_API,
+            params = {"dataset": request.dataset},
+            headers = headers,
+            timeout = 30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        splits_data = data.get("splits")
+        if not isinstance(splits_data, list):
+            splits_data = []
+
+        entries = [
+            SplitEntry(dataset = s["dataset"], config = s["config"], split = s["split"])
+            for s in splits_data
+            if isinstance(s, dict)
+            and all(k in s for k in ("dataset", "config", "split"))
+        ]
+        return SplitsResponse(splits = entries)
+
+    except http_requests.HTTPError as e:
+        detail = None
+        upstream_status = 502
+        try:
+            upstream_status = e.response.status_code
+            error_data = e.response.json()
+            if isinstance(error_data, dict):
+                detail = error_data.get("error")
+        except Exception:
+            logger.debug("Failed to parse HuggingFace error response", exc_info = True)
+        if not isinstance(detail, str) or not detail:
+            detail = f"HuggingFace returned an error (HTTP {upstream_status})"
+        # HF 401/403 means the HF token is invalid or missing, not that the
+        # Studio session expired.  Remap to 422 so authFetch does not
+        # mistake this for a Studio auth failure and force a logout.
+        if upstream_status in (401, 403):
+            upstream_status = 422
+        logger.warning(f"Failed to fetch splits for {request.dataset!r}: {detail}")
+        raise HTTPException(status_code = upstream_status, detail = detail)
+
+    except http_requests.RequestException as e:
+        logger.error(
+            f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True
+        )
+        raise HTTPException(
+            status_code = 502, detail = "Failed to fetch dataset splits from HuggingFace"
+        )
 
 
 @router.get("/download-progress")
