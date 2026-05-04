@@ -708,6 +708,17 @@ class InferenceOrchestrator:
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
+        if model_name in self.loading_models:
+            logger.info(
+                "Cancelling in-flight load for model '%s' by terminating subprocess",
+                model_name,
+            )
+            self._shutdown_subprocess(timeout = 0.5)
+            self.loading_models.discard(model_name)
+            self.active_model_name = None
+            self.models.clear()
+            return True
+
         if not self._ensure_subprocess_alive():
             # No subprocess — just clear local state
             self.models.pop(model_name, None)

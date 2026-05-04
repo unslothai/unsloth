@@ -8,6 +8,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Parse flags ──
+# --local: install from the local repo checkout (overlays unsloth as editable
+# and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
+# path that runs setup.sh directly without going through install.sh.
+if [ "$#" -gt 0 ]; then
+    for _arg in "$@"; do
+        case "$_arg" in
+            --local)
+                export STUDIO_LOCAL_INSTALL=1
+                export STUDIO_LOCAL_REPO="$REPO_ROOT"
+                ;;
+        esac
+    done
+fi
+
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
@@ -169,6 +184,9 @@ verbose_substep "verbose diagnostics enabled"
 _LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
 if [ "$_LLAMA_ONLY" = "1" ]; then
     substep "llama.cpp only mode"
+fi
+if [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
+    substep "local mode: overlaying $REPO_ROOT (editable) + unsloth-zoo from git main"
 fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
@@ -681,7 +699,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         case "$_pkg" in
             build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) command -v curl-config >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
         esac
     done
