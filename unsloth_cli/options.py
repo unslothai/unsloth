@@ -35,8 +35,9 @@ def _is_bool_field(annotation: Any) -> bool:
 
 
 def _is_list_type(annotation: Any) -> bool:
-    """Check if type is a List."""
-    return get_origin(annotation) is list
+    """Check if type is a List (including Optional[List[...]])."""
+    unwrapped = _unwrap_optional(annotation)
+    return get_origin(unwrapped) is list
 
 
 def _get_python_type(annotation: Any) -> type:

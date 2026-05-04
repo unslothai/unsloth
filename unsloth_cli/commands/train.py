@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -9,6 +10,7 @@ import typer
 
 from unsloth_cli.config import Config, load_config
 from unsloth_cli.options import add_options_from_config
+from unsloth_cli.commands.studio import _reexec_cli_in_studio_venv
 
 
 @add_options_from_config(Config)
@@ -59,6 +61,9 @@ def train(
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
+
+    # Only re-exec into studio venv for actual training (not dry-run)
+    _reexec_cli_in_studio_venv(sys.argv[1:])
 
     if not cfg.model:
         typer.echo("Error: provide --model or set model in --config", err = True)
