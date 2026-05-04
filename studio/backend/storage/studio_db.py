@@ -786,8 +786,12 @@ def upsert_chat_message(message: dict) -> dict:
                 message.get("parentId"),
                 message["role"],
                 json.dumps(message.get("content", [])),
-                json.dumps(message.get("attachments")) if message.get("attachments") else None,
-                json.dumps(message.get("metadata")) if message.get("metadata") else None,
+                json.dumps(message.get("attachments"))
+                if message.get("attachments")
+                else None,
+                json.dumps(message.get("metadata"))
+                if message.get("metadata")
+                else None,
                 int(message["createdAt"]),
             ),
         )
