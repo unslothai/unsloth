@@ -31,9 +31,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 from utils.transformers_version import (
     _resolve_base_model,
     _check_tokenizer_config_needs_v5,
-    _check_config_needs_550,
+    _check_config_needs_552,
     _tokenizer_class_cache,
-    _config_needs_550_cache,
+    _config_needs_552_cache,
     needs_transformers_5,
     get_transformers_tier,
 )
@@ -194,15 +194,15 @@ class TestNeedsTransformers5:
 
 
 # ---------------------------------------------------------------------------
-# _check_config_needs_550 — config.json architecture/model_type check
+# _check_config_needs_552 — config.json architecture/model_type check
 # ---------------------------------------------------------------------------
 
 
-class TestCheckConfigNeeds550:
-    """Tests for _check_config_needs_550() local config.json checks."""
+class TestCheckConfigNeeds552:
+    """Tests for _check_config_needs_552() local config.json checks."""
 
     def setup_method(self):
-        _config_needs_550_cache.clear()
+        _config_needs_552_cache.clear()
 
     def test_gemma4_architecture(self, tmp_path: Path):
         """config.json with Gemma4ForConditionalGeneration should return True."""
@@ -212,28 +212,28 @@ class TestCheckConfigNeeds550:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        assert _check_config_needs_550(str(tmp_path)) is True
+        assert _check_config_needs_552(str(tmp_path)) is True
 
     def test_gemma4_model_type_only(self, tmp_path: Path):
         """config.json with model_type=gemma4 (no architectures) should return True."""
         cfg = {"model_type": "gemma4"}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        assert _check_config_needs_550(str(tmp_path)) is True
+        assert _check_config_needs_552(str(tmp_path)) is True
 
     def test_llama_architecture(self, tmp_path: Path):
         """config.json with LlamaForCausalLM should return False."""
         cfg = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        assert _check_config_needs_550(str(tmp_path)) is False
+        assert _check_config_needs_552(str(tmp_path)) is False
 
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
         # Patch network call to avoid real fetch
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
-            assert _check_config_needs_550(str(tmp_path)) is False
+            assert _check_config_needs_552(str(tmp_path)) is False
 
     def test_result_is_cached(self, tmp_path: Path):
         """Subsequent calls should use the cache."""
@@ -241,9 +241,9 @@ class TestCheckConfigNeeds550:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         key = str(tmp_path)
-        _check_config_needs_550(key)
-        assert key in _config_needs_550_cache
-        assert _config_needs_550_cache[key] is True
+        _check_config_needs_552(key)
+        assert key in _config_needs_552_cache
+        assert _config_needs_552_cache[key] is True
 
     def test_local_file_skips_network(self, tmp_path: Path):
         """When local config.json exists, no network request should be made."""
@@ -251,7 +251,7 @@ class TestCheckConfigNeeds550:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         with patch("urllib.request.urlopen") as mock_urlopen:
-            _check_config_needs_550(str(tmp_path))
+            _check_config_needs_552(str(tmp_path))
             mock_urlopen.assert_not_called()
 
 
@@ -265,34 +265,34 @@ class TestGetTransformersTier:
 
     def setup_method(self):
         _tokenizer_class_cache.clear()
-        _config_needs_550_cache.clear()
+        _config_needs_552_cache.clear()
 
-    def test_gemma4_substring_returns_550(self):
-        assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
+    def test_gemma4_substring_returns_552(self):
+        assert get_transformers_tier("google/gemma-4-E2B-it") == "552"
 
-    def test_gemma4_alt_substring_returns_550(self):
-        assert get_transformers_tier("unsloth/gemma4-E4B-it") == "550"
+    def test_gemma4_alt_substring_returns_552(self):
+        assert get_transformers_tier("unsloth/gemma4-E4B-it") == "552"
 
-    def test_gemma4_config_json_returns_550(self, tmp_path: Path):
-        """Local checkpoint with Gemma4 architecture → 550."""
+    def test_gemma4_config_json_returns_552(self, tmp_path: Path):
+        """Local checkpoint with Gemma4 architecture → 552."""
         cfg = {
             "architectures": ["Gemma4ForConditionalGeneration"],
             "model_type": "gemma4",
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        assert get_transformers_tier(str(tmp_path)) == "550"
+        assert get_transformers_tier(str(tmp_path)) == "552"
 
     def test_qwen35_returns_530(self):
         with patch(
-            "utils.transformers_version._check_config_needs_550",
+            "utils.transformers_version._check_config_needs_552",
             return_value = False,
         ):
             assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
 
     def test_ministral_returns_530(self):
         with patch(
-            "utils.transformers_version._check_config_needs_550",
+            "utils.transformers_version._check_config_needs_552",
             return_value = False,
         ):
             assert (
@@ -302,7 +302,7 @@ class TestGetTransformersTier:
     def test_llama_returns_default(self):
         with (
             patch(
-                "utils.transformers_version._check_config_needs_550",
+                "utils.transformers_version._check_config_needs_552",
                 return_value = False,
             ),
             patch(
@@ -312,22 +312,22 @@ class TestGetTransformersTier:
         ):
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
 
-    def test_550_checked_before_530(self):
-        """Ensure 5.5.0 is checked first — a model matching both should get 550."""
+    def test_552_checked_before_530(self):
+        """Ensure 5.5.2 is checked first — a model matching both should get 552."""
         # This shouldn't happen in practice, but verifies priority
-        assert get_transformers_tier("gemma-4-model") == "550"
+        assert get_transformers_tier("gemma-4-model") == "552"
 
     def test_needs_transformers_5_compat(self):
-        """needs_transformers_5 should return True for both 530 and 550 models."""
+        """needs_transformers_5 should return True for both 530 and 552 models."""
         assert needs_transformers_5("google/gemma-4-E2B-it") is True
         with patch(
-            "utils.transformers_version._check_config_needs_550",
+            "utils.transformers_version._check_config_needs_552",
             return_value = False,
         ):
             assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
         with (
             patch(
-                "utils.transformers_version._check_config_needs_550",
+                "utils.transformers_version._check_config_needs_552",
                 return_value = False,
             ),
             patch(
