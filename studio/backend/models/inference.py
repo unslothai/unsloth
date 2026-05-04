@@ -55,6 +55,16 @@ class LoadRequest(BaseModel):
         None,
         description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Extra arguments forwarded verbatim to llama-server for GGUF models. "
+            "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
+            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
+            "non-GGUF models."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):

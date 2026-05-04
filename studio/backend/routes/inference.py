@@ -119,6 +119,7 @@ try:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
+    from core.inference.llama_server_args import validate_extra_args
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -140,6 +141,7 @@ except ImportError:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
+    from core.inference.llama_server_args import validate_extra_args
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -431,6 +433,13 @@ async def load_model(
     native_grant_backed = False
     model_log_label = request.model_path
     try:
+        # Validate user-supplied llama-server pass-through args up front
+        # so a managed-flag collision returns 400 before any model work.
+        try:
+            extra_llama_args = validate_extra_args(request.llama_extra_args)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc))
+
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
@@ -605,6 +614,7 @@ async def load_model(
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
                     n_parallel = _n_parallel,
+                    extra_args = extra_llama_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -623,6 +633,7 @@ async def load_model(
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
                     n_parallel = _n_parallel,
+                    extra_args = extra_llama_args,
                 )
 
             if not success:
