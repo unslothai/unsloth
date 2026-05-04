@@ -71,28 +71,30 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
-    config = SimpleNamespace(identifier="fake/text", is_vision=False, is_lora=False)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
 
     assert backend.load_model(
         config,
-        max_seq_length=4096,
-        load_in_4bit=False,
-        hf_token="hf-token",
-        trust_remote_code=True,
-        dtype="float16",
+        max_seq_length = 4096,
+        load_in_4bit = False,
+        hf_token = "hf-token",
+        trust_remote_code = True,
+        dtype = "float16",
     )
 
-    assert calls == [(
-        ("fake/text",),
-        {
-            "max_seq_length": 4096,
-            "dtype": "float16",
-            "load_in_4bit": False,
-            "token": "hf-token",
-            "trust_remote_code": True,
-            "text_only": True,
-        },
-    )]
+    assert calls == [
+        (
+            ("fake/text",),
+            {
+                "max_seq_length": 4096,
+                "dtype": "float16",
+                "load_in_4bit": False,
+                "token": "hf-token",
+                "trust_remote_code": True,
+                "text_only": True,
+            },
+        )
+    ]
     assert backend._is_vlm is False
     assert isinstance(backend._tokenizer, _DummyTokenizer)
 
@@ -122,31 +124,33 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
 
     backend = MLXInferenceBackend()
     config = SimpleNamespace(
-        identifier=str(adapter_dir),
-        is_vision=True,
-        is_lora=True,
-        base_model="fake/base",
+        identifier = str(adapter_dir),
+        is_vision = True,
+        is_lora = True,
+        base_model = "fake/base",
     )
 
     assert backend.load_model(
         config,
-        max_seq_length=8192,
-        load_in_4bit=True,
-        hf_token="hf-token",
-        trust_remote_code=True,
+        max_seq_length = 8192,
+        load_in_4bit = True,
+        hf_token = "hf-token",
+        trust_remote_code = True,
     )
 
-    assert calls == [(
-        (str(adapter_dir),),
-        {
-            "max_seq_length": 8192,
-            "dtype": None,
-            "load_in_4bit": True,
-            "token": "hf-token",
-            "trust_remote_code": True,
-            "text_only": False,
-        },
-    )]
+    assert calls == [
+        (
+            (str(adapter_dir),),
+            {
+                "max_seq_length": 8192,
+                "dtype": None,
+                "load_in_4bit": True,
+                "token": "hf-token",
+                "trust_remote_code": True,
+                "text_only": False,
+            },
+        )
+    ]
     assert cfg_path.read_text() == original_cfg
     assert backend._is_vlm is True
     assert isinstance(backend._processor, _DummyProcessor)

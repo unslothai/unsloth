@@ -279,7 +279,11 @@ def get_gpu_memory_info() -> Dict[str, Any]:
 
             try:
                 info = mx.device_info()
-                gpu_name = info.get("device_name") or platform.processor() or platform.machine()
+                gpu_name = (
+                    info.get("device_name")
+                    or platform.processor()
+                    or platform.machine()
+                )
             except Exception:
                 gpu_name = platform.processor() or platform.machine()
 
@@ -480,10 +484,10 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
-            capture_output=True,
-            timeout=2,
+            capture_output = True,
+            timeout = 2,
         )
-        text = result.stdout.decode("utf-8", errors="replace")
+        text = result.stdout.decode("utf-8", errors = "replace")
     except Exception:
         return {}
 

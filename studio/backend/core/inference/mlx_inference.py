@@ -13,7 +13,6 @@ logger = get_logger(__name__)
 
 
 class MLXInferenceBackend:
-
     def __init__(self):
         self.models = {}
         self.active_model_name = None
@@ -29,9 +28,16 @@ class MLXInferenceBackend:
         self._is_vlm = False
         self._config = {}
 
-    def load_model(self, config, max_seq_length=2048, load_in_4bit=True,
-                   hf_token=None, trust_remote_code=False, gpu_ids=None,
-                   dtype=None) -> bool:
+    def load_model(
+        self,
+        config,
+        max_seq_length = 2048,
+        load_in_4bit = True,
+        hf_token = None,
+        trust_remote_code = False,
+        gpu_ids = None,
+        dtype = None,
+    ) -> bool:
         import mlx.core as mx
 
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
@@ -39,6 +45,7 @@ class MLXInferenceBackend:
 
         if hf_token:
             import os
+
             os.environ["HF_TOKEN"] = hf_token
 
         if mx.metal.is_available():
@@ -46,18 +53,23 @@ class MLXInferenceBackend:
 
         is_lora = getattr(config, "is_lora", False)
 
-        logger.info("Loading %s via %s (is_lora=%s)", model_name,
-                     "mlx-vlm" if is_vision else "mlx-lm", is_lora)
+        logger.info(
+            "Loading %s via %s (is_lora=%s)",
+            model_name,
+            "mlx-vlm" if is_vision else "mlx-lm",
+            is_lora,
+        )
 
         from unsloth_zoo.mlx_loader import FastMLXModel
+
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
-            max_seq_length=max_seq_length,
-            dtype=dtype,
-            load_in_4bit=load_in_4bit,
-            token=hf_token,
-            trust_remote_code=trust_remote_code,
-            text_only=False if is_vision else True,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = hf_token,
+            trust_remote_code = trust_remote_code,
+            text_only = False if is_vision else True,
         )
 
         if is_vision:
@@ -107,17 +119,16 @@ class MLXInferenceBackend:
     def generate_chat_response(
         self,
         messages,
-        system_prompt="",
-        image=None,
-        temperature=0.7,
-        top_p=0.9,
-        top_k=40,
-        min_p=0.0,
-        max_new_tokens=256,
-        repetition_penalty=1.0,
-        cancel_event=None,
+        system_prompt = "",
+        image = None,
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 40,
+        min_p = 0.0,
+        max_new_tokens = 256,
+        repetition_penalty = 1.0,
+        cancel_event = None,
     ) -> Generator[str, None, None]:
-
         if self._model is None:
             raise RuntimeError("No model loaded")
 
@@ -139,56 +150,91 @@ class MLXInferenceBackend:
                         ]
                     elif isinstance(content, list):
                         # Prepend image if not already there
-                        has_image = any(p.get("type") == "image" for p in content if isinstance(p, dict))
+                        has_image = any(
+                            p.get("type") == "image"
+                            for p in content
+                            if isinstance(p, dict)
+                        )
                         if not has_image:
                             content.insert(0, {"type": "image"})
                     break
 
         if self._is_vlm:
             yield from self._generate_vlm(
-                full_messages, image, temperature, top_p, top_k,
-                max_new_tokens, repetition_penalty, cancel_event,
+                full_messages,
+                image,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+                repetition_penalty,
+                cancel_event,
             )
         else:
             yield from self._generate_text(
-                full_messages, temperature, top_p, top_k,
-                max_new_tokens, repetition_penalty, cancel_event,
+                full_messages,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+                repetition_penalty,
+                cancel_event,
             )
 
-    def _generate_text(self, messages, temperature, top_p, top_k,
-                       max_new_tokens, repetition_penalty, cancel_event):
+    def _generate_text(
+        self,
+        messages,
+        temperature,
+        top_p,
+        top_k,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
+    ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
         prompt = self._tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
+            messages,
+            tokenize = False,
+            add_generation_prompt = True,
         )
         if prompt is None:
-            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
+            raise RuntimeError(
+                "apply_chat_template returned None — tokenizer may be incompatible"
+            )
 
         sampler = make_sampler(
-            temp=temperature,
-            top_p=top_p,
-            top_k=int(top_k or 0),
-            min_tokens_to_keep=1,
+            temp = temperature,
+            top_p = top_p,
+            top_k = int(top_k or 0),
+            min_tokens_to_keep = 1,
         )
         # Only build a logits processor when we actually have a non-trivial
         # repetition penalty (1.0 is the no-op value).
         logits_processors = None
-        if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
+        if repetition_penalty is not None and float(repetition_penalty) not in (
+            0.0,
+            1.0,
+        ):
             logits_processors = make_logits_processors(
-                repetition_penalty=float(repetition_penalty),
+                repetition_penalty = float(repetition_penalty),
             )
 
         token_ids = []
-        logger.info("Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
-                     len(prompt), max_new_tokens, type(self._model).__name__, type(self._tokenizer).__name__)
+        logger.info(
+            "Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
+            len(prompt),
+            max_new_tokens,
+            type(self._model).__name__,
+            type(self._tokenizer).__name__,
+        )
         with self._generation_lock:
             try:
                 gen_kwargs = dict(
-                    prompt=prompt,
-                    max_tokens=max_new_tokens,
-                    sampler=sampler,
+                    prompt = prompt,
+                    max_tokens = max_new_tokens,
+                    sampler = sampler,
                 )
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
@@ -200,7 +246,8 @@ class MLXInferenceBackend:
                     token_ids.append(response.token)
                     # Decode full sequence with skip_special_tokens — same as GPU
                     cumulative = self._tokenizer.decode(
-                        token_ids, skip_special_tokens=True,
+                        token_ids,
+                        skip_special_tokens = True,
                     )
                     yield cumulative
 
@@ -208,27 +255,45 @@ class MLXInferenceBackend:
                         break
             except Exception as e:
                 import traceback
+
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
 
-    def _generate_vlm(self, messages, image, temperature, top_p, top_k,
-                      max_new_tokens, repetition_penalty, cancel_event):
+    def _generate_vlm(
+        self,
+        messages,
+        image,
+        temperature,
+        top_p,
+        top_k,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
+    ):
         from mlx_vlm import stream_generate as vlm_stream
 
         # Apply chat template
         chat_fn = getattr(self._processor, "apply_chat_template", None)
-        if chat_fn is None or not hasattr(self._processor, "chat_template") or self._processor.chat_template is None:
+        if (
+            chat_fn is None
+            or not hasattr(self._processor, "chat_template")
+            or self._processor.chat_template is None
+        ):
             tok = getattr(self._processor, "tokenizer", self._processor)
             chat_fn = tok.apply_chat_template
 
-        prompt = chat_fn(messages, tokenize=False, add_generation_prompt=True)
+        prompt = chat_fn(messages, tokenize = False, add_generation_prompt = True)
 
         # For VLM: always use mlx_vlm's stream_generate which handles
         # pixel_values properly (passes None for text-only, image for VLM)
         images = [image] if image is not None else None
 
         cumulative = ""
-        logger.info("VLM generating: prompt_len=%d, has_image=%s", len(prompt), image is not None)
+        logger.info(
+            "VLM generating: prompt_len=%d, has_image=%s",
+            len(prompt),
+            image is not None,
+        )
         # mlx_vlm.stream_generate forwards **kwargs into generate_step, which
         # accepts temp/top_p/top_k/repetition_penalty (and builds the sampler
         # + logits_processors internally). Pass them through.
@@ -236,12 +301,15 @@ class MLXInferenceBackend:
         # passing ``temp=`` silently falls into **kwargs and is ignored,
         # leaving generation stuck at the default 0.0 (greedy).
         vlm_kwargs = dict(
-            max_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=int(top_k or 0),
+            max_tokens = max_new_tokens,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = int(top_k or 0),
         )
-        if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
+        if repetition_penalty is not None and float(repetition_penalty) not in (
+            0.0,
+            1.0,
+        ):
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         with self._generation_lock:
@@ -252,19 +320,23 @@ class MLXInferenceBackend:
                 images,
                 **vlm_kwargs,
             ):
-                token_text = response.text if hasattr(response, "text") else str(response)
+                token_text = (
+                    response.text if hasattr(response, "text") else str(response)
+                )
                 cumulative += token_text
                 yield cumulative
                 if cancel_event and cancel_event.is_set():
                     break
 
-    def generate_with_adapter_control(self, use_adapter=None, cancel_event=None,
-                                       **gen_kwargs) -> Generator[str, None, None]:
+    def generate_with_adapter_control(
+        self, use_adapter = None, cancel_event = None, **gen_kwargs
+    ) -> Generator[str, None, None]:
         # MLX LoRA adapter toggling not yet supported — generate normally
-        yield from self.generate_chat_response(cancel_event=cancel_event, **gen_kwargs)
+        yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)
 
     def reset_generation_state(self):
         import mlx.core as mx
         import gc
+
         gc.collect()
         mx.clear_cache()

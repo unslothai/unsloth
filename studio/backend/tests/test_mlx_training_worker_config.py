@@ -72,10 +72,10 @@ def test_mlx_studio_optimizer_aliases_are_explicit():
 
 
 def test_mlx_studio_rejects_unknown_optimizer():
-    with pytest.raises(ValueError, match="Unsupported optimizer for MLX training"):
+    with pytest.raises(ValueError, match = "Unsupported optimizer for MLX training"):
         _normalize_mlx_studio_optimizer("adamw_typo")
 
 
 def test_mlx_studio_rejects_unknown_scheduler():
-    with pytest.raises(ValueError, match="Unsupported LR scheduler for MLX training"):
+    with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
