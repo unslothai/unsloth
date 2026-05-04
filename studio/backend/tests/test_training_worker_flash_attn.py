@@ -133,6 +133,22 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
     )
 
 
+def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
+    install_mock = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+
+    worker._ensure_causal_conv1d_fast_path(
+        event_queue = [],
+        model_name = "unsloth/Qwen3.6-4B",
+    )
+    worker._ensure_causal_conv1d_fast_path(
+        event_queue = [],
+        model_name = "unsloth/Qwen3_6-4B",
+    )
+
+    assert install_mock.call_count == 2
+
+
 def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)

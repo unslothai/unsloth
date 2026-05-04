@@ -662,7 +662,7 @@ export function SharedComposer({
                     : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
               aria-label={
-                preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
+                preserveThinking ? "Disable preserve think" : "Enable preserve think"
               }
             >
               {preserveThinking && modelLoaded ? (
@@ -670,7 +670,7 @@ export function SharedComposer({
               ) : (
                 <LightbulbOffIcon className="size-3.5" />
               )}
-              <span>Preserve Thinking</span>
+              <span>Preserve Think</span>
             </button>
           )}
           <button
