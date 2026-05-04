@@ -1,39 +1,17 @@
-"""Verify the FastSentenceTransformer constructor-redirect lifecycle:
+"""FastSentenceTransformer constructor-redirect lifecycle:
 - AutoModel/AutoProcessor/AutoTokenizer.from_pretrained are restored even
   when the Transformer constructor raises (try/finally invariant).
 - The closure that decides whether to substitute the pre-loaded objects
   (`is_requested_model_name`) handles HF repo IDs, local paths, trailing
   slashes, pathlib.Path objects, and missing identifiers correctly.
-
-The relevant function source is AST-extracted from
-unsloth/models/sentence_transformer.py and exec'd in a stubbed namespace
-so the test does not require torch / sentence-transformers to import."""
+"""
 
 from __future__ import annotations
 
-import ast
-import logging
 import os
 import pathlib
 import sys
-import threading
 import types
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PATH = REPO_ROOT / "unsloth" / "models" / "sentence_transformer.py"
-
-
-def _extract_create_module_body():
-    """Pull the body of `_create_transformer_module` so we can build a
-    stand-alone driver that exercises the redirect lifecycle and the
-    `is_requested_model_name` closure."""
-    src = SOURCE_PATH.read_text()
-    module = ast.parse(src)
-    for node in ast.walk(module):
-        if isinstance(node, ast.FunctionDef) and node.name == "_create_transformer_module":
-            return node
-    raise AssertionError("_create_transformer_module not found")
 
 
 class _FakeAuto:
@@ -46,22 +24,15 @@ class _FakeAuto:
 
 
 class _RecordingTransformerOk:
-    """Stand-in for sentence_transformers.models.Transformer that records
-    which AutoModel/AutoProcessor/AutoTokenizer.from_pretrained were called
-    during init."""
-
     last_calls = None
 
     def __init__(self, model_name, **kwargs):
-        from transformers import AutoModel, AutoProcessor, AutoTokenizer  # type: ignore
-
-        calls = {
+        from transformers import AutoModel, AutoProcessor, AutoTokenizer
+        type(self).last_calls = {
             "model": AutoModel.from_pretrained(model_name),
             "processor": AutoProcessor.from_pretrained(model_name),
             "tokenizer": AutoTokenizer.from_pretrained(model_name),
         }
-        type(self).last_calls = calls
-        self.config_keys = ["existing"]
 
 
 class _RaisingTransformer:
@@ -72,10 +43,6 @@ class _RaisingTransformer:
 
 
 def _build_driver(transformer_class):
-    """Compile a callable equivalent to _create_transformer_module that uses
-    a swappable Transformer class. We only need the redirect-lifecycle and
-    closure surface; downstream config_keys / save_in_root assignments are
-    irrelevant here so we stop after Transformer(...) returns."""
     transformers_mod = types.ModuleType("transformers")
     transformers_mod.AutoModel = _FakeAuto("AutoModel")
     transformers_mod.AutoProcessor = _FakeAuto("AutoProcessor")
@@ -147,12 +114,11 @@ def _build_driver(transformer_class):
 
 
 def test_redirect_substitutes_preloaded_objects_on_match():
-    driver, transformers_mod, captured = _build_driver(_RecordingTransformerOk)
+    driver, _mod, captured = _build_driver(_RecordingTransformerOk)
     sentinel_model = object()
     sentinel_tok = object()
     driver("sentence-transformers/all-MiniLM-L6-v2", sentinel_model, sentinel_tok)
     calls = captured["calls"]
-    assert calls is not None
     assert calls["model"] is sentinel_model
     assert calls["processor"] is sentinel_tok
     assert calls["tokenizer"] is sentinel_tok
@@ -175,10 +141,6 @@ def test_redirect_restored_on_constructor_exception():
 
 
 def test_redirect_passes_through_for_other_model_names():
-    """Verify that when the constructor internally requests a *different*
-    name, our patched function delegates to the captured original instead
-    of returning the pre-loaded object."""
-
     class _OtherNameTransformer:
         captured = None
 
@@ -189,26 +151,12 @@ def test_redirect_passes_through_for_other_model_names():
     driver, *_ = _build_driver(_OtherNameTransformer)
     sentinel = object()
     driver("primary/model-id", sentinel, object())
-    # The orig-tuple is what _FakeAuto._original returns; sentinel must
-    # NOT have been substituted because the requested name differs.
     assert _OtherNameTransformer.captured is not sentinel
     assert isinstance(_OtherNameTransformer.captured, tuple)
     assert _OtherNameTransformer.captured[0] == "orig"
 
 
-def test_is_requested_model_name_repo_id_match():
-    driver, *_ = _build_driver(_RecordingTransformerOk)
-    sentinel_model = object()
-    sentinel_tok = object()
-    driver("org/repo-name", sentinel_model, sentinel_tok)
-    # The redirect fired (we know because the recording transformer pulled
-    # AutoModel.from_pretrained which would otherwise return ('orig', ...)).
-    # Already covered by test_redirect_substitutes_preloaded_objects_on_match;
-    # this case checks the same logic specifically for HF repo IDs.
-
-
 def test_is_requested_model_name_handles_pathlib_path(tmp_path):
-    """pathlib.Path inputs must be normalised through os.fspath."""
     target = tmp_path / "model_dir"
     target.mkdir()
 
@@ -243,21 +191,14 @@ def test_is_requested_model_name_trailing_slash_local_path(tmp_path):
 
 
 def test_is_requested_model_name_returns_false_when_no_identifier():
-    """Auto*.from_pretrained called with no positional and no recognised
-    kwarg must NOT substitute the pre-loaded object."""
-
-    captured = {"called": False, "args": None}
+    captured = {"args": None}
 
     class _NoNameTransformer:
         def __init__(self, model_name, **kw):
             from transformers import AutoModel
-            captured["called"] = True
             captured["args"] = AutoModel.from_pretrained(some_other_kwarg="x")
 
     driver, *_ = _build_driver(_NoNameTransformer)
     driver("primary/model-id", object(), object())
-    assert captured["called"] is True
-    # The original (orig-tuple) must have been returned because
-    # is_requested_model_name returned False.
     assert isinstance(captured["args"], tuple)
     assert captured["args"][0] == "orig"
