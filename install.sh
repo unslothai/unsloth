@@ -1245,13 +1245,14 @@ _install_intel_xpu_stack() {
         run_install_cmd "install Intel XPU stack (local)" \
             env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
             uv pip install --python "$_venv_py" \
-                --upgrade-package unsloth --upgrade-package unsloth-zoo \
-                "unsloth[intel-gpu-torch290]>=2026.4.8" unsloth-zoo
+                --upgrade-package "$_package_name" \
+                "${_package_name}[intel-gpu-torch290]>=2026.4.8"
     else
         run_install_cmd "install Intel XPU stack" \
             env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
             uv pip install --python "$_venv_py" \
-                --upgrade-package "$_package_name" "${_package_name}[intel-gpu-torch290]"
+                --upgrade-package "$_package_name" \
+                "${_package_name}[intel-gpu-torch290]>=2026.4.8"
     fi
 }
 
