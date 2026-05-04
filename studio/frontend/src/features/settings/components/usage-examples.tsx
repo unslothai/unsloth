@@ -138,7 +138,7 @@ export function UsageExamples() {
           {snippets[lang]}
         </pre>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
-          <span>Setup docs</span>
+          <span>Setup docs:</span>
           {DOC_LINKS.map((link) => (
             <a
               key={link.href}
