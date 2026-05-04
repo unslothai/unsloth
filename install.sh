@@ -34,8 +34,7 @@ substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
-PACKAGE_NAME="unsloth @ git+https://github.com/Manan17/unsloth.git@main"
-UNSLOTH_ZOO_PACKAGE="unsloth-zoo @ git+https://github.com/Manan17/unsloth-zoo.git@main"
+PACKAGE_NAME="unsloth"
 TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
@@ -1688,7 +1687,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
-        run_install_cmd "install unsloth-zoo (branch)" uv pip install --python "$_VENV_PY" "$UNSLOTH_ZOO_PACKAGE"
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
@@ -1720,7 +1718,6 @@ else
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
-        run_install_cmd "install unsloth-zoo (branch)" uv pip install --python "$_VENV_PY" "$UNSLOTH_ZOO_PACKAGE"
     fi
 fi
 
