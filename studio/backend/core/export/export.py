@@ -530,13 +530,9 @@ class ExportBackend:
             quant_method = quantization_method.lower()
 
             # Pin convert_hf_to_gguf.py to the same llama.cpp ref as the
-            # llama-quantize binary and gguf-py (Studio installs at a tagged
-            # ref via setup.sh). Without this, the convert script is fetched
-            # from master and can drift past the pinned binary's gguf API.
-            # Defer to an explicit user override; zoo validates the value.
-            # Set before both branches so save_pretrained_gguf and
-            # push_to_hub_gguf use the same pin (hub-only export has
-            # save_directory == "" but still needs the pin).
+            # llama-quantize binary (Studio installs at a tagged ref via
+            # setup.sh) so it can't drift past the pinned binary's gguf API.
+            # Set before both branches; hub-only export has save_directory == "".
             from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
 
             os.environ.setdefault(
