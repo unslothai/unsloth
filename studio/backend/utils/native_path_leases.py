@@ -125,6 +125,12 @@ def verify_native_path_lease(
     path = Path(str(payload["canonical_path"]))
     _reject_network_or_device_path(path)
     try:
+        signed_lstat = os.lstat(path)
+    except OSError as exc:
+        raise NativePathLeaseError("Native path is no longer accessible.") from exc
+    if _stat_module.S_ISLNK(signed_lstat.st_mode):
+        raise NativePathLeaseError("Native path is no longer a regular file.")
+    try:
         resolved = path.resolve(strict = True)
     except OSError as exc:
         raise NativePathLeaseError("Native path is no longer accessible.") from exc
