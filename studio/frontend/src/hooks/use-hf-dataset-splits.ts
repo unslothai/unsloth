@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useState } from "react";
+import { authFetch } from "@/features/auth";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,8 +16,7 @@ export interface HfSplitEntry {
 
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
-  pending: unknown[];
-  failed: unknown[];
+  partial_failure?: string | null;
 }
 
 export interface HfDatasetSplitsResult {
@@ -34,9 +34,9 @@ export interface HfDatasetSplitsResult {
   isLoading: boolean;
   /** Error message if the fetch failed */
   error: string | null;
+  /** Warning when some configs loaded but others failed */
+  partialFailure: string | null;
 }
-
-const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
 
 function normalizeDatasetSplitsError(message: string): string {
   const normalized = message.toLowerCase();
@@ -44,9 +44,10 @@ function normalizeDatasetSplitsError(message: string): string {
   // datasets-server returns technical script/runtime details for legacy datasets.
   if (
     normalized.includes("dataset scripts are no longer supported") ||
-    normalized.includes("runs arbitrary python code")
+    normalized.includes("runs arbitrary python code") ||
+    normalized.includes("trust_remote_code")
   ) {
-    return "We can’t load subset/split options for this Hub dataset because it relies on a legacy custom script.";
+    return "We can't load subset/split options for this Hub dataset because it relies on a legacy custom script.";
   }
 
   if (
@@ -74,11 +75,11 @@ function normalizeDatasetSplitsError(message: string): string {
 
 /**
  * Fetches the available configs (subsets) and splits for a HuggingFace dataset
- * using the datasets-server API.
+ * via the studio backend (which proxies the request with the HF token).
  *
  * @param datasetName - HF dataset id (e.g. "ibm/duorc"), or null to skip.
  * @param selectedSubset - Currently selected subset, used to filter splits.
- * @param options.accessToken - Optional HF access token for gated datasets.
+ * @param options.accessToken - Optional HF access token for private/gated datasets.
  */
 export function useHfDatasetSplits(
   datasetName: string | null,
@@ -88,35 +89,42 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partialFailure, setPartialFailure] = useState<string | null>(null);
 
-  
+
   const [prevDatasetName, setPrevDatasetName] = useState(datasetName);
   if (datasetName !== prevDatasetName) {
     setPrevDatasetName(datasetName);
     setEntries([]);
     setError(null);
+    setPartialFailure(null);
   }
 
   const accessToken = options?.accessToken;
 
   const fetchSplits = useCallback(
     async (dataset: string, signal: AbortSignal) => {
-      const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(dataset)}`;
-      const headers: Record<string, string> = {};
-      if (accessToken) {
-        headers.Authorization = `Bearer ${accessToken}`;
-      }
-
-      const res = await fetch(url, { headers, signal });
+      const res = await authFetch("/api/datasets/splits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataset_name: dataset,
+          hf_token: accessToken || undefined,
+        }),
+        signal,
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(
-          body?.error || `Failed to fetch splits (${res.status})`,
+          body?.detail || `Failed to fetch splits (${res.status})`,
         );
       }
 
       const data: HfSplitsResponse = await res.json();
-      return data.splits ?? [];
+      return {
+        splits: data.splits ?? [],
+        partialFailure: data.partial_failure ?? null,
+      };
     },
     [accessToken],
   );
@@ -125,6 +133,7 @@ export function useHfDatasetSplits(
     if (!datasetName) {
       setEntries([]);
       setError(null);
+      setPartialFailure(null);
       setIsLoading(false);
       return;
     }
@@ -132,12 +141,14 @@ export function useHfDatasetSplits(
     const controller = new AbortController();
     setIsLoading(true);
     setError(null);
+    setPartialFailure(null);
 
     fetchSplits(datasetName, controller.signal)
-      .then((splits) => {
+      .then(({ splits, partialFailure: pf }) => {
         if (!controller.signal.aborted) {
           setEntries(splits);
           setError(null);
+          setPartialFailure(pf);
         }
       })
       .catch((err) => {
@@ -155,6 +166,7 @@ export function useHfDatasetSplits(
           });
           setError(normalizeDatasetSplitsError(rawErrorMessage));
           setEntries([]);
+          setPartialFailure(null);
         }
       })
       .finally(() => {
@@ -187,5 +199,6 @@ export function useHfDatasetSplits(
     hasMultipleSplits: activeSubset ? splits.length > 1 : false,
     isLoading,
     error,
+    partialFailure,
   };
 }
