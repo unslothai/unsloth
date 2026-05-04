@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
 _MAX_NATIVE_PATH_REDACTIONS = 100
+_MAX_NATIVE_PATH_LABELS = 10_000
 _MIN_LEASE_SECRET_BYTES = 32
 
 _REPLAY_LOCK = threading.Lock()
@@ -84,9 +85,10 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
-    global _CACHED_LEASE_SECRET
+    global _CACHED_LEASE_SECRET, _SCRUB_SAVED_SECRET
     os.environ.pop(LEASE_SECRET_ENV, None)
     _CACHED_LEASE_SECRET = None
+    _SCRUB_SAVED_SECRET = None
     return target(*args, **kwargs)
 
 
@@ -281,9 +283,11 @@ def _validate_payload(
         raise NativePathLeaseError("Native path grant has expired.")
     if int(payload["issued_at_ms"]) > now_ms + 30_000:
         raise NativePathLeaseError("Native path grant issue time is invalid.")
-    for key in ("canonical_path", "nonce", "token_id_hash"):
-        value = str(payload[key])
-        if "\x00" in value:
+    for key in ("canonical_path", "nonce", "token_id_hash", "display_label"):
+        raw = payload.get(key)
+        if raw is None:
+            continue
+        if "\x00" in str(raw):
             raise NativePathLeaseError("Native path grant contains invalid characters.")
 
 
@@ -324,11 +328,13 @@ def _consume_nonce(nonce: str, expires_at_ms: int) -> None:
 def _remember_native_path_for_redaction(path: str, display_label: str) -> None:
     with _REDACTION_LOCK:
         _NATIVE_PATH_LABELS[path] = display_label
+        if len(_NATIVE_PATH_LABELS) > _MAX_NATIVE_PATH_LABELS:
+            excess = len(_NATIVE_PATH_LABELS) - _MAX_NATIVE_PATH_LABELS
+            for stale_path in list(_NATIVE_PATH_LABELS.keys())[:excess]:
+                _NATIVE_PATH_LABELS.pop(stale_path, None)
         if path in _NATIVE_PATH_REDACTIONS:
             return
         _NATIVE_PATH_REDACTIONS.append(path)
-        for stale_path in _NATIVE_PATH_REDACTIONS[:-_MAX_NATIVE_PATH_REDACTIONS]:
-            _NATIVE_PATH_LABELS.pop(stale_path, None)
         del _NATIVE_PATH_REDACTIONS[:-_MAX_NATIVE_PATH_REDACTIONS]
 
 

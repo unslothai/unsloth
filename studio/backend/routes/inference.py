@@ -800,18 +800,6 @@ async def load_model(
         logger.warning("Rejected inference GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        if native_grant_backed:
-            logger.error(
-                "Error loading native model %s: %s",
-                model_log_label,
-                redact_native_paths(str(e)),
-            )
-            raise HTTPException(
-                status_code = 500,
-                detail = f"Failed to load native model: {model_log_label}",
-            )
-        logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = str(e)
         # Surface a friendlier message for models that Unsloth cannot load
         not_supported_hints = [
             "No config file found",
@@ -819,6 +807,22 @@ async def load_model(
             "is not supported",
             "does not support",
         ]
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.error(
+                "Error loading native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            msg = redacted_msg
+            if any(h.lower() in msg.lower() for h in not_supported_hints):
+                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            raise HTTPException(
+                status_code = 500,
+                detail = f"Failed to load native model {model_log_label}: {msg}",
+            )
+        logger.error(f"Error loading model: {e}", exc_info = True)
+        msg = str(e)
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
@@ -872,14 +876,15 @@ async def validate_model(
         raise
     except Exception as e:
         if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
             logger.error(
                 "Error validating native model %s: %s",
                 model_log_label,
-                redact_native_paths(str(e)),
+                redacted_msg,
             )
             raise HTTPException(
                 status_code = 400,
-                detail = f"Invalid native model: {model_log_label}",
+                detail = f"Invalid native model {model_log_label}: {redacted_msg}",
             )
         logger.error(
             f"Error validating model identifier '{request.model_path}': {e}",
