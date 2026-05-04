@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ChatModelAdapter } from "@assistant-ui/react";
-import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
-import { toast } from "sonner";
 import { getAuthToken } from "@/features/auth/session";
 import { apiUrl } from "@/lib/api-base";
-import {
-  generateAudio,
-  listCachedGguf,
-  listCachedModels,
-  listGgufVariants,
-  loadModel,
-  streamChatCompletions,
-  validateModel,
-} from "./chat-api";
+import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
+import type { ChatModelAdapter } from "@assistant-ui/react";
+import { toast } from "sonner";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ChatModelSummary } from "../types/runtime";
@@ -22,6 +13,16 @@ import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import {
+  generateAudio,
+  getChatThread,
+  listCachedGguf,
+  listCachedModels,
+  listGgufVariants,
+  loadModel,
+  streamChatCompletions,
+  validateModel,
+} from "./chat-api";
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -85,10 +86,24 @@ export function isContextLimitError(message: string): boolean {
 }
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
+function parseSourcesFromResult(raw: string): {
+  type: "source";
+  sourceType: "url";
+  id: string;
+  url: string;
+  title: string;
+  metadata?: { description: string };
+}[] {
   if (!raw) return [];
   const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] = [];
+  const sources: {
+    type: "source";
+    sourceType: "url";
+    id: string;
+    url: string;
+    title: string;
+    metadata?: { description: string };
+  }[] = [];
   for (const block of blocks) {
     const titleMatch = block.match(/Title:\s*(.+)/);
     const urlMatch = block.match(/URL:\s*(.+)/);
@@ -239,7 +254,12 @@ function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
 
     for (const part of message.content ?? []) {
       if (part.type === "audio" && "audio" in part) {
-        const audioPart = (part as unknown as { type: "audio"; audio: string | { data: string; format: string } }).audio;
+        const audioPart = (
+          part as unknown as {
+            type: "audio";
+            audio: string | { data: string; format: string };
+          }
+        ).audio;
         const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
         if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
       }
@@ -258,7 +278,8 @@ async function resolveUseAdapter(
     return undefined;
   }
   try {
-    const thread = await db.threads.get(threadId);
+    const thread =
+      (await getChatThread(threadId)) ?? (await db.threads.get(threadId));
     if (!thread?.pairId) {
       return undefined;
     }
@@ -277,8 +298,14 @@ async function resolveUseAdapter(
 function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
-      if (abortSignal?.aborted) { reject(new Error("Aborted")); return; }
-      if (!useChatRuntimeStore.getState().modelLoading) { resolve(); return; }
+      if (abortSignal?.aborted) {
+        reject(new Error("Aborted"));
+        return;
+      }
+      if (!useChatRuntimeStore.getState().modelLoading) {
+        resolve();
+        return;
+      }
       setTimeout(check, 500);
     };
     check();
@@ -360,12 +387,17 @@ async function autoLoadSmallestModel(): Promise<{
               gguf_variant: variant.quant,
               trust_remote_code: trustRemoteCode,
             });
-            useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
+            useChatRuntimeStore
+              .getState()
+              .setCheckpoint(repo.repo_id, variant.quant);
             const store = useChatRuntimeStore.getState();
             store.setModelRequiresTrustRemoteCode(
               loadResp.requires_trust_remote_code ?? false,
             );
-            store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+            store.setParams({
+              ...store.params,
+              maxTokens: loadResp.context_length ?? 131072,
+            });
             // Add model to store so the selector shows the name
             const autoModel: ChatModelSummary = {
               id: repo.repo_id,
@@ -383,12 +415,16 @@ async function autoLoadSmallestModel(): Promise<{
             }
             useChatRuntimeStore.setState({
               ggufContextLength: loadResp.context_length ?? 131072,
-              ggufMaxContextLength: loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+              ggufMaxContextLength:
+                loadResp.max_context_length ??
+                loadResp.context_length ??
+                131072,
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
               reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
-              supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+              supportsPreserveThinking:
+                loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
               toolsEnabled: loadResp.supports_tools ?? false,
               codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -397,7 +433,9 @@ async function autoLoadSmallestModel(): Promise<{
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
             });
-            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
+            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
+              id: toastId,
+            });
             return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
@@ -409,7 +447,9 @@ async function autoLoadSmallestModel(): Promise<{
 
     // Fall back to safetensors models
     if (modelRepos.length > 0) {
-      const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
+      const sorted = [...modelRepos].sort(
+        (a, b) => a.size_bytes - b.size_bytes,
+      );
       for (const repo of sorted) {
         try {
           if (
@@ -442,7 +482,8 @@ async function autoLoadSmallestModel(): Promise<{
             reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
             reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
             reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
-            supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
+            supportsPreserveThinking:
+              sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
           });
           const sfModel: ChatModelSummary = {
@@ -467,7 +508,8 @@ async function autoLoadSmallestModel(): Promise<{
     // No cached models found — try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
-      description: "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
+      description:
+        "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
@@ -491,12 +533,17 @@ async function autoLoadSmallestModel(): Promise<{
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
       });
-      useChatRuntimeStore.getState().setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
+      useChatRuntimeStore
+        .getState()
+        .setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
-      store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
+      store.setParams({
+        ...store.params,
+        maxTokens: loadResp.context_length ?? 131072,
+      });
       const defaultModel: ChatModelSummary = {
         id: "unsloth/gemma-4-E2B-it-GGUF",
         name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
@@ -509,7 +556,8 @@ async function autoLoadSmallestModel(): Promise<{
       }
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength: loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+        ggufMaxContextLength:
+          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -539,8 +587,7 @@ async function autoLoadSmallestModel(): Promise<{
     hadNonTrustFailure = true;
     return {
       loaded: false,
-      blockedByTrustRemoteCode:
-        blockedByTrustRemoteCode && !hadNonTrustFailure,
+      blockedByTrustRemoteCode: blockedByTrustRemoteCode && !hadNonTrustFailure,
     };
   }
 }
@@ -582,11 +629,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const {
-        supportsTools,
-        toolsEnabled,
-        codeToolsEnabled,
-      } = runtime;
+      const { supportsTools, toolsEnabled, codeToolsEnabled } = runtime;
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
@@ -608,7 +651,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
-          const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+          const lastUserMsg = [...messages]
+            .reverse()
+            .find((m) => m.role === "user");
           if (lastUserMsg) sentAudioNames.set(lastUserMsg.id, audioName);
         }
         runtime.clearPendingAudio();
@@ -656,8 +701,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         } catch (err) {
           if (!abortSignal.aborted) {
             toast.error("Audio generation failed", {
-              description:
-                err instanceof Error ? err.message : "Unknown error",
+              description: err instanceof Error ? err.message : "Unknown error",
             });
           }
           throw err;
@@ -707,7 +751,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
-      let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
+      let serverMetadata: {
+        usage?: ServerUsage;
+        timings?: ServerTimings;
+      } | null = null;
 
       // Per-run cancellation token so a delayed stop POST cannot match
       // the next run on the same thread.
@@ -775,7 +822,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? { reasoning_effort: reasoningEffort }
                 : { enable_thinking: reasoningEnabled }
               : {}),
-            ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
+            ...(supportsPreserveThinking
+              ? { preserve_thinking: preserveThinking }
+              : {}),
             ...(supportsTools && (toolsEnabled || codeToolsEnabled)
               ? {
                   enable_tools: true,
@@ -783,8 +832,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
-                  auto_heal_tool_calls: useChatRuntimeStore.getState().autoHealToolCalls,
-                  max_tool_calls_per_message: useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  auto_heal_tool_calls:
+                    useChatRuntimeStore.getState().autoHealToolCalls,
+                  max_tool_calls_per_message:
+                    useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
@@ -797,7 +848,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         for await (const chunk of stream) {
           // Handle tool status events
-          const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
+          const toolStatusText = (chunk as unknown as { _toolStatus?: string })
+            ._toolStatus;
           if (toolStatusText !== undefined) {
             runtime.setToolStatus(toolStatusText || null);
             continue;
@@ -806,11 +858,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           // Emit tool-call content parts for assistant-ui.
           // On tool_start: add a new tool-call part (renders in "running" state).
           // On tool_end: set result on the existing part (transitions to "complete").
-          const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+          const toolEvent = (
+            chunk as unknown as { _toolEvent?: Record<string, unknown> }
+          )._toolEvent;
           if (toolEvent !== undefined) {
             if (toolEvent.type === "tool_start") {
-              const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
-              const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
+              const id =
+                (toolEvent.tool_call_id as string) ||
+                `${toolEvent.tool_name}_${Date.now()}`;
+              const toolArgs = (toolEvent.arguments ??
+                {}) as ToolCallMessagePart["args"];
               toolCallParts.push({
                 type: "tool-call" as const,
                 toolCallId: id,
@@ -819,21 +876,27 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 args: toolArgs,
               });
             } else if (toolEvent.type === "tool_end") {
-              const id = (toolEvent.tool_call_id as string) ||
-                toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
+              const id =
+                (toolEvent.tool_call_id as string) ||
+                toolCallParts[toolCallParts.length - 1]?.toolCallId ||
+                "";
               const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
               if (idx !== -1) {
                 const rawResult = (toolEvent.result as string) ?? "";
                 const imgMarker = "\n__IMAGES__:";
                 const imgIdx = rawResult.lastIndexOf(imgMarker);
-                let parsedResult: string | { text: string; images: string[]; sessionId: string };
+                let parsedResult:
+                  | string
+                  | { text: string; images: string[]; sessionId: string };
                 if (imgIdx !== -1) {
                   const text = rawResult.slice(0, imgIdx);
                   // Fall back to "_default" to match the backend sandbox directory
                   // used when no session_id is provided (see tools.py _get_workdir).
                   const sessionId = resolvedThreadId || "_default";
                   try {
-                    const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
+                    const images = JSON.parse(
+                      rawResult.slice(imgIdx + imgMarker.length),
+                    ) as string[];
                     parsedResult = { text, images, sessionId };
                   } catch {
                     parsedResult = rawResult;
@@ -841,7 +904,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 } else {
                   parsedResult = rawResult;
                 }
-                toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
+                toolCallParts[idx] = {
+                  ...toolCallParts[idx],
+                  result: parsedResult,
+                };
               }
             }
             // Yield cumulative state so tool UI updates (tools first, text after)
@@ -849,7 +915,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             yield {
               content: [...toolCallParts, ...textParts],
               metadata: {
-                timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
+                timing: buildTiming(
+                  streamStartTime,
+                  totalChunks,
+                  firstTokenTime,
+                ),
                 custom: { reasoningDuration },
               },
             };
@@ -860,7 +930,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           if (chunk.choices?.length === 0 && chunk.usage) {
             serverMetadata = {
               usage: chunk.usage,
-              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+              timings: (chunk as Record<string, unknown>).timings as
+                | ServerTimings
+                | undefined,
             };
             continue;
           }
@@ -880,11 +952,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           cumulativeText += delta;
           const parts = parseAssistantContent(cumulativeText);
 
-          if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
+          if (
+            parts.some((part) => part.type === "reasoning") &&
+            !reasoningStartAt
+          ) {
             reasoningStartAt = Date.now();
           }
-          if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
-            reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
+          if (
+            hasClosedThinkTag(cumulativeText) &&
+            reasoningStartAt &&
+            !reasoningDuration
+          ) {
+            reasoningDuration = Math.round(
+              (Date.now() - reasoningStartAt) / 1000,
+            );
           }
 
           if (parts.length > 0 || toolCallParts.length > 0) {
@@ -906,12 +987,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // Extract source parts from completed web_search tool calls
         const sourceParts = toolCallParts.flatMap((tc) => {
           if (tc.toolName !== "web_search" || !tc.result) return [];
-          return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
+          return parseSourcesFromResult(
+            typeof tc.result === "string" ? tc.result : "",
+          );
         });
 
         const meta = serverMetadata;
-        const finalTokenCount = meta?.usage?.completion_tokens
-          ?? estimateTokenCount(cumulativeText);
+        const finalTokenCount =
+          meta?.usage?.completion_tokens ?? estimateTokenCount(cumulativeText);
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
@@ -951,19 +1034,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             custom: {
               reasoningDuration,
               serverTimings: meta?.timings ?? undefined,
-              contextUsage: meta?.usage ? {
-                promptTokens: meta.usage.prompt_tokens,
-                completionTokens: meta.usage.completion_tokens,
-                totalTokens: meta.usage.total_tokens,
-                cachedTokens: meta.timings?.cache_n ?? 0,
-                modelId: params.checkpoint,
-              } : undefined,
+              contextUsage: meta?.usage
+                ? {
+                    promptTokens: meta.usage.prompt_tokens,
+                    completionTokens: meta.usage.completion_tokens,
+                    totalTokens: meta.usage.total_tokens,
+                    cachedTokens: meta.timings?.cache_n ?? 0,
+                    modelId: params.checkpoint,
+                  }
+                : undefined,
               timing: finalTiming,
             },
           },
         };
       } catch (err) {
-        settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
+        settleFirstTokenErr(
+          err instanceof Error ? err : new Error("Generation failed"),
+        );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (isContextLimitError(msg)) {
@@ -974,7 +1061,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             toast.error("Context limit reached", {
               description:
                 "The conversation has filled the model's context window. " +
-                "Increase \"Context Length\" in the chat Settings panel (⚙ in the top-right), " +
+                'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                 "or start a new chat.",
               duration: 8000,
             });
@@ -991,14 +1078,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         runtime.setToolStatus(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
-          if (!firstTokenSettled) {
-            if (abortSignal.aborted) {
-              settleFirstTokenErr(new Error("Cancelled"));
-            } else {
-              settleFirstTokenErr(new Error("No tokens received"));
-            }
-          } else {
+          if (firstTokenSettled) {
             settleFirstTokenOk();
+          } else if (abortSignal.aborted) {
+            settleFirstTokenErr(new Error("Cancelled"));
+          } else {
+            settleFirstTokenErr(new Error("No tokens received"));
           }
         }
         runtime.setThreadRunning(threadKey, false);
