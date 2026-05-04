@@ -1701,6 +1701,18 @@ class LlamaCppBackend:
             if chat_template_override:
                 import tempfile
 
+                self._chat_template = chat_template_override
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF chat template override",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
+
                 self._chat_template_file = tempfile.NamedTemporaryFile(
                     mode = "w",
                     suffix = ".jinja",
