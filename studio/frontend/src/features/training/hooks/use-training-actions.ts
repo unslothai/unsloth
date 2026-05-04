@@ -3,6 +3,7 @@
 
 import { useCallback } from "react";
 import { checkDatasetFormat } from "../api/datasets-api";
+import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { startTraining, stopTraining, resetTraining } from "../api/train-api";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
@@ -10,6 +11,7 @@ import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 import { toast } from "sonner";
 
@@ -48,6 +50,11 @@ export function useTrainingActions() {
       return false;
     }
 
+    runtimeStore.setStartResources(
+      config.selectedModel ?? null,
+      getHfDatasetName(config),
+      false,
+    );
     runtimeStore.setStarting(true);
 
     try {
@@ -114,6 +121,7 @@ export function useTrainingActions() {
 
       // Re-read config after potential store updates from dataset check
       const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
+      runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, false);
       const response = await startTraining(payload);
 
       if (response.status === "error") {
@@ -153,6 +161,54 @@ export function useTrainingActions() {
     }
   }, []);
 
+  const resumeTrainingRunFromHistory = useCallback(async (runId: string): Promise<boolean> => {
+    const runtimeStore = useTrainingRuntimeStore.getState();
+    runtimeStore.setStartError(null);
+    runtimeStore.setStartResources(null, null, true);
+    runtimeStore.setStarting(true);
+
+    try {
+      const detail = await getTrainingRun(runId);
+      const outputDir = detail.run.output_dir;
+      if (!detail.run.can_resume || !outputDir) {
+        throw new Error("Only stopped runs with a saved checkpoint can be resumed.");
+      }
+
+      const config = useTrainingConfigStore.getState();
+      const savedConfig = detail.config as Partial<TrainingStartRequest>;
+      const payload = {
+        ...savedConfig,
+        hf_token:
+          typeof savedConfig.hf_token === "string"
+            ? savedConfig.hf_token
+            : config.hfToken.trim() || null,
+        wandb_token: null,
+        resume_from_checkpoint: outputDir,
+      } as TrainingStartRequest;
+
+      runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
+
+      const response = await startTraining(payload);
+      if (response.status === "error") {
+        throw new Error(response.error || response.message);
+      }
+
+      runtimeStore.setStartQueued(response.job_id, response.message);
+      await syncTrainingRuntimeFromBackend();
+      return true;
+    } catch (error) {
+      const rawMessage =
+        error instanceof Error ? error.message : "Failed to resume training";
+      const safeMessage = normalizeTrainingStartError(rawMessage);
+      runtimeStore.setStartError(safeMessage);
+      runtimeStore.setStarting(false);
+      toast.error("Could not resume training", {
+        description: safeMessage,
+      });
+      return false;
+    }
+  }, []);
+
   const dismissTrainingRun = useCallback(async (): Promise<void> => {
     try {
       await resetTraining();
@@ -173,6 +229,7 @@ export function useTrainingActions() {
     isStarting,
     startError,
     startTrainingRun,
+    resumeTrainingRunFromHistory,
     stopTrainingRun,
     dismissTrainingRun,
   };
@@ -182,6 +239,10 @@ function getDatasetName(config: TrainingConfigState): string | null {
   return config.datasetSource === "huggingface"
     ? config.dataset
     : config.uploadedFile;
+}
+
+function getHfDatasetName(config: TrainingConfigState): string | null {
+  return config.datasetSource === "huggingface" ? config.dataset : null;
 }
 
 function hasManualMapping(config: TrainingConfigState, isVlm = false, isAudio = false): boolean {

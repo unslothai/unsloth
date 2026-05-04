@@ -219,6 +219,25 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
   await parseJsonOrThrow<unknown>(response);
 }
 
+export async function deleteFineTunedModel(args: {
+  modelPath: string;
+  source: "training" | "exported";
+  exportType?: "lora" | "merged" | "gguf";
+  ggufVariant?: string;
+}): Promise<void> {
+  const response = await authFetch("/api/models/delete-finetuned", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: args.modelPath,
+      source: args.source,
+      export_type: args.exportType ?? null,
+      gguf_variant: args.ggufVariant ?? null,
+    }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
 export interface ScanFolderInfo {
   id: number;
   path: string;
