@@ -590,10 +590,9 @@ export function useChatModelRuntime() {
                       await consumeNativePathToken(previousActiveNativePathToken, "load-model")
                     ).nativePathLease;
                   } catch {
-                    setModelsError(
+                    throw new Error(
                       "Could not reload the previous local model: please re-select the file.",
                     );
-                    throw error;
                   }
                 }
                 await loadModel({
@@ -611,8 +610,10 @@ export function useChatModelRuntime() {
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                 });
                 await refresh();
-              } catch {
-                // If rollback also fails, surface the original error.
+              } catch (rollbackError) {
+                throw rollbackError instanceof Error
+                  ? rollbackError
+                  : new Error("Could not reload the previous local model.");
               }
             }
             throw error;

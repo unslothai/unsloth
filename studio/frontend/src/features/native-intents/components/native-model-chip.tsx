@@ -2,7 +2,7 @@ import { revealPathToken } from "../api";
 import { useNativeIntentStore } from "../store";
 import type { NativeIntent } from "../types";
 import { XIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 interface NativeModelChipProps {
@@ -25,10 +25,19 @@ export function NativeModelChip({
 }: NativeModelChipProps) {
   const clearModelIntent = useNativeIntentStore((state) => state.clearModelIntent);
   const [loading, setLoading] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
+  const expired = intent.path.expiresAtMs <= now;
+
+  useEffect(() => {
+    if (expired) return;
+    const remaining = Math.max(0, intent.path.expiresAtMs - Date.now());
+    const timer = window.setTimeout(() => setNow(Date.now()), remaining);
+    return () => window.clearTimeout(timer);
+  }, [expired, intent.path.expiresAtMs]);
 
   async function handleLoad() {
-    if (nativeReadsDisabled) return;
+    if (nativeReadsDisabled || expired) return;
     setLoading(true);
     try {
       await onLoad({
@@ -71,11 +80,17 @@ export function NativeModelChip({
       <button
         type="button"
         onClick={handleLoad}
-        disabled={nativeReadsDisabled || loading}
-        title={nativeReadsDisabled ? "Managed desktop backend required" : undefined}
+        disabled={nativeReadsDisabled || expired || loading}
+        title={
+          nativeReadsDisabled
+            ? "Managed desktop backend required"
+            : expired
+              ? "Selection expired, pick or drop the file again"
+              : undefined
+        }
         className="rounded-md bg-foreground px-2 py-1 text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {loading ? "Loading…" : "Load model"}
+        {expired ? "Select again" : loading ? "Loading…" : "Load model"}
       </button>
       <button
         type="button"

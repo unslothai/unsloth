@@ -602,6 +602,9 @@ async def load_model(
             _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
             llama_backend._audio_type = _gguf_audio
+            llama_backend._native_display_label = (
+                model_log_label if native_grant_backed else None
+            )
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
                 await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
@@ -797,6 +800,14 @@ async def load_model(
     except HTTPException:
         raise
     except ValueError as e:
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.warning(
+                "Rejected inference selection for native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
@@ -1069,7 +1080,16 @@ async def get_status(
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
-            _display_model_id = display_label_for_native_path(_model_id)
+            _display_model_id = (
+                getattr(llama_backend, "_native_display_label", None)
+                or display_label_for_native_path(_model_id)
+            )
+            if (
+                _model_id
+                and _display_model_id == _model_id
+                and os.path.isabs(_model_id)
+            ):
+                _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             return InferenceStatusResponse(
                 active_model = _display_model_id,

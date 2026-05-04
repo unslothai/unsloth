@@ -342,6 +342,29 @@ pub fn reveal_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Reveal)?;
+    #[cfg(target_os = "macos")]
+    {
+        if entry.canonical_path.is_file() {
+            return std::process::Command::new("open")
+                .arg("-R")
+                .arg(&entry.canonical_path)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("Failed to reveal path: {e}"));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if entry.canonical_path.is_file() {
+            let mut select_arg = std::ffi::OsString::from("/select,");
+            select_arg.push(entry.canonical_path.as_os_str());
+            return std::process::Command::new("explorer")
+                .arg(select_arg)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("Failed to reveal path: {e}"));
+        }
+    }
     let target = reveal_target(&entry.canonical_path);
     open::that_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }

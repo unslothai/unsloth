@@ -98,10 +98,11 @@ def run_without_native_path_secret(
 
 @contextmanager
 def native_path_secret_removed_for_child_start() -> Iterator[None]:
-    global _SCRUB_REFCOUNT, _SCRUB_SAVED_SECRET
+    global _SCRUB_REFCOUNT, _SCRUB_SAVED_SECRET, _CACHED_LEASE_SECRET
     with _NATIVE_PATH_ENV_LOCK:
         if _SCRUB_REFCOUNT == 0:
             _SCRUB_SAVED_SECRET = os.environ.pop(LEASE_SECRET_ENV, None)
+            _CACHED_LEASE_SECRET = None
         _SCRUB_REFCOUNT += 1
     try:
         yield

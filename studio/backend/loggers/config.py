@@ -60,6 +60,7 @@ class LogConfig:
                 structlog.processors.TimeStamper(fmt = "iso"),  # timestamp first
                 structlog.processors.add_log_level,  # level second
                 structlog.contextvars.merge_contextvars,
+                structlog.processors.format_exc_info,
                 filter_sensitive_data,
                 # Custom processor to flatten the extra field
                 lambda logger, method_name, event_dict: {
