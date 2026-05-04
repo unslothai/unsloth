@@ -554,6 +554,16 @@ class ExportBackend:
                 # unsloth saves intermediate HF model files into model_save_path.
                 # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
                 model_save_path = os.path.join(abs_save_dir, "model")
+
+                # Pin convert_hf_to_gguf.py to the same llama.cpp ref as the
+                # llama-quantize binary and gguf-py (Studio installs at a tagged
+                # ref via setup.sh). Without this, the convert script is fetched
+                # from master and can drift past the pinned binary's gguf API.
+                # Defer to an explicit user override; zoo validates the value.
+                from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+                os.environ.setdefault(
+                    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
+                )
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
                     self.current_tokenizer,
