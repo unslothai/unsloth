@@ -2817,6 +2817,7 @@ class FastLlamaModel:
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -2849,6 +2850,7 @@ class FastLlamaModel:
                 random_state = random_state,
                 max_seq_length = max_seq_length,
                 use_rslora = use_rslora,
+                use_dora = use_dora,
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
@@ -2960,6 +2962,7 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora" in signature
+        SUPPORTS_DORA = "use_dora" in signature
 
         if lora_dropout != 0:
             logger.warning_once(
@@ -2972,6 +2975,35 @@ class FastLlamaModel:
                 f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
+
+        if target_parameters is not None:
+            if lora_dropout != 0:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_dropout != 0.\n"
+                    "Please set lora_dropout = 0 when using target_parameters."
+                )
+            if use_dora:
+                raise ValueError(
+                    "Unsloth: target_parameters does not support use_dora = True.\n"
+                    "Please set use_dora = False when using target_parameters."
+                )
+            if kwargs.get("lora_bias", False):
+                raise ValueError(
+                    "Unsloth: target_parameters does not support lora_bias = True.\n"
+                    "Please set lora_bias = False when using target_parameters."
+                )
+            invalid_params = [
+                p
+                for p in target_parameters
+                if p
+                in ("lm_head.weight", "lm_head", "embed_tokens.weight", "embed_tokens")
+            ]
+            if invalid_params:
+                raise ValueError(
+                    f"Unsloth: target_parameters should not contain {invalid_params}.\n"
+                    f"target_parameters is for targeting nn.Parameter objects directly (e.g., MoE expert weights).\n"
+                    f"For embed_tokens/lm_head, use modules_to_save instead for full fine-tuning."
+                )
 
         if not (
             type(init_lora_weights) is bool
@@ -3019,6 +3051,14 @@ class FastLlamaModel:
                     "Please install PEFT 0.7.2 or higher.\n"
                     "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
                 )
+        assert type(use_dora) is bool
+        if use_dora and not SUPPORTS_DORA:
+            import peft
+
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support `use_dora`.\n"
+                "Please install a newer PEFT version or disable use_dora."
+            )
 
         accepted_modules = frozenset(
             (
@@ -3162,6 +3202,8 @@ class FastLlamaModel:
             del arguments["loftq_config"]
         if not SUPPORTS_RSLORA:
             del arguments["use_rslora"]
+        else:
+            arguments["use_dora"] = use_dora
 
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
