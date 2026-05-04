@@ -122,6 +122,13 @@ try:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
+    from utils.native_path_leases import (
+        NativePathLeaseError,
+        display_label_for_native_path,
+        is_registered_native_path_label,
+        redact_native_paths,
+        verify_native_path_lease,
+    )
 except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
@@ -136,6 +143,13 @@ except ImportError:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
+    from utils.native_path_leases import (
+        NativePathLeaseError,
+        display_label_for_native_path,
+        is_registered_native_path_label,
+        redact_native_paths,
+        verify_native_path_lease,
+    )
 
 from models.inference import (
     LoadRequest,
@@ -332,6 +346,65 @@ _TOOL_XML_RE = _re.compile(
 logger = get_logger(__name__)
 
 
+def _validate_native_mmproj_companion(
+    mmproj_path: str | None, gguf_path: str | None
+) -> None:
+    if not mmproj_path or not gguf_path:
+        return
+    import stat as _stat_module
+
+    mm = Path(mmproj_path)
+    gguf = Path(gguf_path)
+    try:
+        mm_lstat = os.lstat(mm)
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion is no longer accessible.",
+        ) from exc
+    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(
+        mm_lstat.st_mode
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion must be a regular file.",
+        )
+    try:
+        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Native vision companion must live next to the selected GGUF.",
+            )
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion is no longer accessible.",
+        ) from exc
+
+
+def _resolve_model_identifier_for_request(
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+) -> tuple[str, str, bool]:
+    if not request.native_path_lease:
+        return request.model_path, request.model_path, False
+    try:
+        grant = verify_native_path_lease(
+            request.native_path_lease,
+            operation = operation,
+            expected_kind = "model",
+            expected_path_type = "file",
+            allowed_suffixes = (".gguf",),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    display_label = (
+        grant.display_label or Path(request.model_path).name or "Native model"
+    )
+    return str(grant.canonical_path), display_label, True
+
+
 # GGUF inference backend (llama-server)
 _llama_cpp_backend = LlamaCppBackend()
 
@@ -355,7 +428,12 @@ async def load_model(
 
     GGUF models are loaded via llama-server (llama.cpp) instead of Unsloth.
     """
+    native_grant_backed = False
+    model_log_label = request.model_path
     try:
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "load-model")
+        )
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
@@ -369,10 +447,10 @@ async def load_model(
                 and llama_backend.hf_variant
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == request.model_path.lower()
+                and llama_backend.model_identifier.lower() == model_identifier.lower()
             ):
                 logger.info(
-                    f"Model already loaded (GGUF): {request.model_path} variant={request.gguf_variant}, skipping reload"
+                    f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
                 from utils.models import is_audio_input_type
@@ -385,8 +463,12 @@ async def load_model(
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
                 return LoadResponse(
                     status = "already_loaded",
-                    model = llama_backend.model_identifier,
-                    display_name = llama_backend.model_identifier,
+                    model = model_log_label
+                    if native_grant_backed
+                    else llama_backend.model_identifier,
+                    display_name = model_log_label
+                    if native_grant_backed
+                    else llama_backend.model_identifier,
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
@@ -412,10 +494,10 @@ async def load_model(
         else:
             if (
                 backend.active_model_name
-                and backend.active_model_name.lower() == request.model_path.lower()
+                and backend.active_model_name.lower() == model_identifier.lower()
             ):
                 logger.info(
-                    f"Model already loaded (Unsloth): {request.model_path}, skipping reload"
+                    f"Model already loaded (Unsloth): {model_log_label}, skipping reload"
                 )
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
@@ -444,8 +526,12 @@ async def load_model(
                         pass
                 return LoadResponse(
                     status = "already_loaded",
-                    model = backend.active_model_name,
-                    display_name = backend.active_model_name,
+                    model = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
+                    display_name = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
                     is_vision = _model_info.get("is_vision", False),
                     is_lora = _model_info.get("is_lora", False),
                     is_gguf = False,
@@ -467,7 +553,7 @@ async def load_model(
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
-            model_id = request.model_path,
+            model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
         )
@@ -475,7 +561,7 @@ async def load_model(
         if not config:
             raise HTTPException(
                 status_code = 400,
-                detail = f"Invalid model identifier: {request.model_path}",
+                detail = f"Invalid model identifier: {model_log_label}",
             )
 
         # Normalize gpu_ids: empty list means auto-selection, same as None
@@ -522,6 +608,10 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
+                if native_grant_backed and config.gguf_mmproj_file:
+                    _validate_native_mmproj_companion(
+                        config.gguf_mmproj_file, config.gguf_file
+                    )
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
@@ -538,10 +628,12 @@ async def load_model(
             if not success:
                 raise HTTPException(
                     status_code = 500,
-                    detail = f"Failed to load GGUF model: {config.display_name}",
+                    detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
                 )
 
-            logger.info(f"Loaded GGUF model via llama-server: {config.identifier}")
+            logger.info(
+                f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
+            )
 
             # Detect TTS audio by probing the loaded model's vocabulary
             from utils.models import is_audio_input_type
@@ -550,6 +642,10 @@ async def load_model(
             _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
             llama_backend._audio_type = _gguf_audio
+            llama_backend._native_display_label = (
+                model_log_label if native_grant_backed else None
+            )
+            llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
                 await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
@@ -558,8 +654,10 @@ async def load_model(
 
             return LoadResponse(
                 status = "loaded",
-                model = config.identifier,
-                display_name = config.display_name,
+                model = model_log_label if native_grant_backed else config.identifier,
+                display_name = model_log_label
+                if native_grant_backed
+                else config.display_name,
                 is_vision = config.is_vision,
                 is_lora = False,
                 is_gguf = True,
@@ -682,10 +780,13 @@ async def load_model(
                         ),
                     )
             raise HTTPException(
-                status_code = 500, detail = f"Failed to load model: {config.display_name}"
+                status_code = 500,
+                detail = f"Failed to load model: {model_log_label if native_grant_backed else config.display_name}",
             )
 
-        logger.info(f"Loaded model: {config.identifier}")
+        logger.info(
+            f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
+        )
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
@@ -715,8 +816,10 @@ async def load_model(
 
         return LoadResponse(
             status = "loaded",
-            model = config.identifier,
-            display_name = config.display_name,
+            model = model_log_label if native_grant_backed else config.identifier,
+            display_name = model_log_label
+            if native_grant_backed
+            else config.display_name,
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
@@ -738,11 +841,17 @@ async def load_model(
     except HTTPException:
         raise
     except ValueError as e:
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.warning(
+                "Rejected inference selection for native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = str(e)
         # Surface a friendlier message for models that Unsloth cannot load
         not_supported_hints = [
             "No config file found",
@@ -750,6 +859,22 @@ async def load_model(
             "is not supported",
             "does not support",
         ]
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.error(
+                "Error loading native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            msg = redacted_msg
+            if any(h.lower() in msg.lower() for h in not_supported_hints):
+                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            raise HTTPException(
+                status_code = 500,
+                detail = f"Failed to load native model {model_log_label}: {msg}",
+            )
+        logger.error(f"Error loading model: {e}", exc_info = True)
+        msg = str(e)
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
@@ -766,9 +891,14 @@ async def validate_model(
     This checks that ModelConfig.from_identifier() can resolve the given
     model_path, but it does NOT actually load model weights into GPU memory.
     """
+    native_grant_backed = False
+    model_log_label = request.model_path
     try:
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "validate-model")
+        )
         config = ModelConfig.from_identifier(
-            model_id = request.model_path,
+            model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
         )
@@ -776,14 +906,16 @@ async def validate_model(
         if not config:
             raise HTTPException(
                 status_code = 400,
-                detail = f"Invalid model identifier: {request.model_path}",
+                detail = f"Invalid model identifier: {model_log_label}",
             )
 
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
-            identifier = config.identifier,
-            display_name = getattr(config, "display_name", config.identifier),
+            identifier = model_log_label if native_grant_backed else config.identifier,
+            display_name = model_log_label
+            if native_grant_backed
+            else getattr(config, "display_name", config.identifier),
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
@@ -795,6 +927,26 @@ async def validate_model(
     except HTTPException:
         raise
     except Exception as e:
+        not_supported_hints = [
+            "No config file found",
+            "not yet supported",
+            "is not supported",
+            "does not support",
+        ]
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.error(
+                "Error validating native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            msg = redacted_msg
+            if any(h.lower() in msg.lower() for h in not_supported_hints):
+                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid native model {model_log_label}: {msg}",
+            )
         logger.error(
             f"Error validating model identifier '{request.model_path}': {e}",
             exc_info = True,
@@ -819,6 +971,9 @@ async def unload_model(
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
             llama_backend.model_identifier == request.model_path
+            or is_registered_native_path_label(
+                llama_backend.model_identifier, request.model_path
+            )
             or not llama_backend.is_loaded
         ):
             llama_backend.unload_model()
@@ -966,16 +1121,27 @@ async def get_status(
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
+            _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
+            _display_model_id = getattr(
+                llama_backend, "_native_display_label", None
+            ) or display_label_for_native_path(_model_id)
+            if (
+                _native_grant_backed
+                and _model_id
+                and _display_model_id == _model_id
+                and os.path.isabs(_model_id)
+            ):
+                _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             return InferenceStatusResponse(
-                active_model = _model_id,
+                active_model = _display_model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = getattr(llama_backend, "_audio_type", None),
                 loading = [],
-                loaded = [_model_id],
+                loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
                 requires_trust_remote_code = bool(
                     (_inference_cfg or {}).get("trust_remote_code", False)

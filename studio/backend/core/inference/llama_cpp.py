@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -592,6 +593,7 @@ class LlamaCppBackend:
                 capture_output = True,
                 text = True,
                 timeout = 10,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
@@ -1776,7 +1778,7 @@ class LlamaCppBackend:
             import os
             import sys
 
-            env = os.environ.copy()
+            env = child_env_without_native_path_secret()
             binary_dir = str(Path(binary).parent)
 
             if sys.platform == "win32":
@@ -2166,6 +2168,7 @@ class LlamaCppBackend:
                     capture_output = True,
                     text = True,
                     timeout = 5,
+                    env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
                     return
