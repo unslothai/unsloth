@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator, List, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -1381,6 +1381,7 @@ class LlamaCppBackend:
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
         n_parallel: int = 1,
+        extra_args: Optional[List[str]] = None,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1766,6 +1767,17 @@ class LlamaCppBackend:
                 logger.info("llama-server started with --api-key for direct streaming")
             else:
                 self._api_key = None
+
+            # User-supplied pass-through args go last so llama.cpp's
+            # last-wins flag parsing lets the user override Studio's
+            # auto-set tier-2 flags (e.g. --cache-type-k, --spec-type).
+            # The route layer has already validated this list against
+            # the managed-flag denylist via validate_extra_args().
+            if extra_args:
+                cmd.extend(str(a) for a in extra_args)
+                logger.info(
+                    f"Appending user extra args to llama-server: {list(extra_args)}"
+                )
 
             _log_cmd = list(cmd)
             if "--api-key" in _log_cmd:
