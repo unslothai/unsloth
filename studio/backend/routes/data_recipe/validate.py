@@ -14,9 +14,62 @@ from core.data_recipe.service import (
     create_data_designer,
     validate_recipe,
 )
+from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 
+logger = get_logger(__name__)
 router = APIRouter()
+
+_GITHUB_VALIDATE_NOTE = "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+_GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
+
+
+def _github_seed_source(recipe: dict[str, Any]) -> dict[str, Any] | None:
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return None
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "github_repo":
+        return None
+    return source
+
+
+def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
+    errors: list[ValidateError] = []
+
+    repos = source.get("repos")
+    if not isinstance(repos, list) or not repos:
+        errors.append(ValidateError(message = "GitHub seed requires at least one repo."))
+    else:
+        for repo in repos:
+            if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
+                errors.append(
+                    ValidateError(message = "GitHub repos must be owner/name strings.")
+                )
+                break
+
+    item_types = source.get("item_types")
+    if not isinstance(item_types, list) or not item_types:
+        errors.append(
+            ValidateError(message = "GitHub seed requires at least one item type.")
+        )
+    else:
+        invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
+        if invalid_items:
+            errors.append(
+                ValidateError(
+                    message = "GitHub item types must be issues, pulls, or commits."
+                )
+            )
+
+    try:
+        limit = int(source.get("limit"))
+    except (TypeError, ValueError):
+        limit = 0
+    if limit < 1 or limit > 5000:
+        errors.append(ValidateError(message = "GitHub limit must be from 1 to 5000."))
+
+    return errors
 
 
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
@@ -92,6 +145,38 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         )
 
     _patch_local_providers(recipe)
+
+    github_source = _github_seed_source(recipe)
+    if github_source is not None:
+        static_errors = _validate_github_seed_static(github_source)
+        if static_errors:
+            return ValidateResponse(valid = False, errors = static_errors)
+        try:
+            build_config_builder(recipe)
+        except ModuleNotFoundError as exc:
+            # data_designer is an optional runtime dep. Static validation
+            # already passed; live access + full config validation are
+            # deferred to run start (per _GITHUB_VALIDATE_NOTE), so a missing
+            # optional import at validate time should not block the recipe.
+            # Restrict the bypass to the data_designer module specifically so
+            # other ImportErrors (e.g. broken internal imports or missing
+            # transitive deps after a package upgrade) still surface as
+            # validation failures instead of being silently swallowed.
+            if not (exc.name or "").startswith("data_designer"):
+                raise
+            logger.debug(
+                "data_designer not installed; deferring full config "
+                "validation to run start",
+                missing_module = exc.name,
+            )
+        except Exception as exc:
+            detail = str(exc).strip() or "Validation failed."
+            return ValidateResponse(
+                valid = False,
+                errors = [ValidateError(message = detail)],
+                raw_detail = detail,
+            )
+        return ValidateResponse(valid = True, raw_detail = _GITHUB_VALIDATE_NOTE)
 
     try:
         validate_recipe(recipe)

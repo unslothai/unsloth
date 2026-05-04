@@ -21,6 +21,14 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from backend.utils.wheel_utils import (
+    flash_attn_package_version,
+    flash_attn_wheel_url,
+    install_wheel,
+    probe_torch_wheel_env,
+    url_exists,
+)
+
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
@@ -41,7 +49,9 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (6, 1): "rocm6.1",
     (6, 0): "rocm6.0",
 }
-_PYTORCH_WHL_BASE = "https://download.pytorch.org/whl"
+_PYTORCH_WHL_BASE = (
+    os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
+).rstrip("/")
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
@@ -173,8 +183,14 @@ def _has_rocm_gpu() -> bool:
     import re
 
     for cmd, check_fn in (
-        # rocminfo: look for "Name: gfxNNNN" with nonzero first digit (gfx000 is the CPU agent)
-        (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
+        # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
+        # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
+        # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
+        # the dash and must not be treated as a real GPU.
+        (
+            ["rocminfo"],
+            lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
+        ),
         # amd-smi list: require "GPU: <number>" data rows, not just a header
         (
             ["amd-smi", "list"],
@@ -343,6 +359,49 @@ def _ensure_rocm_torch() -> None:
             )
 
 
+def _uv_safe_path(path: object) -> str:
+    # uv 0.11.x: `-c <path with space>` truncates at the space; use 8.3 short form.
+    s = str(path)
+    if not IS_WINDOWS or " " not in s:
+        return s
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        get_short = ctypes.windll.kernel32.GetShortPathNameW
+        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        get_short.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(32768)
+        rc = get_short(s, buf, 32768)
+        if 0 < rc < 32768 and " " not in buf.value:
+            return buf.value
+    except Exception:
+        pass
+    return s
+
+
+def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
+    """Return Windows-only subprocess kwargs that suppress console windows."""
+    if not IS_WINDOWS:
+        return {}
+
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_factory is not None and startf_use_showwindow:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def _infer_no_torch() -> bool:
     """Determine whether to run in no-torch (GGUF-only) mode.
 
@@ -368,7 +427,6 @@ NO_TORCH = _infer_no_torch()
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
 # Progress bar state -- updated by _progress() as each install step runs.
-# _TOTAL counts: pip-upgrade + 7 shared steps + triton (non-Windows) + local-plugin + finalize
 # Update _TOTAL here if you add or remove install steps in install_python_stack().
 _STEP: int = 0
 _TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
@@ -380,6 +438,9 @@ SINGLE_ENV = REQ_ROOT / "single-env"
 CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
+)
+LOCAL_DD_GITHUB_PLUGIN = (
+    SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 )
 
 # -- Unicode-safe printing ---------------------------------------------
@@ -397,9 +458,11 @@ _UNICODE_TO_ASCII: dict[str, str] = {
 
 
 def _safe_print(*args: object, **kwargs: object) -> None:
-    """Drop-in print() replacement that survives non-UTF-8 consoles."""
+    """Drop-in print() replacement that survives non-UTF-8 consoles and detached stdout."""
     try:
         print(*args, **kwargs)
+    except OSError:
+        return
     except UnicodeEncodeError:
         # Stringify, then swap emoji for ASCII equivalents
         text = " ".join(str(a) for a in args)
@@ -480,7 +543,7 @@ def _step(label: str, value: str, color_fn = None) -> None:
     if color_fn is None:
         color_fn = _green
     padded = label[:_COL]
-    print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
+    _safe_print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
 
 
 def _progress(label: str) -> None:
@@ -494,10 +557,13 @@ def _progress(label: str) -> None:
     bar = "=" * filled + "-" * (width - filled)
     pad = " " * (_COL - len(_LABEL))
     end = "\n" if _STEP >= _TOTAL else ""
-    sys.stdout.write(
-        f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
-    )
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(
+            f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
+        )
+        sys.stdout.flush()
+    except OSError:
+        pass
 
 
 def run(
@@ -510,6 +576,7 @@ def run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         _step("error", f"{label} failed (exit code {result.returncode})", _red)
@@ -535,6 +602,66 @@ NO_TORCH_SKIP_PACKAGES = {
     "transformers-cfg",
 }
 
+
+def _select_flash_attn_version(torch_mm: str) -> str | None:
+    return flash_attn_package_version(torch_mm)
+
+
+def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
+    return flash_attn_wheel_url(env)
+
+
+def _print_optional_install_failure(
+    label: str, result: subprocess.CompletedProcess[str]
+) -> None:
+    _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
+    if result.stdout:
+        print(result.stdout.strip())
+
+
+def _flash_attn_install_disabled() -> bool:
+    return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
+
+
+def _ensure_flash_attn() -> None:
+    if NO_TORCH or IS_WINDOWS or IS_MACOS:
+        return
+    if _flash_attn_install_disabled():
+        return
+    if (
+        subprocess.run(
+            [sys.executable, "-c", "import flash_attn"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        ).returncode
+        == 0
+    ):
+        return
+
+    env = probe_torch_wheel_env()
+    wheel_url = _build_flash_attn_wheel_url(env) if env else None
+    if wheel_url and url_exists(wheel_url):
+        for installer, wheel_result in install_wheel(
+            wheel_url,
+            python_executable = sys.executable,
+            use_uv = USE_UV,
+            uv_needs_system = UV_NEEDS_SYSTEM,
+        ):
+            if wheel_result.returncode == 0:
+                return
+            _print_optional_install_failure(
+                f"Installing flash-attn prebuilt wheel with {installer}",
+                wheel_result,
+            )
+        _step("warning", "Continuing without flash-attn", _cyan)
+        return
+
+    if wheel_url is None:
+        _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+    else:
+        _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+
+
 # -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -552,6 +679,7 @@ def _bootstrap_uv() -> bool:
         ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if probe.returncode != 0:
         # Retry with --system (some envs need it when uv can't find a venv)
@@ -559,6 +687,7 @@ def _bootstrap_uv() -> bool:
             ["uv", "pip", "install", "--dry-run", "--system", "pip"],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            **_windows_hidden_subprocess_kwargs(),
         )
         if probe_sys.returncode != 0:
             return False  # uv is broken, fall back to pip
@@ -643,14 +772,16 @@ def pip_install_try(
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs with a follow-up fallback.
     """
-    constraint_args: list[str] = []
+    constraint_args_pip: list[str] = []
+    constraint_args_uv: list[str] = []
     if constrain and CONSTRAINTS.is_file():
-        constraint_args = ["-c", str(CONSTRAINTS)]
+        constraint_args_pip = ["-c", str(CONSTRAINTS)]
+        constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
     if USE_UV:
-        cmd = _build_uv_cmd(args) + constraint_args
+        cmd = _build_uv_cmd(args) + constraint_args_uv
     else:
-        cmd = _build_pip_cmd(args) + constraint_args
+        cmd = _build_pip_cmd(args) + constraint_args_pip
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
@@ -673,9 +804,11 @@ def pip_install(
     constrain: bool = True,
 ) -> None:
     """Build and run a pip install command (uses uv when available, falls back to pip)."""
-    constraint_args: list[str] = []
+    constraint_args_pip: list[str] = []
+    constraint_args_uv: list[str] = []
     if constrain and CONSTRAINTS.is_file():
-        constraint_args = ["-c", str(CONSTRAINTS)]
+        constraint_args_pip = ["-c", str(CONSTRAINTS)]
+        constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
     actual_req = req
     temp_reqs: list[Path] = []
@@ -685,19 +818,22 @@ def pip_install(
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
-    req_args: list[str] = []
+    req_args_pip: list[str] = []
+    req_args_uv: list[str] = []
     if actual_req is not None:
-        req_args = ["-r", str(actual_req)]
+        req_args_pip = ["-r", str(actual_req)]
+        req_args_uv = ["-r", _uv_safe_path(actual_req)]
 
     try:
         if USE_UV:
-            uv_cmd = _build_uv_cmd(args) + constraint_args + req_args
+            uv_cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
             if VERBOSE:
                 print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
+                **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
                 return
@@ -705,7 +841,7 @@ def pip_install(
             if result.stdout:
                 print(result.stdout.decode(errors = "replace"))
 
-        pip_cmd = _build_pip_cmd(args) + constraint_args + req_args
+        pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
     finally:
         for temp_req in temp_reqs:
@@ -723,6 +859,7 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
         [sys.executable, "-m", "pip", "show", package_name],
         capture_output = True,
         text = True,
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         _step(_LABEL, f"package {package_name} not found, skipping patch", _red)
@@ -762,10 +899,8 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
-    # ROCm torch check steps (Linux only, non-macOS, non-no-torch):
-    # one early check (step 2b) and one final repair (step 13).
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        base_total += 2
+        base_total += 3
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try to use uv for faster installs (must happen before pip upgrade
@@ -795,6 +930,7 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "--version"],
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
+                **_windows_hidden_subprocess_kwargs(),
             ).returncode
             == 0
         )
@@ -836,12 +972,22 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
+            _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
             pip_install(
                 "Overlaying local repo (editable)",
                 "--no-cache-dir",
                 "--no-deps",
                 "-e",
                 local_repo,
+                constrain = False,
+            )
+            _step(_LABEL, "overlaying unsloth-zoo from git main")
+            pip_install(
+                "Overlaying unsloth-zoo from git main",
+                "--no-cache-dir",
+                "--no-deps",
+                "--force-reinstall",
+                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
                 constrain = False,
             )
     elif local_repo:
@@ -858,12 +1004,22 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
+        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
         pip_install(
             "Overlaying local repo (editable)",
             "--no-cache-dir",
             "--no-deps",
             "-e",
             local_repo,
+            constrain = False,
+        )
+        _step(_LABEL, "overlaying unsloth-zoo from git main")
+        pip_install(
+            "Overlaying unsloth-zoo from git main",
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
             constrain = False,
         )
     elif package_name != "unsloth":
@@ -979,6 +1135,10 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
+    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+        _progress("flash-attn")
+        _ensure_flash_attn()
+
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
     #     "unsloth-zoo",
@@ -1025,22 +1185,28 @@ def install_python_stack() -> int:
         req = SINGLE_ENV / "data-designer.txt",
     )
 
-    # 11. Local Data Designer seed plugin
-    if not LOCAL_DD_UNSTRUCTURED_PLUGIN.is_dir():
-        _safe_print(
-            _red(
-                f"❌ Missing local plugin directory: {LOCAL_DD_UNSTRUCTURED_PLUGIN}",
-            ),
-        )
-        return 1
+    # 11. Local Data Designer seed plugins
+    local_dd_plugins = [
+        ("unstructured", LOCAL_DD_UNSTRUCTURED_PLUGIN),
+        ("github", LOCAL_DD_GITHUB_PLUGIN),
+    ]
+    for _plugin_name, plugin_dir in local_dd_plugins:
+        if not plugin_dir.is_dir():
+            _safe_print(
+                _red(
+                    f"❌ Missing local plugin directory: {plugin_dir}",
+                ),
+            )
+            return 1
     _progress("local plugin")
-    pip_install(
-        "Installing local data-designer unstructured plugin",
-        "--no-cache-dir",
-        "--no-deps",
-        str(LOCAL_DD_UNSTRUCTURED_PLUGIN),
-        constrain = False,
-    )
+    for plugin_name, plugin_dir in local_dd_plugins:
+        pip_install(
+            f"Installing local data-designer {plugin_name} plugin",
+            "--no-cache-dir",
+            "--no-deps",
+            str(plugin_dir),
+            constrain = False,
+        )
 
     # 12. Patch metadata for single-env compatibility
     _progress("finalizing")
@@ -1063,6 +1229,7 @@ def install_python_stack() -> int:
         [sys.executable, "-m", "pip", "check"],
         stdout = subprocess.DEVNULL,
         stderr = subprocess.DEVNULL,
+        **_windows_hidden_subprocess_kwargs(),
     )
 
     _step(_LABEL, "installed")

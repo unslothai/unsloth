@@ -46,6 +46,28 @@ EXIT_ERROR = 1
 EXIT_BUSY = 3
 
 
+def windows_hidden_subprocess_kwargs() -> dict[str, object]:
+    """Return Windows-only subprocess kwargs that suppress console windows."""
+    if sys.platform != "win32":
+        return {}
+
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_factory is not None and startf_use_showwindow:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -2469,6 +2491,7 @@ def run_capture(
         text = True,
         timeout = timeout,
         env = env,
+        **windows_hidden_subprocess_kwargs(),
     )
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
@@ -2576,8 +2599,14 @@ def detect_host() -> HostInfo:
     has_rocm = False
     if is_linux:
         for _cmd, _check in (
-            # rocminfo: look for "gfxNNNN" with nonzero first digit (gfx000 is CPU agent)
-            (["rocminfo"], lambda out: bool(re.search(r"gfx[1-9]", out.lower()))),
+            # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
+            # gfx000 is the CPU agent; ROCm 6.1+ also emits generic ISA lines like
+            # "gfx11-generic" or "gfx9-4-generic" which only have 1-2 digits before
+            # the dash and must not be treated as a real GPU.
+            (
+                ["rocminfo"],
+                lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
+            ),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
             _exe = shutil.which(_cmd[0])
@@ -2633,7 +2662,7 @@ def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     if not host.driver_cuda_version:
         return None
     major, minor = host.driver_cuda_version
-    if major > 13 or (major == 13 and minor >= 1):
+    if major > 13 or (major == 13):  # and minor >= 1):
         return "13.1"
     if major > 12 or (major == 12 and minor >= 4):
         return "12.4"
@@ -3634,6 +3663,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         return [
             "llama-server",
             "llama-quantize",
+            "libllama-common.so*",
             "libllama.so*",
             "libggml.so*",
             "libggml-base.so*",
@@ -4350,6 +4380,7 @@ def validate_quantize(
         text = True,
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
+        **windows_hidden_subprocess_kwargs(),
     )
     if (
         result.returncode != 0
@@ -4437,8 +4468,9 @@ def validate_server(
                     env = binary_env(
                         server_path, install_dir, host, runtime_line = runtime_line
                     ),
+                    **windows_hidden_subprocess_kwargs(),
                 )
-                deadline = time.time() + 20
+                deadline = time.time() + 60
                 startup_started = time.time()
                 response_body = ""
                 last_error: Exception | None = None
@@ -4923,6 +4955,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "linux-cpu":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4931,6 +4964,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-cuda":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
@@ -4946,6 +4980,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         ]
     if choice.install_kind == "linux-rocm":
         return [
+            ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],

@@ -16,26 +16,40 @@ from __future__ import annotations
 import structlog
 from loggers import get_logger
 import os
-import platform
 import shutil
 import sys
 import time
 import traceback
-import json
 import subprocess as _sp
 from pathlib import Path
-from typing import Any
-import urllib.error
-import urllib.request
+from typing import Any, Callable
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.wheel_utils import (
+    direct_wheel_url,
+    flash_attn_wheel_url,
+    install_wheel,
+    probe_torch_wheel_env,
+    url_exists,
+)
+
+
+def _output_dir_from_resume_checkpoint(
+    resume_from_checkpoint: str | None,
+) -> str | None:
+    if not resume_from_checkpoint:
+        return None
+    path = Path(resume_from_checkpoint)
+    return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
+_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
+_FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
 
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
@@ -45,6 +59,8 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
         for key in (
             "qwen3.5",
             "qwen3_5",
+            "qwen3.6",
+            "qwen3_6",
             "qwen3-next",
             "qwen3_next",
             "nemotron_h",
@@ -59,184 +75,60 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
     )
 
 
-def _causal_conv1d_platform_tag() -> str | None:
-    machine = platform.machine().lower()
-    if sys.platform.startswith("linux"):
-        if machine in {"x86_64", "amd64"}:
-            return "linux_x86_64"
-        if machine in {"aarch64", "arm64"}:
-            return "linux_aarch64"
-        return None
-    # No prebuilt wheels published for macOS or Windows
-    return None
-
-
-def _probe_causal_conv1d_env() -> dict[str, str] | None:
-    try:
-        probe = _sp.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import json, sys, re, torch; "
-                    "parts = torch.__version__.split('+', 1)[0].split('.')[:2]; "
-                    "minor = re.sub(r'[^0-9].*', '', parts[1]) if len(parts) > 1 else '0'; "
-                    "torch_mm = parts[0] + '.' + minor; "
-                    "print(json.dumps({"
-                    "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                    "'torch_mm': torch_mm, "
-                    "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
-                    "'hip_version': str(torch.version.hip) if getattr(torch.version, 'hip', None) else '', "
-                    "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
-                    "}))"
-                ),
-            ],
-            stdout = _sp.PIPE,
-            stderr = _sp.PIPE,
-            text = True,
-            timeout = 30,
-        )
-    except _sp.TimeoutExpired:
-        logger.warning("Torch environment probe timed out after 30s")
-        return None
-    if probe.returncode != 0:
-        logger.warning(
-            "Failed to probe torch environment for causal-conv1d wheel:\n%s",
-            probe.stdout,
-        )
-        return None
-
-    try:
-        return json.loads(probe.stdout.strip())
-    except json.JSONDecodeError:
-        logger.warning(
-            "Failed to parse torch environment probe output: %s", probe.stdout
-        )
-        return None
-
-
-def _direct_wheel_url(
-    *,
-    filename_prefix: str,
-    package_version: str,
-    release_tag: str,
-    release_base_url: str,
-    env: dict[str, str] | None = None,
-) -> str | None:
-    env = env or _probe_causal_conv1d_env()
-    platform_tag = _causal_conv1d_platform_tag()
-    if env is None or platform_tag is None or not env.get("cuda_major"):
-        return None
-
-    filename = (
-        f"{filename_prefix}-{package_version}"
-        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
-        f"cxx11abi{env['cxx11abi']}-{env['python_tag']}-{env['python_tag']}-{platform_tag}.whl"
-    )
-    return f"{release_base_url}/{release_tag}/{filename}"
-
-
-def _url_exists(url: str) -> bool:
-    try:
-        request = urllib.request.Request(url, method = "HEAD")
-        with urllib.request.urlopen(request, timeout = 10):
-            return True
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return False
-        logger.warning("Unexpected HTTP error while probing %s: %s", url, exc)
-        return False
-    except Exception as exc:
-        logger.warning("Failed to probe %s: %s", url, exc)
-        return False
-
-
 def _install_package_wheel_first(
     *,
     event_queue: Any,
     import_name: str,
     display_name: str,
     pypi_name: str,
-    pypi_version: str,
-    filename_prefix: str,
-    release_tag: str,
-    release_base_url: str,
-) -> None:
+    pypi_version: str | None = None,
+    filename_prefix: str | None = None,
+    release_tag: str | None = None,
+    release_base_url: str | None = None,
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
+    pypi_spec: str | None = None,
+    pypi_status_message: str | None = None,
+) -> bool:
     try:
         __import__(import_name)
         logger.info("%s already installed", display_name)
-        return
+        return True
     except ImportError:
         pass
 
-    env = _probe_causal_conv1d_env()
-    wheel_url = _direct_wheel_url(
-        filename_prefix = filename_prefix,
-        package_version = pypi_version,
-        release_tag = release_tag,
-        release_base_url = release_base_url,
-        env = env,
-    )
+    env = probe_torch_wheel_env(timeout = 30)
+    if wheel_url_builder is not None:
+        wheel_url = wheel_url_builder(env)
+    else:
+        wheel_url = direct_wheel_url(
+            filename_prefix = filename_prefix,
+            package_version = pypi_version,
+            release_tag = release_tag,
+            release_base_url = release_base_url,
+            env = env,
+        )
 
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
-    else:
-        if _url_exists(wheel_url):
-            _send_status(event_queue, f"Installing prebuilt {display_name} wheel...")
-            installed = False
-            # Try uv first if available, then fall back to pip
-            if shutil.which("uv"):
-                uv_cmd = [
-                    "uv",
-                    "pip",
-                    "install",
-                    "--python",
-                    sys.executable,
-                    "--no-deps",
-                    wheel_url,
-                ]
-                result = _sp.run(
-                    uv_cmd,
-                    stdout = _sp.PIPE,
-                    stderr = _sp.STDOUT,
-                    text = True,
-                )
-                if result.returncode == 0:
-                    installed = True
-                else:
-                    logger.warning(
-                        "uv failed to install %s wheel:\n%s",
-                        display_name,
-                        result.stdout,
-                    )
-            if not installed:
-                pip_cmd = [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--no-deps",
-                    wheel_url,
-                ]
-                result = _sp.run(
-                    pip_cmd,
-                    stdout = _sp.PIPE,
-                    stderr = _sp.STDOUT,
-                    text = True,
-                )
-                if result.returncode == 0:
-                    installed = True
-                else:
-                    logger.warning(
-                        "pip failed to install %s wheel:\n%s",
-                        display_name,
-                        result.stdout,
-                    )
-            if installed:
+    elif url_exists(wheel_url):
+        _send_status(event_queue, f"Installing prebuilt {display_name} wheel...")
+        for installer, result in install_wheel(
+            wheel_url,
+            python_executable = sys.executable,
+            use_uv = bool(shutil.which("uv")),
+            run = _sp.run,
+        ):
+            if result.returncode == 0:
                 logger.info("Installed prebuilt %s wheel successfully", display_name)
-                return
-        else:
-            logger.info("No published %s wheel found: %s", display_name, wheel_url)
+                return True
+            logger.warning(
+                "%s failed to install %s wheel:\n%s",
+                installer,
+                display_name,
+                result.stdout,
+            )
+    else:
+        logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
     is_hip = env and env.get("hip_version")
     if is_hip and not shutil.which("hipcc"):
@@ -249,43 +141,62 @@ def _install_package_wheel_first(
             event_queue,
             f"{display_name}: hipcc not found (ROCm HIP SDK required)",
         )
-        return
+        return False
 
-    if is_hip:
-        _send_status(
-            event_queue,
-            f"Compiling {display_name} from source for ROCm "
-            "(this may take several minutes)...",
-        )
-    else:
-        _send_status(event_queue, f"Installing {display_name} from PyPI...")
+    if pypi_spec is None:
+        pypi_spec = f"{pypi_name}=={pypi_version}"
+
+    if pypi_status_message is None:
+        if is_hip:
+            pypi_status_message = (
+                f"Compiling {display_name} from source for ROCm "
+                "(this may take several minutes)..."
+            )
+        else:
+            pypi_status_message = f"Installing {display_name} from PyPI..."
+
+    _send_status(event_queue, pypi_status_message)
 
     # Prefer uv for faster dependency resolution when available
-    if shutil.which("uv"):
-        pypi_cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--no-build-isolation",
-            "--no-deps",
-        ]
-        # Avoid stale cache artifacts from partial HIP source builds
-        if is_hip:
-            pypi_cmd.append("--no-cache")
-        pypi_cmd.append(f"{pypi_name}=={pypi_version}")
+    plain_pypi_install = pypi_version is None
+    if plain_pypi_install:
+        if shutil.which("uv"):
+            pypi_cmd = [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                pypi_spec,
+            ]
+        else:
+            pypi_cmd = [sys.executable, "-m", "pip", "install", pypi_spec]
     else:
-        pypi_cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-build-isolation",
-            "--no-deps",
-            "--no-cache-dir",
-            f"{pypi_name}=={pypi_version}",
-        ]
+        if shutil.which("uv"):
+            pypi_cmd = [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--no-build-isolation",
+                "--no-deps",
+            ]
+            # Avoid stale cache artifacts from partial HIP source builds
+            if is_hip:
+                pypi_cmd.append("--no-cache")
+            pypi_cmd.append(pypi_spec)
+        else:
+            pypi_cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                pypi_spec,
+            ]
 
     # Source compilation on ROCm can take 10-30 minutes; use a generous
     # timeout. Non-HIP installs preserve the pre-existing "no timeout"
@@ -313,7 +224,7 @@ def _install_package_wheel_first(
             f"{display_name} installation timed out after "
             f"{_run_kwargs.get('timeout')}s",
         )
-        return
+        return False
 
     if result.returncode != 0:
         if is_hip:
@@ -337,12 +248,13 @@ def _install_package_wheel_first(
                 display_name,
                 result.stdout,
             )
-        return
+        return False
 
     if is_hip:
         logger.info("Compiled and installed %s from source for ROCm", display_name)
     else:
         logger.info("Installed %s from PyPI", display_name)
+    return True
 
 
 def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
@@ -387,6 +299,31 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
         release_tag = _MAMBA_SSM_RELEASE_TAG,
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
     )
+
+
+def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
+    if os.getenv(_FLASH_ATTN_SKIP_ENV) == "1":
+        return False
+    if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
+        return False
+    return sys.platform.startswith("linux")
+
+
+def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
+    if not _should_try_runtime_flash_attn_install(max_seq_length):
+        return
+
+    installed = _install_package_wheel_first(
+        event_queue = event_queue,
+        import_name = "flash_attn",
+        display_name = "flash-attn",
+        pypi_name = "flash-attn",
+        wheel_url_builder = flash_attn_wheel_url,
+        pypi_spec = "flash-attn",
+        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+    )
+    if not installed:
+        _send_status(event_queue, "Continuing without flash-attn")
 
 
 def _activate_transformers_version(model_name: str) -> None:
@@ -471,6 +408,10 @@ def run_training_process(
     try:
         _ensure_causal_conv1d_fast_path(event_queue, model_name)
         _ensure_mamba_ssm(event_queue, model_name)
+        _ensure_flash_attn_for_long_context(
+            event_queue,
+            int(config.get("max_seq_length", 2048)),
+        )
     except Exception as exc:
         event_queue.put(
             {
@@ -825,7 +766,10 @@ def run_training_process(
             return
 
         # Generate output dir
-        output_dir = config.get("output_dir")
+        resume_from_checkpoint = config.get("resume_from_checkpoint")
+        output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+            resume_from_checkpoint
+        )
         if not output_dir:
             output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
         output_dir = str(resolve_output_dir(output_dir))
@@ -873,6 +817,7 @@ def run_training_process(
             max_seq_length = config.get("max_seq_length", 2048),
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
+            resume_from_checkpoint = resume_from_checkpoint,
         )
 
         _tqdm_stop.set()
@@ -889,10 +834,13 @@ def run_training_process(
                 }
             )
         else:
+            saved_output_dir = (
+                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+            )
             event_queue.put(
                 {
                     "type": "complete",
-                    "output_dir": output_dir,
+                    "output_dir": saved_output_dir,
                     "status_message": progress.status_message or "Training completed",
                     "ts": time.time(),
                 }
@@ -1177,11 +1125,15 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    output_dir = config.get("output_dir")
+    resume_from_checkpoint = config.get("resume_from_checkpoint")
+    output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
     if not output_dir:
         output_dir = str(
             resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}")
         )
+    output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)
@@ -1289,7 +1241,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             callbacks = [_EmbeddingProgressCallback()],
         )
 
-        trainer.train()
+        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
     except Exception as e:
         event_queue.put(
             {
@@ -1315,6 +1267,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _send_status(event_queue, "Saving model...")
     try:
+        if _should_stop and _save_on_stop:
+            trainer._save_checkpoint(trainer.model, trial = None)
         model.save_pretrained(output_dir)
         model.tokenizer.save_pretrained(output_dir)
         logger.info("Embedding model saved to %s", output_dir)

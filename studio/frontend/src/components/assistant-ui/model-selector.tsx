@@ -18,13 +18,19 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 
-export type { LoraModelOption, ModelOption, ModelSelectorChangeMeta } from "./model-selector/types";
+export type {
+  DeletedModelRef,
+  LoraModelOption,
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "./model-selector/types";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -35,6 +41,8 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -66,11 +74,11 @@ function ModelSelectorTrigger({
         type="button"
         data-tour={dataTour}
         className={cn(
-          "flex items-center gap-2 transition-colors",
+          "flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-full border border-border/60 hover:bg-accent",
-          variant === "ghost" && "rounded-md hover:bg-accent",
-          variant === "muted" && "rounded-md bg-muted hover:bg-muted/80",
+          "rounded-[8px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+          variant === "ghost" && "rounded-[8px] hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+          variant === "muted" && "rounded-[8px] bg-muted hover:bg-muted/80",
           size === "sm" && "h-8 px-3 text-xs",
           size === "default" && "h-9 px-3.5 text-sm",
           size === "lg" && "h-10 px-4 text-sm",
@@ -80,16 +88,23 @@ function ModelSelectorTrigger({
         {isLoaded && (
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
-        <span className={isLoaded ? "text-foreground" : "text-muted-foreground"}>
-          {currentModel?.name ?? "Select model..."}
+        <span className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+            {currentModel?.name ?? "Select model"}
+          </span>
+          {currentModel?.description && (
+            <span className="shrink-0 text-xs leading-none text-muted-foreground">
+              {currentModel.description}
+            </span>
+          )}
         </span>
-        {currentModel?.description && (
-          <span className="text-muted-foreground text-xs">{currentModel.description}</span>
-        )}
-        <HugeiconsIcon
-          icon={ArrowDown01Icon}
-          className="size-3 shrink-0 text-muted-foreground"
-        />
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            strokeWidth={1.75}
+            className="relative top-0.5 size-3.5 text-muted-foreground"
+          />
+        </span>
       </button>
     </PopoverTrigger>
   );
@@ -102,6 +117,8 @@ function ModelSelectorContent({
   onSelect,
   onEject,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   className,
   dataTour,
 }: {
@@ -111,6 +128,8 @@ function ModelSelectorContent({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
 }) {
@@ -144,6 +163,8 @@ function ModelSelectorContent({
               loraModels={loraModels}
               value={value}
               onSelect={onSelect}
+              onModelsChange={onModelsChange}
+              deleteDisabled={deleteDisabled}
             />
           </TabsContent>
         </Tabs>
@@ -175,6 +196,8 @@ export function ModelSelector({
   onValueChange,
   onEject,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   variant = "outline",
   size = "default",
   className,
@@ -203,11 +226,22 @@ export function ModelSelector({
         ? lora.name.split("/")[0].trim()
         : lora.name;
       // Show type tag instead of base model name
+      const isLocal = lora.source === "local";
+      const isTraining = lora.source === "training";
       const isExported = lora.source === "exported";
       const isMerged = lora.exportType === "merged";
-      const tag = isExported
-        ? isMerged ? "Merged · Exported" : "LoRA"
-        : "LoRA";
+      const isGguf = lora.exportType === "gguf";
+      const tag = isLocal
+        ? isGguf
+          ? "GGUF"
+          : "Local"
+        : isTraining && isMerged
+          ? "Full finetune"
+          : isExported
+            ? isMerged
+              ? "Merged · Exported"
+              : "LoRA · Exported"
+            : "LoRA";
       all.set(lora.id, {
         ...lora,
         name: displayName,
@@ -258,6 +292,8 @@ export function ModelSelector({
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
+        deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
       />
