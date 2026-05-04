@@ -439,6 +439,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
             W_deq = weight_dequant(weight, weight_scale).T
             output = torch_matmul(x, W_deq)
+            output = output + bias if bias is not None else output
             del W_deq
         else:
             raise ValueError(
