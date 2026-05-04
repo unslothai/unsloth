@@ -2336,6 +2336,7 @@ class FastLlamaModel:
             model_name,
             token = token,
             attn_implementation = "sdpa",
+            revision = revision,
         )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
@@ -2464,6 +2465,7 @@ class FastLlamaModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
+                revision = revision,
                 **kwargs,
             )
             # Defensive: make sure the task head ended up in a floating dtype.
@@ -2498,6 +2500,7 @@ class FastLlamaModel:
                 max_position_embeddings = max_position_embeddings,
                 trust_remote_code = trust_remote_code,
                 attn_implementation = preferred_attn_impl,
+                revision = revision,
                 **kwargs,
             )
             # Attach dispatch hooks for bnb multi-device loads.
@@ -2540,6 +2543,7 @@ class FastLlamaModel:
                 disable_log_stats = disable_log_stats,
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
+                revision = revision,
                 fp8_mode = fp8_mode,
             )
             for allowed_arg in allowed_args:
@@ -2577,6 +2581,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
+            revision = revision,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
