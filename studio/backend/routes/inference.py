@@ -346,6 +346,39 @@ _TOOL_XML_RE = _re.compile(
 logger = get_logger(__name__)
 
 
+def _validate_native_mmproj_companion(
+    mmproj_path: str | None, gguf_path: str | None
+) -> None:
+    if not mmproj_path or not gguf_path:
+        return
+    import stat as _stat_module
+    mm = Path(mmproj_path)
+    gguf = Path(gguf_path)
+    try:
+        mm_lstat = os.lstat(mm)
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion is no longer accessible.",
+        ) from exc
+    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(mm_lstat.st_mode):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion must be a regular file.",
+        )
+    try:
+        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Native vision companion must live next to the selected GGUF.",
+            )
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion is no longer accessible.",
+        ) from exc
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -572,6 +605,10 @@ async def load_model(
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
+                if native_grant_backed and config.gguf_mmproj_file:
+                    _validate_native_mmproj_companion(
+                        config.gguf_mmproj_file, config.gguf_file
+                    )
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
@@ -605,6 +642,7 @@ async def load_model(
             llama_backend._native_display_label = (
                 model_log_label if native_grant_backed else None
             )
+            llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
                 await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
@@ -1080,12 +1118,14 @@ async def get_status(
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
+            _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
             _display_model_id = (
                 getattr(llama_backend, "_native_display_label", None)
                 or display_label_for_native_path(_model_id)
             )
             if (
-                _model_id
+                _native_grant_backed
+                and _model_id
                 and _display_model_id == _model_id
                 and os.path.isabs(_model_id)
             ):

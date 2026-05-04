@@ -92,9 +92,22 @@ pub fn reveal_target(path: &Path) -> PathBuf {
     }
 }
 
+fn sanitize_display_label(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "Selected path".to_string()
+    } else {
+        trimmed.chars().take(160).collect()
+    }
+}
+
 pub fn is_open_safe_artifact(path: &Path, path_type: NativePathType) -> bool {
     if path_type == NativePathType::Directory {
-        return true;
+        return false;
     }
     let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
         return false;
@@ -123,11 +136,12 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         return Err("Symlink paths are not supported for native intake.".to_string());
     }
     let (path_type, size_bytes, modified_ms) = refresh_path_fingerprint(&canonical_path)?;
-    let display_label = canonical_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Selected path")
-        .to_string();
+    let display_label = sanitize_display_label(
+        canonical_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Selected path"),
+    );
 
     Ok(ClassifiedPath {
         canonical_path,

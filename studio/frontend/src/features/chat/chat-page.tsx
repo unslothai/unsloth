@@ -631,10 +631,9 @@ export function ChatPage(): ReactElement {
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
-    (intent: NativeIntent, loadingDescription: string) => {
+    async (intent: NativeIntent, loadingDescription: string) => {
       const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
-      useNativeIntentStore.getState().clearModelIntent(intent.id);
-      return selectModel({
+      await selectModel({
         id: label,
         nativePathToken: intent.path.token,
         isDownloaded: true,
@@ -642,6 +641,7 @@ export function ChatPage(): ReactElement {
         forceReload: true,
         throwOnError: true,
       });
+      useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
     [selectModel],
   );

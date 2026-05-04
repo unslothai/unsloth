@@ -73,7 +73,9 @@ export function NativeModelChip({
       <button
         type="button"
         onClick={handleReveal}
-        className="rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+        disabled={expired}
+        title={expired ? "Selection expired, pick or drop the file again" : undefined}
+        className="rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       >
         Reveal
       </button>
@@ -90,7 +92,7 @@ export function NativeModelChip({
         }
         className="rounded-md bg-foreground px-2 py-1 text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {expired ? "Select again" : loading ? "Loading…" : "Load model"}
+        {expired ? "Expired" : loading ? "Loading…" : "Load model"}
       </button>
       <button
         type="button"

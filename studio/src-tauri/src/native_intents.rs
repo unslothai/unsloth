@@ -222,12 +222,16 @@ fn validate_entry_path(
             classify_artifact_path(kind, &entry.canonical_path)?
         }
     };
+    let check_fingerprint = !matches!(
+        operation,
+        NativePathOperation::Reveal | NativePathOperation::Open
+    );
     if classified.canonical_path != entry.canonical_path
         || classified.path_kind != entry.path_kind
         || classified.path_type != entry.path_type
         || !classified.allowed_operations.contains(&operation)
-        || classified.size_bytes != entry.size_bytes
-        || classified.modified_ms != entry.modified_ms
+        || (check_fingerprint && classified.size_bytes != entry.size_bytes)
+        || (check_fingerprint && classified.modified_ms != entry.modified_ms)
     {
         return Err("Native path changed after it was selected.".to_string());
     }

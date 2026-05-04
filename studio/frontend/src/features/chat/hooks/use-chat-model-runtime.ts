@@ -157,6 +157,7 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
+    nativePathToken?: string | null;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
@@ -350,7 +351,11 @@ export function useChatModelRuntime() {
         return;
       }
       // Prevent duplicate loads if already loading this model
-      if (loadingModelRef.current?.id === modelId) return;
+      if (
+        loadingModelRef.current?.id === modelId &&
+        (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
+      )
+        return;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -390,7 +395,13 @@ export function useChatModelRuntime() {
         .join(" ");
       setModelsError(null);
       setLoadToastDismissedState(false);
-      const loadInfo = { id: modelId, displayName, isDownloaded, isCachedLora };
+      const loadInfo = {
+        id: modelId,
+        displayName,
+        isDownloaded,
+        isCachedLora,
+        nativePathToken: nativePathToken ?? null,
+      };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
@@ -582,19 +593,19 @@ export function useChatModelRuntime() {
             if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
-              try {
-                let rollbackNativePathLease: string | undefined;
-                if (previousActiveNativePathToken) {
-                  try {
-                    rollbackNativePathLease = (
-                      await consumeNativePathToken(previousActiveNativePathToken, "load-model")
-                    ).nativePathLease;
-                  } catch {
-                    throw new Error(
-                      "Could not reload the previous local model: please re-select the file.",
-                    );
-                  }
+              let rollbackNativePathLease: string | undefined;
+              if (previousActiveNativePathToken) {
+                try {
+                  rollbackNativePathLease = (
+                    await consumeNativePathToken(previousActiveNativePathToken, "load-model")
+                  ).nativePathLease;
+                } catch {
+                  throw new Error(
+                    "Could not reload the previous local model: please re-select the file.",
+                  );
                 }
+              }
+              try {
                 await loadModel({
                   model_path: previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
@@ -610,10 +621,8 @@ export function useChatModelRuntime() {
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                 });
                 await refresh();
-              } catch (rollbackError) {
-                throw rollbackError instanceof Error
-                  ? rollbackError
-                  : new Error("Could not reload the previous local model.");
+              } catch {
+                // Rollback also failed; surface the original load error below.
               }
             }
             throw error;
