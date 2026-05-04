@@ -8,6 +8,14 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
+import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
+import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
+import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -574,6 +582,7 @@ export function ChatPage(): ReactElement {
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
+  const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
@@ -587,6 +596,8 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const pendingNativeModelIntent = useNativeIntentStore((state) => state.pendingModelIntent);
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -617,6 +628,60 @@ export function ChatPage(): ReactElement {
     }
     return { mode: "single" };
   }, [search.thread, search.compare, search.new, activeThreadId]);
+
+  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const loadNativeModelIntent = useCallback(
+    async (intent: NativeIntent, loadingDescription: string) => {
+      const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
+      await selectModel({
+        id: label,
+        nativePathToken: intent.path.token,
+        isDownloaded: true,
+        loadingDescription,
+        forceReload: true,
+        throwOnError: true,
+      });
+      useNativeIntentStore.getState().clearModelIntent(intent.id);
+    },
+    [selectModel],
+  );
+  const handleNativeModelDropAutoLoad = useCallback(
+    (intent: NativeIntent) =>
+      loadNativeModelIntent(
+        intent,
+        hasActiveModel
+          ? "Replacing with dropped local GGUF model."
+          : "Loading dropped local GGUF model.",
+      ),
+    [hasActiveModel, loadNativeModelIntent],
+  );
+  const handleNativeModelPickerAutoLoad = useCallback(
+    (intent: NativeIntent) =>
+      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
+    [loadNativeModelIntent],
+  );
+  const canAutoLoadPickedNativeModel = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    return (
+      view.mode === "single" &&
+      nativePathLeasesSupported &&
+      !loadingModel &&
+      !modelLoading &&
+      !store.modelLoading &&
+      !store.params.checkpoint
+    );
+  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
+  const chooseNativeModel = useChooseNativeModel({
+    shouldAutoLoad: canAutoLoadPickedNativeModel,
+    onAutoLoad: handleNativeModelPickerAutoLoad,
+  });
+  const nativeModelDropState = useNativeModelDrop({
+    enabled: view.mode === "single",
+    nativePathLeasesSupported,
+    hasActiveModel,
+    isModelLoading: Boolean(loadingModel) || modelLoading,
+    onAutoLoad: handleNativeModelDropAutoLoad,
+  });
 
   const handleCheckpointChange = useCallback(
     (
@@ -922,6 +987,7 @@ export function ChatPage(): ReactElement {
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+        <NativeModelDropOverlay state={nativeModelDropState} />
         <div
           className={cn(
             "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
@@ -940,6 +1006,7 @@ export function ChatPage(): ReactElement {
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
+                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
@@ -950,6 +1017,13 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
+            {pendingNativeModelIntent && view.mode !== "compare" ? (
+              <NativeModelChip
+                intent={pendingNativeModelIntent}
+                nativeReadsDisabled={!nativePathLeasesSupported}
+                onLoad={(selection) => selectModel(selection)}
+              />
+            ) : null}
             {loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
                 label={

@@ -226,6 +226,7 @@ type ChatRuntimeStore = {
     cachedTokens: number;
   } | null;
   modelLoading: boolean;
+  activeNativePathToken: string | null;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -305,6 +306,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   pendingAudioName: null,
   contextUsage: null,
   modelLoading: false,
+  activeNativePathToken: null,
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
@@ -378,6 +380,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeNativePathToken: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
