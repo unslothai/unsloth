@@ -561,20 +561,6 @@ def _grpo_hidden_states_wrap_target(model):
     return model
 
 
-def _source_supports_unsloth_return_hidden_states(forward):
-    if forward is None:
-        return False
-    try:
-        source = inspect.getsource(forward)
-    except Exception:
-        return False
-    return "UNSLOTH_RETURN_HIDDEN_STATES" in source and (
-        "logits = hidden_states" in source
-        or "logits=hidden_states" in source
-        or "return hidden_states instead of logits" in source
-    )
-
-
 def _model_supports_unsloth_return_hidden_states(model):
     target_model = _grpo_hidden_states_wrap_target(model)
     for candidate in (model, target_model):
@@ -586,18 +572,15 @@ def _model_supports_unsloth_return_hidden_states(model):
             type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False
         ):
             return True
-        forward = getattr(candidate, "forward", None)
-        if _source_supports_unsloth_return_hidden_states(forward):
-            return True
     return False
 
 
-def _drop_forward_kwargs_consumed_positionally(forward, args, kwargs):
+def _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs):
     if len(args) == 0 or len(kwargs) == 0:
         return kwargs
 
     consumed_names = []
-    for parameter in inspect.signature(forward).parameters.values():
+    for parameter in forward_signature.parameters.values():
         if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
             break
         if parameter.kind in (
@@ -617,7 +600,32 @@ def _drop_forward_kwargs_consumed_positionally(forward, args, kwargs):
     return kwargs
 
 
-def _get_num_logits_to_keep(kwargs):
+def _get_num_logits_to_keep(forward_signature, args, kwargs):
+    try:
+        bound = forward_signature.bind_partial(*args, **kwargs)
+        arguments = bound.arguments
+        num_logits_to_keep = arguments.get("num_logits_to_keep", 0) or 0
+        logits_to_keep = arguments.get("logits_to_keep", 0) or 0
+        for parameter in forward_signature.parameters.values():
+            if parameter.kind != inspect.Parameter.VAR_KEYWORD:
+                continue
+            extra_kwargs = arguments.get(parameter.name, {})
+            num_logits_to_keep = max(
+                num_logits_to_keep,
+                extra_kwargs.get("num_logits_to_keep", 0) or 0,
+            )
+            logits_to_keep = max(
+                logits_to_keep,
+                extra_kwargs.get("logits_to_keep", 0) or 0,
+            )
+            break
+        return max(num_logits_to_keep, logits_to_keep)
+    except TypeError:
+        logger.debug(
+            "Unsloth: Could not bind forward arguments for GRPO hidden-state fallback.",
+            exc_info = True,
+        )
+
     num_logits_to_keep = kwargs.get("num_logits_to_keep", 0) or 0
     logits_to_keep = kwargs.get("logits_to_keep", 0) or 0
     return max(num_logits_to_keep, logits_to_keep)
@@ -651,13 +659,12 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         return False
 
     target_model = _grpo_hidden_states_wrap_target(model)
-    if target_model is None or getattr(
-        target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False
-    ):
+    if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
         return False
 
     original_forward = target_model.forward
+    forward_signature = inspect.signature(original_forward)
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
@@ -665,7 +672,10 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             return original_forward(*args, **kwargs)
 
         forward_kwargs = _drop_forward_kwargs_consumed_positionally(
-            original_forward, args, kwargs
+            forward_signature, args, kwargs
+        )
+        num_logits_to_keep = _get_num_logits_to_keep(
+            forward_signature, args, forward_kwargs
         )
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
@@ -691,7 +701,6 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             return outputs
 
         hidden_states = hidden_states[-1]
-        num_logits_to_keep = _get_num_logits_to_keep(forward_kwargs)
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         return _replace_outputs_logits(outputs, hidden_states)
