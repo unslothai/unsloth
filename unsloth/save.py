@@ -1557,8 +1557,7 @@ def save_to_gguf(
             # convert_to_gguf may return multiple base shards plus an mmproj entry,
             # so treat every initial file that is not an mmproj as part of the base set.
             base_files = [
-                f for f in initial_files
-                if "-mmproj" not in os.path.basename(f).lower()
+                f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()
             ]
             if not want_full_precision:
                 for f in base_files:
