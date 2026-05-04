@@ -555,7 +555,19 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
 )
 def run(
     ctx: typer.Context,
-    model: str = typer.Option(..., "--model", "-m", help = "Model path or HF repo"),
+    model: str = typer.Option(
+        ...,
+        "--model",
+        "-m",
+        "-hf",
+        "-hfr",
+        "--hf-repo",
+        help = (
+            "Model path or HF repo. Accepts llama.cpp-style "
+            "`org/repo:variant` syntax. The `-hf` / `--hf-repo` aliases "
+            "match llama-server's spelling."
+        ),
+    ),
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
