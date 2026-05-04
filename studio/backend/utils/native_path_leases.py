@@ -207,7 +207,10 @@ def _decode_secret() -> bytes:
     with _SECRET_INIT_LOCK:
         if _CACHED_LEASE_SECRET is not None:
             return _CACHED_LEASE_SECRET
-        encoded = os.environ.get(LEASE_SECRET_ENV)
+        with _NATIVE_PATH_ENV_LOCK:
+            encoded = os.environ.get(LEASE_SECRET_ENV)
+            if encoded is None and _SCRUB_SAVED_SECRET is not None:
+                encoded = _SCRUB_SAVED_SECRET
         if not encoded:
             raise NativePathLeaseError(
                 "Native path grants require the managed desktop backend."
