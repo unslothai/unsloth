@@ -289,13 +289,15 @@ pub async fn pick_native_model(
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeIntent>, String> {
     ensure_main_window(&window)?;
-    let Some(file_path) = app
-        .dialog()
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
         .file()
         .set_title("Choose a GGUF model")
         .add_filter("GGUF models", &["gguf"])
-        .blocking_pick_file()
-    else {
+        .pick_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(file_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
         return Ok(None);
     };
     let path = file_path

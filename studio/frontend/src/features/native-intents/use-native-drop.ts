@@ -1,5 +1,5 @@
 import { isTauri } from "@/lib/api-base";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { registerNativeModelPath } from "./api";
 import { useNativeIntentStore } from "./store";
@@ -50,15 +50,11 @@ function dropStateForPaths(
 }
 
 export function useNativeModelDrop(options: NativeModelDropOptions): NativeModelDropState {
-  const {
-    enabled = true,
-    nativePathLeasesSupported,
-    hasActiveModel,
-    isModelLoading,
-    onAutoLoad,
-  } = options;
+  const { enabled = true } = options;
   const addIntent = useNativeIntentStore((state) => state.addIntent);
   const [dropState, setDropState] = useState<NativeModelDropState>({ status: "idle" });
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   useEffect(() => {
     if (!isTauri || !enabled) {
@@ -67,16 +63,10 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
     }
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    const currentOptions = {
-      enabled,
-      nativePathLeasesSupported,
-      hasActiveModel,
-      isModelLoading,
-      onAutoLoad,
-    };
 
     void import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => getCurrentWindow().onDragDropEvent(async (event) => {
+        const currentOptions = optionsRef.current;
         if (event.payload.type === "enter") {
           setDropState(dropStateForPaths(event.payload.paths, currentOptions));
           return;
@@ -87,8 +77,14 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         }
         if (event.payload.type !== "drop") return;
         setDropState({ status: "idle" });
-        const [ggufPath] = ggufPaths(event.payload.paths);
-        if (!ggufPath) return;
+        const ggufs = ggufPaths(event.payload.paths);
+        if (event.payload.paths.length !== 1 || ggufs.length !== 1) {
+          if (event.payload.paths.length > 0) {
+            toast.error("Drop one GGUF model at a time.");
+          }
+          return;
+        }
+        const ggufPath = ggufs[0];
         try {
           const intent = await registerNativeModelPath(ggufPath);
           if (disposed) return;
@@ -97,7 +93,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             return;
           }
           try {
-            await onAutoLoad?.(intent);
+            await currentOptions.onAutoLoad?.(intent);
           } catch {
             addIntent(intent);
           }
@@ -120,14 +116,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
       disposed = true;
       unlisten?.();
     };
-  }, [
-    addIntent,
-    enabled,
-    nativePathLeasesSupported,
-    hasActiveModel,
-    isModelLoading,
-    onAutoLoad,
-  ]);
+  }, [addIntent, enabled]);
 
   return dropState;
 }

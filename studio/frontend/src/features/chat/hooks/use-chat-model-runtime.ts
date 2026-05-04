@@ -420,6 +420,8 @@ export function useChatModelRuntime() {
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
+          const previousActiveNativePathToken =
+            stateBeforeUnload.activeNativePathToken;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -543,6 +545,7 @@ export function useChatModelRuntime() {
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
+              activeNativePathToken: nativePathToken ?? null,
             });
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
@@ -580,8 +583,12 @@ export function useChatModelRuntime() {
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
               try {
+                const rollbackNativePathLease = previousActiveNativePathToken
+                  ? (await consumeNativePathToken(previousActiveNativePathToken, "load-model")).nativePathLease
+                  : undefined;
                 await loadModel({
                   model_path: previousCheckpoint,
+                  nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,

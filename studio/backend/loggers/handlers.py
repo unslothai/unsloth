@@ -23,9 +23,11 @@ import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from utils.native_path_leases import redact_native_paths
+
 logger = structlog.get_logger(__name__)
 _NATIVE_PATH_LEASE_RE = re.compile(
-    r"(?i)(\bnative_path_lease[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
 
 
@@ -81,8 +83,6 @@ def filter_sensitive_data(logger, method_name, event_dict):
     def filter_value(value):
         if isinstance(value, str):
             try:
-                from utils.native_path_leases import redact_native_paths
-
                 value = redact_native_paths(value)
             except Exception:
                 pass
@@ -97,7 +97,7 @@ def filter_sensitive_data(logger, method_name, event_dict):
         elif isinstance(value, dict):
             return {
                 k: "<redacted native path lease>"
-                if str(k).lower() == "native_path_lease"
+                if str(k).replace("_", "").lower() == "nativepathlease"
                 else filter_value(v)
                 for k, v in value.items()
             }

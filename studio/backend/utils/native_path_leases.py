@@ -102,7 +102,11 @@ def verify_native_path_lease(
 
     path = Path(str(payload["canonical_path"]))
     _reject_network_or_device_path(path)
-    resolved = path.resolve(strict = True)
+    try:
+        resolved = path.resolve(strict = True)
+    except OSError as exc:
+        raise NativePathLeaseError("Native path is no longer accessible.") from exc
+    _reject_network_or_device_path(resolved)
     if os.path.normcase(str(resolved)) != os.path.normcase(
         str(payload["canonical_path"])
     ):
@@ -236,7 +240,10 @@ def _validate_current_stat(grant: NativePathGrant) -> None:
     else:
         raise NativePathLeaseError("Native path grant has an unsupported path type.")
 
-    stat = grant.canonical_path.stat()
+    try:
+        stat = grant.canonical_path.stat()
+    except OSError as exc:
+        raise NativePathLeaseError("Native path is no longer accessible.") from exc
     if grant.size_bytes is not None and stat.st_size != grant.size_bytes:
         raise NativePathLeaseError("Native path changed after it was selected.")
     current_modified_ms = int(stat.st_mtime_ns // 1_000_000)
@@ -283,13 +290,10 @@ def _reject_network_or_device_path(path: Path) -> None:
             )
     if os.name != "nt":
         for root in ("/dev", "/proc", "/sys"):
-            try:
-                path.relative_to(root)
+            if path.is_relative_to(root):
                 raise NativePathLeaseError(
                     "Device and virtual filesystem paths are not supported."
                 )
-            except ValueError:
-                pass
     if "\x00" in text:
         raise NativePathLeaseError("Native path contains invalid characters.")
 

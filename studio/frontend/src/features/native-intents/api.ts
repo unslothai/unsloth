@@ -26,7 +26,6 @@ export async function pickNativeModel(): Promise<NativeIntent | null> {
 export async function registerNativeModelPath(path: string): Promise<NativeIntent> {
   return invokeNative<NativeIntent>("register_native_model_path", {
     path,
-    sourceKind: "drop",
     source_kind: "drop",
   });
 }
