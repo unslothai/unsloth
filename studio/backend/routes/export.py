@@ -43,6 +43,7 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    ExportAutoRound4bitRequest,
 )
 
 router = APIRouter()
@@ -349,6 +350,46 @@ async def export_lora_adapter(
         raise HTTPException(
             status_code = 500,
             detail = f"Failed to export LoRA adapter: {str(e)}",
+        )
+
+
+@router.post("/export/autoround4bit", response_model = ExportOperationResponse)
+async def export_autoround_4bit(
+    request: ExportAutoRound4bitRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Export the model to 4-bit format using Auto-Round (AWQ/GPTQ).
+
+    Wraps ExportBackend.export_autoround_4bit.
+    """
+    try:
+        backend = get_export_backend()
+        success, message = backend.export_autoround_4bit(
+            save_directory = request.save_directory,
+            export_format = request.export_format,
+            bits = request.bits,
+            group_size = request.group_size,
+            iters = request.iters,
+            nsamples = request.nsamples,
+            dataset = request.dataset,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
+        )
+
+        if not success:
+            raise HTTPException(status_code = 400, detail = message)
+
+        return ExportOperationResponse(success = True, message = message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting Auto-Round 4-bit model: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to export Auto-Round 4-bit model: {str(e)}",
         )
 
 
