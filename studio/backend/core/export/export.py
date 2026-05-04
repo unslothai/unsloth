@@ -529,6 +529,20 @@ class ExportBackend:
             # Convert quantization method to lowercase for unsloth
             quant_method = quantization_method.lower()
 
+            # Pin convert_hf_to_gguf.py to the same llama.cpp ref as the
+            # llama-quantize binary and gguf-py (Studio installs at a tagged
+            # ref via setup.sh). Without this, the convert script is fetched
+            # from master and can drift past the pinned binary's gguf API.
+            # Defer to an explicit user override; zoo validates the value.
+            # Set before both branches so save_pretrained_gguf and
+            # push_to_hub_gguf use the same pin (hub-only export has
+            # save_directory == "" but still needs the pin).
+            from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+
+            os.environ.setdefault(
+                "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
+            )
+
             # Save locally if requested
             if save_directory:
                 save_directory = str(resolve_export_dir(save_directory))
@@ -554,17 +568,6 @@ class ExportBackend:
                 # unsloth saves intermediate HF model files into model_save_path.
                 # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
                 model_save_path = os.path.join(abs_save_dir, "model")
-
-                # Pin convert_hf_to_gguf.py to the same llama.cpp ref as the
-                # llama-quantize binary and gguf-py (Studio installs at a tagged
-                # ref via setup.sh). Without this, the convert script is fetched
-                # from master and can drift past the pinned binary's gguf API.
-                # Defer to an explicit user override; zoo validates the value.
-                from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
-
-                os.environ.setdefault(
-                    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
-                )
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
                     self.current_tokenizer,
