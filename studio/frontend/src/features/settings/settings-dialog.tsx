@@ -12,8 +12,8 @@ import {
   Cancel01Icon,
   Message01Icon,
   PaintBrush02Icon,
-  Plug01Icon,
   Settings02Icon,
+  SourceCodeSquareIcon,
   SparklesIcon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
@@ -38,7 +38,7 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "api-keys", label: "API Access", icon: Plug01Icon },
+  { id: "api-keys", label: "Developer", icon: SourceCodeSquareIcon },
   { id: "about", label: "About", icon: SparklesIcon },
 ];
 
