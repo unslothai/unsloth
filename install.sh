@@ -1195,6 +1195,19 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
+# ── Intel XPU GPU detection helper ──
+# Returns 0 (true) if a Linux x86_64 host exposes an Intel GPU via DRM sysfs.
+_has_intel_xpu_gpu() {
+    _drm_root="${UNSLOTH_DRM_ROOT:-/sys/class/drm}"
+    for _vendor in "$_drm_root"/card*/device/vendor; do
+        [ -r "$_vendor" ] || continue
+        if grep -qi '0x8086' "$_vendor" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ── NVIDIA usable-GPU helper ──
 # Returns 0 (true) only if nvidia-smi is present AND actually lists a GPU.
 # Prevents AMD-only hosts with a stale nvidia-smi on PATH from being routed
@@ -1209,6 +1222,25 @@ _has_usable_nvidia_gpu() {
         return 1
     fi
     "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'
+}
+
+_install_intel_xpu_stack() {
+    _venv_py="$1"
+    _package_name="$2"
+    _local_install="$3"
+
+    # Required for the current Intel extras path because one preview wheel in the
+    # dependency set uses a filename uv rejects unless this check is disabled.
+    substep "installing Intel XPU PyTorch + Unsloth extras..."
+    if [ "$_local_install" = true ]; then
+        run_install_cmd "install Intel XPU stack (local)" \
+            env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
+            uv pip install --python "$_venv_py" "unsloth[intel-gpu-torch290]>=2026.4.7" unsloth-zoo
+    else
+        run_install_cmd "install Intel XPU stack" \
+            env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
+            uv pip install --python "$_venv_py" "${_package_name}[intel-gpu-torch290]"
+    fi
 }
 
 # ── Detect GPU and choose PyTorch index URL ──
@@ -1242,6 +1274,9 @@ get_torch_index_url() {
             *) echo "$_base/cpu"; return ;;
         esac
         if ! _has_amd_rocm_gpu; then
+            if _has_intel_xpu_gpu; then
+                echo "$_base/xpu"; return
+            fi
             echo "$_base/cpu"; return
         fi
         # AMD GPU confirmed -- detect ROCm version
@@ -1461,6 +1496,11 @@ case "$TORCH_INDEX_URL" in
             echo ""
         fi
         ;;
+    */xpu)
+        echo ""
+        echo "  Intel GPU detected -- installing Intel XPU-enabled PyTorch and Unsloth extras"
+        echo ""
+        ;;
     */rocm*)
         echo ""
         if [ "$_amd_gpu_radeon" = true ]; then
@@ -1524,9 +1564,13 @@ if [ "$_MIGRATED" = true ]; then
         esac
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
+    _skip_unsloth_stage2=false
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
     if [ "$SKIP_TORCH" = true ]; then
         substep "skipping PyTorch (--no-torch or Intel Mac x86_64)." "$C_WARN"
+    elif [ "${TORCH_INDEX_URL%/xpu}" != "$TORCH_INDEX_URL" ]; then
+        _install_intel_xpu_stack "$_VENV_PY" "$PACKAGE_NAME" "$STUDIO_LOCAL_INSTALL"
+        _skip_unsloth_stage2=true
     elif [ "$_amd_gpu_radeon" = true ]; then
         _radeon_url=$(get_radeon_wheel_url)
         if [ -n "$_radeon_url" ]; then
@@ -1655,40 +1699,36 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         esac
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
-    tauri_log "STEP" "Installing Unsloth"
-    substep "installing unsloth (this may take a few minutes)..."
-    if [ "$SKIP_TORCH" = true ]; then
-        # No-torch: install unsloth + unsloth-zoo with --no-deps, then
-        # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-        run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
-            --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.4.8" unsloth-zoo
-        _NO_TORCH_RT="$(_find_no_torch_runtime)"
-        if [ -n "$_NO_TORCH_RT" ]; then
-            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
-        fi
-        if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+    if [ "$_skip_unsloth_stage2" = false ]; then
+        substep "installing unsloth (this may take a few minutes)..."
+        if [ "$SKIP_TORCH" = true ]; then
+            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
+            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
+            run_install_cmd "install unsloth (no torch)" uv pip install --python "$_VENV_PY" \
+                --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo \
+                "unsloth>=2026.4.7" unsloth-zoo
+            _req_file="$(find_no_torch_runtime_file)"
+            if [ -n "$_req_file" ]; then
+                run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_req_file"
+            fi
+            if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+                substep "overlaying local repo (editable)..."
+                run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+            fi
+        elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+            run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
+                --upgrade-package unsloth "unsloth>=2026.4.7" unsloth-zoo
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-            substep "overlaying unsloth-zoo from git main..."
-            run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
-                --no-deps --reinstall-package unsloth-zoo \
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+        else
+            run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
+                --upgrade-package unsloth "$PACKAGE_NAME"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
-            --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
-    else
-        run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
-    # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
+
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ]; then
         case "$TORCH_INDEX_URL" in

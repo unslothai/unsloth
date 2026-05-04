@@ -15,6 +15,8 @@ _FAKE_SMI_DIR=$(mktemp -d)
 {
     sed -n '/^_has_amd_rocm_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_has_intel_xpu_gpu()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
@@ -95,10 +97,10 @@ run_func() {
     _mock_dir="$1"
     if [ "$_mock_dir" = "none" ]; then
         # Minimal PATH with only basic tools, no nvidia-smi anywhere
-        PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        UNSLOTH_DRM_ROOT="$_FAKE_SMI_DIR/no-drm" PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     else
         # Put mock nvidia-smi dir first, then basic tools
-        PATH="$_mock_dir:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        UNSLOTH_DRM_ROOT="$_FAKE_SMI_DIR/no-drm" PATH="$_mock_dir:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     fi
 }
 
@@ -190,6 +192,14 @@ rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 _result=$(run_func "none")
 assert_eq "no GPU -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
+# 13b) Intel DRM vendor id -> xpu
+_intel_root=$(mktemp -d)
+mkdir -p "$_intel_root/card0/device"
+printf '0x8086\n' > "$_intel_root/card0/device/vendor"
+_result=$(UNSLOTH_DRM_ROOT="$_intel_root" PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "Intel DRM vendor -> xpu" "https://download.pytorch.org/whl/xpu" "$_result"
+rm -rf "$_intel_root"
+
 # 14) ROCm 6.1 (no nvidia-smi) -> rocm6.1
 _dir=$(make_mock_amd_smi "6.1")
 _result=$(run_func "$_dir")
@@ -218,7 +228,14 @@ rm -rf "$_dir"
 _dir=$(mktemp -d)
 cat > "$_dir/amd-smi" <<'MOCK'
 #!/bin/sh
-echo "AMDSMI Tool: 25.0.1 | AMDSMI Library version: 25.0.1.0 | ROCm version: "
+case "$1" in
+    list)
+        printf 'GPU: 0\n  BDF: 0000:03:00.0\n  NAME: gfx1100\n'
+        ;;
+    *)
+        echo "AMDSMI Tool: 25.0.1 | AMDSMI Library version: 25.0.1.0 | ROCm version: "
+        ;;
+esac
 MOCK
 chmod +x "$_dir/amd-smi"
 _result=$(run_func "$_dir")
@@ -229,7 +246,14 @@ rm -rf "$_dir"
 _dir=$(mktemp -d)
 cat > "$_dir/amd-smi" <<'MOCK'
 #!/bin/sh
-echo "AMDSMI Tool: 25.0.1 | AMDSMI Library version: 25.0.1.0 | ROCm version: N/A"
+case "$1" in
+    list)
+        printf 'GPU: 0\n  BDF: 0000:03:00.0\n  NAME: gfx1100\n'
+        ;;
+    *)
+        echo "AMDSMI Tool: 25.0.1 | AMDSMI Library version: 25.0.1.0 | ROCm version: N/A"
+        ;;
+esac
 MOCK
 chmod +x "$_dir/amd-smi"
 _result=$(run_func "$_dir")
