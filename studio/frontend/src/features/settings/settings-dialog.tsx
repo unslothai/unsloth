@@ -10,9 +10,9 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Key01Icon,
   Message01Icon,
   PaintBrush02Icon,
+  Plug01Icon,
   Settings02Icon,
   SparklesIcon,
   UserIcon,
@@ -38,7 +38,7 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "api-keys", label: "API Access", icon: Key01Icon },
+  { id: "api-keys", label: "API Access", icon: Plug01Icon },
   { id: "about", label: "About", icon: SparklesIcon },
 ];
 
