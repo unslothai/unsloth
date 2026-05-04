@@ -1407,9 +1407,7 @@ class FastSentenceTransformer(FastModel):
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
-            if isinstance(
-                getattr(type(model[0]), "auto_model", None), property
-            ):
+            if isinstance(getattr(type(model[0]), "auto_model", None), property):
                 model[0].model = compiled
             else:
                 model[0].auto_model = compiled
