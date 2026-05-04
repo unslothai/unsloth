@@ -13,7 +13,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
-import { deleteTrainingRun, listTrainingRuns } from "@/features/training";
+import {
+  deleteTrainingRun,
+  emitTrainingRunDeleted,
+  listTrainingRuns,
+  onTrainingRunDeleted,
+  onTrainingRunUpdated,
+} from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
@@ -186,6 +192,22 @@ export function HistoryCardGrid({
     };
   }, [fetchRuns]);
 
+  useEffect(() => {
+    const offUpdated = onTrainingRunUpdated((updated) => {
+      setRuns((prev) =>
+        prev.map((run) => (run.id === updated.id ? updated : run)),
+      );
+    });
+    const offDeleted = onTrainingRunDeleted((runId) => {
+      setRuns((prev) => prev.filter((run) => run.id !== runId));
+      setTotal((prev) => Math.max(0, prev - 1));
+    });
+    return () => {
+      offUpdated();
+      offDeleted();
+    };
+  }, []);
+
   // Poll while any run is still "running" so the card shows live progress
   const hasRunningRun = runs.some((r) => r.status === "running");
   const visibleCount = runs.length;
@@ -218,9 +240,7 @@ export function HistoryCardGrid({
     setDeleteError(null);
     try {
       await deleteTrainingRun(deleteTarget);
-      // Optimistically remove the card so it disappears immediately
-      setRuns((prev) => prev.filter((r) => r.id !== deleteTarget));
-      setTotal((prev) => Math.max(0, prev - 1));
+      emitTrainingRunDeleted(deleteTarget);
       // Re-fetch preserving visible count so offsets stay consistent for "Load more"
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
@@ -302,11 +322,22 @@ export function HistoryCardGrid({
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.model_name}
+                  title={run.display_name ?? run.model_name}
                 >
-                  {run.model_name}
+                  {run.display_name ?? run.model_name}
                 </p>
-                <p className="truncate text-xs text-muted-foreground">
+                {run.display_name && (
+                  <p
+                    className="truncate text-xs text-muted-foreground"
+                    title={run.model_name}
+                  >
+                    {run.model_name}
+                  </p>
+                )}
+                <p
+                  className="truncate text-xs text-muted-foreground"
+                  title={run.dataset_name}
+                >
                   {run.dataset_name}
                 </p>
               </div>

@@ -81,6 +81,8 @@ import { usePlatformStore } from "@/config/env";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
   deleteTrainingRun,
+  emitTrainingRunDeleted,
+  emitTrainingRunUpdated,
   removeTrainingUnloadGuard,
   renameTrainingRun,
   useTrainingHistorySidebarItems,
@@ -235,12 +237,7 @@ export function AppSidebar() {
     : undefined;
 
   // Training runs
-  const {
-    items: runItems,
-    refresh: refreshRuns,
-    applyRunUpdate,
-    removeRun,
-  } = useTrainingHistorySidebarItems(
+  const { items: runItems } = useTrainingHistorySidebarItems(
     !chatOnly && isStudioRoute,
   );
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
@@ -296,8 +293,7 @@ export function AppSidebar() {
     }
     try {
       const updated = await renameTrainingRun(target.run.id, renameTrimmed);
-      applyRunUpdate(updated);
-      void refreshRuns();
+      emitTrainingRunUpdated(updated);
     } catch (err) {
       toast.error("Failed to rename run", {
         description: err instanceof Error ? err.message : undefined,
@@ -330,8 +326,7 @@ export function AppSidebar() {
       if (selectedHistoryRunId === target.run.id) {
         setSelectedHistoryRunId(null);
       }
-      removeRun(target.run.id);
-      void refreshRuns();
+      emitTrainingRunDeleted(target.run.id);
     } catch (err) {
       toast.error("Failed to delete run", {
         description: err instanceof Error ? err.message : undefined,
@@ -810,7 +805,7 @@ export function AppSidebar() {
             {confirmingDelete?.kind === "run" ? (
               <>
                 Are you sure you want to delete this run{" "}
-                <em>{confirmingDelete.run.model_name}</em>?
+                <em>{confirmingDelete.run.display_name ?? confirmingDelete.run.model_name}</em>?
               </>
             ) : confirmingDelete?.kind === "chat" ? (
               <>

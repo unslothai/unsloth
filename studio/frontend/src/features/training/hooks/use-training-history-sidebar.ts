@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { listTrainingRuns } from "../api/history-api";
+import { onTrainingRunDeleted, onTrainingRunUpdated } from "../events";
 import type { TrainingRunSummary } from "../types/history";
 
 const SIDEBAR_LIMIT = 20;
@@ -165,19 +166,22 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     };
   }, [enabled, hasRunning, refresh]);
 
-  // Optimistic mutation helpers abort any in-flight fetch so a stale
-  // response can't resurrect a row the caller just removed/renamed.
-  const applyRunUpdate = useCallback((updated: TrainingRunSummary) => {
-    controllerRef.current?.abort();
-    setItems((prev) =>
-      prev.map((run) => (run.id === updated.id ? updated : run)),
-    );
+  useEffect(() => {
+    const offUpdated = onTrainingRunUpdated((updated) => {
+      controllerRef.current?.abort();
+      setItems((prev) =>
+        prev.map((run) => (run.id === updated.id ? updated : run)),
+      );
+    });
+    const offDeleted = onTrainingRunDeleted((runId) => {
+      controllerRef.current?.abort();
+      setItems((prev) => prev.filter((run) => run.id !== runId));
+    });
+    return () => {
+      offUpdated();
+      offDeleted();
+    };
   }, []);
 
-  const removeRun = useCallback((runId: string) => {
-    controllerRef.current?.abort();
-    setItems((prev) => prev.filter((run) => run.id !== runId));
-  }, []);
-
-  return { items, loaded, refresh, applyRunUpdate, removeRun };
+  return { items, loaded, refresh };
 }

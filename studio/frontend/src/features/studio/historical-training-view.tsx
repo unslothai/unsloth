@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TrainingViewData } from "@/features/training";
-import { getTrainingRun } from "@/features/training";
+import { getTrainingRun, onTrainingRunUpdated } from "@/features/training";
 import type { TrainingRunDetailResponse } from "@/features/training";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
@@ -77,7 +77,7 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
             : run.error_message ?? "Training errored",
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
-    modelName: run.model_name,
+    modelName: run.display_name ?? run.model_name,
     trainingMethod: normalizeTrainingMethod(detail.config),
     lossHistory,
     lrHistory,
@@ -111,6 +111,14 @@ export function HistoricalTrainingView({
       setDetail(null);
       setError(null);
     };
+  }, [runId]);
+
+  useEffect(() => {
+    const offUpdated = onTrainingRunUpdated((updated) => {
+      if (updated.id !== runId) return;
+      setDetail((prev) => (prev ? { ...prev, run: updated } : prev));
+    });
+    return offUpdated;
   }, [runId]);
 
   if (loading) {

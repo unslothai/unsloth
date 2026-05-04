@@ -190,9 +190,10 @@
 	--accent: #2e3035;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
-	--border: #2e3035;
-	/* --input one step lighter than --muted so form borders stay visible on
-	   muted surfaces (right config panel) and keep subtle contrast on card. */
+	/* --border / --input one step lighter than --muted so outlines and form
+	   borders stay visible on muted surfaces (right config panel, export
+	   tiles, quant chips) and keep subtle contrast on card. */
+	--border: #3a3d42;
 	--input: #3a3d42;
 	--ring: oklch(0.705 0.15 162.5);
 	--chart-1: oklch(0.7511 0.1407 166.2284);
@@ -659,6 +660,9 @@
 	}
 	.panel-switch [data-slot="switch-thumb"] {
 		background-color: var(--panel-slider-fg) !important;
+	}
+	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
+		background-color: #ffffff !important;
 	}
 
 	/* Compact tooltip — small black pill with white text. Used for short
