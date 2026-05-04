@@ -15,7 +15,7 @@ import time
 import types
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -374,6 +374,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
@@ -388,6 +389,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if llama_extra_args:
+        payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -514,8 +517,14 @@ def studio_default(
 # ── unsloth studio run ───────────────────────────────────────────────
 
 
-@studio_app.command()
+@studio_app.command(
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    },
+)
 def run(
+    ctx: typer.Context,
     model: str = typer.Option(..., "--model", "-m", help = "Model path or HF repo"),
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
@@ -534,9 +543,18 @@ def run(
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
+    Any flag this command does not recognize is forwarded verbatim to
+    the underlying llama-server (GGUF only). Studio-managed flags
+    (--port, -c / --ctx-size, --api-key, -ngl, --jinja, --flash-attn,
+    --no-context-shift, model-identity flags, ...) are rejected with
+    HTTP 400.
+
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42
+        unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
     """
+    extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
@@ -576,6 +594,11 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        # Forward unknown args (llama-server pass-through) to the
+        # re-exec'd command so the studio venv sees them in ctx.args
+        # and the re-execed run() can include them in the load payload.
+        if extra_llama_args:
+            args.extend(extra_llama_args)
 
         if sys.platform == "win32":
             proc = subprocess.Popen(args)
@@ -617,6 +640,7 @@ def run(
             gguf_variant = gguf_variant,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            llama_extra_args = extra_llama_args,
         )
     except RuntimeError as exc:
         typer.echo(f"Error: {exc}", err = True)
