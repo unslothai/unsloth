@@ -31,6 +31,7 @@ interface TabDef {
   id: SettingsTab;
   label: string;
   icon: typeof Settings02Icon;
+  badge?: string;
 }
 
 const TABS: TabDef[] = [
@@ -38,8 +39,8 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "api-keys", label: "API Keys", icon: Key01Icon },
-  { id: "about", label: "About", icon: SparklesIcon },
+  { id: "api-keys", label: "API Keys", icon: Key01Icon, badge: "New" },
+  { id: "about", label: "Help", icon: SparklesIcon },
 ];
 
 function renderTab(tab: SettingsTab) {
@@ -121,7 +122,12 @@ export function SettingsDialog() {
                       strokeWidth={1.5}
                       className="relative z-10 size-[18px]"
                     />
-                    <span className="relative z-10">{tab.label}</span>
+                    <span className="relative z-10 min-w-0 truncate">{tab.label}</span>
+                    {tab.badge ? (
+                      <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                        {tab.badge}
+                      </span>
+                    ) : null}
                   </button>
                 );
               })}

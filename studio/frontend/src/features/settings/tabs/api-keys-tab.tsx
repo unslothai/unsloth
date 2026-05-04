@@ -65,7 +65,7 @@ export function ApiKeysTab() {
       <header className="flex flex-col gap-1">
         <h1 className="text-lg font-semibold font-heading">API Keys</h1>
         <p className="text-xs text-muted-foreground">
-          Access Unsloth Studio programmatically via the OpenAI-compatible API.{" "}
+          Access Unsloth programmatically via the OpenAI-compatible API.{" "}
           <a
             href="https://unsloth.ai/docs/basics/api"
             target="_blank"
