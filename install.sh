@@ -1132,17 +1132,45 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
 fi
 
-# Guard against Python 3.13.8 torch import bug on Apple Silicon
-# (skip when the user explicitly chose a version via --python)
+# Guard against known issues with the venv interpreter on Apple Silicon:
+#   * uv may pick a cached x86_64 Python (Rosetta) when a same-version
+#     x86_64 build is already cached, producing a venv that has no torch
+#     wheels available on the macOS CPU index.
+#   * Python 3.13.8 has a known torch import bug.
+# The two issues are independent: a venv may be x86_64 AND happen to be
+# 3.13.8 once recreated. The checks therefore run sequentially with a
+# re-inspection of the interpreter between them, so both invariants hold
+# on whatever venv we end up with. Skip both when the user explicitly
+# chose an interpreter via --python.
 if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    _PY_VER=$("$VENV_DIR/bin/python" -c \
-        "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>/dev/null || echo "")
+    _inspect_venv() {
+        "$VENV_DIR/bin/python" -c \
+            "import platform, sys; print(platform.machine() + ' ' + '{}.{}.{}'.format(*sys.version_info[:3]))" \
+            2>/dev/null || echo " "
+    }
+    _info=$(_inspect_venv)
+    _VENV_ARCH=${_info% *}
+    _PY_VER=${_info#* }
+
+    if [ "$_VENV_ARCH" = "x86_64" ]; then
+        echo "  WARNING: venv was created with an x86_64 Python (Rosetta) on Apple Silicon."
+        echo "  Recreating venv with arm64 Python..."
+        rm -rf "$VENV_DIR"
+        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        # Re-inspect the recreated venv before the version check below.
+        _info=$(_inspect_venv)
+        _VENV_ARCH=${_info% *}
+        _PY_VER=${_info#* }
+    fi
+
     if [ "$_PY_VER" = "3.13.8" ]; then
         echo "  WARNING: Python 3.13.8 has a known torch import bug."
         echo "  Recreating venv with Python 3.12..."
         rm -rf "$VENV_DIR"
         PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
     fi
 fi
 
