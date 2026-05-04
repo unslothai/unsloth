@@ -1244,11 +1244,14 @@ _install_intel_xpu_stack() {
     if [ "$_local_install" = true ]; then
         run_install_cmd "install Intel XPU stack (local)" \
             env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
-            uv pip install --python "$_venv_py" "unsloth[intel-gpu-torch290]>=2026.4.8" unsloth-zoo
+            uv pip install --python "$_venv_py" \
+                --upgrade-package unsloth --upgrade-package unsloth-zoo \
+                "unsloth[intel-gpu-torch290]>=2026.4.8" unsloth-zoo
     else
         run_install_cmd "install Intel XPU stack" \
             env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
-            uv pip install --python "$_venv_py" "${_package_name}[intel-gpu-torch290]"
+            uv pip install --python "$_venv_py" \
+                --upgrade-package "$_package_name" "${_package_name}[intel-gpu-torch290]"
     fi
 }
 
@@ -1727,8 +1730,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 --upgrade-package unsloth "$PACKAGE_NAME"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        substep "overlaying local repo (editable)..."
-        run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
+        _overlay_local_repos
     fi
 
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
