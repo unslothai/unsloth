@@ -22,11 +22,12 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator, List, Optional
 from urllib.parse import urlparse
 
 import httpx
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -592,6 +593,7 @@ class LlamaCppBackend:
                 capture_output = True,
                 text = True,
                 timeout = 10,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
@@ -1379,6 +1381,7 @@ class LlamaCppBackend:
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
         n_parallel: int = 1,
+        extra_args: Optional[List[str]] = None,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1701,6 +1704,18 @@ class LlamaCppBackend:
             if chat_template_override:
                 import tempfile
 
+                self._chat_template = chat_template_override
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF chat template override",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
+
                 self._chat_template_file = tempfile.NamedTemporaryFile(
                     mode = "w",
                     suffix = ".jinja",
@@ -1753,6 +1768,17 @@ class LlamaCppBackend:
             else:
                 self._api_key = None
 
+            # User-supplied pass-through args go last so llama.cpp's
+            # last-wins flag parsing lets the user override Studio's
+            # auto-set tier-2 flags (e.g. --cache-type-k, --spec-type).
+            # The route layer has already validated this list against
+            # the managed-flag denylist via validate_extra_args().
+            if extra_args:
+                cmd.extend(str(a) for a in extra_args)
+                logger.info(
+                    f"Appending user extra args to llama-server: {list(extra_args)}"
+                )
+
             _log_cmd = list(cmd)
             if "--api-key" in _log_cmd:
                 _ki = _log_cmd.index("--api-key") + 1
@@ -1764,7 +1790,7 @@ class LlamaCppBackend:
             import os
             import sys
 
-            env = os.environ.copy()
+            env = child_env_without_native_path_secret()
             binary_dir = str(Path(binary).parent)
 
             if sys.platform == "win32":
@@ -2154,6 +2180,7 @@ class LlamaCppBackend:
                     capture_output = True,
                     text = True,
                     timeout = 5,
+                    env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
                     return

@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -105,6 +106,7 @@ class AudioCodecManager:
                     spark_code_dir,
                 ],
                 check = True,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
 
@@ -143,6 +145,7 @@ class AudioCodecManager:
                     outetts_code_dir,
                 ],
                 check = True,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             # Remove files that pull in heavy / incompatible dependencies

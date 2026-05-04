@@ -68,7 +68,11 @@ export async function loadModel(
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      native_path_lease: payload.nativePathLease ?? null,
+      nativePathLease: undefined,
+    }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
@@ -81,6 +85,7 @@ export async function validateModel(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
+      native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
     }),
@@ -215,6 +220,25 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export async function deleteFineTunedModel(args: {
+  modelPath: string;
+  source: "training" | "exported";
+  exportType?: "lora" | "merged" | "gguf";
+  ggufVariant?: string;
+}): Promise<void> {
+  const response = await authFetch("/api/models/delete-finetuned", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: args.modelPath,
+      source: args.source,
+      export_type: args.exportType ?? null,
+      gguf_variant: args.ggufVariant ?? null,
+    }),
   });
   await parseJsonOrThrow<unknown>(response);
 }

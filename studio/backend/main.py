@@ -78,6 +78,7 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.native_path_leases import native_path_leases_supported
 
 
 def get_unsloth_version() -> str:
@@ -187,6 +188,8 @@ if _api_only:
         "tauri://localhost",  # Linux/macOS Tauri webview
         "http://tauri.localhost",  # Windows Tauri webview
         "http://localhost",  # dev fallback
+        "http://localhost:5173",  # Tauri dev/Vite
+        "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
     ]
     _cors_origin_regex = None
 else:
@@ -242,6 +245,7 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
+        "native_path_leases_supported": native_path_leases_supported(),
     }
 
 
