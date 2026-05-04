@@ -1235,7 +1235,7 @@ _install_intel_xpu_stack() {
     if [ "$_local_install" = true ]; then
         run_install_cmd "install Intel XPU stack (local)" \
             env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
-            uv pip install --python "$_venv_py" "unsloth[intel-gpu-torch290]>=2026.4.7" unsloth-zoo
+            uv pip install --python "$_venv_py" "unsloth[intel-gpu-torch290]>=2026.4.8" unsloth-zoo
     else
         run_install_cmd "install Intel XPU stack" \
             env UV_SKIP_WHEEL_FILENAME_CHECK=1 \
@@ -1706,10 +1706,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             run_install_cmd "install unsloth (no torch)" uv pip install --python "$_VENV_PY" \
                 --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo \
-                "unsloth>=2026.4.7" unsloth-zoo
-            _req_file="$(find_no_torch_runtime_file)"
-            if [ -n "$_req_file" ]; then
-                run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_req_file"
+                "unsloth>=2026.4.8" unsloth-zoo
+            _NO_TORCH_RT="$(_find_no_torch_runtime)"
+            if [ -n "$_NO_TORCH_RT" ]; then
+                run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
             fi
             if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
                 substep "overlaying local repo (editable)..."
