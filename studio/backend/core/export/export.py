@@ -561,6 +561,7 @@ class ExportBackend:
                 # from master and can drift past the pinned binary's gguf API.
                 # Defer to an explicit user override; zoo validates the value.
                 from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+
                 os.environ.setdefault(
                     "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
                 )
