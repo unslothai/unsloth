@@ -352,6 +352,7 @@ def _validate_native_mmproj_companion(
     if not mmproj_path or not gguf_path:
         return
     import stat as _stat_module
+
     mm = Path(mmproj_path)
     gguf = Path(gguf_path)
     try:
@@ -361,7 +362,9 @@ def _validate_native_mmproj_companion(
             status_code = 400,
             detail = "Native vision companion is no longer accessible.",
         ) from exc
-    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(mm_lstat.st_mode):
+    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(
+        mm_lstat.st_mode
+    ):
         raise HTTPException(
             status_code = 400,
             detail = "Native vision companion must be a regular file.",
@@ -1119,10 +1122,9 @@ async def get_status(
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
             _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
-            _display_model_id = (
-                getattr(llama_backend, "_native_display_label", None)
-                or display_label_for_native_path(_model_id)
-            )
+            _display_model_id = getattr(
+                llama_backend, "_native_display_label", None
+            ) or display_label_for_native_path(_model_id)
             if (
                 _native_grant_backed
                 and _model_id
