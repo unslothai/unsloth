@@ -22,11 +22,9 @@ import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
-import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
-  InferenceParams,
 } from "../types/runtime";
 
 // The simplified Speculative Decoding control surfaces "default" (which
@@ -170,6 +168,7 @@ export function useChatModelRuntime() {
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
   const loadToastDismissedRef = useRef(false);
+  const cancelUnloadPendingRef = useRef(false);
 
   const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
     loadToastDismissedRef.current = dismissed;
@@ -183,7 +182,9 @@ export function useChatModelRuntime() {
     loadAbortRef.current = null;
     loadToastIdRef.current = null;
     setLoadToastDismissedState(false);
-    useChatRuntimeStore.getState().setModelLoading(false);
+    if (!cancelUnloadPendingRef.current) {
+      useChatRuntimeStore.getState().setModelLoading(false);
+    }
   }, [setLoadToastDismissedState]);
 
   const renderLoadDescription = useCallback(
@@ -222,27 +223,6 @@ export function useChatModelRuntime() {
         // Apply inference defaults on reconnect (page refresh with model already loaded)
         if (statusRes.inference) {
           const currentParams = useChatRuntimeStore.getState().params;
-          const reconnectResponse: LoadModelResponse = {
-            status: "already_loaded",
-            model: statusRes.active_model,
-            display_name: statusRes.active_model,
-            is_vision: statusRes.is_vision,
-            is_lora: false,
-            is_gguf: statusRes.is_gguf,
-            is_audio: statusRes.is_audio,
-            audio_type: statusRes.audio_type,
-            has_audio_input: statusRes.has_audio_input,
-            inference: statusRes.inference,
-            context_length: statusRes.context_length,
-            max_context_length: statusRes.max_context_length,
-            native_context_length: statusRes.native_context_length,
-            supports_reasoning: statusRes.supports_reasoning,
-            reasoning_style: statusRes.reasoning_style,
-            reasoning_always_on: statusRes.reasoning_always_on,
-            supports_preserve_thinking: statusRes.supports_preserve_thinking,
-            supports_tools: statusRes.supports_tools,
-            speculative_type: statusRes.speculative_type,
-          };
           setParams(
             mergeBackendRecommendedInference({
               current: currentParams,
@@ -340,8 +320,18 @@ export function useChatModelRuntime() {
         ? undefined
         : "The current download may still finish in the background.",
     });
-    // Fire-and-forget: tell backend to stop, don't block UI
-    unloadModel({ model_path: model.id }).catch(() => {});
+    cancelUnloadPendingRef.current = true;
+    useChatRuntimeStore.getState().setModelLoading(true);
+    void (async () => {
+      try {
+        await unloadModel({ model_path: model.id }).catch(() => {});
+      } finally {
+        cancelUnloadPendingRef.current = false;
+        if (!loadingModelRef.current) {
+          useChatRuntimeStore.getState().setModelLoading(false);
+        }
+      }
+    })();
   }, [clearCheckpoint, setLoadToastDismissedState]);
 
   const selectModel = useCallback(
@@ -448,6 +438,7 @@ export function useChatModelRuntime() {
             if (validation.requires_trust_remote_code && !trustRemoteCode) {
               throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
             }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             const loadNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
@@ -456,6 +447,7 @@ export function useChatModelRuntime() {
               await unloadModel({ model_path: currentCheckpoint });
               previousWasUnloaded = true;
             }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
             const {
               chatTemplateOverride,

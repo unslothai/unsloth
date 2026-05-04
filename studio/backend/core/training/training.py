@@ -186,6 +186,7 @@ class TrainingBackend:
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "gpu_ids": kwargs.get("gpu_ids"),
         }
