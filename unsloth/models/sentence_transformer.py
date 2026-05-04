@@ -1407,7 +1407,12 @@ class FastSentenceTransformer(FastModel):
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
-            model[0].auto_model = compiled
+            if isinstance(
+                getattr(type(model[0]), "auto_model", None), property
+            ):
+                model[0].model = compiled
+            else:
+                model[0].auto_model = compiled
             # Fix for accelerate unwrap_model bug:
             # When SentenceTransformer contains a compiled inner model,
             # accelerate checks has_compiled_regions() which returns True,
