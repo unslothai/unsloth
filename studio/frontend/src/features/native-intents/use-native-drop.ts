@@ -83,7 +83,11 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         const ggufs = ggufPaths(event.payload.paths);
         if (event.payload.paths.length !== 1 || ggufs.length !== 1) {
           if (event.payload.paths.length > 0) {
-            toast.error("Drop one GGUF model at a time.");
+            toast.error(
+              ggufs.length === 0
+                ? "Only .gguf model files can be dropped here."
+                : "Drop a single .gguf model file.",
+            );
           }
           return;
         }

@@ -174,6 +174,19 @@ function ModelSelectorContent({
         </Tabs>
       )}
 
+      {onPickLocalModel ? (
+        <div className="mt-2 border-t border-border/70 pt-2">
+          <button
+            type="button"
+            onClick={onPickLocalModel}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+            title="Pick a model file from disk"
+          >
+            <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+            Pick a model file from disk
+          </button>
+        </div>
+      ) : null}
       {hasSelection && onEject ? (
         <div className="mt-2 border-t border-border/70 pt-2">
           <button
@@ -184,18 +197,6 @@ function ModelSelectorContent({
           >
             <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
             Eject loaded model
-          </button>
-        </div>
-      ) : !hasSelection && onPickLocalModel ? (
-        <div className="mt-2 border-t border-border/70 pt-2">
-          <button
-            type="button"
-            onClick={onPickLocalModel}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-            title="Pick a model file from disk"
-          >
-            <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-            Pick a model file from disk
           </button>
         </div>
       ) : null}

@@ -1,3 +1,4 @@
+import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { pickNativeModel } from "./api";
 import { useNativeIntentStore } from "./store";
@@ -21,38 +22,47 @@ function isGgufModelIntent(intent: NativeIntent): boolean {
 
 export function useChooseNativeModel(options: ChooseNativeModelOptions = {}) {
   const addIntent = useNativeIntentStore((state) => state.addIntent);
+  const pickingRef = useRef(false);
+  const onAutoLoad = options.onAutoLoad;
+  const shouldAutoLoad = options.shouldAutoLoad;
 
-  return async () => {
-    let intent: NativeIntent | null = null;
+  return useCallback(async () => {
+    if (pickingRef.current) return;
+    pickingRef.current = true;
     try {
-      intent = await pickNativeModel();
-    } catch (error) {
-      toast.error("Could not choose local model", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-      return;
-    }
+      let intent: NativeIntent | null = null;
+      try {
+        intent = await pickNativeModel();
+      } catch (error) {
+        toast.error("Could not choose local model", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
 
-    if (!intent) return;
+      if (!intent) return;
 
-    let shouldAutoLoad = false;
-    try {
-      shouldAutoLoad =
-        Boolean(options.onAutoLoad) &&
-        isGgufModelIntent(intent) &&
-        options.shouldAutoLoad?.(intent) === true;
-    } catch {
-      shouldAutoLoad = false;
-    }
-    if (!shouldAutoLoad) {
-      addIntent(intent);
-      return;
-    }
+      let runAutoLoad = false;
+      try {
+        runAutoLoad =
+          Boolean(onAutoLoad) &&
+          isGgufModelIntent(intent) &&
+          shouldAutoLoad?.(intent) === true;
+      } catch {
+        runAutoLoad = false;
+      }
+      if (!runAutoLoad) {
+        addIntent(intent);
+        return;
+      }
 
-    try {
-      await options.onAutoLoad?.(intent);
-    } catch {
-      addIntent(intent);
+      try {
+        await onAutoLoad?.(intent);
+      } catch {
+        addIntent(intent);
+      }
+    } finally {
+      pickingRef.current = false;
     }
-  };
+  }, [addIntent, onAutoLoad, shouldAutoLoad]);
 }

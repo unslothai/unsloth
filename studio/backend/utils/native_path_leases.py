@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat as _stat_module
 import threading
 import time
 from contextlib import contextmanager
@@ -26,6 +27,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
 _MAX_NATIVE_PATH_REDACTIONS = 100
+_MIN_LEASE_SECRET_BYTES = 32
 
 _REPLAY_LOCK = threading.Lock()
 _USED_NONCES: dict[str, int] = {}
@@ -33,6 +35,8 @@ _REDACTION_LOCK = threading.Lock()
 _NATIVE_PATH_REDACTIONS: list[str] = []
 _NATIVE_PATH_LABELS: dict[str, str] = {}
 _NATIVE_PATH_ENV_LOCK = threading.Lock()
+_SECRET_INIT_LOCK = threading.Lock()
+_CACHED_LEASE_SECRET: bytes | None = None
 
 
 class NativePathLeaseError(ValueError):
@@ -54,7 +58,11 @@ class NativePathGrant:
 
 
 def native_path_leases_supported() -> bool:
-    return bool(os.environ.get(LEASE_SECRET_ENV))
+    try:
+        _decode_secret()
+    except NativePathLeaseError:
+        return False
+    return True
 
 
 def child_env_without_native_path_secret(
@@ -167,7 +175,7 @@ def is_registered_native_path_label(path_value: str | None, label: str | None) -
 
 def redact_native_paths(value: str) -> str:
     with _REDACTION_LOCK:
-        paths = list(_NATIVE_PATH_REDACTIONS)
+        paths = sorted(_NATIVE_PATH_REDACTIONS, key = len, reverse = True)
     redacted = value
     for path in paths:
         for variant in {path, path.replace("/", "\\"), path.replace("\\", "/")}:
@@ -177,15 +185,25 @@ def redact_native_paths(value: str) -> str:
 
 
 def _decode_secret() -> bytes:
-    encoded = os.environ.get(LEASE_SECRET_ENV)
-    if not encoded:
-        raise NativePathLeaseError(
-            "Native path grants require the managed desktop backend."
-        )
-    try:
-        return _b64decode(encoded)
-    except Exception as exc:
-        raise NativePathLeaseError("Native path grant secret is invalid.") from exc
+    global _CACHED_LEASE_SECRET
+    if _CACHED_LEASE_SECRET is not None:
+        return _CACHED_LEASE_SECRET
+    with _SECRET_INIT_LOCK:
+        if _CACHED_LEASE_SECRET is not None:
+            return _CACHED_LEASE_SECRET
+        encoded = os.environ.get(LEASE_SECRET_ENV)
+        if not encoded:
+            raise NativePathLeaseError(
+                "Native path grants require the managed desktop backend."
+            )
+        try:
+            secret = _b64decode(encoded)
+        except Exception as exc:
+            raise NativePathLeaseError("Native path grant secret is invalid.") from exc
+        if len(secret) < _MIN_LEASE_SECRET_BYTES:
+            raise NativePathLeaseError("Native path grant secret is invalid.")
+        _CACHED_LEASE_SECRET = secret
+        return secret
 
 
 def _split_lease(lease: str) -> tuple[str, str]:
@@ -238,6 +256,8 @@ def _validate_payload(
     if expected_kind and payload["path_kind"] != expected_kind:
         raise NativePathLeaseError("Native path grant kind is invalid.")
     now_ms = int(time.time() * 1000)
+    if int(payload["issued_at_ms"]) >= int(payload["expires_at_ms"]):
+        raise NativePathLeaseError("Native path grant timestamps are inconsistent.")
     if int(payload["expires_at_ms"]) <= now_ms:
         raise NativePathLeaseError("Native path grant has expired.")
     if int(payload["issued_at_ms"]) > now_ms + 30_000:
@@ -249,22 +269,24 @@ def _validate_payload(
 
 
 def _validate_current_stat(grant: NativePathGrant) -> None:
+    try:
+        st = os.lstat(grant.canonical_path)
+    except OSError as exc:
+        raise NativePathLeaseError("Native path is no longer accessible.") from exc
+    if _stat_module.S_ISLNK(st.st_mode):
+        raise NativePathLeaseError("Native path is no longer a regular file.")
     if grant.path_type == "file":
-        if not grant.canonical_path.is_file():
+        if not _stat_module.S_ISREG(st.st_mode):
             raise NativePathLeaseError("Native path is no longer a regular file.")
     elif grant.path_type == "directory":
-        if not grant.canonical_path.is_dir():
+        if not _stat_module.S_ISDIR(st.st_mode):
             raise NativePathLeaseError("Native path is no longer a directory.")
     else:
         raise NativePathLeaseError("Native path grant has an unsupported path type.")
 
-    try:
-        stat = grant.canonical_path.stat()
-    except OSError as exc:
-        raise NativePathLeaseError("Native path is no longer accessible.") from exc
-    if grant.size_bytes is not None and stat.st_size != grant.size_bytes:
+    if grant.size_bytes is not None and st.st_size != grant.size_bytes:
         raise NativePathLeaseError("Native path changed after it was selected.")
-    current_modified_ms = int(stat.st_mtime_ns // 1_000_000)
+    current_modified_ms = int(st.st_mtime_ns // 1_000_000)
     if grant.modified_ms is not None and current_modified_ms != grant.modified_ms:
         raise NativePathLeaseError("Native path changed after it was selected.")
 
