@@ -19,6 +19,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
+import { useEffect, useRef } from "react";
 import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
@@ -66,12 +67,27 @@ export function SettingsDialog() {
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const reduced = useReducedMotion();
+  const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
+    general: null,
+    profile: null,
+    appearance: null,
+    chat: null,
+    "api-keys": null,
+    about: null,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      tabButtonRefs.current[activeTab]?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, activeTab]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
       <DialogContent
         showCloseButton={false}
-        onOpenAutoFocus={(event) => event.preventDefault()}
         overlayClassName="bg-background/40"
         className={cn(
           "!max-w-none h-[560px] w-[820px] p-0 overflow-hidden",
@@ -92,6 +108,9 @@ export function SettingsDialog() {
                 return (
                   <button
                     key={tab.id}
+                    ref={(node) => {
+                      tabButtonRefs.current[tab.id] = node;
+                    }}
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
