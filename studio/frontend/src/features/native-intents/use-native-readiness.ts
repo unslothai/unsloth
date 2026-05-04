@@ -1,7 +1,7 @@
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 
-const MAX_READINESS_POLLS = 60;
+const MAX_READINESS_POLLS = 720;
 
 export function useNativePathLeasesSupported(): boolean {
   const [supported, setSupported] = useState(false);

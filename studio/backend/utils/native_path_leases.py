@@ -37,6 +37,8 @@ _NATIVE_PATH_LABELS: dict[str, str] = {}
 _NATIVE_PATH_ENV_LOCK = threading.Lock()
 _SECRET_INIT_LOCK = threading.Lock()
 _CACHED_LEASE_SECRET: bytes | None = None
+_SCRUB_REFCOUNT = 0
+_SCRUB_SAVED_SECRET: str | None = None
 
 
 class NativePathLeaseError(ValueError):
@@ -82,19 +84,27 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
+    global _CACHED_LEASE_SECRET
     os.environ.pop(LEASE_SECRET_ENV, None)
+    _CACHED_LEASE_SECRET = None
     return target(*args, **kwargs)
 
 
 @contextmanager
 def native_path_secret_removed_for_child_start() -> Iterator[None]:
+    global _SCRUB_REFCOUNT, _SCRUB_SAVED_SECRET
     with _NATIVE_PATH_ENV_LOCK:
-        value = os.environ.pop(LEASE_SECRET_ENV, None)
-        try:
-            yield
-        finally:
-            if value is not None:
-                os.environ[LEASE_SECRET_ENV] = value
+        if _SCRUB_REFCOUNT == 0:
+            _SCRUB_SAVED_SECRET = os.environ.pop(LEASE_SECRET_ENV, None)
+        _SCRUB_REFCOUNT += 1
+    try:
+        yield
+    finally:
+        with _NATIVE_PATH_ENV_LOCK:
+            _SCRUB_REFCOUNT -= 1
+            if _SCRUB_REFCOUNT == 0 and _SCRUB_SAVED_SECRET is not None:
+                os.environ[LEASE_SECRET_ENV] = _SCRUB_SAVED_SECRET
+                _SCRUB_SAVED_SECRET = None
 
 
 def verify_native_path_lease(

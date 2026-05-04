@@ -105,7 +105,12 @@ def filter_sensitive_data(logger, method_name, event_dict):
             return [filter_value(item) for item in value]
         return value
 
-    return {k: filter_value(v) for k, v in event_dict.items()}
+    return {
+        k: "<redacted native path lease>"
+        if str(k).replace("_", "").lower() == "nativepathlease"
+        else filter_value(v)
+        for k, v in event_dict.items()
+    }
 
 
 def get_logger(name: str) -> structlog.BoundLogger:

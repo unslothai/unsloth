@@ -633,7 +633,7 @@ export function ChatPage(): ReactElement {
   const loadNativeModelIntent = useCallback(
     (intent: NativeIntent, loadingDescription: string) => {
       const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
-      useNativeIntentStore.getState().clearModelIntent();
+      useNativeIntentStore.getState().clearModelIntent(intent.id);
       return selectModel({
         id: label,
         nativePathToken: intent.path.token,

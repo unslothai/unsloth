@@ -217,21 +217,21 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
-        event_queue = _CTX.Queue()
-        stop_queue = _CTX.Queue()
-
-        proc = _CTX.Process(
-            target = run_without_native_path_secret,
-            args = (run_training_process,),
-            kwargs = {
-                "event_queue": event_queue,
-                "stop_queue": stop_queue,
-                "config": config,
-            },
-            daemon = True,
-        )
         try:
             with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
+
+                proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
                 proc.start()
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
