@@ -276,10 +276,9 @@ pub fn register_native_model_path(
     window: WebviewWindow,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
-    source_kind: NativePathSourceKind,
 ) -> Result<NativeIntent, String> {
     ensure_main_window(&window)?;
-    state.register_model_path(path, source_kind)
+    state.register_model_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]

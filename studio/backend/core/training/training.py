@@ -29,7 +29,10 @@ from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
-from utils.native_path_leases import run_without_native_path_secret
+from utils.native_path_leases import (
+    native_path_secret_removed_for_child_start,
+    run_without_native_path_secret,
+)
 
 logger = get_logger(__name__)
 
@@ -228,7 +231,8 @@ class TrainingBackend:
             daemon = True,
         )
         try:
-            proc.start()
+            with native_path_secret_removed_for_child_start():
+                proc.start()
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
             return False

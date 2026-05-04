@@ -12,15 +12,17 @@ re-stats the path before any native read.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
 _MAX_NATIVE_PATH_REDACTIONS = 100
@@ -30,6 +32,7 @@ _USED_NONCES: dict[str, int] = {}
 _REDACTION_LOCK = threading.Lock()
 _NATIVE_PATH_REDACTIONS: list[str] = []
 _NATIVE_PATH_LABELS: dict[str, str] = {}
+_NATIVE_PATH_ENV_LOCK = threading.Lock()
 
 
 class NativePathLeaseError(ValueError):
@@ -75,6 +78,17 @@ def run_without_native_path_secret(
     return target(*args, **kwargs)
 
 
+@contextmanager
+def native_path_secret_removed_for_child_start() -> Iterator[None]:
+    with _NATIVE_PATH_ENV_LOCK:
+        value = os.environ.pop(LEASE_SECRET_ENV, None)
+        try:
+            yield
+        finally:
+            if value is not None:
+                os.environ[LEASE_SECRET_ENV] = value
+
+
 def verify_native_path_lease(
     lease: str | None,
     *,
@@ -107,9 +121,7 @@ def verify_native_path_lease(
     except OSError as exc:
         raise NativePathLeaseError("Native path is no longer accessible.") from exc
     _reject_network_or_device_path(resolved)
-    if os.path.normcase(str(resolved)) != os.path.normcase(
-        str(payload["canonical_path"])
-    ):
+    if not _same_native_path(resolved, path):
         raise NativePathLeaseError(
             "Native path grant no longer resolves to the selected path."
         )
@@ -133,8 +145,8 @@ def verify_native_path_lease(
     if suffixes and resolved.suffix.lower() not in suffixes:
         raise NativePathLeaseError("Native path grant has an unsupported file type.")
 
-    _validate_current_stat(grant)
     _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
+    _validate_current_stat(grant)
     _remember_native_path_for_redaction(str(resolved), grant.display_label)
     return grant
 
@@ -177,6 +189,12 @@ def _decode_secret() -> bytes:
 
 
 def _split_lease(lease: str) -> tuple[str, str]:
+    if not isinstance(lease, str):
+        raise NativePathLeaseError("Native path grant has an invalid format.")
+    try:
+        lease.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise NativePathLeaseError("Native path grant has an invalid format.") from exc
     parts = lease.split(".")
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise NativePathLeaseError("Native path grant has an invalid format.")
@@ -299,8 +317,18 @@ def _reject_network_or_device_path(path: Path) -> None:
 
 
 def _b64decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+    try:
+        padding = "=" * (-len(value) % 4)
+        return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+    except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+        raise NativePathLeaseError("Native path grant has an invalid format.") from exc
+
+
+def _same_native_path(resolved: Path, signed: Path) -> bool:
+    try:
+        return resolved.samefile(signed)
+    except OSError:
+        return os.path.normcase(str(resolved)) == os.path.normcase(str(signed))
 
 
 def _optional_int(value: Any) -> int | None:

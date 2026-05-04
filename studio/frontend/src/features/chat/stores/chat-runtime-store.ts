@@ -227,7 +227,6 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
-  setActiveNativePathToken: (token: string | null) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -308,7 +307,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
-  setActiveNativePathToken: (activeNativePathToken) => set({ activeNativePathToken }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),

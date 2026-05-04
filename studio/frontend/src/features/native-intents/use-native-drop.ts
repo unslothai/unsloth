@@ -36,9 +36,12 @@ function dropStateForPaths(
   paths: string[],
   options: NativeModelDropOptions,
 ): NativeModelDropState {
+  if (paths.length === 0) {
+    return { status: "idle" };
+  }
   const ggufs = ggufPaths(paths);
-  if (ggufs.length === 0) {
-    return paths.length > 0 ? { status: "invalid" } : { status: "idle" };
+  if (paths.length !== 1 || ggufs.length !== 1) {
+    return { status: "invalid" };
   }
   if (!canAutoLoadPaths(paths, options)) {
     return { status: "valid", action: "chip" };
@@ -94,8 +97,11 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           }
           try {
             await currentOptions.onAutoLoad?.(intent);
-          } catch {
+          } catch (error) {
             addIntent(intent);
+            toast.error("Could not load dropped model", {
+              description: error instanceof Error ? error.message : String(error),
+            });
           }
         } catch (error) {
           toast.error("Could not use dropped model", {

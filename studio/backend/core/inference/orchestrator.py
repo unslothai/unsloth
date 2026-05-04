@@ -166,7 +166,10 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
-        from utils.native_path_leases import run_without_native_path_secret
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
 
         from .worker import run_inference_process
 
@@ -185,7 +188,8 @@ class InferenceOrchestrator:
             },
             daemon = True,
         )
-        self._proc.start()
+        with native_path_secret_removed_for_child_start():
+            self._proc.start()
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:

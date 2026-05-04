@@ -805,7 +805,6 @@ async def load_model(
                 "Error loading native model %s: %s",
                 model_log_label,
                 redact_native_paths(str(e)),
-                exc_info = True,
             )
             raise HTTPException(
                 status_code = 500,
@@ -877,7 +876,6 @@ async def validate_model(
                 "Error validating native model %s: %s",
                 model_log_label,
                 redact_native_paths(str(e)),
-                exc_info = True,
             )
             raise HTTPException(
                 status_code = 400,

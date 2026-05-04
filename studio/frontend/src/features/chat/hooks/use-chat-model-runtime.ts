@@ -583,9 +583,19 @@ export function useChatModelRuntime() {
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
               try {
-                const rollbackNativePathLease = previousActiveNativePathToken
-                  ? (await consumeNativePathToken(previousActiveNativePathToken, "load-model")).nativePathLease
-                  : undefined;
+                let rollbackNativePathLease: string | undefined;
+                if (previousActiveNativePathToken) {
+                  try {
+                    rollbackNativePathLease = (
+                      await consumeNativePathToken(previousActiveNativePathToken, "load-model")
+                    ).nativePathLease;
+                  } catch {
+                    setModelsError(
+                      "Could not reload the previous local model: please re-select the file.",
+                    );
+                    throw error;
+                  }
+                }
                 await loadModel({
                   model_path: previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
