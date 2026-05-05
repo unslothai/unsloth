@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import type { MessageRecord, ModelType, ThreadRecord } from "../types";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -15,6 +16,14 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+
+export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+
+function notifyChatHistoryUpdated(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+  }
+}
 
 function parseErrorText(status: number, body: unknown): string {
   if (
@@ -49,7 +58,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
+export async function listLoras(
+  outputsDir?: string,
+): Promise<ListLorasResponse> {
   const query = outputsDir
     ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
     : "";
@@ -112,13 +123,19 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<{
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+}> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(
+    `/api/models/gguf-download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -213,7 +230,10 @@ export async function listCachedModels(): Promise<CachedModelRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
   const response = await authFetch("/api/models/delete-cached", {
@@ -269,6 +289,143 @@ export async function removeScanFolder(id: number): Promise<void> {
     method: "DELETE",
   });
   await parseJsonOrThrow<unknown>(response);
+}
+
+export async function listChatThreads(
+  args: {
+    modelType?: ModelType;
+    pairId?: string;
+    includeArchived?: boolean;
+  } = {},
+): Promise<ThreadRecord[]> {
+  const params = new URLSearchParams();
+  if (args.modelType) params.set("model_type", args.modelType);
+  if (args.pairId) params.set("pair_id", args.pairId);
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
+  return data.threads;
+}
+
+export async function getChatThread(
+  threadId: string,
+): Promise<ThreadRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ThreadRecord>(response);
+}
+
+export async function saveChatThread(
+  thread: ThreadRecord,
+): Promise<ThreadRecord> {
+  const response = await authFetch("/api/chat/threads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(thread),
+  });
+  const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
+  notifyChatHistoryUpdated();
+  return savedThread;
+}
+
+export async function updateChatThread(
+  threadId: string,
+  patch: Partial<ThreadRecord>,
+): Promise<ThreadRecord> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const thread = await parseJsonOrThrow<ThreadRecord>(response);
+  notifyChatHistoryUpdated();
+  return thread;
+}
+
+export async function deleteChatThreads(threadIds: string[]): Promise<void> {
+  if (threadIds.length === 0) return;
+  const response = await authFetch("/api/chat/threads", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: threadIds }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatMessages(
+  threadId: string,
+): Promise<MessageRecord[]> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+  );
+  if (response.status === 404) return [];
+  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
+  return data.messages;
+}
+
+export async function saveChatMessage(
+  message: MessageRecord,
+): Promise<MessageRecord> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    },
+  );
+  const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
+  notifyChatHistoryUpdated();
+  return savedMessage;
+}
+
+export async function syncChatMessages(
+  threadId: string,
+  messages: MessageRecord[],
+): Promise<MessageRecord[]> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    },
+  );
+  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
+  notifyChatHistoryUpdated();
+  return data.messages;
+}
+
+export async function countBackendChats(): Promise<number> {
+  const response = await authFetch("/api/chat/count");
+  const data = await parseJsonOrThrow<{ count: number }>(response);
+  return data.count;
+}
+
+export async function clearBackendChats(): Promise<void> {
+  const response = await authFetch("/api/chat", { method: "DELETE" });
+  await parseJsonOrThrow<unknown>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function buildBackendChatExport(): Promise<{
+  exportedAt: string;
+  version: number;
+  threadCount: number;
+  threads: ThreadRecord[];
+  messages: MessageRecord[];
+}> {
+  const response = await authFetch("/api/chat/export");
+  return parseJsonOrThrow(response);
 }
 
 export interface BrowseEntry {
@@ -390,12 +547,17 @@ export async function* streamChatCompletions(
       }
       // Tool status events are custom SSE payloads, not OpenAI chunks
       if ("type" in parsed && parsed.type === "tool_status") {
-        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        yield {
+          _toolStatus: parsed.content ?? "",
+        } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
       // Tool start/end events carry full input/output for the tool outputs panel
-      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+      if (
+        "type" in parsed &&
+        (parsed.type === "tool_start" || parsed.type === "tool_end")
+      ) {
         yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;

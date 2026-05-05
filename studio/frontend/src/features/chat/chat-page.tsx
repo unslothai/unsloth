@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ChatSearch } from "@/app/routes/chat";
 import {
   type DeletedModelRef,
   type LoraModelOption,
@@ -8,22 +9,22 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { useSidebar } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
 import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
 import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
 import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
 import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { useSidebar } from "@/components/ui/sidebar";
 import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type ReactElement,
   memo,
@@ -34,8 +35,12 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import type { ChatSearch } from "@/app/routes/chat";
-import { listLocalModels } from "./api/chat-api";
+import {
+  getChatThread,
+  listChatMessages,
+  listChatThreads,
+  listLocalModels,
+} from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
@@ -113,6 +118,28 @@ function messageHasImage(message: MessageRecord): boolean {
     }
   }
   return false;
+}
+
+async function getChatThreadWithLegacyFallback(threadId: string) {
+  return (await getChatThread(threadId)) ?? (await db.threads.get(threadId));
+}
+
+async function listChatMessagesWithLegacyFallback(threadId: string) {
+  const backendThread = await getChatThread(threadId);
+  if (backendThread) {
+    return listChatMessages(threadId);
+  }
+  return db.messages.where("threadId").equals(threadId).toArray();
+}
+
+async function listPairThreadsWithLegacyFallback(pairId: string) {
+  const [backendThreads, legacyThreads] = await Promise.all([
+    listChatThreads({ pairId }).catch(() => []),
+    db.threads.where("pairId").equals(pairId).toArray(),
+  ]);
+  const byId = new Map(legacyThreads.map((thread) => [thread.id, thread]));
+  for (const thread of backendThreads) byId.set(thread.id, thread);
+  return Array.from(byId.values());
 }
 
 const SingleContent = memo(function SingleContent({
@@ -293,15 +320,11 @@ const LoraCompareContent = memo(function LoraCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    db.threads
-      .where("pairId")
-      .equals(pairId)
-      .toArray()
-      .then((threads) => {
-        if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
-      });
+    listPairThreadsWithLegacyFallback(pairId).then((threads) => {
+      if (!isActive) return;
+      setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
+      setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+    });
     return () => {
       isActive = false;
     };
@@ -442,23 +465,17 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    db.threads
-      .where("pairId")
-      .equals(pairId)
-      .toArray()
-      .then((threads) => {
-        if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
-      });
+    listPairThreadsWithLegacyFallback(pairId).then((threads) => {
+      if (!isActive) return;
+      setModel1ThreadId(
+        threads.find((t) => t.modelType === "model1" || t.modelType === "base")
+          ?.id,
+      );
+      setModel2ThreadId(
+        threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
+          ?.id,
+      );
+    });
     return () => {
       isActive = false;
     };
@@ -542,8 +559,7 @@ export function ChatPage(): ReactElement {
     if (!threadId) return;
 
     let canceled = false;
-    void db.threads
-      .get(threadId)
+    void getChatThreadWithLegacyFallback(threadId)
       .then((thread) => {
         if (canceled || thread) return;
         useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -596,7 +612,9 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
-  const pendingNativeModelIntent = useNativeIntentStore((state) => state.pendingModelIntent);
+  const pendingNativeModelIntent = useNativeIntentStore(
+    (state) => state.pendingModelIntent,
+  );
   const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
@@ -632,7 +650,8 @@ export function ChatPage(): ReactElement {
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
-      const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
+      const label =
+        intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
       await selectModel({
         id: label,
         nativePathToken: intent.path.token,
@@ -705,12 +724,10 @@ export function ChatPage(): ReactElement {
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
-          const thread = await db.threads.get(activeThreadId);
+          const thread = await getChatThreadWithLegacyFallback(activeThreadId);
           if (thread?.modelId && thread.modelId !== value) {
-            const messages = await db.messages
-              .where("threadId")
-              .equals(activeThreadId)
-              .toArray();
+            const messages =
+              await listChatMessagesWithLegacyFallback(activeThreadId);
             if (messages.length > 0) {
               const hasImage = messages.some(messageHasImage);
               const targetModel = modelsFromStore.find(
@@ -788,11 +805,11 @@ export function ChatPage(): ReactElement {
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
-      void db.messages
-        .where("threadId")
-        .equals(threadId)
-        .reverse()
-        .first()
+      void listChatMessagesWithLegacyFallback(threadId)
+        .then(
+          (messages) =>
+            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
+        )
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
           const usage = metadata?.contextUsage as ReturnType<
@@ -847,20 +864,24 @@ export function ChatPage(): ReactElement {
       .catch(() => {});
   }, [navigate]);
 
-  const refreshModelLists = useCallback((deletedModel?: DeletedModelRef) => {
-    const { checkpoint } = useChatRuntimeStore.getState().params;
-    const activeGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
-    if (
-      modelMatchesDeleted(
-        { id: checkpoint, ggufVariant: activeGgufVariant },
-        deletedModel,
-      )
-    ) {
-      useChatRuntimeStore.getState().clearCheckpoint();
-    }
-    void refresh();
-    refreshLocalModels();
-  }, [refresh, refreshLocalModels]);
+  const refreshModelLists = useCallback(
+    (deletedModel?: DeletedModelRef) => {
+      const { checkpoint } = useChatRuntimeStore.getState().params;
+      const activeGgufVariant =
+        useChatRuntimeStore.getState().activeGgufVariant;
+      if (
+        modelMatchesDeleted(
+          { id: checkpoint, ggufVariant: activeGgufVariant },
+          deletedModel,
+        )
+      ) {
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
+      void refresh();
+      refreshLocalModels();
+    },
+    [refresh, refreshLocalModels],
+  );
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({
@@ -1069,7 +1090,7 @@ export function ChatPage(): ReactElement {
             ) : null}
             {!settingsOpen && (
               <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
+                <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
