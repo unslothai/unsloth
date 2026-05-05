@@ -81,10 +81,11 @@ export async function syncExportedRepositoryToDexie(
   await db.transaction("rw", db.messages, async () => {
     if (options.pruneMissing) {
       const keepIds = new Set(exp.messages.map((x) => x.message.id));
-      const existing = await db.messages.where("threadId").equals(remoteId).toArray();
-      const idsToDelete = existing
-        .filter((m) => !keepIds.has(m.id))
-        .map((m) => m.id);
+      const existingIds = await db.messages
+        .where("threadId")
+        .equals(remoteId)
+        .primaryKeys();
+      const idsToDelete = existingIds.filter((id) => !keepIds.has(String(id)));
       if (idsToDelete.length > 0) {
         await db.messages.bulkDelete(idsToDelete);
       }
