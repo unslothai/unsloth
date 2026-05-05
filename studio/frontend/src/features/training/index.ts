@@ -33,8 +33,10 @@ export {
 export {
   onTrainingRunUpdated,
   onTrainingRunDeleted,
+  onTrainingRunsChanged,
   emitTrainingRunUpdated,
   emitTrainingRunDeleted,
+  emitTrainingRunsChanged,
 } from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export { validateTrainingConfig } from "./lib/validation";

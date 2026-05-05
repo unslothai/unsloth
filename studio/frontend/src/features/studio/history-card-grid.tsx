@@ -18,6 +18,7 @@ import {
   emitTrainingRunDeleted,
   listTrainingRuns,
   onTrainingRunDeleted,
+  onTrainingRunsChanged,
   onTrainingRunUpdated,
   useTrainingActions,
   useTrainingRuntimeStore,
@@ -183,6 +184,11 @@ export function HistoryCardGrid({
   const pollControllerRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
   const pollIdRef = useRef(0);
+  const runsLengthRef = useRef(0);
+
+  useEffect(() => {
+    runsLengthRef.current = runs.length;
+  }, [runs.length]);
 
   const fetchRuns = useCallback(async (offset = 0, append = false, limit = PAGE_SIZE) => {
     // Cancel any in-flight poll so its stale response can't clobber this fresher fetch
@@ -229,11 +235,16 @@ export function HistoryCardGrid({
       setRuns((prev) => prev.filter((run) => run.id !== runId));
       setTotal((prev) => Math.max(0, prev - 1));
     });
+    const offChanged = onTrainingRunsChanged(() => {
+      const limit = Math.max(PAGE_SIZE, runsLengthRef.current);
+      void fetchRuns(0, false, limit);
+    });
     return () => {
       offUpdated();
       offDeleted();
+      offChanged();
     };
-  }, []);
+  }, [fetchRuns]);
 
   // Poll while any run is still "running" so the card shows live progress
   const hasRunningRun = runs.some((r) => r.status === "running");

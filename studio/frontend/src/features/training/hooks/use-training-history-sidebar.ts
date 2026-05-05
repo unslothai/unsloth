@@ -4,7 +4,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { listTrainingRuns } from "../api/history-api";
-import { onTrainingRunDeleted, onTrainingRunUpdated } from "../events";
+import {
+  onTrainingRunDeleted,
+  onTrainingRunsChanged,
+  onTrainingRunUpdated,
+} from "../events";
 import type { TrainingRunSummary } from "../types/history";
 
 const SIDEBAR_LIMIT = 20;
@@ -177,11 +181,16 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
       controllerRef.current?.abort();
       setItems((prev) => prev.filter((run) => run.id !== runId));
     });
+    const offChanged = onTrainingRunsChanged(() => {
+      controllerRef.current?.abort();
+      void refresh();
+    });
     return () => {
       offUpdated();
       offDeleted();
+      offChanged();
     };
-  }, []);
+  }, [refresh]);
 
   return { items, loaded, refresh };
 }
