@@ -909,55 +909,55 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               abortSignal,
             );
 
-          for await (const chunk of stream) {
-            // Handle tool status events
-                const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
-                if (toolStatusText !== undefined) {
-                  runtime.setToolStatus(toolStatusText || null);
-                  continue;
-                }
-  
-            // Emit tool-call content parts for assistant-ui.
-            // On tool_start: add a new tool-call part (renders in "running" state).
-            // On tool_end: set result on the existing part (transitions to "complete").
-            const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
-            if (toolEvent !== undefined) {
-              if (toolEvent.type === "tool_start") {
-                const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
-                const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
-                toolCallParts.push({
-                  type: "tool-call" as const,
-                  toolCallId: id,
-                  toolName: toolEvent.tool_name as string,
-                  argsText: JSON.stringify(toolArgs),
-                  args: toolArgs,
-                });
-              } else if (toolEvent.type === "tool_end") {
-                const id = (toolEvent.tool_call_id as string) ||
-                  toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
-                const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
-                if (idx !== -1) {
-                  const rawResult = (toolEvent.result as string) ?? "";
-                  const imgMarker = "\n__IMAGES__:";
-                  const imgIdx = rawResult.lastIndexOf(imgMarker);
-                  let parsedResult: string | { text: string; images: string[]; sessionId: string };
-                  if (imgIdx !== -1) {
-                    const text = rawResult.slice(0, imgIdx);
-                    // Fall back to "_default" to match the backend sandbox directory
-                    // used when no session_id is provided (see tools.py _get_workdir).
-                    const sessionId = resolvedThreadId || "_default";
-                    try {
-                      const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
-                      parsedResult = { text, images, sessionId };
-                    } catch {
+            for await (const chunk of stream) {
+              // Handle tool status events
+              const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
+              if (toolStatusText !== undefined) {
+                runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+    
+              // Emit tool-call content parts for assistant-ui.
+              // On tool_start: add a new tool-call part (renders in "running" state).
+              // On tool_end: set result on the existing part (transitions to "complete").
+              const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+              if (toolEvent !== undefined) {
+                if (toolEvent.type === "tool_start") {
+                  const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+                  const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
+                  toolCallParts.push({
+                    type: "tool-call" as const,
+                    toolCallId: id,
+                    toolName: toolEvent.tool_name as string,
+                    argsText: JSON.stringify(toolArgs),
+                    args: toolArgs,
+                  });
+                } else if (toolEvent.type === "tool_end") {
+                  const id = (toolEvent.tool_call_id as string) ||
+                    toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
+                  const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
+                  if (idx !== -1) {
+                    const rawResult = (toolEvent.result as string) ?? "";
+                    const imgMarker = "\n__IMAGES__:";
+                    const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    let parsedResult: string | { text: string; images: string[]; sessionId: string };
+                    if (imgIdx !== -1) {
+                      const text = rawResult.slice(0, imgIdx);
+                      // Fall back to "_default" to match the backend sandbox directory
+                      // used when no session_id is provided (see tools.py _get_workdir).
+                      const sessionId = resolvedThreadId || "_default";
+                      try {
+                        const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
+                        parsedResult = { text, images, sessionId };
+                      } catch {
+                        parsedResult = rawResult;
+                      }
+                    } else {
                       parsedResult = rawResult;
                     }
-                  } else {
-                    parsedResult = rawResult;
+                    toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
                   }
-                  toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
                 }
-              }
                 // Yield cumulative state so tool UI updates (tools first, text after)
                 const textParts = parseAssistantContent(cumulativeText);
                 yield {
@@ -969,64 +969,64 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 };
                 continue;
               }
-  
-                // OpenAI-standard usage chunk: choices=[], usage populated
-                if (chunk.choices?.length === 0 && chunk.usage) {
-                  serverMetadata = {
-                    usage: chunk.usage,
-                    timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
-                  };
-                  continue;
-                }
-  
-                totalChunks += 1;
-                const delta = chunk.choices?.[0]?.delta?.content;
-                if (!delta) {
-                  continue;
-                }
-                if (waitingFirstChunk) {
-                  waitingFirstChunk = false;
-                  firstTokenTime = Date.now() - streamStartTime;
-                  settleFirstTokenOk();
-                  runtime.setGeneratingStatus(null);
-                }
-  
-                cumulativeText += delta;
-                const parts = parseAssistantContent(cumulativeText);
-  
-                if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
-                  reasoningStartAt = Date.now();
-                }
-                if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
-                  reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
-                }
-  
-                if (parts.length > 0 || toolCallParts.length > 0) {
-                  yield {
-                    content: [...toolCallParts, ...parts],
-                    metadata: {
-                      timing: buildTiming(
-                        streamStartTime,
-                        totalChunks,
-                        firstTokenTime,
-                      ),
-                      custom: { reasoningDuration },
-                    },
-                  };
-                }
-              }
-              break;
-            } catch (streamError) {
-              if (
-                isExternalRequest &&
-                !retriedWithRefreshedKey &&
-                isProviderKeyRotationError(streamError)
-              ) {
-                retriedWithRefreshedKey = true;
+
+              // OpenAI-standard usage chunk: choices=[], usage populated
+              if (chunk.choices?.length === 0 && chunk.usage) {
+                serverMetadata = {
+                  usage: chunk.usage,
+                  timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+                };
                 continue;
               }
-              throw streamError;
+
+              totalChunks += 1;
+              const delta = chunk.choices?.[0]?.delta?.content;
+              if (!delta) {
+                continue;
+              }
+              if (waitingFirstChunk) {
+                waitingFirstChunk = false;
+                firstTokenTime = Date.now() - streamStartTime;
+                settleFirstTokenOk();
+                runtime.setGeneratingStatus(null);
+              }
+
+              cumulativeText += delta;
+              const parts = parseAssistantContent(cumulativeText);
+
+              if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
+                reasoningStartAt = Date.now();
+              }
+              if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
+                reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
+              }
+
+              if (parts.length > 0 || toolCallParts.length > 0) {
+                yield {
+                  content: [...toolCallParts, ...parts],
+                  metadata: {
+                    timing: buildTiming(
+                      streamStartTime,
+                      totalChunks,
+                      firstTokenTime,
+                    ),
+                    custom: { reasoningDuration },
+                  },
+                };
+              }
             }
+            break;
+          } catch (streamError) {
+            if (
+              isExternalRequest &&
+              !retriedWithRefreshedKey &&
+              isProviderKeyRotationError(streamError)
+            ) {
+              retriedWithRefreshedKey = true;
+              continue;
+            }
+            throw streamError;
+          }
         }
         settleFirstTokenOk();
 
