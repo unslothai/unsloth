@@ -539,6 +539,17 @@ class ExportBackend:
                 "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
             )
 
+            try:
+                from unsloth_zoo.llama_cpp import _resolve_local_convert_script  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "Unsloth: installed unsloth_zoo does not honor "
+                    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR; convert_hf_to_gguf.py will "
+                    "still be downloaded from llama.cpp master and may drift "
+                    "past the pinned llama-quantize binary. Upgrade unsloth_zoo "
+                    "to activate the local script pin."
+                )
+
             # Save locally if requested
             if save_directory:
                 save_directory = str(resolve_export_dir(save_directory))
