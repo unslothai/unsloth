@@ -349,9 +349,7 @@ class ExportBackend:
         try:
             if _IS_MLX:
                 mlx_save_method = (
-                    "merged_4bit"
-                    if format_type == "4-bit (FP4)"
-                    else "merged_16bit"
+                    "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
                 )
             else:
                 if format_type == "4-bit (FP4)":

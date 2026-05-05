@@ -38,9 +38,9 @@ def test_export_methods_return_three_tuple_annotation():
         assert isinstance(ret, ast.Subscript), f"{fn_name} return must be Tuple[...]"
         slc = ret.slice
         elts = slc.elts if isinstance(slc, ast.Tuple) else None
-        assert elts is not None and len(elts) == 3, (
-            f"{fn_name} return annotation must be a 3-tuple, got {ast.dump(ret)}"
-        )
+        assert (
+            elts is not None and len(elts) == 3
+        ), f"{fn_name} return annotation must be a 3-tuple, got {ast.dump(ret)}"
 
 
 def test_export_methods_return_three_element_tuples():
@@ -66,7 +66,8 @@ def test_local_save_assigns_output_path():
                     if isinstance(tgt, ast.Name) and tgt.id == "output_path":
                         assigns.append(node)
         non_none = [
-            a for a in assigns
+            a
+            for a in assigns
             if not (isinstance(a.value, ast.Constant) and a.value.value is None)
         ]
         assert non_none, f"{fn_name} never assigns a non-None output_path"
@@ -84,14 +85,11 @@ def test_gpu_save_method_bound_for_hub_only():
                     test = stmt.test
                     if isinstance(test, ast.Name) and test.id == "_IS_MLX":
                         for sub in ast.walk(
-                            ast.Module(body=stmt.orelse, type_ignores=[])
+                            ast.Module(body = stmt.orelse, type_ignores = [])
                         ):
-                            if (
-                                isinstance(sub, ast.Assign)
-                                and any(
-                                    isinstance(t, ast.Name) and t.id == "save_method"
-                                    for t in sub.targets
-                                )
+                            if isinstance(sub, ast.Assign) and any(
+                                isinstance(t, ast.Name) and t.id == "save_method"
+                                for t in sub.targets
                             ):
                                 found_pre_save_method = True
                                 break
@@ -108,9 +106,9 @@ def test_gpu_save_method_bound_for_hub_only():
 
 def test_mlx_hub_only_uses_temp_directory():
     src = EXPORT.read_text()
-    assert src.count("tempfile.TemporaryDirectory") >= 3, (
-        "expected TemporaryDirectory in merged, base, and lora hub-push paths"
-    )
+    assert (
+        src.count("tempfile.TemporaryDirectory") >= 3
+    ), "expected TemporaryDirectory in merged, base, and lora hub-push paths"
     assert "import tempfile" in src.split("class ExportBackend")[0]
 
 

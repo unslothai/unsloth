@@ -19,7 +19,9 @@ def _find_geteuid_guard(tree: ast.AST):
 def test_gpu_init_has_geteuid_guard():
     tree = ast.parse(GPU_INIT.read_text())
     guard = _find_geteuid_guard(tree)
-    assert guard is not None, "_gpu_init.py must guard ldconfig recovery on os.geteuid()"
+    assert (
+        guard is not None
+    ), "_gpu_init.py must guard ldconfig recovery on os.geteuid()"
 
 
 def test_ldconfig_calls_only_inside_geteuid_guard():

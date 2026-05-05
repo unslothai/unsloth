@@ -26,9 +26,9 @@ def test_run_mlx_training_passes_token_to_from_pretrained():
             and node.func.value.id == "FastMLXModel"
         ):
             kwarg_names = {kw.arg for kw in node.keywords if kw.arg}
-            assert "token" in kwarg_names, (
-                f"FastMLXModel.from_pretrained must forward token=hf_token; got {kwarg_names!r}"
-            )
+            assert (
+                "token" in kwarg_names
+            ), f"FastMLXModel.from_pretrained must forward token=hf_token; got {kwarg_names!r}"
             found = True
     assert found, "FastMLXModel.from_pretrained call not found in _run_mlx_training"
 
@@ -37,9 +37,9 @@ def test_wandb_init_strips_secret_keys():
     src = WORKER.read_text()
     assert "_wandb_sensitive" in src, "expected a sensitive-key set near wandb.init"
     assert '"hf_token"' in src and '"wandb_token"' in src
-    assert "config = dict(config)" not in src, (
-        "wandb.init received raw config dict; secrets would leak"
-    )
+    assert (
+        "config = dict(config)" not in src
+    ), "wandb.init received raw config dict; secrets would leak"
 
 
 def test_local_dataset_loader_uses_load_dataset_path():
@@ -71,9 +71,9 @@ def test_poll_stop_returns_on_broken_pipe():
                 stripped = lines[j].strip()
                 if not stripped or stripped.startswith("#"):
                     continue
-                assert stripped.startswith("return"), (
-                    f"expected return after EOFError/OSError, got {stripped!r}"
-                )
+                assert stripped.startswith(
+                    "return"
+                ), f"expected return after EOFError/OSError, got {stripped!r}"
                 break
             break
     else:
