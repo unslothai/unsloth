@@ -30,7 +30,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   createProviderConfig,
@@ -138,6 +138,7 @@ export function ChatProvidersDialog({
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
   const [customProviderName, setCustomProviderName] = useState("Custom");
+  const providersRef = useRef(providers);
   const reduceMotion = useReducedMotion();
   const isCustomProvider = providerType === CUSTOM_PROVIDER_TYPE;
 
@@ -178,6 +179,10 @@ export function ChatProvidersDialog({
   );
 
   useEffect(() => {
+    providersRef.current = providers;
+  }, [providers]);
+
+  useEffect(() => {
     if (!open) return;
     let isMounted = true;
     const syncFromBackend = async () => {
@@ -196,7 +201,9 @@ export function ChatProvidersDialog({
           }
           return registryRows[0]?.provider_type ?? "";
         });
-        const existingById = new Map(providers.map((provider) => [provider.id, provider]));
+        const existingById = new Map(
+          providersRef.current.map((provider) => [provider.id, provider]),
+        );
         const syncedProviders: ExternalProviderConfig[] = configRows
           .filter((config) => config.is_enabled)
           .map((config) => {
