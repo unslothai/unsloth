@@ -1136,66 +1136,66 @@ export function ChatSettingsPanel({
   
             <ChatTemplateSection onReloadModel={onReloadModel} />
            </>
-          ) : null}
-        </div>
-        </div>
-        <Dialog
-          open={systemPromptEditorOpen}
-          onOpenChange={(nextOpen) => {
-            setSystemPromptEditorOpen(nextOpen);
-          }}
+        ) : null}
+      </div>
+      </div>
+      <Dialog
+        open={systemPromptEditorOpen}
+        onOpenChange={(nextOpen) => {
+          setSystemPromptEditorOpen(nextOpen);
+        }}
+      >
+        <DialogContent
+          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
+          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
         >
-          <DialogContent
-            className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
-            overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
-          >
-            <DialogHeader>
-              <DialogTitle>Edit System Prompt</DialogTitle>
-              <DialogDescription>
-                This prompt is part of the current configuration and saves with
-                the preset.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-2">
-              <div className="space-y-0.5 px-0.5">
-                <div className="text-[11px] font-medium">Prompt editor</div>
-                <p className="text-[11px] text-muted-foreground">
-                  Use this for longer edits. Save writes back to the active
-                  configuration only.
-                </p>
-              </div>
-              <Textarea
-                value={systemPromptDraft}
-                onChange={(event) => setSystemPromptDraft(event.target.value)}
-                placeholder="You are a helpful assistant..."
-                fieldSizing="fixed"
-                className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
-                rows={14}
-              />
+          <DialogHeader>
+            <DialogTitle>Edit System Prompt</DialogTitle>
+            <DialogDescription>
+              This prompt is part of the current configuration and saves with
+              the preset.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <div className="space-y-0.5 px-0.5">
+              <div className="text-[11px] font-medium">Prompt editor</div>
+              <p className="text-[11px] text-muted-foreground">
+                Use this for longer edits. Save writes back to the active
+                configuration only.
+              </p>
             </div>
-            <DialogFooter className="flex-wrap gap-2 sm:justify-between">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setSystemPromptDraft(params.systemPrompt);
-                  setSystemPromptEditorOpen(false);
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={saveSystemPromptEditor}
-                disabled={!systemPromptEditorDirty}
-              >
-                Save
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </>
-    );
+            <Textarea
+              value={systemPromptDraft}
+              onChange={(event) => setSystemPromptDraft(event.target.value)}
+              placeholder="You are a helpful assistant..."
+              fieldSizing="fixed"
+              className="min-h-[24rem] max-h-[50vh] overflow-y-auto text-sm leading-6 corner-squircle"
+              rows={14}
+            />
+          </div>
+          <DialogFooter className="flex-wrap gap-2 sm:justify-between">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setSystemPromptDraft(params.systemPrompt);
+                setSystemPromptEditorOpen(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={saveSystemPromptEditor}
+              disabled={!systemPromptEditorDirty}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 
   if (isMobile) {
     return (
