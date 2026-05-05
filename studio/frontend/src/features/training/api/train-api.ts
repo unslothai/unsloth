@@ -185,3 +185,39 @@ export async function streamTrainingProgress(options: {
 }
 
 export { isAbortError };
+
+// ── Activation data ──────────────────────────────────────────────────────────
+
+export type ActivationRecord = {
+  step: number;
+  loss?: number;
+  layers: Record<string, { mean_abs: number[]; mean: number[] }>;
+  grad_norms?: Record<string, number>;
+  lora_norms?: Record<string, number>;
+};
+
+export type ActivationMetadata = {
+  model_name: string;
+  num_layers: number;
+  hidden_size: number;
+  captured_channels: number[];
+  capture_interval: number;
+  capture_gradients: boolean;
+  capture_lora_norms: boolean;
+  lora_targets?: string[];
+};
+
+export type ActivationData = {
+  metadata: ActivationMetadata | null;
+  records: ActivationRecord[];
+};
+
+export async function fetchActivations(outputDir?: string, sinceStep?: number): Promise<ActivationData> {
+  const params = new URLSearchParams();
+  if (outputDir) params.set("output_dir", outputDir);
+  if (sinceStep !== undefined) params.set("since_step", String(sinceStep));
+  const query = params.toString();
+  const url = query ? `/api/train/activations?${query}` : "/api/train/activations";
+  const response = await authFetch(url);
+  return parseJson<ActivationData>(response);
+}

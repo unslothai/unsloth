@@ -355,5 +355,12 @@ from unsloth_zoo.rl_environments import (
     launch_openenv,
 )
 
+# Activation capture for neuron visualization
+from .activation_capture import (
+    ActivationCaptureConfig,
+    ActivationCapture,
+    ActivationCaptureCallback,
+)
+
 # Patch TRL trainers for backwards compatibility
 _patch_trl_trainer()

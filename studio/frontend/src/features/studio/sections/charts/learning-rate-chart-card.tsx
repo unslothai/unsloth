@@ -48,11 +48,11 @@ export function LearningRateChartCard({
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
-    <Card size="sm">
+    <Card size="sm" className="h-full">
       <CardHeader>
         <CardTitle className="text-sm">Learning Rate</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex-1 min-h-0">
         <ChartContainer config={lrConfig} className={CHART_CONTAINER_CLASS}>
           <LineChart
             data={data}

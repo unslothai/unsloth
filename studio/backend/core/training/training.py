@@ -99,6 +99,9 @@ class TrainingBackend:
         # Job metadata
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
+        self._active_output_dir: Optional[str] = (
+            None  # set as soon as output_dir is known
+        )
 
         # DB persistence
         self._metric_buffer: list[dict] = []
@@ -256,6 +259,7 @@ class TrainingBackend:
         self.eval_step_history.clear()
         self.eval_enabled = False
         self._output_dir = None
+        self._active_output_dir = None
         self._metric_buffer.clear()
         self._run_finalized = False
         self._db_run_created = False
@@ -599,6 +603,9 @@ class TrainingBackend:
 
             elif etype == "eval_configured":
                 self.eval_enabled = True
+
+            elif etype == "output_dir_set":
+                self._active_output_dir = event.get("output_dir")
 
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")

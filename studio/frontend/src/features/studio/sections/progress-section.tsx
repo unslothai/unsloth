@@ -31,11 +31,14 @@ import { useGpuUtilization } from "@/hooks";
 import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
+  Clock01Icon,
   DashboardSpeed01Icon,
+  GpuIcon,
   Notebook01Icon,
   RamMemoryIcon,
   StopIcon,
   TemperatureIcon,
+  Timer01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -228,19 +231,25 @@ export function ProgressSection({
             <span className="text-[10px] tabular-nums text-muted-foreground">
               Epoch {formatNumber(data.currentEpoch, 2)}
             </span>
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
-              {pct}% complete
-            </span>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>
-                Step {data.currentStep} / {data.totalSteps || "--"}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm font-semibold tabular-nums">
+                Step {data.currentStep}
+                <span className="text-xs font-normal text-muted-foreground">
+                  {" "}/ {data.totalSteps || "--"}
+                </span>
               </span>
-              <span>{pct}%</span>
+              <span className="text-sm font-semibold tabular-nums">{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-foreground/[0.05]" />
+            <Progress
+              value={pct}
+              className={cn(
+                "h-2.5 bg-foreground/[0.05]",
+                data.phase === "training" && "[&>div]:animate-none",
+              )}
+            />
           </div>
 
           {!isHistorical && (
@@ -257,18 +266,19 @@ export function ProgressSection({
             </p>
           )}
 
-          <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-[auto_auto_auto_minmax(0,1fr)_auto]">
             <MetricStat
               label="Loss"
               valueClassName="text-2xl font-bold tracking-tight"
             >
               {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
             </MetricStat>
+            <div className="hidden xl:block w-px self-stretch bg-border/40" />
             <MetricStat label="LR">{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
             <MetricStat label="Grad Norm">
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
-            <MetricStat label="Model" valueClassName="truncate">
+            <MetricStat label="Model" valueClassName="truncate" title={data.modelName || "--"}>
               {data.modelName || "--"}
             </MetricStat>
             <MetricStat label="Method">
@@ -276,16 +286,25 @@ export function ProgressSection({
             </MetricStat>
           </div>
 
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>Elapsed: {formatDuration(elapsed)}</span>
-            {!isHistorical && <span>ETA: {formatDuration(eta)}</span>}
-            <span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <HugeiconsIcon icon={Clock01Icon} className="size-3" />
+              {formatDuration(elapsed)}
+            </span>
+            {!isHistorical && (
+              <span className="flex items-center gap-1">
+                <HugeiconsIcon icon={Timer01Icon} className="size-3" />
+                ETA {formatDuration(eta)}
+              </span>
+            )}
+            <span className="flex items-center gap-1">
+              <HugeiconsIcon icon={GpuIcon} className="size-3" />
               {stepsPerSecond == null
                 ? "-- steps/s"
                 : `${stepsPerSecond.toFixed(2)} steps/s`}
             </span>
             {data.currentNumTokens != null && (
-              <span>Tokens: {data.currentNumTokens}</span>
+              <span>{data.currentNumTokens.toLocaleString()} tokens</span>
             )}
           </div>
         </div>
@@ -311,7 +330,10 @@ function LiveGpuPanel({
         <p className="text-xs font-medium text-muted-foreground">
           GPU Monitor
         </p>
-        <span className="text-[11px] text-muted-foreground">Live</span>
+        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+          Live
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-2.5">
         <GpuStat
@@ -479,6 +501,7 @@ function TrainingHeaderActions({
           className={cn(
             "h-8 rounded-full px-3.5 text-xs shadow-sm",
             stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+            !isTrainingRunning && !stopRequested && "hidden",
           )}
           onClick={() => onOpenStopDialog(true)}
           disabled={!isTrainingRunning || stopRequested}
@@ -568,15 +591,18 @@ function MetricStat({
   label,
   children,
   valueClassName,
+  title,
 }: {
   label: string;
   children: ReactNode;
   valueClassName?: string;
+  title?: string;
 }): ReactElement {
   return (
     <div className="min-w-0">
       <p className="text-[11px] text-muted-foreground">{label}</p>
       <p
+        title={title}
         className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
       >
         {children}
