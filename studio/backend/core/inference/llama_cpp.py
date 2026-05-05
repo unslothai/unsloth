@@ -1710,9 +1710,8 @@ class LlamaCppBackend:
             if chat_template_override:
                 import tempfile
 
-                self._chat_template = chat_template_override
                 flags = detect_reasoning_flags(
-                    self._chat_template,
+                    chat_template_override,
                     self._model_identifier,
                     log_source = "GGUF chat template override",
                 )
