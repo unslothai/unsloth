@@ -928,7 +928,7 @@ export function ChatSettingsPanel({
                       className="panel-switch shrink-0"
                       checked={speculativeType != null}
                       onCheckedChange={(checked) => {
-                        setSpeculativeType(checked ? "ngram-mod" : null);
+                        setSpeculativeType(checked ? "default" : null);
                       }}
                     />
                   </div>
