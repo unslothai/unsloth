@@ -11,7 +11,14 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Discriminator,
+    Field,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 
 class LoadRequest(BaseModel):
@@ -46,7 +53,9 @@ class LoadRequest(BaseModel):
 
     @field_validator("chat_template_override")
     @classmethod
-    def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
+    def normalize_blank_chat_template_override(
+        cls, value: Optional[str]
+    ) -> Optional[str]:
         if value is not None and value.strip() == "":
             return None
         return value
