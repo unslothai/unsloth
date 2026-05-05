@@ -366,6 +366,7 @@ interface ChatSettingsPanelProps {
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
+  isExternalModel?: boolean;
   onReloadModel?: () => void;
 }
 
@@ -374,6 +375,7 @@ export function ChatSettingsPanel({
   onOpenChange,
   params,
   onParamsChange,
+  isExternalModel = false,
   onReloadModel,
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
@@ -657,7 +659,11 @@ export function ChatSettingsPanel({
     return () => ro.disconnect();
   }, [open]);
 
-  const modelSection = (
+  const modelSection = isExternalModel ? (
+    <div className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-[11px] text-muted-foreground">
+      External model selected. Local-only settings are hidden.
+    </div>
+  ) : (
     <CollapsibleSection
       icon={Settings02Icon}
       label="Model"
@@ -872,120 +878,122 @@ export function ChatSettingsPanel({
 
       <div className="px-1.5">
         {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
-        <div className="mt-4 px-2 pb-3">
-          <div className="space-y-1.5">
-            <div ref={presetControlRowRef} className="w-full min-w-0">
-              <DropdownMenu>
-                <InputGroup className="!h-8 min-h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
-                  <InputGroupInput
-                    id="inference-preset-name"
-                    value={presetNameInput}
-                    onChange={(e) => setPresetNameInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && presetSaveState.canSubmit) {
-                        e.preventDefault();
-                        savePresetWithName(presetNameInput);
-                      }
-                    }}
-                    placeholder="Preset name"
-                    maxLength={80}
-                    autoComplete="off"
-                    className={cn(
-                      "!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm",
-                      presetSaveState.isSaveReady &&
-                        "text-foreground placeholder:text-primary/45",
-                    )}
-                    aria-label="Inference preset name"
-                  />
-                  <InputGroupAddon
-                    align="inline-end"
-                    className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-0 has-[>button]:mr-0"
-                  >
-                    <DropdownMenuTrigger asChild={true}>
-                      <InputGroupButton
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
-                        title="Choose a preset"
-                        aria-label="Open preset list"
-                      >
-                        <HugeiconsIcon
-                          icon={ArrowDown01Icon}
-                          className="size-3.5"
-                          strokeWidth={2}
-                        />
-                      </InputGroupButton>
-                    </DropdownMenuTrigger>
-                  </InputGroupAddon>
-                </InputGroup>
-                <DropdownMenuContent
-                  align="end"
-                  className="min-w-40 max-w-none"
-                  style={
-                    presetMenuWidthPx != null
-                      ? {
-                          width: presetMenuWidthPx,
-                          minWidth: presetMenuWidthPx,
+        {!isExternalModel ? (
+          <div className="mt-4 px-2 pb-3">
+            <div className="space-y-1.5">
+              <div ref={presetControlRowRef} className="w-full min-w-0">
+                <DropdownMenu>
+                  <InputGroup className="!h-8 min-h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
+                    <InputGroupInput
+                      id="inference-preset-name"
+                      value={presetNameInput}
+                      onChange={(e) => setPresetNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && presetSaveState.canSubmit) {
+                          e.preventDefault();
+                          savePresetWithName(presetNameInput);
                         }
-                      : undefined
+                      }}
+                      placeholder="Preset name"
+                      maxLength={80}
+                      autoComplete="off"
+                      className={cn(
+                        "!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm",
+                        presetSaveState.isSaveReady &&
+                          "text-foreground placeholder:text-primary/45",
+                      )}
+                      aria-label="Inference preset name"
+                    />
+                    <InputGroupAddon
+                      align="inline-end"
+                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-0 has-[>button]:mr-0"
+                    >
+                      <DropdownMenuTrigger asChild={true}>
+                        <InputGroupButton
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
+                          title="Choose a preset"
+                          aria-label="Open preset list"
+                        >
+                          <HugeiconsIcon
+                            icon={ArrowDown01Icon}
+                            className="size-3.5"
+                            strokeWidth={2}
+                          />
+                        </InputGroupButton>
+                      </DropdownMenuTrigger>
+                    </InputGroupAddon>
+                  </InputGroup>
+                  <DropdownMenuContent
+                    align="end"
+                    className="min-w-40 max-w-none"
+                    style={
+                      presetMenuWidthPx != null
+                        ? {
+                            width: presetMenuWidthPx,
+                            minWidth: presetMenuWidthPx,
+                          }
+                        : undefined
+                    }
+                  >
+                    {presets.map((p, index) => (
+                      <Fragment key={p.name}>
+                        <DropdownMenuItem onSelect={() => applyPreset(p.name)}>
+                          {p.name}
+                        </DropdownMenuItem>
+                        {index === BUILTIN_PRESETS.length - 1 &&
+                          presets.length > BUILTIN_PRESETS.length && (
+                            <DropdownMenuSeparator className="mx-2.5! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
+                          )}
+                      </Fragment>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <Button
+                  type="button"
+                  onClick={() => savePresetWithName(presetNameInput)}
+                  disabled={!presetSaveState.canSubmit}
+                  variant={presetSaveState.isSaveReady ? "default" : "outline"}
+                  size="sm"
+                  className={cn(
+                    "h-8 w-full text-xs",
+                    presetSaveState.isSaveReady &&
+                      "bg-primary/92 text-primary-foreground hover:bg-primary",
+                  )}
+                  title={presetSaveState.title}
+                  aria-label={presetSaveState.title}
+                >
+                  <span className="inline-flex shrink-0 items-center pr-1.5">
+                    <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+                  </span>
+                  {presetSaveState.buttonLabel}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => deletePreset(activePreset)}
+                  disabled={!activeCustomPreset}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-full text-xs text-muted-foreground"
+                  title={
+                    activeCustomPreset
+                      ? "Delete selected preset"
+                      : "No saved override to delete"
                   }
                 >
-                  {presets.map((p, index) => (
-                    <Fragment key={p.name}>
-                      <DropdownMenuItem onSelect={() => applyPreset(p.name)}>
-                        {p.name}
-                      </DropdownMenuItem>
-                      {index === BUILTIN_PRESETS.length - 1 &&
-                        presets.length > BUILTIN_PRESETS.length && (
-                          <DropdownMenuSeparator className="mx-2.5! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
-                        )}
-                    </Fragment>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5">
-              <Button
-                type="button"
-                onClick={() => savePresetWithName(presetNameInput)}
-                disabled={!presetSaveState.canSubmit}
-                variant={presetSaveState.isSaveReady ? "default" : "outline"}
-                size="sm"
-                className={cn(
-                  "h-8 w-full text-xs",
-                  presetSaveState.isSaveReady &&
-                    "bg-primary/92 text-primary-foreground hover:bg-primary",
-                )}
-                title={presetSaveState.title}
-                aria-label={presetSaveState.title}
-              >
-                <span className="inline-flex shrink-0 items-center pr-1.5">
-                  <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-                </span>
-                {presetSaveState.buttonLabel}
-              </Button>
-              <Button
-                type="button"
-                onClick={() => deletePreset(activePreset)}
-                disabled={!activeCustomPreset}
-                variant="outline"
-                size="sm"
-                className="h-8 w-full text-xs text-muted-foreground"
-                title={
-                  activeCustomPreset
-                    ? "Delete selected preset"
-                    : "No saved override to delete"
-                }
-              >
-                <span className="inline-flex shrink-0 items-center pr-1.5">
-                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                </span>
-                Delete
-              </Button>
+                  <span className="inline-flex shrink-0 items-center pr-1.5">
+                    <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  </span>
+                  Delete
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
+        ) : null}
 
         <div className="px-2 pb-4">
           <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1039,32 +1047,38 @@ export function ChatSettingsPanel({
               onChange={set("topP")}
               displayValue={params.topP === 1 ? "Off" : undefined}
             />
-            <ParamSlider
-              label="Top K"
-              value={params.topK}
-              min={0}
-              max={100}
-              step={1}
-              onChange={set("topK")}
-              displayValue={params.topK === 0 ? "Off" : undefined}
-            />
-            <ParamSlider
-              label="Min P"
-              value={params.minP}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={set("minP")}
-            />
-            <ParamSlider
-              label="Repetition Penalty"
-              value={params.repetitionPenalty}
-              min={1}
-              max={2}
-              step={0.05}
-              onChange={set("repetitionPenalty")}
-              displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
-            />
+            {!isExternalModel ? (
+              <>
+                <ParamSlider
+                  label="Top K"
+                  value={params.topK}
+                  min={0}
+                  max={100}
+                  step={1}
+                  onChange={set("topK")}
+                  displayValue={params.topK === 0 ? "Off" : undefined}
+                />
+                <ParamSlider
+                  label="Min P"
+                  value={params.minP}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onChange={set("minP")}
+                />
+                <ParamSlider
+                  label="Repetition Penalty"
+                  value={params.repetitionPenalty}
+                  min={1}
+                  max={2}
+                  step={0.05}
+                  onChange={set("repetitionPenalty")}
+                  displayValue={
+                    params.repetitionPenalty === 1 ? "Off" : undefined
+                  }
+                />
+              </>
+            ) : null}
             <ParamSlider
               label="Presence Penalty"
               value={params.presencePenalty}
@@ -1074,7 +1088,7 @@ export function ChatSettingsPanel({
               onChange={set("presencePenalty")}
               displayValue={params.presencePenalty === 0 ? "Off" : undefined}
             />
-            {!isGguf && (
+            {!isExternalModel && !isGguf && (
               <ParamSlider
                 label="Max Seq Length"
                 value={params.maxSeqLength}
@@ -1088,7 +1102,13 @@ export function ChatSettingsPanel({
               label="Max Tokens"
               value={params.maxTokens}
               min={64}
-              max={isGguf && ggufContextLength ? ggufContextLength : 32768}
+              max={
+                isExternalModel
+                  ? 32768
+                  : isGguf && ggufContextLength
+                    ? ggufContextLength
+                    : 32768
+              }
               step={64}
               onChange={set("maxTokens")}
               displayValue={
@@ -1104,15 +1124,19 @@ export function ChatSettingsPanel({
 
         {modelSection}
 
-        <CollapsibleSection icon={Wrench01Icon} label="Tools">
-          <div className="flex flex-col gap-3 py-1">
-            <AutoHealToolCallsToggle />
-            <MaxToolCallsSlider />
-            <ToolCallTimeoutSlider />
-          </div>
-        </CollapsibleSection>
-
-        <ChatTemplateSection onReloadModel={onReloadModel} />
+        {!isExternalModel ? (
+          <>
+            <CollapsibleSection icon={Wrench01Icon} label="Tools">
+              <div className="flex flex-col gap-3 py-1">
+                <AutoHealToolCallsToggle />
+                <MaxToolCallsSlider />
+                <ToolCallTimeoutSlider />
+              </div>
+            </CollapsibleSection>
+  
+            <ChatTemplateSection onReloadModel={onReloadModel} />
+           </>
+        ) : null}
       </div>
       </div>
       <Dialog

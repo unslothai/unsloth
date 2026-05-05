@@ -15,7 +15,17 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import {
+  encryptProviderApiKey,
+  isProviderKeyRotationError,
+} from "./providers-api";
 import { db } from "../db";
+import type { OpenAIMessageContent } from "../types/api";
+import {
+  getExternalProviderApiKey,
+  loadExternalProviders,
+  parseExternalModelId,
+} from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ChatModelSummary } from "../types/runtime";
 import {
@@ -161,9 +171,51 @@ function collectTextParts(message: RunMessage): string[] {
   return textParts;
 }
 
+function collectImageParts(
+  message: RunMessage,
+): Array<{ type: "image_url"; image_url: { url: string } }> {
+  const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  
+  for (const part of message.content ?? []) {
+    if (part.type === "image" && "image" in part) {
+      const src = (part as { image: string }).image;
+      if (src) {
+        parts.push({
+          type: "image_url",
+          image_url: {
+            url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+          },
+        });
+      }
+    }
+  }
+  
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) {
+        if (part.type === "image" && "image" in part) {
+          const src = (part as { image: string }).image;
+          if (src) {
+            parts.push({
+              type: "image_url",
+              image_url: {
+                url: src.startsWith("data:")
+                  ? src
+                  : `data:image/png;base64,${src}`,
+              },
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  return parts;
+}
+
 function toOpenAIMessage(message: RunMessage): {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 } | null {
   if (
     message.role !== "system" &&
@@ -173,17 +225,25 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  let content = collectTextParts(message).join("\n");
+  let textContent = collectTextParts(message).join("\n");
   // Strip inline audio base64 from prior assistant messages to avoid
   // inflating token counts (e.g. audio-player responses with embedded WAV).
   if (message.role === "assistant") {
-    content = content.replace(
+    textContent = textContent.replace(
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
       "[audio]",
     );
   }
 
-  return { role: message.role, content };
+  const imageParts = collectImageParts(message);
+  if (imageParts.length > 0) {
+    return {
+      role: message.role,
+      content: [{ type: "text", text: textContent }, ...imageParts],
+    };
+  }
+
+  return { role: message.role, content: textContent };
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -587,6 +647,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toolsEnabled,
         codeToolsEnabled,
       } = runtime;
+      const externalSelection = parseExternalModelId(params.checkpoint);
+      const isExternalRequest = externalSelection !== null;
+      const externalProvider = isExternalRequest
+        ? loadExternalProviders().find(
+            (provider) => provider.id === externalSelection.providerId,
+          )
+        : null;
+      const externalApiKey = externalProvider
+        ? getExternalProviderApiKey(externalProvider.id).trim()
+        : "";
+
+      if (isExternalRequest && !externalProvider) {
+        toast.error("External provider not found.", {
+          description: "Open API Providers and re-add this provider.",
+        });
+        throw new Error("External provider not found.");
+      }
+      if (isExternalRequest && !externalApiKey) {
+        toast.error("Missing API key for selected external provider.", {
+          description: "Open API Providers and set the API key again.",
+        });
+        throw new Error("Missing external provider API key.");
+      }
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
@@ -753,8 +836,32 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
-        const stream = streamChatCompletions(
-          {
+        const externalBackendProviderType =
+          externalProvider?.providerType === "custom"
+            ? "openai"
+            : externalProvider?.providerType;
+        const buildRequestPayload = async (forceRefreshPublicKey = false) => {
+          if (externalSelection && externalProvider) {
+            return {
+              model: externalSelection.modelId,
+              messages: outboundMessages,
+              stream: true,
+              temperature: params.temperature,
+              top_p: params.topP,
+              max_tokens: params.maxTokens,
+              presence_penalty: params.presencePenalty,
+              provider_id: externalProvider.id,
+              provider_type: externalBackendProviderType,
+              external_model: externalSelection.modelId,
+              encrypted_api_key: await encryptProviderApiKey(
+                externalApiKey,
+                forceRefreshPublicKey,
+              ),
+              provider_base_url: externalProvider.baseUrl || null,
+            };
+          }
+
+          return {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
@@ -791,114 +898,134 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   })(),
                 }
               : {}),
-          },
-          abortSignal,
-        );
+          };
+        };
 
-        for await (const chunk of stream) {
-          // Handle tool status events
-          const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
-          if (toolStatusText !== undefined) {
-            runtime.setToolStatus(toolStatusText || null);
-            continue;
-          }
+        let retriedWithRefreshedKey = false;
+        while (true) {
+          try {
+            const stream = streamChatCompletions(
+              await buildRequestPayload(retriedWithRefreshedKey),
+              abortSignal,
+            );
 
-          // Emit tool-call content parts for assistant-ui.
-          // On tool_start: add a new tool-call part (renders in "running" state).
-          // On tool_end: set result on the existing part (transitions to "complete").
-          const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
-          if (toolEvent !== undefined) {
-            if (toolEvent.type === "tool_start") {
-              const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
-              const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
-              toolCallParts.push({
-                type: "tool-call" as const,
-                toolCallId: id,
-                toolName: toolEvent.tool_name as string,
-                argsText: JSON.stringify(toolArgs),
-                args: toolArgs,
-              });
-            } else if (toolEvent.type === "tool_end") {
-              const id = (toolEvent.tool_call_id as string) ||
-                toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
-              const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
-              if (idx !== -1) {
-                const rawResult = (toolEvent.result as string) ?? "";
-                const imgMarker = "\n__IMAGES__:";
-                const imgIdx = rawResult.lastIndexOf(imgMarker);
-                let parsedResult: string | { text: string; images: string[]; sessionId: string };
-                if (imgIdx !== -1) {
-                  const text = rawResult.slice(0, imgIdx);
-                  // Fall back to "_default" to match the backend sandbox directory
-                  // used when no session_id is provided (see tools.py _get_workdir).
-                  const sessionId = resolvedThreadId || "_default";
-                  try {
-                    const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
-                    parsedResult = { text, images, sessionId };
-                  } catch {
-                    parsedResult = rawResult;
+            for await (const chunk of stream) {
+              // Handle tool status events
+              const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
+              if (toolStatusText !== undefined) {
+                runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+    
+              // Emit tool-call content parts for assistant-ui.
+              // On tool_start: add a new tool-call part (renders in "running" state).
+              // On tool_end: set result on the existing part (transitions to "complete").
+              const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+              if (toolEvent !== undefined) {
+                if (toolEvent.type === "tool_start") {
+                  const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+                  const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
+                  toolCallParts.push({
+                    type: "tool-call" as const,
+                    toolCallId: id,
+                    toolName: toolEvent.tool_name as string,
+                    argsText: JSON.stringify(toolArgs),
+                    args: toolArgs,
+                  });
+                } else if (toolEvent.type === "tool_end") {
+                  const id = (toolEvent.tool_call_id as string) ||
+                    toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
+                  const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
+                  if (idx !== -1) {
+                    const rawResult = (toolEvent.result as string) ?? "";
+                    const imgMarker = "\n__IMAGES__:";
+                    const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    let parsedResult: string | { text: string; images: string[]; sessionId: string };
+                    if (imgIdx !== -1) {
+                      const text = rawResult.slice(0, imgIdx);
+                      // Fall back to "_default" to match the backend sandbox directory
+                      // used when no session_id is provided (see tools.py _get_workdir).
+                      const sessionId = resolvedThreadId || "_default";
+                      try {
+                        const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
+                        parsedResult = { text, images, sessionId };
+                      } catch {
+                        parsedResult = rawResult;
+                      }
+                    } else {
+                      parsedResult = rawResult;
+                    }
+                    toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
                   }
-                } else {
-                  parsedResult = rawResult;
                 }
-                toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
+                // Yield cumulative state so tool UI updates (tools first, text after)
+                const textParts = parseAssistantContent(cumulativeText);
+                yield {
+                  content: [...toolCallParts, ...textParts],
+                  metadata: {
+                    timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
+                    custom: { reasoningDuration },
+                  },
+                };
+                continue;
+              }
+
+              // OpenAI-standard usage chunk: choices=[], usage populated
+              if (chunk.choices?.length === 0 && chunk.usage) {
+                serverMetadata = {
+                  usage: chunk.usage,
+                  timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+                };
+                continue;
+              }
+
+              totalChunks += 1;
+              const delta = chunk.choices?.[0]?.delta?.content;
+              if (!delta) {
+                continue;
+              }
+              if (waitingFirstChunk) {
+                waitingFirstChunk = false;
+                firstTokenTime = Date.now() - streamStartTime;
+                settleFirstTokenOk();
+                runtime.setGeneratingStatus(null);
+              }
+
+              cumulativeText += delta;
+              const parts = parseAssistantContent(cumulativeText);
+
+              if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
+                reasoningStartAt = Date.now();
+              }
+              if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
+                reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
+              }
+
+              if (parts.length > 0 || toolCallParts.length > 0) {
+                yield {
+                  content: [...toolCallParts, ...parts],
+                  metadata: {
+                    timing: buildTiming(
+                      streamStartTime,
+                      totalChunks,
+                      firstTokenTime,
+                    ),
+                    custom: { reasoningDuration },
+                  },
+                };
               }
             }
-            // Yield cumulative state so tool UI updates (tools first, text after)
-            const textParts = parseAssistantContent(cumulativeText);
-            yield {
-              content: [...toolCallParts, ...textParts],
-              metadata: {
-                timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
-                custom: { reasoningDuration },
-              },
-            };
-            continue;
-          }
-
-          // OpenAI-standard usage chunk: choices=[], usage populated
-          if (chunk.choices?.length === 0 && chunk.usage) {
-            serverMetadata = {
-              usage: chunk.usage,
-              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
-            };
-            continue;
-          }
-
-          totalChunks += 1;
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (!delta) {
-            continue;
-          }
-          if (waitingFirstChunk) {
-            waitingFirstChunk = false;
-            firstTokenTime = Date.now() - streamStartTime;
-            settleFirstTokenOk();
-            runtime.setGeneratingStatus(null);
-          }
-
-          cumulativeText += delta;
-          const parts = parseAssistantContent(cumulativeText);
-
-          if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
-            reasoningStartAt = Date.now();
-          }
-          if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
-            reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
-          }
-
-          if (parts.length > 0 || toolCallParts.length > 0) {
-            yield {
-              content: [...toolCallParts, ...parts],
-              metadata: {
-                timing: buildTiming(
-                  streamStartTime,
-                  totalChunks,
-                  firstTokenTime,
-                ),
-                custom: { reasoningDuration },
-              },
-            };
+            break;
+          } catch (streamError) {
+            if (
+              isExternalRequest &&
+              !retriedWithRefreshedKey &&
+              isProviderKeyRotationError(streamError)
+            ) {
+              retriedWithRefreshedKey = true;
+              continue;
+            }
+            throw streamError;
           }
         }
         settleFirstTokenOk();
