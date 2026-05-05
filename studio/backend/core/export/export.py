@@ -541,6 +541,7 @@ class ExportBackend:
                     LLAMA_CPP_DEFAULT_DIR,
                     _resolve_local_convert_script,  # noqa: F401
                 )
+
                 os.environ.setdefault(
                     "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
                 )
