@@ -925,16 +925,6 @@ else
 
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
             elif [ "$GPU_BACKEND" = "rocm" ]; then
-                # Resolve hipcc symlinks to find the real ROCm root
-                _HIPCC_REAL="$(readlink -f "$ROCM_HIPCC" 2>/dev/null || printf '%s' "$ROCM_HIPCC")"
-                ROCM_ROOT=""
-                if command -v hipconfig &>/dev/null; then
-                    ROCM_ROOT="$(hipconfig -R 2>/dev/null || true)"
-                fi
-                if [ -z "$ROCM_ROOT" ]; then
-                    ROCM_ROOT="$(cd "$(dirname "$_HIPCC_REAL")/.." 2>/dev/null && pwd)"
-                fi
-
                 _BUILD_DESC="building (ROCm)"
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
 
