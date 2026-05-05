@@ -32,6 +32,7 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
   load_in_4bit: boolean;

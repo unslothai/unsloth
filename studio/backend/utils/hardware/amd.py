@@ -16,6 +16,7 @@ import subprocess
 from typing import Any, Optional
 
 from loggers import get_logger
+from utils.native_path_leases import child_env_without_native_path_secret
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,7 @@ def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
             capture_output = True,
             text = True,
             timeout = timeout,
+            env = child_env_without_native_path_secret(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("amd-smi query failed: %s", e)
