@@ -105,6 +105,9 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
       const arr = byThreadId.get(tid);
       if (arr) merged.push(...arr);
     }
+    if (merged.length === 0) {
+      continue;
+    }
     merged.sort((a, b) => b.createdAt - a.createdAt);
 
     let preview = "";

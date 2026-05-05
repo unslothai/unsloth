@@ -1557,8 +1557,14 @@ function Mark-StudioOwned {
 }
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
-# matches the current machine, wipe it so we get a clean install.
-if (Test-Path -LiteralPath $VenvDir -PathType Container) {
+# matches the current machine, repair according to invocation context.
+# - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
+#   to the installer-level rollback that restores the previous environment.
+# - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
+# In no-torch mode, a missing torch package is expected.
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
+$InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
@@ -1605,6 +1611,12 @@ if (Test-Path -LiteralPath $VenvDir -PathType Container) {
 
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
+        if ($InstallerManagedSetup) {
+            substep "Stale venv detected ($reason)." "Yellow"
+            Write-Host "   [ERROR] The existing Studio environment needs repair." -ForegroundColor Red
+            Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
+            exit 1
+        }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
         # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;

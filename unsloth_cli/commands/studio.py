@@ -15,7 +15,7 @@ import time
 import types
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -438,6 +438,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
@@ -452,6 +453,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if llama_extra_args:
+        payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -478,7 +481,7 @@ def _load_model_via_http(
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
     api_only: bool = typer.Option(
@@ -580,9 +583,57 @@ def studio_default(
 # ── unsloth studio run ───────────────────────────────────────────────
 
 
-@studio_app.command()
+def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
+    """Split ``org/name:variant`` HF-style identifiers into (repo, variant).
+
+    Mirrors llama.cpp's ``-hf <repo>:<quant>`` convention so users can
+    write ``unsloth/gpt-oss-20b-GGUF:UD-Q4_K_XL`` instead of passing
+    ``--gguf-variant`` separately. Local paths (absolute, ``./``,
+    ``~/``, Windows drive letters) and identifiers without a ``:``
+    suffix are returned verbatim.
+    """
+    s = model_arg.strip()
+    if not s:
+        return s, None
+    if s.startswith(("/", "./", "../", "~")) or s == ".":
+        return s, None
+    # Windows drive letter (e.g. "C:\\path" or "C:/path") -- the colon
+    # here is a path separator, not a variant suffix.
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        return s, None
+    if ":" not in s:
+        return s, None
+    repo, _, variant = s.rpartition(":")
+    if not repo or not variant:
+        return s, None
+    # A real quant label has no slashes; ``foo:bar/baz`` is not
+    # ``repo:variant`` syntax.
+    if "/" in variant:
+        return s, None
+    return repo, variant
+
+
+@studio_app.command(
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    },
+)
 def run(
-    model: str = typer.Option(..., "--model", "-m", help = "Model path or HF repo"),
+    ctx: typer.Context,
+    model: str = typer.Option(
+        ...,
+        "--model",
+        "-m",
+        "-hf",
+        "-hfr",
+        "--hf-repo",
+        help = (
+            "Model path or HF repo. Accepts llama.cpp-style "
+            "`org/repo:variant` syntax. The `-hf` / `--hf-repo` aliases "
+            "match llama-server's spelling."
+        ),
+    ),
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
@@ -594,15 +645,66 @@ def run(
         "cli", "--api-key-name", help = "Label for the auto-generated API key"
     ),
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = (
+            "Force server-side tools on/off for all requests. "
+            "Default: on for 127.0.0.1, off for 0.0.0.0."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+    ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
+    Any flag this command does not recognize is forwarded verbatim to
+    the underlying llama-server (GGUF only). Studio-managed flags
+    (--port, -c / --ctx-size, --api-key, -ngl, --jinja, --flash-attn,
+    --no-context-shift, model-identity flags, ...) are rejected with
+    HTTP 400.
+
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42
+        unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
     """
+    extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # ── 0. Parse llama.cpp-style ``repo:variant`` syntax in --model. ───
+    # Lets users write ``--model unsloth/foo-GGUF:UD-Q4_K_XL`` instead
+    # of pairing ``--model`` with ``--gguf-variant``. If both are given
+    # and disagree, fail loudly instead of silently picking one.
+    parsed_repo, embedded_variant = _split_repo_variant(model)
+    if embedded_variant:
+        if gguf_variant and gguf_variant != embedded_variant:
+            typer.echo(
+                f"Error: --model embeds variant '{embedded_variant}' but "
+                f"--gguf-variant '{gguf_variant}' was also provided.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        model = parsed_repo
+        gguf_variant = gguf_variant or embedded_variant
+
+    # ── Resolve the server-side tool policy. The y/N prompt (if any)
+    # runs in the outer process so the re-exec'd child never re-prompts.
+    from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
+
+    enable_tools = resolve_tool_policy(
+        host = host,
+        flag = enable_tools,
+        yes = yes,
+        silent = silent,
+    )
+
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
@@ -642,6 +744,23 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        # Forward the resolved tool policy (always concrete True/False
+        # at this point — the resolver above ran before the re-exec).
+        if enable_tools:
+            args.append("--enable-tools")
+        else:
+            args.append("--disable-tools")
+        # Forward --yes whenever the parent already cleared the prompt
+        # (either operator passed --yes, or the parent's resolver
+        # accepted the network-bind confirmation). Otherwise the child
+        # re-runs the resolver and prompts a second time.
+        if yes or (enable_tools and is_external_host(host)):
+            args.append("--yes")
+        # Forward unknown args (llama-server pass-through) to the
+        # re-exec'd command so the studio venv sees them in ctx.args
+        # and the re-execed run() can include them in the load payload.
+        if extra_llama_args:
+            args.extend(extra_llama_args)
 
         if sys.platform == "win32":
             proc = subprocess.Popen(args)
@@ -661,6 +780,17 @@ def run(
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
+
+    # ── Apply the resolved tool policy as a process-level override.
+    # Must use the same import path the route handlers use --
+    # `studio/backend/run.py` adds `studio/backend/` to sys.path so the
+    # routes import this module as top-level `state.tool_policy`. If we
+    # imported via `studio.backend.state.tool_policy` instead, Python
+    # would cache two different module objects with two different
+    # `_tool_policy` globals, and the gates would never see our value.
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
 
     # ── 3. Wait for server health ─────────────────────────────────────
     if not silent:
@@ -683,6 +813,7 @@ def run(
             gguf_variant = gguf_variant,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            llama_extra_args = extra_llama_args,
         )
     except RuntimeError as exc:
         typer.echo(f"Error: {exc}", err = True)
@@ -696,6 +827,32 @@ def run(
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
+    # Claude orange (Claude Code's brand color) for tool-policy notices
+    # so they stand out from the surrounding banner. Always printed --
+    # even under --silent / --yes -- so the operator never misses the
+    # current tool-execution status.
+    _tool_notice_fg = (217, 119, 87)
+    _is_external = is_external_host(host)
+    if _is_external and enable_tools:
+        _tool_notice = (
+            f"Server-side tools are ENABLED on {host} (network-reachable). "
+            f"Anyone with the API key can run code on this machine. "
+            f"Do not share the API key."
+        )
+    elif _is_external:
+        _tool_notice = (
+            f"Server-side tools are disabled by default on {host} "
+            f"(network-reachable). Pass --enable-tools to turn on "
+            f"(you will be warned about API-key risk)."
+        )
+    elif enable_tools:
+        _tool_notice = (
+            "Server-side tools are enabled by default for loopback. "
+            "Pass --disable-tools to turn off."
+        )
+    else:
+        _tool_notice = "Server-side tools are disabled."
+
     if not silent:
         typer.echo("")
         typer.echo("=" * 56)
@@ -706,6 +863,7 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
@@ -729,6 +887,13 @@ def run(
         typer.echo('    -H "Content-Type: application/json" \\')
         typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
+    else:
+        # Silent mode still prints the essentials (URL, API key) plus
+        # the orange tool-status notice so the operator never loses
+        # visibility into the security-relevant policy.
+        typer.echo(f"URL:     {base_url}")
+        typer.echo(f"API Key: {api_key}")
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server

@@ -127,8 +127,8 @@ export function StudioPage(): ReactElement {
   })();
 
   return (
-    <div className="relative min-h-screen bg-background">
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
+    <div className="relative min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
         <DatasetPreviewDialog
@@ -209,6 +209,9 @@ export function StudioPage(): ReactElement {
                   } else {
                     setSelectedHistoryRunId(runId);
                   }
+                }} onResumeStarted={() => {
+                  setSelectedHistoryRunId(null);
+                  handleTabChange("current-run");
                 }} />
               )}
             </TabsContent>

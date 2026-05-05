@@ -4,6 +4,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
 import {
+  copySupportDiagnostics,
+  type CopySupportDiagnosticsResult,
+} from "@/lib/tauri-diagnostics";
+import {
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
@@ -33,6 +37,54 @@ interface DesktopPreflightResult {
   port: number | null;
   can_auto_repair: boolean;
   managed_bin: string | null;
+}
+
+const MANAGED_STARTUP_TIMEOUT_MS = 5 * 60_000;
+const MANAGED_STARTUP_POLL_MS = 500;
+
+type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
+type ManagedStartupResult =
+  | { status: "ready"; port: number }
+  | { status: "aborted" }
+  | { status: "missing-port" }
+  | { status: "unhealthy" };
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForManagedServerReady(
+  invoke: TauriInvoke,
+  getPort: () => number | null,
+  shouldContinue: () => boolean,
+): Promise<ManagedStartupResult> {
+  const deadline = Date.now() + MANAGED_STARTUP_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    if (!shouldContinue()) {
+      return { status: "aborted" };
+    }
+
+    const port = getPort();
+    if (port === null) {
+      await wait(MANAGED_STARTUP_POLL_MS);
+      continue;
+    }
+
+    const healthy = await invoke<boolean>("check_health", { port });
+    if (!shouldContinue()) {
+      return { status: "aborted" };
+    }
+    if (healthy && getPort() === port) {
+      return { status: "ready", port };
+    }
+
+    await wait(MANAGED_STARTUP_POLL_MS);
+  }
+
+  return getPort() === null
+    ? { status: "missing-port" }
+    : { status: "unhealthy" };
 }
 
 export function useTauriBackend() {
@@ -181,8 +233,11 @@ export function useTauriBackend() {
 
   async function startManagedServer() {
     // Prevent double-start race condition
-    if (startingRef.current) return;
+    if (startingRef.current) {
+      return;
+    }
     startingRef.current = true;
+    portRef.current = null;
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -192,23 +247,27 @@ export function useTauriBackend() {
 
       // Wait for the owned backend's server-port event. Do not attach to an
       // external backend if the managed start does not report a port.
-      for (let i = 0; i < 120; i++) {
-        if (portRef.current) {
-          const healthy = await invoke<boolean>("check_health", {
-            port: portRef.current,
-          });
-          if (healthy) {
-            setApiBase(portRef.current);
-            setRunningStatus();
-            startingRef.current = false;
-            return;
-          }
-        }
-        await new Promise((r) => setTimeout(r, 500));
+      const startupResult = await waitForManagedServerReady(
+        invoke,
+        () => portRef.current,
+        () => startingRef.current,
+      );
+
+      if (startupResult.status === "ready") {
+        setApiBase(startupResult.port);
+        setRunningStatus();
+        startingRef.current = false;
+        return;
       }
-      const message = !portRef.current
-        ? "Managed server started without reporting a port. Check the logs for details."
-        : "Server started but is not responding. Check the logs for details.";
+
+      if (startupResult.status === "aborted") {
+        return;
+      }
+
+      const message =
+        startupResult.status === "missing-port"
+          ? "Managed server started without reporting a port. Check the logs for details."
+          : "Server started but is not responding. Check the logs for details.";
       setBackendError(message);
     } catch (e) {
       const msg = String(e);
@@ -283,9 +342,11 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // Install completed — this is the ONLY path that starts the server
-      // after install. The install-complete event listener does NOT call
-      // startServer() to avoid a double-start race condition.
+      // Install completed — start the managed backend we just installed.
+      // Do not run the general preflight here: it can attach to an unrelated
+      // already-running CLI/backend server before launching our managed one.
+      // The install-complete event listener does NOT call startServer() to
+      // avoid a double-start race condition.
       setBackendStatus("starting");
       elevationResumeRef.current = null;
       await startServer();
@@ -315,8 +376,16 @@ export function useTauriBackend() {
     checkInstallAndStart();
   }, []);
 
-  const retryInstall = useCallback(() => {
+  const retryInstall = useCallback(async () => {
     const resume = elevationResumeRef.current;
+    if (resume) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("cancel_pending_elevation");
+      } catch (error) {
+        console.warn("Failed to record elevation cancellation", error);
+      }
+    }
     elevationResumeRef.current = null;
     clearBackendError();
     setLogs([]);
@@ -346,6 +415,31 @@ export function useTauriBackend() {
       setBackendError(String(e), resume === "repair" ? "repair-error" : "install-error");
     }
   }, [elevationPackages]);
+
+  const copyDiagnostics = useCallback((): Promise<CopySupportDiagnosticsResult> => {
+    const currentStatus = statusRef.current;
+    const flow =
+      currentStatus === "repairing" ||
+      currentStatus === "repair-error" ||
+      (currentStatus === "needs-elevation" && elevationResumeRef.current === "repair")
+        ? "repair"
+        : currentStatus === "installing" ||
+            currentStatus === "install-error" ||
+            currentStatus === "not-installed" ||
+            currentStatus === "needs-elevation"
+          ? "install"
+          : "backend";
+
+    return copySupportDiagnostics({
+      status: currentStatus,
+      error,
+      currentStepIndex,
+      progressDetail,
+      elevationPackages,
+      lastUiLogLines: logs,
+      flow,
+    });
+  }, [currentStepIndex, elevationPackages, error, logs, progressDetail]);
 
   // Initial check on mount (guarded against Strict Mode double-mount)
   useEffect(() => {
@@ -482,6 +576,6 @@ export function useTauriBackend() {
     status, logs, error, isExternalServer,
     currentStepIndex, progressDetail, elevationPackages,
     startServer, stopServer, startInstall,
-    retry, retryInstall, approveElevation,
+    retry, retryInstall, approveElevation, copyDiagnostics,
   };
 }
