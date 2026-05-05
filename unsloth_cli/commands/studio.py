@@ -751,6 +751,31 @@ def run(
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
+    # Claude orange (Claude Code's brand color) for tool-policy notices
+    # so they stand out from the surrounding banner. Always printed --
+    # even under --silent / --yes -- so the operator never misses the
+    # current tool-execution status.
+    _tool_notice_fg = (217, 119, 87)
+    if host == "0.0.0.0" and enable_tools:
+        _tool_notice = (
+            "Server-side tools are ENABLED on 0.0.0.0. "
+            "Anyone with the API key can run code on this machine. "
+            "Do not share the API key."
+        )
+    elif host == "0.0.0.0":
+        _tool_notice = (
+            "Server-side tools are disabled by default on 0.0.0.0. "
+            "Pass --enable-tools to turn on (you will be warned about "
+            "API-key risk)."
+        )
+    elif enable_tools:
+        _tool_notice = (
+            "Server-side tools are enabled by default for localhost. "
+            "Pass --disable-tools to turn off."
+        )
+    else:
+        _tool_notice = "Server-side tools are disabled."
+
     if not silent:
         typer.echo("")
         typer.echo("=" * 56)
@@ -761,33 +786,7 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
-        # Claude orange (Claude Code's brand color) for tool-policy notices
-        # so they stand out from the surrounding banner.
-        _tool_notice_fg = (217, 119, 87)
-        if host == "0.0.0.0" and enable_tools:
-            # Warning was just shown at the y/N prompt; no extra line.
-            pass
-        elif host == "0.0.0.0":
-            typer.secho(
-                "Server-side tools are disabled by default on 0.0.0.0. "
-                "Pass --enable-tools to turn on (you will be warned about "
-                "API-key risk).",
-                fg = _tool_notice_fg,
-                bold = True,
-            )
-        elif enable_tools:
-            typer.secho(
-                "Server-side tools are enabled by default for localhost. "
-                "Pass --disable-tools to turn off.",
-                fg = _tool_notice_fg,
-                bold = True,
-            )
-        else:
-            typer.secho(
-                "Server-side tools are disabled.",
-                fg = _tool_notice_fg,
-                bold = True,
-            )
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
@@ -811,6 +810,13 @@ def run(
         typer.echo('    -H "Content-Type: application/json" \\')
         typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
+    else:
+        # Silent mode still prints the essentials (URL, API key) plus
+        # the orange tool-status notice so the operator never loses
+        # visibility into the security-relevant policy.
+        typer.echo(f"URL:     {base_url}")
+        typer.echo(f"API Key: {api_key}")
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
