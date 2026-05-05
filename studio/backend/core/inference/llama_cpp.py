@@ -3673,6 +3673,8 @@ class LlamaCppBackend:
                     return "csm"
                 if len(_tok("<|startoftranscript|>")) == 1:
                     return "whisper"
+                if len(_tok("<audio_soft_token>")) == 1:
+                    return "audio_vlm"
                 if (
                     len(_tok("<|bicodec_semantic_0|>")) == 1
                     and len(_tok("<|bicodec_global_0|>")) == 1
