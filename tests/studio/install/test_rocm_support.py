@@ -1251,6 +1251,39 @@ class TestHardwareAmdBranching:
 
 
 # =============================================================================
+# TEST: hardware.py -- apply_gpu_ids ROCm fallback (issue #5180)
+# =============================================================================
+
+
+class TestApplyGpuIdsRocmFallback:
+    """Verify apply_gpu_ids sets HIP_VISIBLE_DEVICES on ROCm hosts even when
+    IS_ROCM is still False (worker subprocess before detect_hardware runs)."""
+
+    def test_apply_gpu_ids_source_checks_torch_version_hip(self):
+        """apply_gpu_ids should fall back to torch.version.hip when IS_ROCM is False."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def apply_gpu_ids")
+        func_body = source[func_start : source.find("\ndef ", func_start + 1)]
+        assert 'getattr(_torch.version, "hip", None)' in func_body or \
+               "getattr(torch.version, 'hip', None)" in func_body or \
+               "torch.version.hip" in func_body
+
+    def test_apply_gpu_ids_source_sets_hip_visible_devices(self):
+        """apply_gpu_ids should set HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def apply_gpu_ids")
+        func_body = source[func_start : source.find("\ndef ", func_start + 1)]
+        assert "HIP_VISIBLE_DEVICES" in func_body
+        assert "ROCR_VISIBLE_DEVICES" in func_body
+
+
+# =============================================================================
 # TEST: install_python_stack.py -- Windows AMD warning
 # =============================================================================
 
