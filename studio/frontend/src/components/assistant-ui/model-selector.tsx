@@ -196,8 +196,8 @@ function ModelSelectorContent({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
   const chatOnlyTabsDefault = useMemo(
-    () => (value && externalModels.some((m) => m.id === value) ? "external" : "hub"),
-    [value, externalModels],
+    () => (value && externalModels.some((model) => model.id === value) ? "external" : "hub"),
+    [externalModels, value],
   );
   const studioTabsDefault = useMemo((): "hub" | "lora" | "external" => {
     if (value && externalModels.some((model) => model.id === value)) {
