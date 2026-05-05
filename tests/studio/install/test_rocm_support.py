@@ -1251,6 +1251,48 @@ class TestHardwareAmdBranching:
 
 
 # =============================================================================
+# TEST: hardware.py -- apply_gpu_ids ROCm fallback (issue #5180)
+# =============================================================================
+
+
+class TestApplyGpuIdsRocmFallback:
+    """Verify apply_gpu_ids sets HIP_VISIBLE_DEVICES on ROCm hosts even when
+    IS_ROCM is still False (worker subprocess before detect_hardware runs)."""
+
+    def test_apply_gpu_ids_falls_back_to_torch_version_hip(self):
+        """apply_gpu_ids should probe torch.version.hip when IS_ROCM is False and no ROCm env vars are set."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def apply_gpu_ids")
+        func_body = source[func_start : source.find("\ndef ", func_start + 1)]
+        assert 'getattr(_torch.version, "hip", None)' in func_body
+
+    def test_apply_gpu_ids_sets_hip_and_rocr_visible_devices(self):
+        """apply_gpu_ids should set both HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES on ROCm."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def apply_gpu_ids")
+        func_body = source[func_start : source.find("\ndef ", func_start + 1)]
+        assert 'os.environ["HIP_VISIBLE_DEVICES"] = value' in func_body
+        assert 'os.environ["ROCR_VISIBLE_DEVICES"] = value' in func_body
+
+    def test_apply_gpu_ids_rocm_fallback_is_guarded_by_try_except(self):
+        """torch import in apply_gpu_ids must be wrapped in try/except so a missing torch never crashes."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text()
+        func_start = source.find("def apply_gpu_ids")
+        func_body = source[func_start : source.find("\ndef ", func_start + 1)]
+        assert "import torch as _torch" in func_body
+        assert "except Exception" in func_body
+
+
+# =============================================================================
 # TEST: install_python_stack.py -- Windows AMD warning
 # =============================================================================
 

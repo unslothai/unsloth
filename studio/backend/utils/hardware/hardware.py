@@ -1462,14 +1462,26 @@ def apply_gpu_ids(gpu_ids) -> None:
     # parent process already set a ROCm visibility variable -- that
     # way a downstream ROCm process inherits the narrowed mask even
     # before Studio's hardware detection has classified the host.
+    # As a final fallback, probe torch.version.hip directly so spawned
+    # training workers on AMD hosts where the user never set HIP_VISIBLE_DEVICES
+    # still get the correct ROCm visibility mask (mirrors the llama_cpp.py
+    # approach for llama-server subprocess GPU pinning).
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
-    if IS_ROCM or _inherits_rocm_visibility:
+    _is_rocm = IS_ROCM or _inherits_rocm_visibility
+    if not _is_rocm:
+        try:
+            import torch as _torch
+
+            _is_rocm = bool(getattr(_torch.version, "hip", None))
+        except Exception:
+            pass
+    if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
         os.environ["ROCR_VISIBLE_DEVICES"] = value
     _visible_gpu_count = None
-    if IS_ROCM or _inherits_rocm_visibility:
+    if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)
     else:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
