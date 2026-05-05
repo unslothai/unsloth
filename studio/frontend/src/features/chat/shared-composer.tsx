@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
+import { isTauri } from "@/lib/api-base";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
@@ -493,11 +494,15 @@ export function SharedComposer({
     <div
       className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
+        if (isTauri) return;
         e.preventDefault();
         setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
+        // Phase 1 native model drops own Tauri local-path drops. Restore browser
+        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        if (isTauri) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);
@@ -662,7 +667,7 @@ export function SharedComposer({
                     : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
               aria-label={
-                preserveThinking ? "Disable preserve thinking" : "Enable preserve thinking"
+                preserveThinking ? "Disable preserve think" : "Enable preserve think"
               }
             >
               {preserveThinking && modelLoaded ? (
@@ -670,7 +675,7 @@ export function SharedComposer({
               ) : (
                 <LightbulbOffIcon className="size-3.5" />
               )}
-              <span>Preserve Thinking</span>
+              <span>Preserve Think</span>
             </button>
           )}
           <button

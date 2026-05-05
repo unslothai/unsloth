@@ -21,6 +21,15 @@ from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
 _ARTIFACT_ROOT = recipe_datasets_root()
+_RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
+_RE_SECRET_TOKEN = re.compile(
+    r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
+)
+
+
+def _sanitize_log_message(message: str) -> str:
+    message = _RE_GITHUB_CURSOR.sub("cursor=<redacted>", message)
+    return _RE_SECRET_TOKEN.sub("<redacted-token>", message)
 
 
 class _QueueLogHandler(logging.Handler):
@@ -35,7 +44,7 @@ class _QueueLogHandler(logging.Handler):
                 "ts": record.created,
                 "level": record.levelname,
                 "logger": record.name,
-                "message": record.getMessage(),
+                "message": _sanitize_log_message(record.getMessage()),
             }
             self._q.put(event)
         except (OSError, RuntimeError, ValueError):
@@ -119,10 +128,16 @@ def run_job_process(
         # Attach queue logger directly to `data_designer` so parser events survive root resets.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
-        data_designer_logger = logging.getLogger("data_designer")
-        data_designer_logger.addHandler(handler)
-        data_designer_logger.setLevel(logging.INFO)
-        data_designer_logger.propagate = True
+        for logger_name in (
+            "data_designer",
+            "scraper",
+            "gh_client",
+            "data_designer_github_repo_seed",
+        ):
+            logger = logging.getLogger(logger_name)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = True
 
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
@@ -180,8 +195,8 @@ def run_job_process(
             {
                 "type": EVENT_JOB_ERROR,
                 "ts": time.time(),
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "error": _sanitize_log_message(str(exc)),
+                "stack": _sanitize_log_message(traceback.format_exc(limit = 20)),
             }
         )
 

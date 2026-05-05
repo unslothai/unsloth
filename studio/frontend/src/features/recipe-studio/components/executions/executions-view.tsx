@@ -32,10 +32,9 @@ import {
   formatCellValue,
   formatDuration,
   formatPercent,
-  hasExpandableTextCell,
+  isExpandableCellValue,
   parseAnalysisColumns,
   parseModelUsageRows,
-  truncateCellValue,
 } from "./executions-view-helpers";
 
 type ExecutionsViewProps = {
@@ -63,9 +62,6 @@ export function ExecutionsView({
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
   >({});
-  const [expandedDatasetRowsByExecution, setExpandedDatasetRowsByExecution] = useState<
-    Record<string, Record<string, boolean>>
-  >({});
   const [previewDatasetPageByExecution, setPreviewDatasetPageByExecution] = useState<
     Record<string, number>
   >({});
@@ -91,13 +87,6 @@ export function ExecutionsView({
     }
     return hiddenDatasetColumnsByExecution[selectedExecutionIdSafe] ?? [];
   }, [hiddenDatasetColumnsByExecution, selectedExecutionIdSafe]);
-  const expandedDatasetRows = useMemo(() => {
-    if (!selectedExecutionIdSafe) {
-      return {};
-    }
-    return expandedDatasetRowsByExecution[selectedExecutionIdSafe] ?? {};
-  }, [expandedDatasetRowsByExecution, selectedExecutionIdSafe]);
-
   const datasetColumnNames = useMemo(() => {
     if (!selectedExecution) {
       return [];
@@ -119,6 +108,36 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
+  // Columns where at least one row has text long enough that it would wrap at
+  // the default narrow width. We give those columns a wider min-width so the
+  // text is readable without clicking anything. The table's wrapper already
+  // scrolls horizontally, so a few wide columns just add a horizontal
+  // scrollbar instead of squeezing everything into the viewport.
+  const wideColumns = useMemo(() => {
+    const result = new Set<string>();
+    if (!selectedExecution) {
+      return result;
+    }
+    for (const row of selectedExecution.dataset) {
+      for (const name of visibleDatasetColumnNames) {
+        if (result.has(name)) {
+          continue;
+        }
+        const raw = row[name];
+        if (resolveImagePreview(raw)) {
+          continue;
+        }
+        if (isExpandableCellValue(formatCellValue(raw))) {
+          result.add(name);
+        }
+      }
+      if (result.size === visibleDatasetColumnNames.length) {
+        break;
+      }
+    }
+    return result;
+  }, [selectedExecution, visibleDatasetColumnNames]);
+
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!selectedExecution) {
       return [];
@@ -126,12 +145,12 @@ export function ExecutionsView({
     return visibleDatasetColumnNames.map((name) => ({
       accessorKey: name,
       header: name,
-      cell: ({ getValue, row }) => {
+      cell: ({ getValue }) => {
         const rawValue = getValue();
         const imagePreview = resolveImagePreview(rawValue);
         if (imagePreview?.kind === "ready") {
           return (
-            <div className="max-w-[32rem]">
+            <div>
               <img
                 src={imagePreview.src}
                 alt={`${name} preview`}
@@ -143,31 +162,21 @@ export function ExecutionsView({
         }
         if (imagePreview?.kind === "too_large") {
           return (
-            <div className="max-w-[32rem]">
-              <p className="text-xs text-muted-foreground">
-                Image too large to preview
-              </p>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Image too large to preview
+            </p>
           );
         }
         const value = formatCellValue(rawValue);
-        const rowExpanded = Boolean(expandedDatasetRows[row.id]);
-        const rowHasExpandableCell = hasExpandableTextCell(
-          row.original,
-          visibleDatasetColumnNames,
-        );
-        const showTruncated = rowHasExpandableCell && !rowExpanded;
-
+        const isWide = wideColumns.has(name);
         return (
-          <div className="max-w-[32rem]">
-            <p className="whitespace-pre-wrap break-all">
-              {showTruncated ? truncateCellValue(value) : value}
-            </p>
+          <div className={cn(isWide ? "min-w-[48rem]" : "min-w-[12rem]")}>
+            <p className="whitespace-pre-wrap break-all">{value}</p>
           </div>
         );
       },
     }));
-  }, [expandedDatasetRows, selectedExecution, visibleDatasetColumnNames]);
+  }, [selectedExecution, visibleDatasetColumnNames, wideColumns]);
 
   const analysisColumns = useMemo(
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
@@ -512,9 +521,7 @@ export function ExecutionsView({
                   totalPages={totalPages}
                   tableColumns={tableColumns}
                   datasetRowsForTable={datasetRowsForTable}
-                  visibleDatasetColumnNames={visibleDatasetColumnNames}
-                  expandedDatasetRows={expandedDatasetRows}
-                  selectedExecutionIdSafe={selectedExecutionIdSafe}
+                  onOpenOverview={() => setDetailTab("overview")}
                   onSetHiddenColumns={(updater) => {
                     const selectedId = selectedExecution.id;
                     setHiddenDatasetColumnsByExecution((current) => {
@@ -546,18 +553,6 @@ export function ExecutionsView({
                       return;
                     }
                     onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
-                  }}
-                  onToggleRowExpanded={(rowId) => {
-                    setExpandedDatasetRowsByExecution((current) => {
-                      const rows = current[selectedExecution.id] ?? {};
-                      return {
-                        ...current,
-                        [selectedExecution.id]: {
-                          ...rows,
-                          [rowId]: !rows[rowId],
-                        },
-                      };
-                    });
                   }}
                 />
               </TabsContent>

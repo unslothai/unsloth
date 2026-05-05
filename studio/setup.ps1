@@ -1145,28 +1145,58 @@ if ($IsPipInstall) {
     }
 }
 
-# ============================================
-# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
-# ============================================
+# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+$PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
+$DetectedPyVer = $null
 
-if ($HasPython) {
+if ($PyLauncher) {
+    foreach ($minor in @("3.13", "3.12", "3.11")) {
+        try {
+            $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
+            if ($out -match 'Python (3\.\d+\.\d+)') {
+                $DetectedPyVer = $Matches[1]
+                # Make `python` resolvable for the rest of setup. Without this,
+                # py-launcher-only installs (no python.exe on PATH) pass the gate
+                # and then crash on the first bare `python` call below.
+                try {
+                    $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
+                        $resolvedDir = Split-Path -Parent $resolvedExe
+                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+                        if (-not $alreadyOnPath) {
+                            $env:PATH = "$resolvedDir;$env:PATH"
+                        }
+                        $HasPython = $true
+                    }
+                } catch { }
+                $PythonOk = $true
+                break
+            }
+        } catch { }
+    }
+}
+
+if (-not $PythonOk -and $HasPython) {
     $PyVer = python --version 2>&1
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            substep "Python $PyVer"
+            $DetectedPyVer = "$PyMajor.$PyMinor"
             $PythonOk = $true
-        } else {
-            Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
-            Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-            exit 1
         }
     }
-} else {
-    # No Python at all -- install 3.12
-    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+}
+
+if ($PythonOk) {
+    substep "Python $DetectedPyVer"
+} elseif (-not $HasPython) {
+    # No `python` on PATH (and py.exe either absent or only had unsupported
+    # minors). Try winget as before -- gating on $HasPython alone, not also
+    # on $PyLauncher, so a launcher-only install with just 3.14 still gets
+    # an automatic 3.12 install instead of a hard error.
+    Write-Host "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
@@ -1180,6 +1210,13 @@ if ($HasPython) {
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
+} else {
+    # python.exe is on PATH but its version is unsupported, and py.exe (if
+    # present) had no supported minor either.
+    Write-Host "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
+    Write-Host "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
+    Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+    exit 1
 }
 
 # Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
@@ -1460,8 +1497,14 @@ substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 $VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
-# matches the current machine, wipe it so we get a clean install.
-if (Test-Path $VenvDir -PathType Container) {
+# matches the current machine, repair according to invocation context.
+# - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
+#   to the installer-level rollback that restores the previous environment.
+# - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
+# In no-torch mode, a missing torch package is expected.
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
+$InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+if ((Test-Path $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
@@ -1508,6 +1551,12 @@ if (Test-Path $VenvDir -PathType Container) {
 
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
+        if ($InstallerManagedSetup) {
+            substep "Stale venv detected ($reason)." "Yellow"
+            Write-Host "   [ERROR] The existing Studio environment needs repair." -ForegroundColor Red
+            Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
+            exit 1
+        }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         try {
             Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop

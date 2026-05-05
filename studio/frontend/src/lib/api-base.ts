@@ -8,6 +8,12 @@ if (isTauri && !isViteDev) {
   apiBase = 'http://127.0.0.1:8888'
 }
 
+const initialApiBase = apiBase
+
+export function resetApiBase() {
+  apiBase = initialApiBase
+}
+
 export function setApiBase(port: number) {
   apiBase = `http://127.0.0.1:${port}`
 }

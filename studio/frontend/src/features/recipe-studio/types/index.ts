@@ -38,7 +38,10 @@ export type LayoutDirection = "LR" | "TB";
 
 export type SeedSamplingStrategy = "ordered" | "shuffle";
 export type SeedSelectionType = "none" | "index_range" | "partition_block";
-export type SeedSourceType = "hf" | "local" | "unstructured";
+export type SeedSourceType = "hf" | "local" | "unstructured" | "github_repo";
+
+export type GithubItemType = "issues" | "pulls" | "commits";
+export type GithubStateFilter = "all" | "open" | "closed";
 export const INFRA_NODE_KINDS = new Set([
   "model_provider",
   "model_config",
@@ -338,6 +341,20 @@ export type SeedConfig = {
   unstructured_file_ids?: string[];
   unstructured_file_names?: string[];
   unstructured_file_sizes?: number[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_repo_slug?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_token?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_limit?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_item_types?: GithubItemType[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_state?: GithubStateFilter;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_include_comments?: boolean;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  github_max_comments_per_item?: string;
   resolved_paths?: string[];
   // ui-only
   seed_preview_rows?: Record<string, unknown>[];
