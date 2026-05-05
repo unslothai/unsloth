@@ -117,6 +117,18 @@ class TestVisionCacheSubprocessPath:
         mock_subprocess.assert_called_once()
         assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
 
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    def test_subprocess_none_falls_back_to_raw_vision_config(
+        self, mock_needs_t5, mock_subprocess, mock_raw_config
+    ):
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is True
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is True
+
+        mock_subprocess.assert_called_once()
+        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
+
 
 # ---------------------------------------------------------------------------
 # Exception handling — cache the False fallback
@@ -221,6 +233,20 @@ class TestVisionCacheDirectPath:
 
         assert is_vision_model("Qwen/Qwen2-VL-7B") is True
         assert is_vision_model("Qwen/Qwen2-VL-7B") is True
+        mock_load_config.assert_called_once()
+
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.models.model_config.load_model_config")
+    def test_model_type_prefix_detected_and_cached(
+        self, mock_load_config, mock_needs_t5
+    ):
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "gemma4audio"
+        cfg.architectures = ["Gemma4AudioForCausalLM"]
+        mock_load_config.return_value = cfg
+
+        assert is_vision_model("google/gemma-4-audio") is True
+        assert is_vision_model("google/gemma-4-audio") is True
         mock_load_config.assert_called_once()
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
