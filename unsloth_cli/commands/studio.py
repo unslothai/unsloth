@@ -716,7 +716,13 @@ def run(
     actual_port = getattr(app.state, "server_port", port) or port
 
     # ── Apply the resolved tool policy as a process-level override.
-    from studio.backend.state.tool_policy import set_tool_policy
+    # Must use the same import path the route handlers use --
+    # `studio/backend/run.py` adds `studio/backend/` to sys.path so the
+    # routes import this module as top-level `state.tool_policy`. If we
+    # imported via `studio.backend.state.tool_policy` instead, Python
+    # would cache two different module objects with two different
+    # `_tool_policy` globals, and the gates would never see our value.
+    from state.tool_policy import set_tool_policy
 
     set_tool_policy(enable_tools)
 
