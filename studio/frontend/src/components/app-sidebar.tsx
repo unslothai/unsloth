@@ -42,6 +42,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
+  HelpCircleIcon,
   Settings02Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -527,7 +528,7 @@ export function AppSidebar() {
                   </div>
                   <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
-                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
+                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Unsloth</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
@@ -578,6 +579,12 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuItem
+                  onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                >
+                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <span>Help</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
                   <span>Shutdown</span>
