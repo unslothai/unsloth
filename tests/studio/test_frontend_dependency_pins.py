@@ -7,7 +7,7 @@ FRONTEND_PACKAGE_JSON = WORKDIR / "studio" / "frontend" / "package.json"
 
 
 def test_assistant_ui_dependencies_are_pinned():
-    package = json.loads(FRONTEND_PACKAGE_JSON.read_text(encoding="utf-8"))
+    package = json.loads(FRONTEND_PACKAGE_JSON.read_text(encoding = "utf-8"))
     dependencies = package["dependencies"]
 
     assert dependencies["@assistant-ui/core"] == "0.1.17"
