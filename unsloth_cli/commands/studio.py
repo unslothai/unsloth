@@ -582,6 +582,20 @@ def run(
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = (
+            "Force server-side tools on/off for all requests. "
+            "Default: on for 127.0.0.1, off for 0.0.0.0."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+    ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
@@ -613,6 +627,17 @@ def run(
             raise typer.Exit(1)
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
+
+    # ── Resolve the server-side tool policy. The y/N prompt (if any)
+    # runs in the outer process so the re-exec'd child never re-prompts.
+    from unsloth_cli._tool_policy import resolve_tool_policy
+
+    enable_tools = resolve_tool_policy(
+        host = host,
+        flag = enable_tools,
+        yes = yes,
+        silent = silent,
+    )
 
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
@@ -653,6 +678,14 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        # Forward the resolved tool policy (always concrete True/False
+        # at this point — the resolver above ran before the re-exec).
+        if enable_tools:
+            args.append("--enable-tools")
+        else:
+            args.append("--disable-tools")
+        if yes:
+            args.append("--yes")
         # Forward unknown args (llama-server pass-through) to the
         # re-exec'd command so the studio venv sees them in ctx.args
         # and the re-execed run() can include them in the load payload.
@@ -677,6 +710,11 @@ def run(
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
+
+    # ── Apply the resolved tool policy as a process-level override.
+    from studio.backend.state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
 
     # ── 3. Wait for server health ─────────────────────────────────────
     if not silent:
@@ -723,6 +761,22 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
+        if host == "0.0.0.0" and enable_tools:
+            # Warning was just shown at the y/N prompt; no extra line.
+            pass
+        elif host == "0.0.0.0":
+            typer.echo(
+                "Server-side tools are disabled by default on 0.0.0.0. "
+                "Pass --enable-tools to turn on (you will be warned about "
+                "API-key risk)."
+            )
+        elif enable_tools:
+            typer.echo(
+                "Server-side tools are enabled by default for localhost. "
+                "Pass --disable-tools to turn off."
+            )
+        else:
+            typer.echo("Server-side tools are disabled.")
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
