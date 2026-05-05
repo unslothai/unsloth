@@ -52,7 +52,6 @@ if _IS_MLX:
 
     FastTextModel = FastLanguageModel
     FastModel = FastLanguageModel
-    FastVisionModel = FastLanguageModel
 
     class FastSentenceTransformer:
         @staticmethod
