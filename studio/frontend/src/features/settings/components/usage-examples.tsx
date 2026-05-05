@@ -134,7 +134,7 @@ export function UsageExamples() {
             {copied ? "Copied" : "Copy"}
           </button>
         </div>
-        <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-all p-3 font-mono text-[11px] leading-relaxed text-foreground">
+        <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-foreground">
           {snippets[lang]}
         </pre>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
