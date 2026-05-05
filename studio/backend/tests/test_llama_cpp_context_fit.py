@@ -141,7 +141,7 @@ def _drive(
     model_size = int(model_gib * GIB)
     cache_type_kv = None
 
-    def fake_estimate(n_ctx_, _type = None):
+    def fake_estimate(n_ctx_, _type = None, **_kwargs):
         return 0 if n_ctx_ <= 0 else n_ctx_ * kv_per_token_bytes
 
     inst._estimate_kv_cache_bytes = fake_estimate

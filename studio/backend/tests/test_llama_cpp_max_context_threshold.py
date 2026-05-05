@@ -118,7 +118,7 @@ def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes =
     model_size = int(model_gib * GIB)
 
     inst._estimate_kv_cache_bytes = (
-        lambda n, _t = None: 0 if n <= 0 else n * kv_per_token_bytes
+        lambda n, _t = None, **_kw: 0 if n <= 0 else n * kv_per_token_bytes
     )
     inst._can_estimate_kv = lambda: True
 
