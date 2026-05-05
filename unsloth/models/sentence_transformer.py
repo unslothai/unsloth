@@ -1089,15 +1089,15 @@ class FastSentenceTransformer(FastModel):
                 trust_remote_code_kwargs = {"trust_remote_code": trust_remote_code}
                 transformer_kwargs = {"max_seq_length": max_seq_length}
                 if "model_kwargs" in transformer_init_params:
-                    transformer_kwargs["model_kwargs"] = trust_remote_code_kwargs
-                    transformer_kwargs["config_kwargs"] = trust_remote_code_kwargs
+                    transformer_kwargs["model_kwargs"] = trust_remote_code_kwargs.copy()
+                    transformer_kwargs["config_kwargs"] = trust_remote_code_kwargs.copy()
                 else:
-                    transformer_kwargs["model_args"] = trust_remote_code_kwargs
-                    transformer_kwargs["config_args"] = trust_remote_code_kwargs
+                    transformer_kwargs["model_args"] = trust_remote_code_kwargs.copy()
+                    transformer_kwargs["config_args"] = trust_remote_code_kwargs.copy()
                 if "processor_kwargs" in transformer_init_params:
-                    transformer_kwargs["processor_kwargs"] = trust_remote_code_kwargs
+                    transformer_kwargs["processor_kwargs"] = trust_remote_code_kwargs.copy()
                 elif "tokenizer_args" in transformer_init_params:
-                    transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs
+                    transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
                 # Initialize Transformer
                 transformer_module = Transformer(model_name, **transformer_kwargs)
