@@ -228,3 +228,4 @@ setup_leo.sh
 server.pid
 *.log
 package-lock.json
+llama.cpp/

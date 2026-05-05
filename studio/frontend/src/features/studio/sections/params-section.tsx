@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { SectionCard } from "@/components/section-card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -124,6 +125,7 @@ function SliderRow({
 
 export function ParamsSection(): ReactElement {
   const store = useTrainingConfigStore();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const isLora = store.trainingMethod !== "full";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
   const [loraOpen, setLoraOpen] = useState(false);
@@ -883,7 +885,11 @@ export function ParamsSection(): ReactElement {
                       <SelectContent>
                         <SelectItem value="none">None</SelectItem>
                         <SelectItem value="true">Standard</SelectItem>
-                        <SelectItem value="unsloth">Unsloth</SelectItem>
+                        {platformDeviceType === "mac" ? (
+                          <SelectItem value="mlx">MLX</SelectItem>
+                        ) : (
+                          <SelectItem value="unsloth">Unsloth</SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                   </Row>

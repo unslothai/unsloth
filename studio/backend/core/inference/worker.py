@@ -663,6 +663,98 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
+    # ── 0. MLX fast-path — skip torch/transformers entirely ──
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
+        try:
+            _activate_transformers_version(model_name)
+        except Exception:
+            pass
+        try:
+            from core.inference.mlx_inference import MLXInferenceBackend
+
+            backend = MLXInferenceBackend()
+            _send_response(
+                resp_queue,
+                {"type": "status", "message": "Loading model...", "ts": time.time()},
+            )
+            _handle_load(backend, config, resp_queue)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"MLX inference init failed: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                },
+            )
+            return
+
+        # Enter same command loop as GPU path
+        logger.info("MLX inference subprocess ready, entering command loop")
+        while True:
+            try:
+                cmd = cmd_queue.get(timeout = 1.0)
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+            if cmd is None:
+                continue
+            cmd_type = cmd.get("type", "")
+            try:
+                if cmd_type == "generate":
+                    cancel_event.clear()
+                    _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "load":
+                    if backend.active_model_name:
+                        backend.unload_model(backend.active_model_name)
+                    _handle_load(backend, cmd, resp_queue)
+                elif cmd_type == "unload":
+                    _handle_unload(backend, cmd, resp_queue)
+                elif cmd_type == "cancel":
+                    cancel_event.set()
+                elif cmd_type == "reset":
+                    cancel_event.set()
+                    backend.reset_generation_state()
+                    _send_response(resp_queue, {"type": "reset_ack", "ts": time.time()})
+                elif cmd_type == "status":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "status_response",
+                            "active_model": backend.active_model_name,
+                            "models": {
+                                k: {kk: vv for kk, vv in v.items() if kk != "model"}
+                                for k, v in backend.models.items()
+                            },
+                            "loading": list(backend.loading_models),
+                            "ts": time.time(),
+                        },
+                    )
+                elif cmd_type == "shutdown":
+                    return
+            except Exception as exc:
+                logger.error("MLX command error (%s): %s", cmd_type, exc)
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gen_error" if cmd_type == "generate" else "error",
+                        "request_id": cmd.get("request_id"),
+                        "error": str(exc),
+                        "stack": traceback.format_exc(limit = 20),
+                        "ts": time.time(),
+                    },
+                )
+        return
+
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
         _activate_transformers_version(model_name)
