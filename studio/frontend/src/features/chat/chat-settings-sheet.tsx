@@ -63,7 +63,7 @@ import {
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
@@ -314,6 +314,7 @@ function NumericValueInput({
 }) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
+  const cancelBlurCommitRef = useRef(false);
 
   const commit = (raw: string) => {
     const parsed = Number.parseFloat(raw);
@@ -334,6 +335,7 @@ function NumericValueInput({
       value={focused ? draft : (displayValue ?? String(value))}
       aria-label={ariaLabel}
       onFocus={(e) => {
+        cancelBlurCommitRef.current = false;
         setDraft(String(value));
         setFocused(true);
         // Defer the select() so it runs after the value swap above.
@@ -341,7 +343,11 @@ function NumericValueInput({
         requestAnimationFrame(() => target.select());
       }}
       onBlur={() => {
-        commit(draft);
+        if (cancelBlurCommitRef.current) {
+          cancelBlurCommitRef.current = false;
+        } else {
+          commit(draft);
+        }
         setFocused(false);
       }}
       onChange={(e) => setDraft(e.target.value)}
@@ -349,6 +355,7 @@ function NumericValueInput({
         if (e.key === "Enter") {
           e.currentTarget.blur();
         } else if (e.key === "Escape") {
+          cancelBlurCommitRef.current = true;
           setDraft(String(value));
           e.currentTarget.blur();
         }
