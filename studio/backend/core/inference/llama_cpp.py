@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import os
 import re
 import struct
 import structlog
@@ -74,6 +75,238 @@ _REPROMPT_MAX_CHARS = 2000
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+
+
+# ── Sliding-window-pattern resolver ───────────────────────────
+# Resolves the per-layer SWA mask when a GGUF reports a sliding window
+# but no `sliding_window_pattern` field. Tier order in
+# `_resolve_swa_pattern`: GGUF metadata, on-disk cache, bootstrap dict
+# below, transformers introspection, HF Hub config.json, legacy 1/4
+# fallback. Period N means layer i is SWA iff `(i + 1) % N != 0`,
+# matching transformers. Skipped on purpose: phi3 (no key/val length
+# in GGUF, window >= ctx anyway), qwen2 family (converter strips
+# sliding_window when use_sliding_window=False), mistral v0.1/v0.2
+# (all-SWA can't be expressed as a period).
+_BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
+    "gemma2": 2,  # Gemma2Config.sliding_window_pattern
+    "gemma3": 6,  # Gemma3TextConfig.sliding_window_pattern
+    "gemma3n": 5,  # text_config.layer_types: SWA*4 + FULL
+    "gpt_oss": 2,  # text_config.layer_types: alternating
+    "cohere2": 4,  # Cohere2Config.sliding_window_pattern
+}
+
+# Process-wide cache backed by JSON on disk. Values are int period or
+# list[bool] mask. Lazy-loaded.
+_SWA_CACHE: Optional[dict] = None
+_SWA_CACHE_LOCK = threading.Lock()
+
+
+def _swa_cache_path() -> Path:
+    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    base = Path(home) if home else Path.home() / ".unsloth" / "studio"
+    return base / "swa_cache.json"
+
+
+def _load_swa_cache() -> dict:
+    global _SWA_CACHE
+    with _SWA_CACHE_LOCK:
+        if _SWA_CACHE is not None:
+            return _SWA_CACHE
+        try:
+            with open(_swa_cache_path()) as f:
+                _SWA_CACHE = json.load(f)
+                if not isinstance(_SWA_CACHE, dict):
+                    _SWA_CACHE = {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            _SWA_CACHE = {}
+        return _SWA_CACHE
+
+
+def _save_swa_cache(cache: dict) -> None:
+    try:
+        path = _swa_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(cache, f, indent = 2, sort_keys = True)
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _period_from_layer_types(layer_types: list) -> Optional[int]:
+    """Smallest period N where `(i+1) % N != 0` matches the SWA mask,
+    or None if no fixed period fits."""
+    if not layer_types:
+        return None
+    is_swa = ["full" not in str(t).lower() for t in layer_types]
+    n = len(is_swa)
+    for N in range(1, n + 1):
+        if all(((i + 1) % N != 0) == is_swa[i] for i in range(n)):
+            return N
+    return None
+
+
+def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cfg_path = hf_hub_download(repo_id, "config.json", repo_type = "model")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        return None
+
+    src = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else cfg
+    period = src.get("sliding_window_pattern")
+    if isinstance(period, int) and period > 0:
+        return period
+    lt = src.get("layer_types")
+    if isinstance(lt, list) and lt:
+        return _period_from_layer_types(lt) or [
+            "full" not in str(t).lower() for t in lt
+        ]
+    return None
+
+
+def _arch_aliases(arch: str) -> tuple:
+    # GGUF emits `falcon-h1`; HF model_type is `falcon_h1`. Normalise both ways.
+    seen = []
+    for a in (arch, arch.replace("-", "_"), arch.replace("_", "-")):
+        if a and a not in seen:
+            seen.append(a)
+    return tuple(seen)
+
+
+def _swa_entry_from_config_obj(cfg) -> Optional[object]:
+    src = getattr(cfg, "text_config", None) or cfg
+    period = getattr(src, "sliding_window_pattern", None)
+    if isinstance(period, int) and period > 0:
+        return period
+    lt = getattr(src, "layer_types", None)
+    if isinstance(lt, list) and lt:
+        return _period_from_layer_types(lt) or [
+            "full" not in str(t).lower() for t in lt
+        ]
+    return None
+
+
+_SWA_PATTERN_SOURCE_RE = re.compile(
+    r"sliding_window_pattern\s*(?::\s*[\w\[\], ]*)?\s*=\s*(\d+)"
+)
+
+
+def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
+    """Default-instantiate the matching Config; on failure, regex-parse
+    its source for `sliding_window_pattern = N`."""
+    try:
+        from transformers.models.auto.configuration_auto import (
+            CONFIG_MAPPING,
+            CONFIG_MAPPING_NAMES,
+        )
+    except Exception:
+        return None
+
+    cfg_class = None
+    for alias in _arch_aliases(arch):
+        if alias in CONFIG_MAPPING_NAMES:
+            try:
+                cfg_class = CONFIG_MAPPING[alias]
+                break
+            except Exception:
+                cfg_class = None
+    if cfg_class is None:
+        return None
+
+    try:
+        if (entry := _swa_entry_from_config_obj(cfg_class())) is not None:
+            return entry
+    except Exception:
+        pass
+
+    import inspect
+
+    candidates = [cfg_class]
+    text_cfg_class = getattr(cfg_class, "sub_configs", {}).get("text_config")
+    if text_cfg_class is not None:
+        candidates.append(text_cfg_class)
+    for cls in candidates:
+        try:
+            src = inspect.getsource(cls)
+        except (OSError, TypeError):
+            continue
+        if m := _SWA_PATTERN_SOURCE_RE.search(src):
+            period = int(m.group(1))
+            if period > 0:
+                return period
+    return None
+
+
+def _resolve_swa_pattern(
+    arch: Optional[str],
+    n_layers: Optional[int],
+    source_repo_candidates: tuple = (),
+    *,
+    allow_network: Optional[bool] = None,
+) -> Optional[list]:
+    if not arch or not n_layers:
+        return None
+    if allow_network is None:
+        allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
+            "1",
+            "true",
+            "True",
+            "yes",
+        )
+
+    cache = _load_swa_cache()
+
+    def _entry_to_mask(entry):
+        if isinstance(entry, int) and entry > 0:
+            return [(i + 1) % entry != 0 for i in range(n_layers)]
+        if isinstance(entry, list) and entry:
+            return [bool(entry[i % len(entry)]) for i in range(n_layers)]
+        return None
+
+    def _persist(entry):
+        with _SWA_CACHE_LOCK:
+            cache[arch] = entry
+        _save_swa_cache(cache)
+
+    if (entry := cache.get(arch)) is not None:
+        if (mask := _entry_to_mask(entry)) is not None:
+            return mask
+
+    if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
+        return _entry_to_mask(entry)
+
+    entry = _resolve_swa_entry_from_transformers(arch)
+    if entry is not None:
+        _persist(entry)
+        return _entry_to_mask(entry)
+
+    # Tier 3: live HF fetch (with persistent caching of the result)
+    if allow_network:
+        for repo_id in source_repo_candidates:
+            if not repo_id:
+                continue
+            entry = _fetch_swa_entry_from_hf(repo_id)
+            if entry is not None:
+                _persist(entry)
+                return _entry_to_mask(entry)
+
+    return None
+
+
+def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
+    """Strip `https://huggingface.co/owner/name(/...)` to `owner/name`."""
+    if not url or "huggingface.co/" not in url:
+        return None
+    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    parts = tail.split("/")
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
 
 
 # Model size extraction — lazy import to avoid pulling in transformers
@@ -216,17 +449,24 @@ class LlamaCppBackend:
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
+        self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
-        # Architecture-aware KV fields (8 new fields for 5-path estimation)
+        # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
         self._kv_value_length: Optional[int] = None
         self._sliding_window: Optional[int] = None
+        self._sliding_window_pattern: Optional[list[bool]] = None
         self._full_attention_interval: Optional[int] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
+        self._kv_key_length_swa: Optional[int] = None
+        self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
         self._ssm_state_size: Optional[int] = None
+        # Last N layers reuse KV from earlier layers and don't allocate
+        # their own cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
+        self._shared_kv_layers: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -749,13 +989,29 @@ class LlamaCppBackend:
         # New-style: need both explicit key AND value dimensions
         if self._kv_key_length is not None and self._kv_value_length is not None:
             return True
-        # Legacy: need embedding_length + head count
+        # Legacy: need embedding_length + a head count (scalar or per-layer).
         return self._embedding_length is not None and (
-            self._n_kv_heads is not None or self._n_heads is not None
+            self._n_kv_heads is not None
+            or self._n_heads is not None
+            or self._n_kv_heads_by_layer is not None
         )
 
+    def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
+        if self._n_kv_heads_by_layer is not None and layer_idx < len(
+            self._n_kv_heads_by_layer
+        ):
+            return self._n_kv_heads_by_layer[layer_idx]
+        return fallback
+
     def _estimate_kv_cache_bytes(
-        self, n_ctx: int, cache_type_kv: Optional[str] = None
+        self,
+        n_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        ctx_checkpoints: int = 0,
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
 
@@ -766,12 +1022,34 @@ class LlamaCppBackend:
           4. GQA      -- standard full KV with explicit key/value dimensions
           5. Legacy   -- fallback using embed // n_heads
 
+        Server-flag knobs (mirror llama-server's CLI):
+          swa_full        -- ``--swa-full``: force SWA layers to cache the
+                             full ``n_ctx`` (collapses path 3 to path 4
+                             sizing for the SWA layers).
+          n_parallel      -- ``--parallel``: number of server slots.
+                             Verified empirically against llama-server:
+                             non-SWA layers stay constant (cells split
+                             across slots), SWA layers scale linearly
+                             (per-slot window).
+          kv_unified      -- ``--kv-unified`` (default on): retained for
+                             API forward-compat. Currently a no-op for
+                             memory math because the unified buffer total
+                             matches per-slot buffers in measured cases.
+          ctx_checkpoints -- ``--ctx-checkpoints``: SWA snapshot count per
+                             slot (PR #15293). Each snapshot stores one
+                             sliding-window of state per SWA layer.
+
         Returns 0 if metadata is insufficient for estimation.
         """
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
         n_layers = self._n_layers  # type: ignore[assignment]
+        # Gemma 3n / Gemma 4 reuse KV from earlier layers in the last
+        # ``shared_kv_layers`` blocks -- those don't allocate their own
+        # cache.  Floor at 1 so a misconfigured GGUF can't zero out KV.
+        shared = self._shared_kv_layers or 0
+        n_layers_kv = max(1, n_layers - shared)
         n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
 
         # Bytes per element depends on KV cache quantization
@@ -787,6 +1065,8 @@ class LlamaCppBackend:
             "iq4_nl": 0.5625,
         }.get(cache_type_kv or "f16", 2.0)
 
+        slots = max(1, n_parallel)
+
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # MLA stores one compressed KV latent per token/layer (shared across heads).
         # V is reconstructed from the latent on the fly -- no separate V cache.
@@ -797,7 +1077,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe)
+            return int(n_layers_kv * n_ctx * n_kv_mla * key_len * bpe)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -815,11 +1095,19 @@ class LlamaCppBackend:
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
-        # Path 3: Sliding Window (Gemma-3, gpt-oss)
-        # SWA layers only cache min(ctx, window) tokens; global layers cache full ctx.
-        # Most SWA architectures use few global layers (e.g., Gemma-3 uses 1 in 6).
-        # Without an explicit field, we conservatively assume 1/4 of layers are global
-        # which is still far more accurate than the legacy formula (which ignores SWA).
+        # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
+        # Pattern is filled in by the resolver at parse time; if absent,
+        # falls through to the legacy 1/4-global heuristic below.
+        # Per-layer-type ``--parallel N`` accounting (verified empirically
+        # against ``llama-server``):
+        #   * non-SWA layers:    total cells = n_ctx, partitioned across
+        #                         slots -> total memory CONSTANT in slots.
+        #   * SWA layers:         per-slot cells = 2 * sliding_window
+        #                         (capped at n_ctx and at per_slot_ctx
+        #                         when ctx is split among many slots) ->
+        #                         total memory grows LINEARLY in slots.
+        # ``--swa-full`` forces full n_ctx for SWA layers instead.
+        # ``--ctx-checkpoints N`` adds N snapshots per SWA layer per slot.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -827,20 +1115,72 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
-            n_global = max(1, n_layers // 4)
-            n_swa = n_layers - n_global
+            per_slot_ctx = max(1, n_ctx // slots)
+            # ``--swa-full`` makes SWA layers cache the full context just
+            # like non-SWA: cells get partitioned across slots, so per-slot
+            # cells = per_slot_ctx and the slots*per-slot product collapses
+            # back to the constant ``n_ctx`` total.  Otherwise SWA caches
+            # 2*sliding_window per slot, clamped at the per-slot ctx.
+            swa_cells_per_slot = (
+                per_slot_ctx if swa_full else min(n_ctx, 2 * swa, per_slot_ctx)
+            )
+            key_len_swa = self._kv_key_length_swa or key_len
+            val_len_swa = self._kv_value_length_swa or val_len
+            if self._sliding_window_pattern is not None:
+                global_bytes = 0.0  # constant across slots
+                swa_bytes_per_slot = 0.0  # multiplied by slots
+                checkpoint_extra_per_slot = 0.0
+                # Iterate only over layers that allocate their own KV;
+                # the trailing ``shared`` layers reuse earlier caches.
+                for layer_idx in range(n_layers_kv):
+                    layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
+                    is_swa = (
+                        layer_idx < len(self._sliding_window_pattern)
+                        and self._sliding_window_pattern[layer_idx]
+                    )
+                    if is_swa:
+                        swa_bytes_per_slot += (
+                            swa_cells_per_slot
+                            * layer_n_kv
+                            * (key_len_swa + val_len_swa)
+                            * bpe
+                        )
+                        if ctx_checkpoints > 0 and not swa_full:
+                            checkpoint_extra_per_slot += (
+                                ctx_checkpoints
+                                * swa
+                                * layer_n_kv
+                                * (key_len_swa + val_len_swa)
+                                * bpe
+                            )
+                    else:
+                        global_bytes += n_ctx * layer_n_kv * (key_len + val_len) * bpe
+                return int(
+                    global_bytes
+                    + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
+                )
+            n_global = max(1, n_layers_kv // 4)
+            n_swa = n_layers_kv - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
+            kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
+            global_bytes = n_global * n_ctx * kv_per_token
+            swa_bytes_per_slot = n_swa * swa_cells_per_slot * kv_per_token_swa
+            checkpoint_extra_per_slot = (
+                ctx_checkpoints * n_swa * swa * kv_per_token_swa
+                if ctx_checkpoints > 0 and not swa_full
+                else 0.0
+            )
             return int(
-                n_global * n_ctx * kv_per_token + n_swa * min(n_ctx, swa) * kv_per_token
+                global_bytes + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
             )
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            return int(n_layers * n_ctx * n_kv * (key_len + val_len) * bpe)
+            return int(n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe)
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-        return int(2 * n_kv * head_dim * n_layers * n_ctx * bpe)
+        return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
 
     def _fit_context_to_vram(
         self,
@@ -849,6 +1189,12 @@ class LlamaCppBackend:
         model_size_bytes: int,
         cache_type_kv: Optional[str] = None,
         min_ctx: int = 4096,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        ctx_checkpoints: int = 0,
+        kv_on_gpu: bool = True,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
@@ -856,6 +1202,11 @@ class LlamaCppBackend:
         threshold -- 10% reserved for compute buffers, CUDA context,
         scratch space, flash-attn workspace, etc.).
         If the model weights alone don't fit, returns min_ctx unchanged.
+
+        ``kv_on_gpu`` mirrors ``--kv-offload`` (default on). When False
+        the KV cache lives in CPU RAM and doesn't compete with weights
+        for VRAM; the requested context is honored verbatim. The other
+        keyword args mirror ``_estimate_kv_cache_bytes``.
         """
         if not self._can_estimate_kv():
             logger.debug(
@@ -865,11 +1216,22 @@ class LlamaCppBackend:
             )
             return requested_ctx
 
+        # KV lives off-GPU: no VRAM accounting needed for the cache itself.
+        if not kv_on_gpu:
+            return requested_ctx
+
+        kv_kwargs = dict(
+            swa_full = swa_full,
+            n_parallel = n_parallel,
+            kv_unified = kv_unified,
+            ctx_checkpoints = ctx_checkpoints,
+        )
+
         budget_bytes = available_mib * 1024 * 1024 * 0.90
         model_footprint = model_size_bytes
 
         # Check if requested context already fits
-        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
+        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv, **kv_kwargs)
         if model_footprint + kv <= budget_bytes:
             return requested_ctx
 
@@ -891,7 +1253,7 @@ class LlamaCppBackend:
         best = effective_min
         while lo <= hi:
             mid = (lo + hi) // 2
-            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
+            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv, **kv_kwargs)
             if kv <= remaining:
                 best = mid
                 lo = mid + 1
@@ -1024,6 +1386,19 @@ class LlamaCppBackend:
                 for _ in range(alen):
                     LlamaCppBackend._gguf_skip_value(f, atype)
 
+    @staticmethod
+    def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
+        if atype == 4:  # UINT32
+            return [struct.unpack("<I", f.read(4))[0] for _ in range(alen)]
+        if atype == 5:  # INT32
+            return [struct.unpack("<i", f.read(4))[0] for _ in range(alen)]
+        if atype == 7:  # BOOL
+            return [struct.unpack("<?", f.read(1))[0] for _ in range(alen)]
+
+        for _ in range(alen):
+            LlamaCppBackend._gguf_skip_value(f, atype)
+        return None
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -1042,23 +1417,44 @@ class LlamaCppBackend:
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
+        self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
         self._kv_key_length = None
         self._kv_value_length = None
         self._sliding_window = None
+        self._sliding_window_pattern = None
         self._full_attention_interval = None
         self._kv_lora_rank = None
         self._key_length_mla = None
+        self._kv_key_length_swa = None
+        self._kv_value_length_swa = None
         self._ssm_inner_size = None
         self._ssm_state_size = None
+        self._shared_kv_layers = None
 
         try:
-            WANTED = {"general.architecture", "tokenizer.chat_template"}
+            WANTED = {
+                "general.architecture",
+                "tokenizer.chat_template",
+                # Source-repo hints for the SWA resolver's HF fallback.
+                "general.source.huggingface.repository",
+                "general.source.url",
+                "general.source.repo_url",
+                "general.base_model.0.repo_url",
+                "general.base_model.0.organization",
+                "general.base_model.0.name",
+                "general.basename",
+                "general.organization",
+                "general.size_label",
+                "general.finetune",
+            }
             # Additional arch-specific keys are added dynamically once
             # we know the architecture name.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            sliding_window_pattern_period: Optional[int] = None
+            general: dict[str, str] = {}
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -1068,49 +1464,141 @@ class LlamaCppBackend:
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
 
                 for _ in range(kv_count):
-                    key_len = struct.unpack("<Q", f.read(8))[0]
-                    key = f.read(key_len).decode("utf-8")
-                    vtype = struct.unpack("<I", f.read(4))[0]
+                    # Tolerate truncated input (e.g., a partial header
+                    # fetched via HTTP byte-range): bail out gracefully
+                    # so the resolver fallback still runs on whatever
+                    # we did manage to parse.
+                    try:
+                        key_len_bytes = f.read(8)
+                        if len(key_len_bytes) < 8:
+                            break
+                        key_len = struct.unpack("<Q", key_len_bytes)[0]
+                        key_bytes = f.read(key_len)
+                        if len(key_bytes) < key_len:
+                            break
+                        key = key_bytes.decode("utf-8")
+                        vtype_bytes = f.read(4)
+                        if len(vtype_bytes) < 4:
+                            break
+                        vtype = struct.unpack("<I", vtype_bytes)[0]
+                    except (struct.error, UnicodeDecodeError):
+                        break
 
-                    if key in WANTED or key in arch_keys:
-                        # Read this value
-                        if vtype == 8:  # STRING
-                            slen = struct.unpack("<Q", f.read(8))[0]
-                            val_s = f.read(slen).decode("utf-8")
-                            if key == "general.architecture":
-                                arch = val_s
-                                # Register arch-specific keys to look for
-                                arch_keys = {
-                                    f"{arch}.context_length": "context_length",
-                                    f"{arch}.block_count": "n_layers",
-                                    f"{arch}.attention.head_count_kv": "n_kv_heads",
-                                    f"{arch}.attention.head_count": "n_heads",
-                                    f"{arch}.embedding_length": "embedding_length",
-                                    # Architecture-aware KV cache fields
-                                    f"{arch}.attention.key_length": "kv_key_length",
-                                    f"{arch}.attention.value_length": "kv_value_length",
-                                    f"{arch}.attention.sliding_window": "sliding_window",
-                                    f"{arch}.full_attention_interval": "full_attention_interval",
-                                    f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
-                                    f"{arch}.attention.key_length_mla": "key_length_mla",
-                                    f"{arch}.ssm.inner_size": "ssm_inner_size",
-                                    f"{arch}.ssm.state_size": "ssm_state_size",
-                                }
-                            elif key == "tokenizer.chat_template":
-                                self._chat_template = val_s
-                        elif vtype in (4, 10):  # UINT32 or UINT64
-                            val_i = (
-                                struct.unpack("<I", f.read(4))[0]
-                                if vtype == 4
-                                else struct.unpack("<Q", f.read(8))[0]
-                            )
-                            attr = arch_keys.get(key)
-                            if attr:
-                                setattr(self, f"_{attr}", val_i)
+                    try:
+                        if key in WANTED or key in arch_keys:
+                            if vtype == 8:  # STRING
+                                slen = struct.unpack("<Q", f.read(8))[0]
+                                val_s = f.read(slen).decode("utf-8")
+                                if (
+                                    key.startswith("general.")
+                                    and key != "general.architecture"
+                                ):
+                                    general[key] = val_s
+                                if key == "general.architecture":
+                                    arch = val_s
+                                    arch_keys = {
+                                        f"{arch}.context_length": "context_length",
+                                        f"{arch}.block_count": "n_layers",
+                                        f"{arch}.attention.head_count_kv": "n_kv_heads",
+                                        f"{arch}.attention.head_count": "n_heads",
+                                        f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.attention.key_length": "kv_key_length",
+                                        f"{arch}.attention.value_length": "kv_value_length",
+                                        f"{arch}.attention.sliding_window": "sliding_window",
+                                        f"{arch}.attention.sliding_window_pattern": "sliding_window_pattern",
+                                        f"{arch}.full_attention_interval": "full_attention_interval",
+                                        f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
+                                        f"{arch}.attention.key_length_mla": "key_length_mla",
+                                        f"{arch}.attention.key_length_swa": "kv_key_length_swa",
+                                        f"{arch}.attention.value_length_swa": "kv_value_length_swa",
+                                        f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
+                                        f"{arch}.ssm.inner_size": "ssm_inner_size",
+                                        f"{arch}.ssm.state_size": "ssm_state_size",
+                                    }
+                                elif key == "tokenizer.chat_template":
+                                    self._chat_template = val_s
+                            elif vtype in (4, 10):  # UINT32 or UINT64
+                                val_i = (
+                                    struct.unpack("<I", f.read(4))[0]
+                                    if vtype == 4
+                                    else struct.unpack("<Q", f.read(8))[0]
+                                )
+                                attr = arch_keys.get(key)
+                                if attr:
+                                    if attr == "sliding_window_pattern":
+                                        sliding_window_pattern_period = val_i
+                                    else:
+                                        setattr(self, f"_{attr}", val_i)
+                            elif vtype == 9:  # ARRAY
+                                atype = struct.unpack("<I", f.read(4))[0]
+                                alen = struct.unpack("<Q", f.read(8))[0]
+                                val_a = self._gguf_read_array_value(f, atype, alen)
+                                attr = arch_keys.get(key)
+                                if attr == "n_kv_heads" and val_a is not None:
+                                    self._n_kv_heads_by_layer = [int(x) for x in val_a]
+                                    if self._n_kv_heads is None and val_a:
+                                        self._n_kv_heads = max(int(x) for x in val_a)
+                                elif (
+                                    attr == "sliding_window_pattern"
+                                    and val_a is not None
+                                ):
+                                    self._sliding_window_pattern = [
+                                        bool(x) for x in val_a
+                                    ]
+                                    sliding_window_pattern_period = None
+                            else:
+                                self._gguf_skip_value(f, vtype)
                         else:
                             self._gguf_skip_value(f, vtype)
-                    else:
-                        self._gguf_skip_value(f, vtype)
+                    except (struct.error, UnicodeDecodeError):
+                        # Truncated input (e.g., HTTP byte-range fetch
+                        # of just the GGUF header); break so the
+                        # resolver fallback still runs on what we have.
+                        break
+
+            # Expand a scalar period straight from the GGUF first.
+            if (
+                self._sliding_window_pattern is None
+                and sliding_window_pattern_period
+                and self._n_layers
+            ):
+                self._sliding_window_pattern = [
+                    (i + 1) % sliding_window_pattern_period != 0
+                    for i in range(self._n_layers)
+                ]
+
+            # Otherwise hand off to the resolver (cache / bootstrap /
+            # transformers / HF). See `_resolve_swa_pattern`.
+            if (
+                self._sliding_window_pattern is None
+                and self._sliding_window
+                and self._n_layers
+            ):
+                hf_repo_candidates = (
+                    general.get("general.source.huggingface.repository"),
+                    _hf_repo_from_url(general.get("general.source.url")),
+                    _hf_repo_from_url(general.get("general.source.repo_url")),
+                    _hf_repo_from_url(general.get("general.base_model.0.repo_url")),
+                    (
+                        f"{general['general.base_model.0.organization']}/"
+                        f"{general['general.base_model.0.name']}".replace(" ", "-")
+                        if general.get("general.base_model.0.organization")
+                        and general.get("general.base_model.0.name")
+                        else None
+                    ),
+                    (
+                        f"{general['general.organization']}/"
+                        f"{general['general.basename']}".replace(" ", "-")
+                        if general.get("general.organization")
+                        and general.get("general.basename")
+                        else None
+                    ),
+                )
+                self._sliding_window_pattern = _resolve_swa_pattern(
+                    arch,
+                    self._n_layers,
+                    hf_repo_candidates,
+                )
 
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
@@ -1509,8 +1997,11 @@ class LlamaCppBackend:
                                 pool_mib,
                                 model_size,
                                 cache_type_kv,
+                                n_parallel = n_parallel,
                             )
-                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv, n_parallel = n_parallel
+                            )
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.90:
                                 best_cap = max(best_cap, capped)
@@ -1534,7 +2025,7 @@ class LlamaCppBackend:
                         # have surfaced the "might be slower" warning before
                         # the user submitted a ctx above the fit ceiling.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv
+                            effective_ctx, cache_type_kv, n_parallel = n_parallel
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
                         # No silent shrink: effective_ctx stays == n_ctx.
@@ -1549,8 +2040,11 @@ class LlamaCppBackend:
                                 pool_mib,
                                 model_size,
                                 cache_type_kv,
+                                n_parallel = n_parallel,
                             )
-                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv, n_parallel = n_parallel
+                            )
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.90:
                                 effective_ctx = capped
@@ -1583,7 +2077,9 @@ class LlamaCppBackend:
                         )
 
                 if effective_ctx < original_ctx:
-                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                    kv_est = self._estimate_kv_cache_bytes(
+                        effective_ctx, cache_type_kv, n_parallel = n_parallel
+                    )
                     logger.info(
                         f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
                         f"(model: {model_size / (1024**3):.1f} GB, "
@@ -1591,7 +2087,7 @@ class LlamaCppBackend:
                     )
 
                 kv_cache_bytes = self._estimate_kv_cache_bytes(
-                    effective_ctx, cache_type_kv
+                    effective_ctx, cache_type_kv, n_parallel = n_parallel
                 )
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
@@ -2021,16 +2517,21 @@ class LlamaCppBackend:
             self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
+            self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None
+            self._sliding_window_pattern = None
             self._full_attention_interval = None
             self._kv_lora_rank = None
             self._key_length_mla = None
+            self._kv_key_length_swa = None
+            self._kv_value_length_swa = None
             self._ssm_inner_size = None
             self._ssm_state_size = None
+            self._shared_kv_layers = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
