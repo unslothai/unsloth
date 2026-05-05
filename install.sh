@@ -7,9 +7,10 @@
 # Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
 # Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > HOME-redirect > default):
-#   UNSLOTH_STUDIO_HOME=/abs/path -> install under that path
-#   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append).
+# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
+#   UNSLOTH_STUDIO_HOME=/abs/path  -> install under that path
+#   STUDIO_HOME=/abs/path          -> alias, same effect (UNSLOTH_STUDIO_HOME wins)
+#   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append.)
 # Default ($HOME/.unsloth/studio) is preserved when no env var is set.
 set -e
 
@@ -74,7 +75,16 @@ fi
 # Custom Studio roots are not supported with --tauri (desktop app still
 # resolves ~/.unsloth/studio). Pass through if the override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
+    _tauri_override_var=""
     _tauri_override="${UNSLOTH_STUDIO_HOME:-}"
+    if [ -n "$_tauri_override" ]; then
+        _tauri_override_var="UNSLOTH_STUDIO_HOME"
+    else
+        _tauri_override="${STUDIO_HOME:-}"
+        [ -n "$_tauri_override" ] && _tauri_override_var="STUDIO_HOME"
+    fi
+    # Strip whitespace so " " is treated as unset (matches Python .strip()).
+    _tauri_override=$(printf '%s' "$_tauri_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     if [ -n "$_tauri_override" ]; then
         case "$_tauri_override" in
             "~") _tauri_override="$HOME" ;;
@@ -103,7 +113,7 @@ if [ "$TAURI_MODE" = true ]; then
             _tauri_legacy_root=${_tauri_legacy_root%/}
         done
         if [ "$_tauri_override_abs" != "$_tauri_legacy_root" ]; then
-            echo "ERROR: UNSLOTH_STUDIO_HOME is not supported with --tauri." >&2
+            echo "ERROR: $_tauri_override_var is not supported with --tauri." >&2
             echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
             echo "       Run install.sh without --tauri for custom-root shell installs," >&2
             echo "       or unset the env var for default desktop installs." >&2
@@ -267,22 +277,33 @@ _tauri_gpu_branch() {
 PYTHON_VERSION=""  # resolved after platform detection
 
 # Resolve install destinations: env override, HOME-redirect (best-effort
-# via getent/dscl), or default.
+# via getent/dscl), or default. Env-var priority: UNSLOTH_STUDIO_HOME wins
+# over STUDIO_HOME (the more specific signal beats the generic alias).
 _resolve_studio_destinations() {
+    _override_var=""
     _override="${UNSLOTH_STUDIO_HOME:-}"
+    if [ -n "$_override" ]; then
+        _override_var="UNSLOTH_STUDIO_HOME"
+    else
+        _override="${STUDIO_HOME:-}"
+        [ -n "$_override" ] && _override_var="STUDIO_HOME"
+    fi
+    # Strip surrounding whitespace so " " is treated as unset (matches the
+    # Python resolvers' .strip()), preventing install/runtime layout drift.
+    _override=$(printf '%s' "$_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     # Tilde expansion: env vars are not subject to it when quoted on assignment.
     case "$_override" in
         "~") _override="$HOME" ;;
         "~/"*) _override="$HOME/${_override#'~/'}" ;;
     esac
     if [ -n "$_override" ]; then
-        mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: UNSLOTH_STUDIO_HOME=$_override cannot be created." >&2; exit 1; }
-        [ -w "$_override" ] || { echo "ERROR: UNSLOTH_STUDIO_HOME=$_override is not writable." >&2; exit 1; }
+        mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: $_override_var=$_override cannot be created." >&2; exit 1; }
+        [ -w "$_override" ] || { echo "ERROR: $_override_var=$_override is not writable." >&2; exit 1; }
         STUDIO_HOME="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
         DATA_DIR="$STUDIO_HOME/share"
         _LOCAL_BIN="$STUDIO_HOME/bin"
         _STUDIO_HOME_REDIRECT=env
-        substep "custom UNSLOTH_STUDIO_HOME=$STUDIO_HOME"
+        substep "custom $_override_var=$STUDIO_HOME"
         return 0
     fi
     _default_home=""

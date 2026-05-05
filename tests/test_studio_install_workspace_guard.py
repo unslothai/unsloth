@@ -16,6 +16,19 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 
+# Stubs for helpers that the extracted install.sh guard block calls in real
+# installs (`substep` for status output, `_start_studio_venv_replacement` for
+# the rollback-managed move). The tests run the block in isolation, so we
+# stand in a minimal `mv`-based replacement that exercises the same observable
+# effect (venv directory is no longer present at $VENV_DIR after a permitted
+# cleanup) without dragging in install.sh's full rollback machinery.
+_INSTALL_GUARD_STUBS = (
+    "substep() { :; }\n"
+    "_start_studio_venv_replacement() {\n"
+    '    mv -- "$1" "$1.replaced"\n'
+    "}\n"
+)
+
 
 def _extract_install_sh_guard_block() -> str:
     """Pull the `if [ -x "$VENV_DIR/bin/python" ]; then ... fi` block out
@@ -29,6 +42,24 @@ def _extract_install_sh_guard_block() -> str:
     )
     assert m, "install.sh venv guard block not found"
     return m.group(1) + "fi\n"
+
+
+def _build_install_guard_script(
+    studio_home: Path, redirect: str, block: str | None = None
+) -> str:
+    """Build a self-contained bash script that exercises the extracted
+    guard block. Includes stubs for substep / _start_studio_venv_replacement
+    so the snippet runs without install.sh's full rollback machinery."""
+    if block is None:
+        block = _extract_install_sh_guard_block()
+    return (
+        _INSTALL_GUARD_STUBS
+        + f'STUDIO_HOME="{studio_home}"\n'
+        + f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
+        + f'_STUDIO_HOME_REDIRECT="{redirect}"\n'
+        + block
+        + "echo RESULT=ok\n"
+    )
 
 
 def _run_install_guard(
@@ -51,12 +82,7 @@ def _run_install_guard(
         (studio_home / "bin" / "unsloth").write_text("")
     if create_venv_marker:
         (venv_dir / ".unsloth-studio-owned").write_text("")
-    block = _extract_install_sh_guard_block()
-    script = (
-        f'STUDIO_HOME="{studio_home}"\n'
-        f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
-        f'_STUDIO_HOME_REDIRECT="{redirect}"\n' + block + "echo RESULT=ok\n"
-    )
+    script = _build_install_guard_script(studio_home, redirect)
     return subprocess.run(
         ["bash", "-c", script],
         env = {"PATH": "/usr/bin:/bin"},
@@ -143,12 +169,7 @@ def test_env_mode_blocks_when_bin_unsloth_is_a_directory(tmp_path):
     py.chmod(0o755)
     (venv / "important.txt").write_text("keep me")
     (studio_home / "bin" / "unsloth").mkdir(parents = True)
-    block = _extract_install_sh_guard_block()
-    script = (
-        f'STUDIO_HOME="{studio_home}"\n'
-        f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
-        f'_STUDIO_HOME_REDIRECT="env"\n' + block + "echo RESULT=ok\n"
-    )
+    script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
         env = {"PATH": "/usr/bin:/bin"},
@@ -176,12 +197,7 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
     target.write_text("#!/bin/sh\nexit 0\n")
     target.chmod(0o755)
     (studio_home / "bin" / "unsloth").symlink_to(target)
-    block = _extract_install_sh_guard_block()
-    script = (
-        f'STUDIO_HOME="{studio_home}"\n'
-        f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
-        f'_STUDIO_HOME_REDIRECT="env"\n' + block + "echo RESULT=ok\n"
-    )
+    script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
         env = {"PATH": "/usr/bin:/bin"},
@@ -301,12 +317,7 @@ def test_env_mode_blocks_when_bin_unsloth_is_symlink_to_directory(tmp_path):
     target_dir = studio_home / "bin" / "unsloth-target-dir"
     target_dir.mkdir()
     (studio_home / "bin" / "unsloth").symlink_to(target_dir)
-    block = _extract_install_sh_guard_block()
-    script = (
-        f'STUDIO_HOME="{studio_home}"\n'
-        f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
-        f'_STUDIO_HOME_REDIRECT="env"\n' + block + "echo RESULT=ok\n"
-    )
+    script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
         env = {"PATH": "/usr/bin:/bin"},
@@ -331,12 +342,7 @@ def test_env_mode_blocks_when_bin_unsloth_is_broken_symlink(tmp_path):
     (venv / "important.txt").write_text("keep me")
     (studio_home / "bin").mkdir(parents = True)
     (studio_home / "bin" / "unsloth").symlink_to(studio_home / "bin" / "does-not-exist")
-    block = _extract_install_sh_guard_block()
-    script = (
-        f'STUDIO_HOME="{studio_home}"\n'
-        f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
-        f'_STUDIO_HOME_REDIRECT="env"\n' + block + "echo RESULT=ok\n"
-    )
+    script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
         env = {"PATH": "/usr/bin:/bin"},

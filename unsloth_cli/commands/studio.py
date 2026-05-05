@@ -21,10 +21,10 @@ import typer
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
-# Resolve install root: UNSLOTH_STUDIO_HOME, then sys.prefix inference
-# (so a direct call to <root>/bin/unsloth resolves after the installer's env
-# var has expired), then legacy ~/.unsloth/studio. STUDIO_HOME is NOT honored:
-# the name is too generic and may already be set by unrelated tooling.
+# Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
+# sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
+# the installer's env var has expired), then legacy ~/.unsloth/studio.
+# UNSLOTH_STUDIO_HOME wins when both env vars are set.
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Studio root.
@@ -37,6 +37,8 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
 
 def _resolve_studio_home() -> tuple[Path, bool]:
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
     if override:
         try:
             return Path(override).expanduser().resolve(), True

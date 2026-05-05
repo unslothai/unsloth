@@ -4,8 +4,8 @@
 # NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
 # Test:   .\install.ps1 --package roland-sloth
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > USERPROFILE-redirect > default):
-#   UNSLOTH_STUDIO_HOME = path -> install under that path
+# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > USERPROFILE-redirect > default):
+#   UNSLOTH_STUDIO_HOME / STUDIO_HOME = path -> install under that path
 #   (DataDir nests inside; user PATH not modified persistently).
 # Default ($USERPROFILE\.unsloth\studio) is preserved when no env var is set.
 
@@ -132,8 +132,19 @@ function Install-UnslothStudio {
 
     $PythonVersion = "3.13"
 
-    # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then USERPROFILE-redirect, then default.
-    $envOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $null }
+    # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
+    # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
+    # Reject whitespace-only values so " " is treated as unset (matches the
+    # Python resolvers' .strip()), preventing install/runtime layout drift.
+    $envOverrideVar = $null
+    $envOverride = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+        $envOverrideVar = "UNSLOTH_STUDIO_HOME"
+        $envOverride = $env:UNSLOTH_STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+        $envOverrideVar = "STUDIO_HOME"
+        $envOverride = $env:STUDIO_HOME.Trim()
+    }
 
     # Custom Studio roots are not supported with --tauri (desktop app still
     # resolves %USERPROFILE%\.unsloth\studio). Pass through if override == legacy.
@@ -157,11 +168,11 @@ function Install-UnslothStudio {
         $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
         if ($_tauriOverride -ne $_legacyTauriRoot) {
-            Write-Host "ERROR: UNSLOTH_STUDIO_HOME is not supported with --tauri." -ForegroundColor Red
+            Write-Host "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
             Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
             Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
-            throw "UNSLOTH_STUDIO_HOME is not supported with --tauri."
+            throw "$envOverrideVar is not supported with --tauri."
         }
     }
 
@@ -185,8 +196,8 @@ function Install-UnslothStudio {
             [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
-            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$envOverride cannot be created or accessed." -ForegroundColor Red
-            throw "UNSLOTH_STUDIO_HOME=$envOverride cannot be created or accessed."
+            Write-Host "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
+            throw "$envOverrideVar=$envOverride cannot be created or accessed."
         }
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
         try {
@@ -194,8 +205,8 @@ function Install-UnslothStudio {
             [System.IO.File]::WriteAllText($probe, "")
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
-            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
-            throw "UNSLOTH_STUDIO_HOME=$StudioHome is not writable."
+            Write-Host "ERROR: $envOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            throw "$envOverrideVar=$StudioHome is not writable."
         }
         $StudioDataDir = Join-Path $StudioHome "share"
         $StudioRedirectMode = 'env'
@@ -1022,11 +1033,13 @@ shell.Run cmd, 0, False
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
         $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID"
         $suffix = 0
-        while (Test-Path $candidate) {
+        # -LiteralPath: a custom $StudioHome may contain [ ] * ? which
+        # plain Test-Path / Move-Item would interpret as wildcards.
+        while (Test-Path -LiteralPath $candidate) {
             $suffix++
             $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
         }
-        Move-Item -Path $ExistingDir -Destination $candidate -ErrorAction Stop
+        Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
@@ -1037,16 +1050,16 @@ shell.Run cmd, 0, False
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
-        if (-not $backup -or -not (Test-Path $backup)) {
+        if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
             $script:StudioVenvRollbackActive = $false
             return
         }
         substep "restoring previous environment after failed install..." "Yellow"
         try {
-            if (Test-Path $target) {
-                Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
             }
-            Move-Item -Path $backup -Destination $target -Force -ErrorAction Stop
+            Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             substep "restored previous environment"
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
@@ -1059,8 +1072,8 @@ shell.Run cmd, 0, False
     function Complete-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
-        if ($backup -and (Test-Path $backup)) {
-            Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
         }
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
@@ -1381,23 +1394,25 @@ shell.Run cmd, 0, False
             foreach ($rel in $overlayMap.Keys) {
                 $src = Join-Path $scriptDir $rel
                 $dst = Join-Path $VenvDir $overlayMap[$rel]
-                if (-not (Test-Path $src)) { continue }
+                # -LiteralPath: $VenvDir derives from $StudioHome which may
+                # contain [ ] * ? when the user overrode UNSLOTH_STUDIO_HOME.
+                if (-not (Test-Path -LiteralPath $src)) { continue }
                 $dstParent = Split-Path -Parent $dst
-                if (-not (Test-Path $dstParent)) {
+                if (-not (Test-Path -LiteralPath $dstParent)) {
                     Write-Host "[WARN] Overlay target dir missing: $dstParent; studio setup may use stale bundled file" -ForegroundColor Yellow
                     continue
                 }
                 try {
-                    if (-not (Test-Path $dst)) {
+                    if (-not (Test-Path -LiteralPath $dst)) {
                         # Backfill: target file missing but parent dir exists.
-                        Copy-Item $src $dst -Force
+                        Copy-Item -LiteralPath $src -Destination $dst -Force
                         substep ("backfilled bundled " + (Split-Path -Leaf $rel))
                     } else {
                         # Hash-compare so re-runs are no-ops when files already match.
-                        $srcHash = (Get-FileHash $src -Algorithm SHA256).Hash
-                        $dstHash = (Get-FileHash $dst -Algorithm SHA256).Hash
+                        $srcHash = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                        $dstHash = (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
                         if ($srcHash -ne $dstHash) {
-                            Copy-Item $src $dst -Force
+                            Copy-Item -LiteralPath $src -Destination $dst -Force
                             substep ("applied bundled " + (Split-Path -Leaf $rel))
                         }
                     }

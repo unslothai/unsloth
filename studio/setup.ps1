@@ -1493,8 +1493,18 @@ if (-not $PythonCmd) {
 substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
 
 # The venv must already exist (created by install.ps1); this script only
-# updates packages. UNSLOTH_STUDIO_HOME overrides the root.
-$_studioOverride = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $null }
+# updates packages. UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the
+# root. UNSLOTH_STUDIO_HOME wins when both are set. Whitespace-only values
+# are treated as unset to match Python .strip() semantics.
+$_studioOverrideVar = $null
+$_studioOverride = $null
+if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_STUDIO_HOME"
+    $_studioOverride = $env:UNSLOTH_STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+    $_studioOverrideVar = "STUDIO_HOME"
+    $_studioOverride = $env:STUDIO_HOME.Trim()
+}
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
         $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
@@ -1509,11 +1519,11 @@ if ($_studioOverride) {
             [System.IO.File]::WriteAllText($_setupWriteProbe, "")
             Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
         } catch {
-            Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$StudioHome is not writable." -ForegroundColor Red
+            Write-Host "ERROR: $_studioOverrideVar=$StudioHome is not writable." -ForegroundColor Red
             exit 1
         }
     } else {
-        Write-Host "ERROR: UNSLOTH_STUDIO_HOME=$_studioOverride does not exist." -ForegroundColor Red
+        Write-Host "ERROR: $_studioOverrideVar=$_studioOverride does not exist." -ForegroundColor Red
         Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
         exit 1
     }
