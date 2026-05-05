@@ -215,6 +215,18 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+def _effective_enable_tools(payload) -> Optional[bool]:
+    """Resolve `payload.enable_tools` against the process-level tool policy.
+
+    Returns the policy value when set (CLI hard-override from `unsloth run`),
+    otherwise the per-request value.
+    """
+    from state.tool_policy import get_tool_policy
+
+    policy = get_tool_policy()
+    return policy if policy is not None else payload.enable_tools
+
+
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts
 # so is_disconnected() never fires. POST /inference/cancel looks up
 # in-flight cancel_events here by cancel_id (per-run) or session_id /
@@ -1656,7 +1668,7 @@ async def openai_chat_completions(
     )
     if (
         using_gguf
-        and not payload.enable_tools
+        and not _effective_enable_tools(payload)
         and (_tools_passthrough or _has_response_format)
     ):
         # Preserve the vision guard that would otherwise run in the
@@ -1747,8 +1759,13 @@ async def openai_chat_completions(
         created = int(time.time())
 
         # ── Tool-calling path (agentic loop) ──────────────────
+        # `_effective_enable_tools` lets `unsloth run --enable-tools/--disable-tools`
+        # hard-override the per-request value. Without a CLI override, falls
+        # back to `payload.enable_tools` (existing behavior).
         use_tools = (
-            payload.enable_tools and llama_backend.supports_tools and not image_b64
+            _effective_enable_tools(payload)
+            and llama_backend.supports_tools
+            and not image_b64
         )
 
         if use_tools:
@@ -3472,7 +3489,9 @@ async def anthropic_messages(
     # Server-side agentic loop doesn't support multimodal input — matches
     # the `not image_b64` gate in /v1/chat/completions.
     server_tools = (
-        payload.enable_tools and llama_backend.supports_tools and not _has_image
+        _effective_enable_tools(payload)
+        and llama_backend.supports_tools
+        and not _has_image
     )
     client_tools = (
         not server_tools
