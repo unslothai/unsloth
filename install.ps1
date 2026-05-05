@@ -552,7 +552,7 @@ try {
         } catch {}
         exit 1
     }
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
+    `$studioCommand = '& "' + `$studioExe + '" studio -p ' + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
@@ -1344,15 +1344,25 @@ shell.Run cmd, 0, False
 
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
-    # Launch studio automatically in interactive terminals;
-    # in non-interactive environments (CI, Docker) just print instructions.
+    # In interactive terminals, ask the user before starting Studio.
+    # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
-        & $UnslothExe studio -H 0.0.0.0 -p 8888
+        Write-Host ""
+        $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
+            & $UnslothExe studio -p 8888
+        } else {
+            step "launch" "to start later, run:"
+            substep "unsloth studio -p 8888"
+            substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            Write-Host ""
+        }
     } else {
         step "launch" "manual commands:"
         substep "& `"$VenvDir\Scripts\Activate.ps1`""
-        substep "unsloth studio -H 0.0.0.0 -p 8888"
+        substep "unsloth studio -p 8888"
+        substep "(add -H 0.0.0.0 to allow network / cloud access)"
         Write-Host ""
     }
 }

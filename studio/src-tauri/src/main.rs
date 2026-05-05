@@ -4,6 +4,9 @@ mod commands;
 mod desktop_auth;
 mod diagnostics;
 mod install;
+mod native_backend_lease;
+mod native_intents;
+mod native_path_policy;
 mod preflight;
 mod process;
 mod update;
@@ -164,10 +167,13 @@ fn main() {
         }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
+        .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
@@ -187,6 +193,13 @@ fn main() {
             commands::install_system_packages,
             desktop_auth::desktop_auth,
             diagnostics::collect_support_diagnostics,
+            native_intents::drain_native_intents,
+            native_intents::register_native_model_path,
+            native_intents::pick_native_model,
+            native_intents::consume_native_path_token,
+            native_intents::register_artifact_path,
+            native_intents::reveal_path_token,
+            native_intents::open_path_token,
         ])
         .setup(|app| {
             #[cfg(any(target_os = "windows", target_os = "linux"))]

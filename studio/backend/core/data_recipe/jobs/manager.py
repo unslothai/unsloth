@@ -167,13 +167,20 @@ class JobManager:
 
             run_payload = dict(run)
             run_payload["_job_id"] = job_id
-            mp_q = _CTX.Queue()
-            proc = _CTX.Process(
-                target = run_job_process,
-                kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
-                daemon = True,
+            from utils.native_path_leases import (
+                native_path_secret_removed_for_child_start,
+                run_without_native_path_secret,
             )
-            proc.start()
+
+            with native_path_secret_removed_for_child_start():
+                mp_q = _CTX.Queue()
+                proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_job_process,),
+                    kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                    daemon = True,
+                )
+                proc.start()
 
             self._mp_q = mp_q
             self._proc = proc

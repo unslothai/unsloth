@@ -3,6 +3,13 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import { consumeNativePathToken } from "@/features/native-intents/api";
+import {
+  notifyNative,
+  primeNativeNotificationPermission,
+  safeNotificationLabel,
+  sanitizeNotificationBody,
+} from "@/lib/native-notifications";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -47,6 +54,8 @@ type SelectedModelInput = {
   isDownloaded?: boolean;
   expectedBytes?: number;
   forceReload?: boolean;
+  nativePathToken?: string;
+  throwOnError?: boolean;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -154,6 +163,7 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
+    nativePathToken?: string | null;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
@@ -164,6 +174,7 @@ export function useChatModelRuntime() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
+  const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
 
@@ -338,12 +349,20 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
         typeof selection === "string" ? false : selection.forceReload ?? false;
+      const nativePathToken =
+        typeof selection === "string" ? undefined : selection.nativePathToken;
+      const throwOnError =
+        typeof selection === "string" ? false : selection.throwOnError ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
       // Prevent duplicate loads if already loading this model
-      if (loadingModelRef.current?.id === modelId) return;
+      if (
+        loadingModelRef.current?.id === modelId &&
+        (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
+      )
+        return;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -357,6 +376,10 @@ export function useChatModelRuntime() {
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
+      const loadAttemptId = ++loadAttemptRef.current;
+      primeNativeNotificationPermission().catch(() => undefined);
+      const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
+      const safeModelName = safeNotificationLabel(displayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -383,7 +406,13 @@ export function useChatModelRuntime() {
         .join(" ");
       setModelsError(null);
       setLoadToastDismissedState(false);
-      const loadInfo = { id: modelId, displayName, isDownloaded, isCachedLora };
+      const loadInfo = {
+        id: modelId,
+        displayName,
+        isDownloaded,
+        isCachedLora,
+        nativePathToken: nativePathToken ?? null,
+      };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
@@ -413,11 +442,17 @@ export function useChatModelRuntime() {
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
+          const previousActiveNativePathToken =
+            stateBeforeUnload.activeNativePathToken;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
+            const validateNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
+              : undefined;
             const validation = await validateModel({
               model_path: modelId,
+              nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: maxSeqLength,
               load_in_4bit: true,
@@ -428,6 +463,9 @@ export function useChatModelRuntime() {
               throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            const loadNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
+              : undefined;
 
             if (currentCheckpoint) {
               await unloadModel({ model_path: currentCheckpoint });
@@ -456,6 +494,7 @@ export function useChatModelRuntime() {
             });
             const loadResponse = await loadModel({
               model_path: modelId,
+              nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: effectiveMaxSeqLength,
               load_in_4bit: true,
@@ -528,6 +567,7 @@ export function useChatModelRuntime() {
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: null,
+              activeNativePathToken: nativePathToken ?? null,
             });
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
             if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
@@ -564,9 +604,22 @@ export function useChatModelRuntime() {
             if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
+              let rollbackNativePathLease: string | undefined;
+              if (previousActiveNativePathToken) {
+                try {
+                  rollbackNativePathLease = (
+                    await consumeNativePathToken(previousActiveNativePathToken, "load-model")
+                  ).nativePathLease;
+                } catch {
+                  throw new Error(
+                    "Could not reload the previous local model: please re-select the file.",
+                  );
+                }
+              }
               try {
                 await loadModel({
                   model_path: previousCheckpoint,
+                  nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
@@ -575,9 +628,12 @@ export function useChatModelRuntime() {
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
                 });
+                useChatRuntimeStore.setState({
+                  activeNativePathToken: previousActiveNativePathToken ?? null,
+                });
                 await refresh();
               } catch {
-                // If rollback also fails, surface the original error.
+                // Rollback also failed; surface the original load error below.
               }
             }
             throw error;
@@ -768,6 +824,12 @@ export function useChatModelRuntime() {
                   },
                 });
               }
+              notifyNative({
+                key: `model-downloaded:${notificationModelKey}`,
+                title: "Model downloaded",
+                body: `${safeModelName} finished downloading and is loading into memory.`,
+                requestPermission: false,
+              }).catch(() => undefined);
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
@@ -853,6 +915,12 @@ export function useChatModelRuntime() {
               duration: 2000,
             });
           }
+          notifyNative({
+            key: `model-loaded:${notificationModelKey}`,
+            title: "Model ready",
+            body: `${safeModelName} is loaded and ready to chat.`,
+            requestPermission: false,
+          }).catch(() => undefined);
         } catch (err) {
           if (!abortCtrl.signal.aborted) {
             const message =
@@ -867,6 +935,12 @@ export function useChatModelRuntime() {
                 duration: 5000,
               });
             }
+            notifyNative({
+              key: `model-load-failed:${notificationModelKey}`,
+              title: "Model failed to load",
+              body: sanitizeNotificationBody(message, "The model failed to load."),
+              requestPermission: false,
+            }).catch(() => undefined);
           }
           throw err;
         } finally {
@@ -879,6 +953,9 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        if (throwOnError) {
+          throw error instanceof Error ? error : new Error(message);
+        }
       }
     },
     [

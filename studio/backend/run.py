@@ -244,7 +244,7 @@ _shutdown_event = None
 
 
 def run_server(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
@@ -392,7 +392,11 @@ if __name__ == "__main__":
             pass
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
-    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
+    parser.add_argument(
+        "--host",
+        default = "127.0.0.1",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+    )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",

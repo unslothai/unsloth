@@ -18,6 +18,9 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    native_path_lease: Optional[str] = Field(
+        None, description = "Frontend-visible signed native path grant"
+    )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )
@@ -52,6 +55,16 @@ class LoadRequest(BaseModel):
         None,
         description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Extra arguments forwarded verbatim to llama-server for GGUF models. "
+            "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
+            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
+            "non-GGUF models."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -69,6 +82,9 @@ class ValidateModelRequest(BaseModel):
     """
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    native_path_lease: Optional[str] = Field(
+        None, description = "Frontend-visible signed native path grant"
+    )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )
