@@ -61,8 +61,8 @@ export function ApiKeysTab() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
+    <div className="flex min-w-0 max-w-full flex-col gap-6">
+      <header className="flex min-w-0 flex-col gap-1">
         <h1 className="text-lg font-semibold font-heading">API</h1>
         <p className="text-xs text-muted-foreground">
           Access Unsloth programmatically via the OpenAI-compatible API.{" "}
@@ -111,7 +111,7 @@ export function ApiKeysTab() {
         )}
       </AnimatePresence>
 
-      <section className="flex flex-col">
+      <section className="flex min-w-0 flex-col">
         <h2 className="mb-2 text-sm font-semibold text-foreground">Access tokens</h2>
         {error ? (
           <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
@@ -131,7 +131,7 @@ export function ApiKeysTab() {
             No API access yet.
           </p>
         ) : (
-          <div className="flex flex-col">
+          <div className="flex min-w-0 flex-col">
             {keys.map((k) => (
               <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
             ))}
