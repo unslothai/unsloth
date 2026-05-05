@@ -41,21 +41,19 @@ import { Button } from "@/components/ui/button";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
-  Book03Icon,
   ChefHatIcon,
   ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   DownloadSquare01Icon,
   Edit03Icon,
-  MessageSearch01Icon,
-  NewReleasesIcon,
+  Globe02Icon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
+  HelpCircleIcon,
   Settings02Icon,
-  SourceCodeSquareIcon,
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -718,8 +716,8 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                   >
-                    <HugeiconsIcon icon={SourceCodeSquareIcon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>Developer</span>
+                    <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                    <span>API</span>
                     <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                       New
                     </span>
@@ -747,48 +745,13 @@ export function AppSidebar() {
                     <span>Guided Tour</span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t-[0.5px] border-border/70 dark:border-white/6 bg-transparent!" />
-                <DropdownMenuGroup>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://unsloth.ai/docs"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Learn More</span>
-                    </a>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://unsloth.ai/docs/new/changelog"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <HugeiconsIcon
-                        icon={NewReleasesIcon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                      <span>What's New</span>
-                    </a>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://github.com/unslothai/unsloth/issues"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <HugeiconsIcon
-                        icon={MessageSearch01Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                      <span>Feedback</span>
-                    </a>
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t-[0.5px] border-border/70 dark:border-white/6 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuItem
+                  onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                >
+                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>Help</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
                   <span>Shutdown</span>
