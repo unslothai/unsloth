@@ -203,6 +203,10 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+from core.inference.key_exchange import decrypt_api_key
+from core.inference.providers import get_base_url, get_provider_info
+from core.inference.external_provider import ExternalProviderClient
+from storage import providers_db
 
 import io
 import wave
@@ -1462,6 +1466,146 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """Convert Studio chat messages to provider-facing OpenAI messages."""
+    result: list[dict] = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
+            result.append({"role": msg.role, "content": msg.content})
+            continue
+
+        if not isinstance(msg.content, list):
+            continue
+
+        if supports_vision:
+            parts: list[dict] = []
+            for part in msg.content:
+                if part.type == "text":
+                    parts.append({"type": "text", "text": part.text})
+                elif part.type == "image_url":
+                    parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": part.image_url.url},
+                        }
+                    )
+            result.append({"role": msg.role, "content": parts})
+        else:
+            text = "\n".join(part.text for part in msg.content if part.type == "text")
+            if msg.role == "assistant" and not text.strip():
+                continue
+            result.append({"role": msg.role, "content": text})
+    return result
+
+
+async def _proxy_to_external_provider(
+    payload: ChatCompletionRequest,
+    request: Request,
+) -> StreamingResponse:
+    """Proxy a chat completion request to an external LLM provider."""
+    provider_type = payload.provider_type
+    base_url = payload.provider_base_url
+
+    if payload.provider_id:
+        config = providers_db.get_provider(payload.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {payload.provider_id}",
+            )
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        provider_type = provider_type or config["provider_type"]
+        base_url = base_url or config["base_url"]
+
+    if not provider_type:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Either provider_id or provider_type is required for external provider routing.",
+        )
+
+    if not base_url:
+        base_url = get_base_url(provider_type)
+    if not base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {provider_type}",
+        )
+
+    try:
+        api_key = decrypt_api_key(payload.encrypted_api_key)
+    except Exception as exc:
+        logger.warning("external_provider.decrypt_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 400,
+            detail = "Failed to decrypt API key. The server key may have changed - try refreshing the page.",
+        ) from exc
+
+    model = payload.external_model or payload.model
+    if model == "default":
+        raise HTTPException(
+            status_code = 400,
+            detail = "external_model is required when using an external provider.",
+        )
+
+    provider_info = get_provider_info(provider_type) or {}
+    chat_messages = _build_external_messages(
+        payload.messages,
+        bool(provider_info.get("supports_vision", False)),
+    )
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+    async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            stream = payload.stream,
+        )
+        try:
+            sent_done = False
+            async for line in gen:
+                if await request.is_disconnected():
+                    break
+                yield f"{line}\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("external_provider.stream_error", error = str(exc))
+        finally:
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass
+            await client.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1481,6 +1625,9 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    if payload.encrypted_api_key and (payload.provider_id or payload.provider_type):
+        return await _proxy_to_external_provider(payload, request)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 

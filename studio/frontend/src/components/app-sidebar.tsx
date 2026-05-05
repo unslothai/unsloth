@@ -38,7 +38,7 @@ import {
   Download03Icon,
   GemIcon,
   Search01Icon,
-  PowerIcon,
+  EcoPowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
@@ -579,7 +579,7 @@ export function AppSidebar() {
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <HugeiconsIcon icon={EcoPowerIcon} strokeWidth={1.75} className="size-[18px]" />
                   <span>Shutdown</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>

@@ -552,6 +552,26 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved provider config ID. If set with encrypted_api_key, routes to external LLM.",
+    )
+    provider_type: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Provider type. Used if provider_id is not set.",
+    )
+    external_model: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Model ID at the external provider.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded API key for the external provider.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Override base URL for the external provider.",
+    )
     cancel_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",

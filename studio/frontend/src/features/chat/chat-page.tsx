@@ -3,6 +3,7 @@
 
 import {
   type DeletedModelRef,
+  type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
@@ -19,7 +20,7 @@ import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
-import { Settings05Icon } from "@hugeicons/core-free-icons";
+import { CloudIcon, Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -36,10 +37,18 @@ import {
 import { toast } from "sonner";
 import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
+import { ChatProvidersDialog } from "./chat-providers-dialog";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
+import {
+  buildExternalModelId,
+  isExternalModelId,
+  loadExternalProviders,
+  saveExternalProviders,
+  type ExternalProviderConfig,
+} from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
   clearTrainingCompareHandoff,
@@ -536,6 +545,7 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const [providersOpen, setProvidersOpen] = useState(false);
 
   useEffect(() => {
     const threadId = search.thread;
@@ -569,6 +579,9 @@ export function ChatPage(): ReactElement {
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
+  const [externalProviders, setExternalProviders] = useState<ExternalProviderConfig[]>(() =>
+    loadExternalProviders(),
+  );
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
@@ -605,9 +618,13 @@ export function ChatPage(): ReactElement {
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  const isExternalModel = useMemo(
+    () => isExternalModelId(inferenceParams.checkpoint),
+    [inferenceParams.checkpoint],
+  );
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint);
-  }, [inferenceParams.checkpoint]);
+    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
+  }, [inferenceParams.checkpoint, isExternalModel]);
 
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
@@ -687,6 +704,7 @@ export function ChatPage(): ReactElement {
     (
       value: string,
       meta?: {
+        source?: string;
         isLora: boolean;
         ggufVariant?: string;
         isDownloaded?: boolean;
@@ -702,6 +720,13 @@ export function ChatPage(): ReactElement {
           (meta?.ggufVariant ?? null) === (currentVariant ?? null))
       )
         return;
+      if (meta?.source === "external" || isExternalModelId(value)) {
+        setInferenceParams({
+          ...store.params,
+          checkpoint: value,
+        });
+        return;
+      }
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -738,7 +763,7 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [activeThreadId, modelsFromStore, selectModel, view],
+    [activeThreadId, modelsFromStore, selectModel, setInferenceParams, view],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
@@ -813,6 +838,19 @@ export function ChatPage(): ReactElement {
       })),
     [modelsFromStore],
   );
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      externalProviders.flatMap((provider) =>
+        provider.models.map((model) => ({
+          id: buildExternalModelId(provider.id, model),
+          name: model,
+          providerId: provider.id,
+          providerName: provider.name,
+          providerType: provider.providerType,
+        })),
+      ),
+    [externalProviders],
+  );
 
   const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
 
@@ -879,6 +917,10 @@ export function ChatPage(): ReactElement {
     void refresh();
     refreshLocalModels();
   }, [refresh, refreshLocalModels]);
+
+  useEffect(() => {
+    void saveExternalProviders(externalProviders);
+  }, [externalProviders]);
 
   useEffect(() => {
     const handoff = getTrainingCompareHandoff();
@@ -1001,6 +1043,7 @@ export function ChatPage(): ReactElement {
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
+                externalModels={externalModels}
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
@@ -1067,6 +1110,23 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
+            {view.mode === "single" ? (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setProvidersOpen(true)}
+                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[8px] text-[#383835] transition-colors hover:bg-[#ececec] hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#c7c7c4] dark:hover:bg-[#2e3035] dark:hover:text-white"
+                    aria-label="Open API providers"
+                  >
+                    <HugeiconsIcon icon={CloudIcon} className="size-5" />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent side="bottom" sideOffset={6}>
+                  API providers
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild>
@@ -1112,6 +1172,7 @@ export function ChatPage(): ReactElement {
         onOpenChange={setSettingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
+        isExternalModel={isExternalModel}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();
           if (state.params.checkpoint) {
@@ -1124,6 +1185,12 @@ export function ChatPage(): ReactElement {
             });
           }
         }}
+      />
+      <ChatProvidersDialog
+        open={providersOpen}
+        onOpenChange={setProvidersOpen}
+        providers={externalProviders}
+        onProvidersChange={setExternalProviders}
       />
     </div>
   );
