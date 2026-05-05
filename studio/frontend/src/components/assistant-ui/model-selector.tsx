@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
-import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -30,9 +29,54 @@ import type {
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 import { Input } from "../ui/input";
 
+const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
+  openai: "svg",
+  mistral: "svg",
+  gemini: "svg",
+  anthropic: "svg",
+  deepseek: "svg",
+  huggingface: "svg",
+  kimi: "jpg",
+  qwen: "png",
+  openrouter: "svg",
+};
+
+function providerLogoSrc(providerType: string | undefined): string | undefined {
+  if (!providerType) return undefined;
+  const ext = PROVIDER_LOGO_EXT[providerType];
+  if (!ext) return undefined;
+  return `${import.meta.env.BASE_URL}provider-logos/${providerType}.${ext}`;
+}
+
+function ExternalProviderLogo({
+  providerType,
+  className,
+  title,
+}: {
+  providerType: string | undefined;
+  className?: string;
+  title?: string;
+}) {
+  const src = providerLogoSrc(providerType);
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      alt=""
+      title={title}
+      aria-hidden={true}
+      className={cn(
+        "shrink-0 object-contain",
+        providerType === "openai" && "dark:invert",
+        className,
+      )}
+    />
+  );
+}
+
 export type {
-  ExternalModelOption,
   DeletedModelRef,
+  ExternalModelOption,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
