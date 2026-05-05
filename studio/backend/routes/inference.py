@@ -120,7 +120,7 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import validate_extra_args
-    from utils.models import ModelConfig
+    from utils.models import ModelConfig, is_audio_input_type
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
     from utils.native_path_leases import (
@@ -142,7 +142,7 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import validate_extra_args
-    from utils.models import ModelConfig
+    from utils.models import ModelConfig, is_audio_input_type
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
     from utils.native_path_leases import (
@@ -1156,13 +1156,18 @@ async def get_status(
             ):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
+            _audio_type = getattr(llama_backend, "_audio_type", None)
+            _has_audio_input = (
+                is_audio_input_type(_audio_type) if _audio_type else False
+            )
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
-                audio_type = getattr(llama_backend, "_audio_type", None),
+                audio_type = _audio_type,
+                has_audio_input = _has_audio_input,
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,

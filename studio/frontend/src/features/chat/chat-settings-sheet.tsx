@@ -525,7 +525,11 @@ export function ChatSettingsPanel({
   const currentModelIsMultimodal = useChatRuntimeStore((s) => {
     if (s.loadedIsMultimodal) return true;
     const m = s.models.find((m) => m.id === currentCheckpoint);
-    return Boolean(m?.isVision) || Boolean(m?.isAudio);
+    return (
+      Boolean(m?.isVision) ||
+      Boolean(m?.isAudio) ||
+      Boolean(m?.hasAudioInput)
+    );
   });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
