@@ -100,7 +100,10 @@ async def update_training_run(
     if refreshed is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
     return TrainingRunSummary(
-        **{k: v for k, v in refreshed.items() if k != "config_json"}
+        **{
+            **{k: v for k, v in refreshed.items() if k != "config_json"},
+            "can_resume": can_resume_run(refreshed),
+        }
     )
 
 
