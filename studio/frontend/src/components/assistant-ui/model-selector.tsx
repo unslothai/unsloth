@@ -195,17 +195,19 @@ function ModelSelectorContent({
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
-
   const chatOnlyTabsDefault = useMemo(
     () => (value && externalModels.some((m) => m.id === value) ? "external" : "hub"),
     [value, externalModels],
   );
-
   const studioTabsDefault = useMemo((): "hub" | "lora" | "external" => {
-    if (value && externalModels.some((m) => m.id === value)) return "external";
-    if (value && loraModels.some((l) => l.id === value)) return "lora";
+    if (value && externalModels.some((model) => model.id === value)) {
+      return "external";
+    }
+    if (value && loraModels.some((model) => model.id === value)) {
+      return "lora";
+    }
     return "hub";
-  }, [value, externalModels, loraModels]);
+  }, [externalModels, loraModels, value]);
 
   return (
     <PopoverContent
@@ -369,7 +371,7 @@ export function ModelSelector({
         ...externalModel,
         description: `External · ${externalModel.providerName}`,
         icon: (
-          <ApiProviderLogo
+          <ExternalProviderLogo
             providerType={externalModel.providerType}
             className="size-4"
             title={externalModel.providerName}
@@ -441,7 +443,7 @@ ModelSelector.Trigger = ModelSelectorTrigger;
 ModelSelector.Content = ModelSelectorContent;
 
 function normalizeForSearch(value: string): string {
-  return value.toLowerCase().replace(/[\s\-_\.]/g, "");
+  return value.toLowerCase().replace(/[\s_.-]/g, "");
 }
 
 function ExternalModelPicker({
@@ -456,7 +458,10 @@ function ExternalModelPicker({
   const [query, setQuery] = useState("");
   const grouped = useMemo(() => {
     const needle = normalizeForSearch(query.trim());
-    const byProvider = new Map<string, { providerName: string; models: ExternalModelOption[] }>();
+    const byProvider = new Map<
+      string,
+      { providerName: string; models: ExternalModelOption[] }
+    >();
     for (const model of externalModels) {
       const searchText = normalizeForSearch(
         `${model.name} ${model.providerName} ${model.id}`,
@@ -505,7 +510,7 @@ function ExternalModelPicker({
             grouped.map((group) => (
               <div key={group.providerId}>
                 <div className="flex items-center gap-2 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  <ApiProviderLogo
+                  <ExternalProviderLogo
                     providerType={group.models[0]?.providerType}
                     className="size-3.5"
                     title={group.providerName}
@@ -516,7 +521,12 @@ function ExternalModelPicker({
                   <button
                     key={model.id}
                     type="button"
-                    onClick={() => onSelect(model.id, { source: "external", isLora: false })}
+                    onClick={() =>
+                      onSelect(model.id, {
+                        source: "external",
+                        isLora: false,
+                      })
+                    }
                     className={cn(
                       "flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
                       value === model.id && "bg-accent/60",
