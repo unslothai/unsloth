@@ -1120,6 +1120,9 @@ class FastSentenceTransformer(FastModel):
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
         # sentence-transformers only passes along known keys to model.forward
+        preinit_model_forward_params = getattr(
+            transformer_module, "model_forward_params", set()
+        )
         model_forward_params = list(inspect.signature(model.forward).parameters)
         transformer_module.model_forward_params = set(model_forward_params) | {
             "input_ids",
@@ -1128,6 +1131,7 @@ class FastSentenceTransformer(FastModel):
             "inputs_embeds",
             "return_dict",
         }
+        transformer_module.model_forward_params |= preinit_model_forward_params
 
         # determine max_seq_length if not provided
         if max_seq_length is None:
