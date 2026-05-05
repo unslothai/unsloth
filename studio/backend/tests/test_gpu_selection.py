@@ -1049,6 +1049,182 @@ class TestMinGpuVram(unittest.TestCase):
 
 
 class TestPerGpuFitGuardAllCounts(unittest.TestCase):
+    def test_training_estimate_resolves_attention_without_raising(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (8 * (1024**3), "config"),
+            ),
+            patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                return_value = "unsloth/test",
+            ),
+            patch(
+                "utils.hardware.hardware._load_config_for_gpu_estimate",
+                return_value = SimpleNamespace(
+                    hidden_size = 4096,
+                    num_hidden_layers = 32,
+                    num_attention_heads = 32,
+                    num_key_value_heads = 8,
+                    intermediate_size = 14336,
+                    vocab_size = 128256,
+                    tie_word_embeddings = False,
+                ),
+            ),
+            patch(
+                "utils.hardware.hardware._determine_attention_impl_for_gpu_estimate",
+                return_value = "eager",
+            ),
+            patch("utils.hardware.hardware.get_visible_gpu_count", return_value = 1),
+        ):
+            _, metadata = estimate_required_model_memory_gb(
+                "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                load_in_4bit = True,
+            )
+
+        self.assertEqual(metadata.get("estimation_mode"), "detailed")
+        self.assertEqual(metadata.get("attention_implementation"), "eager")
+
+    def test_training_estimate_falls_back_when_attention_resolution_fails(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (8 * (1024**3), "config"),
+            ),
+            patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                return_value = "unsloth/test",
+            ),
+            patch(
+                "utils.hardware.hardware._load_config_for_gpu_estimate",
+                return_value = SimpleNamespace(
+                    hidden_size = 4096,
+                    num_hidden_layers = 32,
+                    num_attention_heads = 32,
+                    num_key_value_heads = 8,
+                    intermediate_size = 14336,
+                    vocab_size = 128256,
+                    tie_word_embeddings = False,
+                ),
+            ),
+            patch(
+                "utils.hardware.hardware._determine_attention_impl_for_gpu_estimate",
+                side_effect = RuntimeError("attention unavailable"),
+            ),
+            patch("utils.hardware.hardware.get_visible_gpu_count", return_value = 1),
+        ):
+            _, metadata = estimate_required_model_memory_gb(
+                "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                load_in_4bit = True,
+            )
+
+        self.assertEqual(metadata.get("estimation_mode"), "detailed")
+        self.assertEqual(
+            metadata.get("attention_implementation"),
+            "eager",
+        )
+
+    def test_attention_resolver_does_not_mutate_loaded_config(self):
+        from utils.hardware import hardware as hardware_module
+
+        config = SimpleNamespace(
+            hidden_size = 1024,
+            num_hidden_layers = 2,
+            num_attention_heads = 8,
+            num_key_value_heads = 8,
+            intermediate_size = 2048,
+            vocab_size = 1024,
+            tie_word_embeddings = True,
+        )
+
+        def _stub_resolver(model_class, cfg):
+            cfg._attn_implementation = "eager"
+            return "eager"
+
+        with patch(
+            "unsloth.models._utils.resolve_attention_implementation",
+            side_effect = _stub_resolver,
+        ):
+            hardware_module._determine_attention_impl_for_gpu_estimate(config)
+
+        self.assertFalse(hasattr(config, "_attn_implementation"))
+
+    def test_attention_resolver_handles_missing_model_mapping(self):
+        from utils.hardware import hardware as hardware_module
+
+        config = SimpleNamespace(
+            hidden_size = 1024,
+            num_hidden_layers = 2,
+            num_attention_heads = 8,
+            num_key_value_heads = 8,
+            intermediate_size = 2048,
+            vocab_size = 1024,
+            tie_word_embeddings = True,
+        )
+        captured = {}
+
+        def _stub_resolver(model_class, cfg):
+            captured["model_class"] = model_class
+            return "eager"
+
+        from transformers import AutoModel, AutoModelForCausalLM
+
+        with (
+            patch.object(AutoModelForCausalLM, "_model_mapping", new = None),
+            patch.object(AutoModel, "_model_mapping", new = None),
+            patch(
+                "unsloth.models._utils.resolve_attention_implementation",
+                side_effect = _stub_resolver,
+            ),
+        ):
+            result = hardware_module._determine_attention_impl_for_gpu_estimate(config)
+
+        self.assertEqual(result, "eager")
+        self.assertIsNone(captured["model_class"])
+
+    def test_attention_resolver_does_not_mutate_nested_text_config(self):
+        from utils.hardware import hardware as hardware_module
+
+        text_config = SimpleNamespace(
+            hidden_size = 1024,
+            num_hidden_layers = 2,
+            num_attention_heads = 8,
+            num_key_value_heads = 8,
+            intermediate_size = 2048,
+            vocab_size = 1024,
+            tie_word_embeddings = True,
+        )
+        config = SimpleNamespace(
+            hidden_size = 1024,
+            num_hidden_layers = 2,
+            num_attention_heads = 8,
+            num_key_value_heads = 8,
+            intermediate_size = 2048,
+            vocab_size = 1024,
+            tie_word_embeddings = True,
+            text_config = text_config,
+        )
+
+        def _stub_resolver(model_class, cfg):
+            cfg._attn_implementation = "eager"
+            inner = getattr(cfg, "text_config", None)
+            if inner is not None:
+                inner._attn_implementation = "eager"
+            return "eager"
+
+        with patch(
+            "unsloth.models._utils.resolve_attention_implementation",
+            side_effect = _stub_resolver,
+        ):
+            hardware_module._determine_attention_impl_for_gpu_estimate(config)
+
+        self.assertFalse(hasattr(config, "_attn_implementation"))
+        self.assertFalse(hasattr(text_config, "_attn_implementation"))
+
     def test_min_per_gpu_generated_for_all_visible_counts(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
@@ -1125,3 +1301,123 @@ class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
             with self.assertRaisesRegex(ValueError, "only supported on CUDA"):
                 prepare_gpu_selection([0], model_name = "unsloth/test")
+
+
+class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
+    def _run(
+        self,
+        model_path,
+        *,
+        config_bytes,
+        local_bytes,
+        safetensors_params = None,
+        config = object(),
+    ):
+        from utils.hardware import hardware as hardware_module
+
+        with (
+            patch.object(
+                hardware_module,
+                "_resolve_model_identifier_for_gpu_estimate",
+                return_value = model_path,
+            ),
+            patch.object(
+                hardware_module,
+                "_get_hf_safetensors_total_params",
+                return_value = safetensors_params,
+            ),
+            patch.object(
+                hardware_module,
+                "_load_config_for_gpu_estimate",
+                return_value = config,
+            ),
+            patch.object(
+                hardware_module,
+                "_estimate_fp16_model_size_bytes_from_config",
+                return_value = config_bytes,
+            ),
+            patch.object(
+                hardware_module,
+                "_get_local_weight_size_bytes",
+                return_value = local_bytes,
+            ),
+        ):
+            return hardware_module.estimate_fp16_model_size_bytes(model_path)
+
+    def test_local_weight_bytes_preferred_when_larger_than_config(self):
+        bytes_, src = self._run(
+            "/local/vlm",
+            config_bytes = 2 * (1 << 30),
+            local_bytes = 20 * (1 << 30),
+        )
+        self.assertEqual(bytes_, 20 * (1 << 30))
+        self.assertEqual(src, "weight_bytes")
+
+    def test_config_bytes_preferred_when_larger_than_local(self):
+        bytes_, src = self._run(
+            "/local/text-only",
+            config_bytes = 20 * (1 << 30),
+            local_bytes = 2 * (1 << 30),
+        )
+        self.assertEqual(bytes_, 20 * (1 << 30))
+        self.assertEqual(src, "config")
+
+    def test_config_bytes_returned_when_no_local_weights(self):
+        bytes_, src = self._run(
+            "/local/no-weights",
+            config_bytes = 5 * (1 << 30),
+            local_bytes = None,
+        )
+        self.assertEqual(bytes_, 5 * (1 << 30))
+        self.assertEqual(src, "config")
+
+    def test_local_bytes_returned_when_config_resolution_fails(self):
+        bytes_, src = self._run(
+            "/local/no-config",
+            config_bytes = None,
+            local_bytes = 7 * (1 << 30),
+            config = None,
+        )
+        self.assertEqual(bytes_, 7 * (1 << 30))
+        self.assertEqual(src, "weight_bytes")
+
+    def test_equal_local_and_config_keeps_config_label(self):
+        # why: tie-breaker is "local must be strictly larger" so an exact
+        # match keeps the config-derived path.
+        same = 8 * (1 << 30)
+        bytes_, src = self._run(
+            "/local/equal",
+            config_bytes = same,
+            local_bytes = same,
+        )
+        self.assertEqual(bytes_, same)
+        self.assertEqual(src, "config")
+
+    def test_remote_safetensors_path_unaffected_by_local_weights(self):
+        from utils.hardware import hardware as hardware_module
+
+        with (
+            patch.object(
+                hardware_module,
+                "_resolve_model_identifier_for_gpu_estimate",
+                return_value = "owner/repo",
+            ),
+            patch.object(
+                hardware_module,
+                "_get_hf_safetensors_total_params",
+                return_value = 1_000_000_000,
+            ),
+            patch.object(
+                hardware_module,
+                "_load_config_for_gpu_estimate",
+            ) as mock_load,
+            patch.object(
+                hardware_module,
+                "_get_local_weight_size_bytes",
+            ) as mock_local,
+        ):
+            bytes_, src = hardware_module.estimate_fp16_model_size_bytes("owner/repo")
+            self.assertEqual(bytes_, 2 * 1_000_000_000)
+            self.assertEqual(src, "safetensors")
+            mock_load.assert_not_called()
+            mock_local.assert_not_called()

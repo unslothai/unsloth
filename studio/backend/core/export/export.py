@@ -33,6 +33,8 @@ if not _IS_MLX:
 
 logger = get_logger(__name__)
 
+_LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
+
 
 def _is_wsl():
     """Detect if running under Windows Subsystem for Linux."""
@@ -575,6 +577,31 @@ class ExportBackend:
         try:
             # Convert quantization method to lowercase for unsloth
             quant_method = quantization_method.lower()
+
+            # Pin convert_hf_to_gguf.py to the same llama.cpp ref as the
+            # llama-quantize binary (Studio installs at a tagged ref via
+            # setup.sh) so it can't drift past the pinned binary's gguf API.
+            # Set before both branches; hub-only export has save_directory == "".
+            global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
+            try:
+                from unsloth_zoo.llama_cpp import (
+                    LLAMA_CPP_DEFAULT_DIR,
+                    _resolve_local_convert_script,  # noqa: F401
+                )
+
+                os.environ.setdefault(
+                    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
+                )
+            except ImportError:
+                if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
+                    logger.warning(
+                        "Unsloth: installed unsloth_zoo does not honor "
+                        "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR; convert_hf_to_gguf.py will "
+                        "still be downloaded from llama.cpp master and may drift "
+                        "past the pinned llama-quantize binary. Upgrade unsloth_zoo "
+                        "to activate the local script pin."
+                    )
+                    _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
 
             # Save locally if requested
             if save_directory:
