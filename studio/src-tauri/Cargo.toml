@@ -27,7 +27,7 @@ tauri-plugin-opener = "2.5.3"
 tauri-plugin-updater = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
-rand = "0.10.0"
+rand = "0.10.1"
 tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(unix)'.dependencies]
