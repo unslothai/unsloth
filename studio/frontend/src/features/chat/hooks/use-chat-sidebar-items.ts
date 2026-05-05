@@ -66,6 +66,29 @@ function cancelIfRunning(threadId: string): void {
   cancelByThreadId[threadId]?.();
 }
 
+export async function renameChatItem(
+  item: SidebarItem,
+  nextTitle: string,
+): Promise<void> {
+  const trimmed = nextTitle.trim();
+  if (!trimmed || trimmed === item.title) return;
+
+  if (item.type === "single") {
+    await db.threads.update(item.id, { title: trimmed });
+    return;
+  }
+
+  const pairThreads = await db.threads
+    .where("pairId")
+    .equals(item.id)
+    .toArray();
+  await db.transaction("rw", db.threads, async () => {
+    for (const t of pairThreads) {
+      await db.threads.update(t.id, { title: trimmed });
+    }
+  });
+}
+
 export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,

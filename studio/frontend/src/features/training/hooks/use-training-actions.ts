@@ -5,6 +5,7 @@ import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { useCallback } from "react";
 import { toast } from "sonner";
 import { checkDatasetFormat } from "../api/datasets-api";
+import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
@@ -136,6 +137,7 @@ export function useTrainingActions() {
       }
 
       runtimeStore.setStartQueued(response.job_id, response.message);
+      emitTrainingRunsChanged();
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {
@@ -199,6 +201,7 @@ export function useTrainingActions() {
       }
 
       runtimeStore.setStartQueued(response.job_id, response.message);
+      emitTrainingRunsChanged();
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {

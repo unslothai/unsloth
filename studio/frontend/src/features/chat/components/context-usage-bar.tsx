@@ -46,14 +46,14 @@ export const ContextUsageBar: FC<{
           type="button"
           aria-label={`Context usage: ${formatTokenCount(used)} of ${formatTokenCount(total)} tokens`}
           className={cn(
-            "flex items-center gap-2 rounded-md px-2 py-1 text-xs font-mono tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
+            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-[13px] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >
           <span>
             {formatTokenCount(used)} / {formatTokenCount(total)}
           </span>
-          <div className="h-1.5 w-16 rounded-full bg-muted overflow-hidden">
+          <div className="h-1.5 w-16 rounded-full bg-black/10 dark:bg-white/15 overflow-hidden">
             <div
               className={cn("h-full rounded-full transition-all", severity.bar)}
               style={{ width: `${percent}%` }}
@@ -64,7 +64,8 @@ export const ContextUsageBar: FC<{
       <TooltipContent
         side="bottom"
         sideOffset={8}
-        className="[&_span>svg]:hidden! rounded-lg border bg-popover px-3 py-2 text-popover-foreground shadow-md"
+        variant="rich"
+        className="[&_span>svg]:hidden!"
       >
         <div className="grid min-w-44 gap-1.5 text-xs">
           <div className="flex items-center justify-between gap-4">

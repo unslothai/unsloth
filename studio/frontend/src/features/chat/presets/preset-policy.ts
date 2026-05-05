@@ -27,44 +27,16 @@ export type PresetOwnedParams = Pick<
 
 export const BUILTIN_PRESETS: Preset[] = [
   { name: "Default", params: { ...defaultInferenceParams } },
-  {
-    name: "Creative",
-    params: {
-      ...defaultInferenceParams,
-      temperature: 1.5,
-      topP: 1.0,
-      topK: 0,
-      minP: 0.1,
-      repetitionPenalty: 1.0,
-    },
-  },
-  {
-    name: "Precise",
-    params: {
-      ...defaultInferenceParams,
-      temperature: 0.1,
-      topP: 0.95,
-      topK: 80,
-      minP: 0.01,
-      repetitionPenalty: 1.0,
-    },
-  },
 ];
 
 export const BUILTIN_PRESET_NAMES = new Set(
   BUILTIN_PRESETS.map((preset) => preset.name),
 );
 
-export type ChatPresetSource =
-  | "builtin-default"
-  | "builtin-fixed"
-  | "custom"
-  | "modified";
+export type ChatPresetSource = "builtin-default" | "custom" | "modified";
 
 export function getPresetSource(name: string): ChatPresetSource {
-  if (name === "Default") return "builtin-default";
-  if (BUILTIN_PRESET_NAMES.has(name)) return "builtin-fixed";
-  return "custom";
+  return name === "Default" ? "builtin-default" : "custom";
 }
 
 export function getUniquePresetName(
@@ -102,7 +74,9 @@ export function normalizeCustomPresets(presets: Preset[]): Preset[] {
   return presets
     .map((preset): Preset | null => {
       const trimmedName = preset.name.trim();
-      if (!trimmedName) return null;
+      if (!trimmedName) {
+        return null;
+      }
       const name = usedNames.has(trimmedName)
         ? getBuiltinVariantName(trimmedName, usedNames)
         : trimmedName;
@@ -117,6 +91,21 @@ export function normalizeCustomPresets(presets: Preset[]): Preset[] {
 
 export function getOrderedPresets(customPresets: Preset[]): Preset[] {
   return [...BUILTIN_PRESETS, ...normalizeCustomPresets(customPresets)];
+}
+
+export function getPresetOwnedParams(
+  params: InferenceParams,
+): PresetOwnedParams {
+  return {
+    temperature: params.temperature,
+    topP: params.topP,
+    topK: params.topK,
+    minP: params.minP,
+    repetitionPenalty: params.repetitionPenalty,
+    presencePenalty: params.presencePenalty,
+    maxTokens: params.maxTokens,
+    systemPrompt: params.systemPrompt,
+  };
 }
 
 export function isSamePresetConfig(
@@ -135,21 +124,6 @@ export function isSamePresetConfig(
     left.maxTokens === right.maxTokens &&
     left.systemPrompt === right.systemPrompt
   );
-}
-
-export function getPresetOwnedParams(
-  params: InferenceParams,
-): PresetOwnedParams {
-  return {
-    temperature: params.temperature,
-    topP: params.topP,
-    topK: params.topK,
-    minP: params.minP,
-    repetitionPenalty: params.repetitionPenalty,
-    presencePenalty: params.presencePenalty,
-    maxTokens: params.maxTokens,
-    systemPrompt: params.systemPrompt,
-  };
 }
 
 export function getPresetOwnedConfigKey(params: InferenceParams): string {
@@ -211,7 +185,10 @@ export function getPresetSaveState({
   }
 
   if (BUILTIN_PRESET_NAMES.has(trimmedName)) {
-    const variantName = getBuiltinVariantName(trimmedName, new Set(presets.map((preset) => preset.name)));
+    const variantName = getBuiltinVariantName(
+      trimmedName,
+      new Set(presets.map((preset) => preset.name)),
+    );
     return {
       mode: "copy-builtin",
       canSubmit: activePreset !== trimmedName || hasUnsavedPresetChanges,
@@ -234,8 +211,7 @@ export function getPresetSaveState({
       mode: isActiveMatch ? "overwrite-active" : "overwrite-other",
       canSubmit: !isActiveMatch || hasUnsavedPresetChanges,
       isSaveReady: !isActiveMatch || hasUnsavedPresetChanges,
-      buttonLabel:
-        isActiveMatch && !hasUnsavedPresetChanges ? "Saved" : "Save",
+      buttonLabel: isActiveMatch && !hasUnsavedPresetChanges ? "Saved" : "Save",
       title: isActiveMatch
         ? hasUnsavedPresetChanges
           ? "Save current settings to this preset"
@@ -307,7 +283,8 @@ export function mergeBackendRecommendedInference({
     ...next,
     maxTokens: defaultMaxTokens,
     temperature:
-      toFiniteNumber(inference?.temperature) ?? defaultInferenceParams.temperature,
+      toFiniteNumber(inference?.temperature) ??
+      defaultInferenceParams.temperature,
     topP: toFiniteNumber(inference?.top_p) ?? defaultInferenceParams.topP,
     topK: toFiniteNumber(inference?.top_k) ?? defaultInferenceParams.topK,
     minP: toFiniteNumber(inference?.min_p) ?? defaultInferenceParams.minP,
@@ -343,9 +320,17 @@ export function resolveLoadMaxSeqLength({
     currentCheckpoint === modelId &&
     (ggufVariant ?? null) === (activeGgufVariant ?? null);
 
-  if (customContextLength != null) return customContextLength;
-  if (isGgufLoad && presetSource === "builtin-default") return 0;
-  if (isReloadingCurrentGguf) return ggufContextLength ?? 0;
-  if (isGgufLoad) return 0;
+  if (customContextLength != null) {
+    return customContextLength;
+  }
+  if (isGgufLoad && presetSource === "builtin-default") {
+    return 0;
+  }
+  if (isReloadingCurrentGguf) {
+    return ggufContextLength ?? 0;
+  }
+  if (isGgufLoad) {
+    return 0;
+  }
   return maxSeqLength;
 }

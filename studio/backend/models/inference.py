@@ -11,7 +11,14 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import (
+    BaseModel,
+    Discriminator,
+    Field,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 
 class LoadRequest(BaseModel):
@@ -43,6 +50,16 @@ class LoadRequest(BaseModel):
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
+
+    @field_validator("chat_template_override")
+    @classmethod
+    def normalize_blank_chat_template_override(
+        cls, value: Optional[str]
+    ) -> Optional[str]:
+        if value is not None and value.strip() == "":
+            return None
+        return value
+
     cache_type_kv: Optional[str] = Field(
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
@@ -299,10 +316,6 @@ class InferenceStatusResponse(BaseModel):
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
-    chat_template: Optional[str] = Field(
-        None,
-        description = "Jinja2 chat template string for the active model",
-    )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
     )
@@ -313,6 +326,17 @@ class InferenceStatusResponse(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+    )
+    chat_template: Optional[str] = Field(
+        None, description = "Model's default chat template (Jinja2 source), if any"
+    )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Active chat template override applied at load time, or None if model is using its default",
     )
     speculative_type: Optional[str] = Field(
         None,

@@ -60,6 +60,16 @@ const UPWARD_DETACH_THRESHOLD_PX = 2;
 // keeps the viewport pinned as long as content keeps arriving; settles
 // this long after the last change.
 const FOLLOW_SETTLE_MS = 600;
+// Maximum stabilizer compensation. The stabilizer is meant to absorb
+// sub-frame transients (~5-15px shiki re-renders, ~8px action-bar
+// reservation drift). Anything larger is almost certainly an intentional
+// content removal — message delete, regenerate's old-content clear,
+// reasoning-panel collapse — and should *not* be silently padded over,
+// which would leave persistent empty space below the last message.
+// Above this threshold we release the stabilizer immediately and let
+// the autoscroll re-pin to the new content height, which is the natural
+// behavior the user expects for those actions.
+const STABILIZER_MAX_PX = 64;
 
 export type ScrollToBottom = (behavior?: ScrollBehavior) => void;
 
@@ -202,6 +212,21 @@ export function useIntentAwareAutoScroll(): {
         return false;
       };
 
+      // Stabilizer state — see `stabilize` below for the full
+      // explanation. Lives in this closure so it resets naturally
+      // whenever the viewport remounts (Compare-pane swap, thread
+      // switch with remount, etc.).
+      let stabilizerPx = 0;
+      let maxContentHeight = 0;
+
+      const releaseStabilizer = (): void => {
+        if (stabilizerPx === 0) {
+          return;
+        }
+        stabilizerPx = 0;
+        el.style.removeProperty("--aui-scroll-stabilizer");
+      };
+
       const extendFollow = (): void => {
         if (userDetachedRef.current) {
           return;
@@ -212,6 +237,13 @@ export function useIntentAwareAutoScroll(): {
       const detach = (): void => {
         userDetachedRef.current = true;
         followUntilRef.current = 0;
+        // The stabilizer is only meaningful while we're actively
+        // pinning to the bottom. Once the user scrolls up, drop any
+        // residual padding so the bottom stays flush whenever they
+        // come back. Safe here because the user is mid-content —
+        // shrinking scrollHeight cannot cap their scrollTop.
+        releaseStabilizer();
+        maxContentHeight = el.scrollHeight;
       };
 
       const requestTick = (): void => {
@@ -334,20 +366,115 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      const resizeObserver = new ResizeObserver(() => {
-        extendFollow();
-        requestTick();
-      });
+      // Scroll stabilizer.
+      //
+      // Problem: when a trailing code block finalizes at stream end
+      // (Streamdown flips `isAnimating` → false, shiki re-renders the
+      // <pre> with highlight spans), the block's rendered height
+      // briefly dips and then recovers a frame later. That dip shrinks
+      // `scrollHeight`, which the browser handles by *synchronously*
+      // capping `scrollTop` to the new (smaller) `scrollHeight −
+      // clientHeight`. The cap is visible as a one-frame upward jump;
+      // the recovery a frame or two later is the "snap back" the user
+      // perceives as a flicker. No amount of programmatic re-scrolling
+      // can prevent this — once `scrollHeight` drops, the cap has
+      // already happened and `scrollTop` cannot be pushed past the new
+      // max.
+      //
+      // Fix: keep `scrollHeight` monotonic across the follow window.
+      // We track the maximum *content* height (scrollHeight minus our
+      // own padding contribution) seen during follow, and compensate
+      // for any shortfall by writing the deficit into a CSS custom
+      // property `--aui-scroll-stabilizer`, which the viewport's
+      // `padding-bottom` reads. A 5px content shrink instantly grows
+      // the padding by 5px, so the browser sees no scrollHeight change
+      // and never caps scrollTop. As content naturally grows past its
+      // prior high-water mark (e.g. the next message streams in), the
+      // padding shrinks back toward zero.
+      //
+      // Self-contained: lives entirely on the viewport element via a
+      // CSS variable. Doesn't touch the composer, the action bar, the
+      // message footer, the spacer, or any other UI.
+      //
+      // Returns the post-adjustment scrollHeight so a single layout
+      // read per observer callback can feed both stabilization and
+      // pinning, avoiding a redundant flush.
+      const stabilize = (): number => {
+        const sh = el.scrollHeight;
+        const currentContent = sh - stabilizerPx;
+        const followActive =
+          !userDetachedRef.current &&
+          performance.now() < followUntilRef.current;
+        if (!followActive) {
+          // Outside the follow window we stop adjusting, but we keep
+          // `maxContentHeight` aligned with reality so the next follow
+          // session starts from the current content size, not stale.
+          maxContentHeight = currentContent;
+          return sh;
+        }
+        if (currentContent > maxContentHeight) {
+          maxContentHeight = currentContent;
+        }
+        const shrink = maxContentHeight - currentContent;
+        // Large shrinks (over STABILIZER_MAX_PX) are intentional content
+        // removals — message delete, regenerate clearing the old
+        // assistant turn, reasoning-panel collapse. Compensating for
+        // those would leave persistent empty space at the bottom of the
+        // viewport, which the user reads as "weird empty gap." Release
+        // the stabilizer instead and rebase the high-water mark; the
+        // pinIfFollowing call right after will smoothly re-anchor to
+        // the new (smaller) bottom.
+        if (shrink > STABILIZER_MAX_PX) {
+          maxContentHeight = currentContent;
+          if (stabilizerPx !== 0) {
+            stabilizerPx = 0;
+            el.style.removeProperty("--aui-scroll-stabilizer");
+          }
+          return currentContent;
+        }
+        const needed = Math.max(0, shrink);
+        if (needed !== stabilizerPx) {
+          stabilizerPx = needed;
+          el.style.setProperty(
+            "--aui-scroll-stabilizer",
+            `${stabilizerPx}px`,
+          );
+        }
+        return currentContent + stabilizerPx;
+      };
 
-      const mutationObserver = new MutationObserver(() => {
-        extendFollow();
-        requestTick();
-      });
+      // Synchronous pin-to-bottom. Observer callbacks run in the event-
+      // loop's "update the rendering" step (after layout, before paint),
+      // so the scrollTo here is composited in the same frame as the
+      // mutation that triggered the observer.
+      const pinIfFollowing = (scrollHeight: number): void => {
+        if (userDetachedRef.current) {
+          return;
+        }
+        if (performance.now() >= followUntilRef.current) {
+          return;
+        }
+        if (scrollHeight <= el.clientHeight) {
+          return;
+        }
+        el.scrollTo({ top: scrollHeight, behavior: "instant" });
+      };
 
-      const onViewportResize = () => {
+      // All three layout-change signals fan in here so there's a
+      // single place to understand "what runs when the viewport's
+      // content shape changes". Order matters: extend first so the
+      // stabilizer sees the follow window as active; stabilize before
+      // pinning so we scroll to the post-adjustment scrollHeight.
+      const onLayoutChange = (): void => {
         extendFollow();
+        const scrollHeight = stabilize();
+        pinIfFollowing(scrollHeight);
         requestTick();
       };
+
+      const resizeObserver = new ResizeObserver(onLayoutChange);
+      const mutationObserver = new MutationObserver(onLayoutChange);
+      const onViewportResize = onLayoutChange;
 
       // Fresh attach always starts pinned. `userDetachedRef` survives
       // ref rebinds (it's hook-scoped), so if the viewport element is
@@ -366,7 +493,13 @@ export function useIntentAwareAutoScroll(): {
       setIsAtBottom(true);
       requestTick();
 
-      resizeObserver.observe(el);
+      // Observe the border box, not the content box. The stabilizer
+      // writes `padding-bottom`, which shrinks the content box; if we
+      // observed that, every stabilizer adjustment would echo back as
+      // a resize and re-enter onLayoutChange. Border-box stays put
+      // through padding changes but still tracks parent-driven
+      // resizes (window, sidebar toggle) — which is all we need.
+      resizeObserver.observe(el, { box: "border-box" });
       mutationObserver.observe(el, {
         childList: true,
         subtree: true,

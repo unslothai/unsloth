@@ -8,12 +8,19 @@ from pathlib import Path
 import pytest
 
 WORKDIR = Path(__file__).resolve().parents[2]
-PRESET_POLICY = (
-    WORKDIR / "unsloth_repo/studio/frontend/src/features/chat/presets/preset-policy.ts"
+
+
+def _source_path(relative_path: str) -> Path:
+    direct = WORKDIR / relative_path
+    if direct.exists():
+        return direct
+    return WORKDIR / "unsloth_repo" / relative_path
+
+
+PRESET_POLICY = _source_path(
+    "studio/frontend/src/features/chat/presets/preset-policy.ts"
 )
-RUNTIME_TYPES = (
-    WORKDIR / "unsloth_repo/studio/frontend/src/features/chat/types/runtime.ts"
-)
+RUNTIME_TYPES = _source_path("studio/frontend/src/features/chat/types/runtime.ts")
 TEMP = WORKDIR / "temp" / "chat_preset_builtin_invariants"
 
 
@@ -22,6 +29,14 @@ def _require_node():
         pytest.skip("node not available")
     if not PRESET_POLICY.exists() or not RUNTIME_TYPES.exists():
         pytest.skip("studio chat sources not present")
+    result = subprocess.run(
+        ["node", "--experimental-strip-types", "--version"],
+        capture_output = True,
+        text = True,
+        timeout = 5,
+    )
+    if result.returncode != 0:
+        pytest.skip("node --experimental-strip-types not available")
 
 
 def _ensure_harness():
@@ -217,8 +232,20 @@ def test_apply_preset_params_preserves_model_owned_fields():
         textwrap.dedent(
             f"""
             // @ts-nocheck
-            import {{ BUILTIN_PRESETS, applyPresetParams }} from "{_policy_path()}";
-            const creative = BUILTIN_PRESETS.find((p) => p.name === "Creative");
+            import {{ applyPresetParams }} from "{_policy_path()}";
+            const samplingPreset = {{
+                temperature: 1.5,
+                topP: 1,
+                topK: 0,
+                minP: 0.1,
+                repetitionPenalty: 1,
+                presencePenalty: 0,
+                maxSeqLength: 4096,
+                maxTokens: 2048,
+                systemPrompt: "",
+                checkpoint: "",
+                trustRemoteCode: false,
+            }};
             const applied = applyPresetParams(
                 {{
                     temperature: 0.6,
@@ -233,7 +260,7 @@ def test_apply_preset_params_preserves_model_owned_fields():
                     checkpoint: "foo/bar",
                     trustRemoteCode: true,
                 }},
-                creative.params,
+                samplingPreset,
             );
             console.log(JSON.stringify({{
                 checkpoint: applied.checkpoint,
@@ -252,21 +279,16 @@ def test_apply_preset_params_preserves_model_owned_fields():
     assert out["topK"] == 0
 
 
-def test_creative_and_precise_builtins_differ_from_default():
+def test_default_is_only_builtin_preset():
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
-            import {{ BUILTIN_PRESETS, isSamePresetConfig }} from "{_policy_path()}";
-            const def = BUILTIN_PRESETS.find((p) => p.name === "Default");
-            const creative = BUILTIN_PRESETS.find((p) => p.name === "Creative");
-            const precise = BUILTIN_PRESETS.find((p) => p.name === "Precise");
+            import {{ BUILTIN_PRESETS }} from "{_policy_path()}";
             console.log(JSON.stringify({{
-                creativeDiffers: !isSamePresetConfig(def.params, creative.params),
-                preciseDiffers: !isSamePresetConfig(def.params, precise.params),
+                names: BUILTIN_PRESETS.map((p) => p.name),
             }}));
             """
         )
     )
-    assert out["creativeDiffers"] is True
-    assert out["preciseDiffers"] is True
+    assert out["names"] == ["Default"]
