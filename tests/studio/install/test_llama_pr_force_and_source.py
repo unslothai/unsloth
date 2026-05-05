@@ -439,7 +439,7 @@ class TestSourcePatternsSh:
     def _rocm_build_block(self) -> str:
         start = self.content.index('elif [ "$GPU_BACKEND" = "rocm" ]; then')
         end = self.content.index(
-            'elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then',
+            "elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then",
             start,
         )
         return self.content[start:end]
