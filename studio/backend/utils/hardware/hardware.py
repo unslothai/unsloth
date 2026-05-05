@@ -1473,6 +1473,7 @@ def apply_gpu_ids(gpu_ids) -> None:
     if not _is_rocm:
         try:
             import torch as _torch
+
             _is_rocm = bool(getattr(_torch.version, "hip", None))
         except Exception:
             pass
