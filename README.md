@@ -126,6 +126,16 @@ You can use the same Docker image as Unsloth Studio.
 For RTX 50x, B200, 6000 GPUs: `uv pip install unsloth --torch-backend=auto`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/get-started/install/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
+### CPU-Only and No-Torch Modes
+
+**CPU-only** (PyTorch installed, no GPU): `import unsloth` and `from unsloth import FastLanguageModel` both work, but calling `FastLanguageModel.from_pretrained(...)` will raise a `RuntimeError` — model loading and training require a GPU. For GGUF inference on CPU, use [llama.cpp](https://github.com/ggerganov/llama.cpp) or [Unsloth Studio](https://unsloth.ai/docs/get-started/unsloth-studio) directly.
+
+**No-torch** (no PyTorch, or set `UNSLOTH_NO_TORCH=1` to disable explicitly): `import unsloth` works but model loading, inference, and training are disabled.
+```bash
+export UNSLOTH_NO_TORCH=1  # Linux/macOS
+set UNSLOTH_NO_TORCH=1     # Windows
+```
+
 ## 📒 Free Notebooks
 
 Train for free with our notebooks. You can use our new [free Unsloth Studio notebook](https://colab.research.google.com/github/unslothai/unsloth/blob/main/studio/Unsloth_Studio_Colab.ipynb) to run and train models for free in a web UI.

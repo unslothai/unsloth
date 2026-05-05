@@ -263,6 +263,12 @@ class FastLanguageModel(FastLlamaModel):
         *args,
         **kwargs,
     ):
+        if DEVICE_TYPE == "cpu":
+            raise RuntimeError(
+                "Unsloth: FastLanguageModel requires a GPU for model loading and training.\n"
+                "No GPU was detected on this machine.\n"
+                "For GGUF inference on CPU, use llama.cpp or Unsloth Studio directly."
+            )
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -877,6 +883,12 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
+        if DEVICE_TYPE == "cpu":
+            raise RuntimeError(
+                "Unsloth: FastModel requires a GPU for model loading and training.\n"
+                "No GPU was detected on this machine.\n"
+                "For GGUF inference on CPU, use llama.cpp or Unsloth Studio directly."
+            )
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
