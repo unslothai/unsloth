@@ -28,6 +28,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 rand = "0.10.0"
+tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
