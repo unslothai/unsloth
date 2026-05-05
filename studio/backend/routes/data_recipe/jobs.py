@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Any
+import copy
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -57,6 +58,20 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
     return f"http://127.0.0.1:{int(port)}/v1"
 
 
+def _request_has_desktop_access_token(request: Request) -> bool:
+    auth_header = request.headers.get("authorization")
+    if not auth_header:
+        return False
+
+    parts = auth_header.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+
+    from auth.authentication import is_desktop_access_token
+
+    return is_desktop_access_token(parts[1])
+
+
 def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     """Return the set of model_aliases that are actually referenced by an
     LLM column. Used to narrow the "Chat model loaded" gate so that orphan
@@ -80,14 +95,111 @@ def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     return aliases
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
+def _inject_local_structured_response_format(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> None:
+    """For each llm-structured column that targets a local-provider model_config,
+    clone the model_config and inject an OpenAI ``response_format`` with the
+    column's ``output_format`` JSON schema. The column is rewritten to point at
+    the clone so llm-text / llm-judge columns that share the same alias keep
+    free-form sampling.
+
+    Without this, data_designer only injects a prompt-level "return JSON in a
+    ```json fence" instruction. Small GGUF models frequently break format,
+    wasting the full ``max_tokens`` budget per row and then failing to parse.
+    Forwarding ``response_format`` lets llama-server apply grammar-constrained
+    sampling from the JSON schema, which guarantees a parseable response and
+    terminates early.
+    """
+    columns = recipe.get("columns")
+    model_configs = recipe.get("model_configs")
+    if not isinstance(columns, list) or not isinstance(model_configs, list):
+        return
+
+    # alias -> model_config (only configs referencing a local provider qualify).
+    alias_to_local_mc: dict[str, dict[str, Any]] = {}
+    for mc in model_configs:
+        if not isinstance(mc, dict):
+            continue
+        if mc.get("provider") in local_provider_names and isinstance(
+            mc.get("alias"), str
+        ):
+            alias_to_local_mc[mc["alias"]] = mc
+
+    if not alias_to_local_mc:
+        return
+
+    # Clone per (alias, column) so each llm-structured column gets its own
+    # schema without leaking response_format onto other columns that share the
+    # same base alias.
+    seen_clone_aliases: set[str] = {
+        mc.get("alias") for mc in model_configs if isinstance(mc.get("alias"), str)
+    }
+    new_configs: list[dict[str, Any]] = []
+    for column in columns:
+        if not isinstance(column, dict):
+            continue
+        if column.get("column_type") != "llm-structured":
+            continue
+        alias = column.get("model_alias")
+        if not isinstance(alias, str) or alias not in alias_to_local_mc:
+            continue
+        output_format = column.get("output_format")
+        if not isinstance(output_format, dict) or not output_format:
+            continue
+        base_mc = alias_to_local_mc[alias]
+        column_name = column.get("name") or "structured"
+        clone_alias_base = f"{alias}__{column_name}_structured"
+        clone_alias = clone_alias_base
+        counter = 1
+        while clone_alias in seen_clone_aliases:
+            counter += 1
+            clone_alias = f"{clone_alias_base}_{counter}"
+        seen_clone_aliases.add(clone_alias)
+
+        clone = copy.deepcopy(base_mc)
+        clone["alias"] = clone_alias
+        params = clone.get("inference_parameters")
+        if not isinstance(params, dict):
+            params = {}
+            clone["inference_parameters"] = params
+        # data_designer's BaseInferenceParams is a pydantic model with
+        # extra="forbid", so response_format cannot sit at the top level of
+        # inference_parameters. It does expose an `extra_body: dict` pass-
+        # through that the OpenAI client spreads into the request body at the
+        # top level, which is where llama-server reads response_format from.
+        # llama.cpp server shape (tools/server/README.md): the schema sits
+        # directly under response_format, not nested in a json_schema object
+        # the way OpenAI's Chat Completions API expects. llama-server converts
+        # the schema to a GBNF grammar and applies it during sampling.
+        extra_body = params.get("extra_body")
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        extra_body["response_format"] = {
+            "type": "json_schema",
+            "schema": output_format,
+        }
+        params["extra_body"] = extra_body
+        new_configs.append(clone)
+        column["model_alias"] = clone_alias
+
+    if new_configs:
+        model_configs.extend(new_configs)
+
+
+def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
     """
     Mutate recipe dict in-place: for any provider with is_local=True,
-    generate a JWT and fill in the endpoint pointing at this server.
+    fill in the endpoint pointing at this server and inject a short-lived
+    internal sk-unsloth-* API key for workflow auth.
+
+    Returns the row id of the minted internal key (so the caller can
+    revoke it on job completion) or ``None`` when no local provider is
+    actually reachable from an LLM column.
     """
     providers = recipe.get("model_providers")
     if not providers:
-        return
+        return None
 
     # Collect local providers and pop is_local from ALL dicts unconditionally.
     # Strict `is True` guard so malformed payloads (is_local: 1,
@@ -101,7 +213,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
             local_indices.append(i)
 
     if not local_indices:
-        return
+        return None
 
     endpoint = _resolve_local_v1_endpoint(request)
 
@@ -124,6 +236,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
     }
 
     token = ""
+    internal_key_id: Optional[int] = None
     if local_names & referenced_providers:
         # Verify a model is loaded.
         # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
@@ -144,17 +257,21 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
                 "No model loaded in Chat. Load a model first, then run the recipe."
             )
 
-        from auth.authentication import (
-            create_access_token,
-        )  # deferred: avoids circular import
+        from auth import storage  # deferred: avoids circular import
 
-        # Uses the "unsloth" admin subject. If the user changes their password,
-        # the JWT secret rotates and this token becomes invalid mid-run.
-        # Acceptable for v1 - recipes typically finish well within one session.
-        token = create_access_token(
-            subject = "unsloth",
-            expires_delta = timedelta(hours = 24),
+        # Mint an internal sk-unsloth-* key scoped to this workflow run.
+        # Uses the unified API-key issuance path (one mint/revoke/verify
+        # surface instead of a second JWT code path). The key is marked
+        # internal so it is hidden from the user's API-key list, and the
+        # caller revokes it when the job terminates.
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
+        token, row = storage.create_api_key(
+            username = "unsloth",
+            name = "data-recipe workflow",
+            expires_at = expires_at,
+            internal = True,
         )
+        internal_key_id = int(row["id"])
 
     # Defensively strip any stale "external"-only fields the frontend may
     # have left on the dict (extra_headers/extra_body/api_key_env). The UI
@@ -181,6 +298,37 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> None:
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
+            # Disable thinking for data-recipe inference on local providers.
+            # Reasoning models emit a <think>...</think> preamble before the
+            # answer, which roughly doubles generated token count per row and
+            # pushes the visible answer past data_designer's json-fence
+            # regex. Forward chat_template_kwargs={enable_thinking: False}
+            # through the OpenAI SDK's extra_body passthrough so llama-server
+            # renders the template without the reasoning preamble. Free-form
+            # llm-text columns benefit from the latency cut, and structured
+            # columns also stop leaking think tags into the grammar-
+            # constrained JSON (llama-server's GBNF path still enforces the
+            # schema either way).
+            params = mc.get("inference_parameters")
+            if not isinstance(params, dict):
+                params = {}
+                mc["inference_parameters"] = params
+            extra_body = params.get("extra_body")
+            if not isinstance(extra_body, dict):
+                extra_body = {}
+            tpl_kwargs = extra_body.get("chat_template_kwargs")
+            if not isinstance(tpl_kwargs, dict):
+                tpl_kwargs = {}
+            tpl_kwargs.setdefault("enable_thinking", False)
+            extra_body["chat_template_kwargs"] = tpl_kwargs
+            params["extra_body"] = extra_body
+
+    # Forward each llm-structured column's output_format as an OpenAI
+    # response_format so llama-server uses grammar-constrained sampling and
+    # small GGUFs stop wasting the full max_tokens budget on broken JSON.
+    _inject_local_structured_response_format(recipe, local_names)
+
+    return internal_key_id
 
 
 def _normalize_run_name(value: Any) -> str | None:
@@ -225,19 +373,47 @@ def create_job(payload: RecipePayload, request: Request):
             ) from exc
 
     try:
-        _inject_local_providers(recipe, request)
+        internal_api_key_id = _inject_local_providers(recipe, request)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
-    mgr = get_job_manager()
+    # Single try block covers get_job_manager() AND mgr.start() so a workflow
+    # key minted above never outlives the request even when an unexpected
+    # exception type (TypeError from a stale kwarg, OSError from a queue
+    # write, etc.) bubbles up. Without the bare except, such exceptions let
+    # the sk-unsloth-* key live until its 24h TTL.
     try:
-        job_id = mgr.start(recipe = recipe, run = run)
+        mgr = get_job_manager()
+        job_id = mgr.start(
+            recipe = recipe,
+            run = run,
+            internal_api_key_id = internal_api_key_id,
+        )
     except RuntimeError as exc:
+        if internal_api_key_id is not None:
+            _revoke_internal_api_key_safe(internal_api_key_id)
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ValueError as exc:
+        if internal_api_key_id is not None:
+            _revoke_internal_api_key_safe(internal_api_key_id)
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except Exception:
+        if internal_api_key_id is not None:
+            _revoke_internal_api_key_safe(internal_api_key_id)
+        raise
 
     return {"job_id": job_id}
+
+
+def _revoke_internal_api_key_safe(key_id: int) -> None:
+    """Best-effort revoke of a workflow-minted key; swallow any error so
+    that revocation failures never mask the caller's own error path."""
+    try:
+        from auth import storage  # deferred: avoids circular import
+
+        storage.revoke_internal_api_key(key_id)
+    except Exception:
+        pass
 
 
 @router.get("/jobs/{job_id}/status")

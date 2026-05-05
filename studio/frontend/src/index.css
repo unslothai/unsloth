@@ -281,6 +281,22 @@
 		}
 	}
 
+	--animate-icon-pop: icon-pop 0.3s ease-out;
+
+	@keyframes icon-pop {
+		0% {
+			transform: scale(1);
+		}
+
+		45% {
+			transform: scale(1.08);
+		}
+
+		100% {
+			transform: scale(1);
+		}
+	}
+
 	--animate-shine: shine var(--duration) infinite linear;
 
 	@keyframes shine {
@@ -306,6 +322,9 @@
 	body {
 		@apply font-sans bg-background text-foreground;
 		letter-spacing: var(--tracking-normal);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
 	}
 
 	html {
@@ -334,16 +353,13 @@
 
 @layer utilities {
 
-	/* Heading font utility — matches the sidebar logo's letter-spacing so
-	   all Hellix text (select model, menus, nav items) stays visually
-	   consistent, with a small bump in dark mode to offset optical bloom. */
+	/* Heading font utility — the logo applies its own dark-mode tracking
+	   to offset optical bloom at large sizes. For small UI text (menus,
+	   nav items) we keep a single tight tracking in both themes, relying
+	   on global antialiased font-smoothing to neutralize the bloom. */
 	.font-heading {
 		font-family: var(--font-heading);
 		letter-spacing: -0.01em;
-	}
-
-	.dark .font-heading {
-		letter-spacing: 0.02em;
 	}
 
 	/* Elevated surface shadow (use ring-* for borders) */

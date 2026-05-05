@@ -61,7 +61,7 @@ def format_data(sample):
 
 system_message = "You are an expert french ocr system."
 # Convert dataset to OAI messages
-# need to use list comprehension to keep Pil.Image type, .mape convert image to bytes
+# need to use list comprehension to keep Pil.Image type, .map convert image to bytes
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
@@ -102,7 +102,7 @@ model = FastVisionModel.get_peft_model(
     finetune_vision_layers = True,  # Turn off for just text!
     finetune_language_layers = True,  # Should leave on!
     finetune_attention_modules = True,  # Attention good for GRPO
-    finetune_mlp_modules = True,  # SHould leave on always!
+    finetune_mlp_modules = True,  # Should leave on always!
     r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
     # target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
     # "gate_proj", "up_proj", "down_proj",],

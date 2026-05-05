@@ -2,22 +2,26 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type DeletedModelRef,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
+import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
+import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
+import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
-import {
-  Settings05Icon,
-} from "@hugeicons/core-free-icons";
+import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Tooltip,
-  TooltipContent,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -122,7 +126,7 @@ const SingleContent = memo(function SingleContent({
       newThreadNonce={newThreadNonce}
     >
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread />
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -133,6 +137,17 @@ type CompareModelSelection = {
   isLora: boolean;
   ggufVariant?: string;
 };
+
+function modelMatchesDeleted(
+  model: { id: string; ggufVariant?: string | null },
+  deletedModel?: DeletedModelRef,
+): boolean {
+  if (!deletedModel || model.id !== deletedModel.id) return false;
+  return (
+    deletedModel.ggufVariant == null ||
+    (model.ggufVariant ?? null) === deletedModel.ggufVariant
+  );
+}
 
 /**
  * Detect if this is a LoRA base-vs-fine-tuned compare.
@@ -152,11 +167,15 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
@@ -168,6 +187,8 @@ const CompareContent = memo(function CompareContent({
       models={models}
       loraModels={loraModels}
       onFoldersChange={onFoldersChange}
+      onModelsChange={onModelsChange}
+      deleteDisabled={deleteDisabled}
     />
   );
 });
@@ -336,6 +357,8 @@ function GeneralCompareHeader({
   value,
   onValueChange,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
   side,
 }: {
   models: ModelOption[];
@@ -346,12 +369,14 @@ function GeneralCompareHeader({
     meta: { isLora: boolean; ggufVariant?: string },
   ) => void;
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   side: "left" | "right";
 }): ReactElement {
   return (
     <div
       className={cn(
-        "flex h-[48px] shrink-0 items-center gap-2 bg-background",
+        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
         side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
       )}
     >
@@ -361,6 +386,8 @@ function GeneralCompareHeader({
         value={value}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
+        deleteDisabled={deleteDisabled}
         variant="ghost"
         className="max-w-[80%] !h-[34px]"
       />
@@ -374,11 +401,15 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models,
   loraModels,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -395,6 +426,19 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+
+  const handleModelsChange = useCallback(
+    (deletedModel?: DeletedModelRef) => {
+      if (modelMatchesDeleted(model1, deletedModel)) {
+        setModel1({ id: "", isLora: false });
+      }
+      if (modelMatchesDeleted(model2, deletedModel)) {
+        setModel2({ id: "", isLora: false });
+      }
+      onModelsChange?.(deletedModel);
+    },
+    [model1, model2, onModelsChange],
+  );
 
   useEffect(() => {
     let isActive = true;
@@ -451,6 +495,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 })
               }
               onFoldersChange={onFoldersChange}
+              onModelsChange={handleModelsChange}
+              deleteDisabled={deleteDisabled}
             />
           }
         />
@@ -474,6 +520,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                 })
               }
               onFoldersChange={onFoldersChange}
+              onModelsChange={handleModelsChange}
+              deleteDisabled={deleteDisabled}
             />
           }
         />
@@ -490,8 +538,35 @@ export function ChatPage(): ReactElement {
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
 
   useEffect(() => {
-    return () => setSettingsOpen(false);
-  }, [setSettingsOpen]);
+    const threadId = search.thread;
+    if (!threadId) return;
+
+    let canceled = false;
+    void db.threads
+      .get(threadId)
+      .then((thread) => {
+        if (canceled || thread) return;
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        toast.info("Chat not found", {
+          description: "That thread no longer exists, so we opened a new chat.",
+        });
+        navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+          replace: true,
+        });
+      })
+      .catch(() => {
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [navigate, search.thread]);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
@@ -507,7 +582,11 @@ export function ChatPage(): ReactElement {
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
+  const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const modelOperationInProgress = useChatRuntimeStore(
+    (state) => state.modelLoading,
+  );
   const {
     refresh,
     selectModel,
@@ -517,6 +596,8 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const pendingNativeModelIntent = useNativeIntentStore((state) => state.pendingModelIntent);
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -533,8 +614,7 @@ export function ChatPage(): ReactElement {
     if (search.compare) {
       return {
         mode: "compare",
-        pairId:
-          search.compare,
+        pairId: search.compare,
       };
     }
     if (search.thread) {
@@ -548,6 +628,60 @@ export function ChatPage(): ReactElement {
     }
     return { mode: "single" };
   }, [search.thread, search.compare, search.new, activeThreadId]);
+
+  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const loadNativeModelIntent = useCallback(
+    async (intent: NativeIntent, loadingDescription: string) => {
+      const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
+      await selectModel({
+        id: label,
+        nativePathToken: intent.path.token,
+        isDownloaded: true,
+        loadingDescription,
+        forceReload: true,
+        throwOnError: true,
+      });
+      useNativeIntentStore.getState().clearModelIntent(intent.id);
+    },
+    [selectModel],
+  );
+  const handleNativeModelDropAutoLoad = useCallback(
+    (intent: NativeIntent) =>
+      loadNativeModelIntent(
+        intent,
+        hasActiveModel
+          ? "Replacing with dropped local GGUF model."
+          : "Loading dropped local GGUF model.",
+      ),
+    [hasActiveModel, loadNativeModelIntent],
+  );
+  const handleNativeModelPickerAutoLoad = useCallback(
+    (intent: NativeIntent) =>
+      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
+    [loadNativeModelIntent],
+  );
+  const canAutoLoadPickedNativeModel = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    return (
+      view.mode === "single" &&
+      nativePathLeasesSupported &&
+      !loadingModel &&
+      !modelLoading &&
+      !store.modelLoading &&
+      !store.params.checkpoint
+    );
+  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
+  const chooseNativeModel = useChooseNativeModel({
+    shouldAutoLoad: canAutoLoadPickedNativeModel,
+    onAutoLoad: handleNativeModelPickerAutoLoad,
+  });
+  const nativeModelDropState = useNativeModelDrop({
+    enabled: view.mode === "single",
+    nativePathLeasesSupported,
+    hasActiveModel,
+    isModelLoading: Boolean(loadingModel) || modelLoading,
+    onAutoLoad: handleNativeModelDropAutoLoad,
+  });
 
   const handleCheckpointChange = useCallback(
     (
@@ -627,8 +761,14 @@ export function ChatPage(): ReactElement {
     },
     [modelSelectorLocked],
   );
-  const openSettings = useCallback(() => setSettingsOpen(true), [setSettingsOpen]);
-  const closeSettings = useCallback(() => setSettingsOpen(false), [setSettingsOpen]);
+  const openSettings = useCallback(
+    () => setSettingsOpen(true),
+    [setSettingsOpen],
+  );
+  const closeSettings = useCallback(
+    () => setSettingsOpen(false),
+    [setSettingsOpen],
+  );
   const { setPinned, isMobile } = useSidebar();
   const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
@@ -655,7 +795,9 @@ export function ChatPage(): ReactElement {
         .first()
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"];
+          const usage = metadata?.contextUsage as ReturnType<
+            typeof useChatRuntimeStore.getState
+          >["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
         });
     }
@@ -704,6 +846,21 @@ export function ChatPage(): ReactElement {
       })
       .catch(() => {});
   }, [navigate]);
+
+  const refreshModelLists = useCallback((deletedModel?: DeletedModelRef) => {
+    const { checkpoint } = useChatRuntimeStore.getState().params;
+    const activeGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
+    if (
+      modelMatchesDeleted(
+        { id: checkpoint, ggufVariant: activeGgufVariant },
+        deletedModel,
+      )
+    ) {
+      useChatRuntimeStore.getState().clearCheckpoint();
+    }
+    void refresh();
+    refreshLocalModels();
+  }, [refresh, refreshLocalModels]);
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({
@@ -830,11 +987,13 @@ export function ChatPage(): ReactElement {
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+        <NativeModelDropOverlay state={nativeModelDropState} />
         <div
           className={cn(
             "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
-            view.mode === "compare" && "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
+            view.mode === "compare" &&
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
           )}
         >
           <div className="flex items-center gap-1">
@@ -847,14 +1006,24 @@ export function ChatPage(): ReactElement {
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
+                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
+                onModelsChange={refreshModelLists}
+                deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                className="max-w-[62vw] sm:max-w-none !h-[34px]"
+                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
+            {pendingNativeModelIntent && view.mode !== "compare" ? (
+              <NativeModelChip
+                intent={pendingNativeModelIntent}
+                nativeReadsDisabled={!nativePathLeasesSupported}
+                onLoad={(selection) => selectModel(selection)}
+              />
+            ) : null}
             {loadingModel && loadToastDismissed ? (
               <ModelLoadInlineStatus
                 label={
@@ -876,12 +1045,17 @@ export function ChatPage(): ReactElement {
                 onStop={cancelLoading}
               />
             ) : null}
+            {!loadingModel && modelsError ? (
+              <div
+                className="relative top-0.5 max-w-[28rem] truncate pl-0.5 text-xs text-destructive"
+                title={modelsError}
+                role="status"
+                aria-live="polite"
+              >
+                {modelsError}
+              </div>
+            ) : null}
           </div>
-          {modelsError && (
-            <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
-              {modelsError}
-            </div>
-          )}
           <div className="ml-auto flex items-center gap-2">
             {view.mode === "single" && ggufContextLength && contextUsage ? (
               <ContextUsageBar
@@ -927,6 +1101,8 @@ export function ChatPage(): ReactElement {
             models={models}
             loraModels={loraModels}
             onFoldersChange={refreshLocalModels}
+            onModelsChange={refreshModelLists}
+            deleteDisabled={modelOperationInProgress}
           />
         )}
       </div>

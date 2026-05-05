@@ -4,6 +4,8 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
+import { getAuthToken } from "@/features/auth/session";
+import { apiUrl } from "@/lib/api-base";
 import {
   generateAudio,
   listCachedGguf,
@@ -385,6 +387,8 @@ async function autoLoadSmallestModel(): Promise<{
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
+              reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
               toolsEnabled: loadResp.supports_tools ?? false,
               codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -433,6 +437,14 @@ async function autoLoadSmallestModel(): Promise<{
             sfLoadResp.requires_trust_remote_code ?? false,
           );
           store.setParams({ ...store.params, maxTokens: 4096 });
+          useChatRuntimeStore.setState({
+            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
+            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
+            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
+            reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
+            supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
+            supportsTools: sfLoadResp.supports_tools ?? false,
+          });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
             name: sfLoadResp.display_name ?? repo.repo_id,
@@ -501,6 +513,8 @@ async function autoLoadSmallestModel(): Promise<{
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
+        reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
         toolsEnabled: loadResp.supports_tools ?? false,
         codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -695,8 +709,50 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const toolCallParts: ToolCallMessagePart[] = [];
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
+      // Per-run cancellation token so a delayed stop POST cannot match
+      // the next run on the same thread.
+      const cancelId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Colab-style proxies can swallow fetch aborts, so also POST
+      // /inference/cancel explicitly on abort.
+      const onAbortCancel = () => {
+        const body: Record<string, string> = { cancel_id: cancelId };
+        if (resolvedThreadId) body.session_id = resolvedThreadId;
+        // Plain fetch, not authFetch: authFetch redirects to login on
+        // 401, which would kick the user out mid-stop.
+        const token = getAuthToken();
+        // Use apiUrl so the cancel POST reaches the right origin in
+        // Tauri production builds (where the webview origin is not the
+        // backend at 127.0.0.1:<port>). Browser/dev builds get the empty
+        // base, so the path is unchanged there.
+        void fetch(apiUrl("/api/inference/cancel"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(body),
+          keepalive: true,
+        }).catch(() => {});
+      };
       try {
-        const { supportsReasoning, reasoningEnabled } = runtime;
+        if (abortSignal.aborted) {
+          onAbortCancel();
+        } else {
+          abortSignal.addEventListener("abort", onAbortCancel, { once: true });
+        }
+
+        const {
+          supportsReasoning,
+          reasoningEnabled,
+          reasoningStyle,
+          reasoningEffort,
+          supportsPreserveThinking,
+          preserveThinking,
+        } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -711,8 +767,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            cancel_id: cancelId,
+            ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
-            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
+            ...(supportsReasoning
+              ? reasoningStyle === "reasoning_effort"
+                ? { reasoning_effort: reasoningEffort }
+                : { enable_thinking: reasoningEnabled }
+              : {}),
+            ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
             ...(supportsTools && (toolsEnabled || codeToolsEnabled)
               ? {
                   enable_tools: true,
@@ -726,7 +789,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
-                  session_id: resolvedThreadId,
                 }
               : {}),
           },
@@ -924,6 +986,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         throw err;
       } finally {
+        abortSignal.removeEventListener("abort", onAbortCancel);
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
         clearTimeout(warmupTimer);

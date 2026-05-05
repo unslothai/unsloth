@@ -10,6 +10,8 @@ import sys
 import os
 import json
 
+import pytest
+
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
@@ -32,6 +34,10 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+from routes.inference import _normalize_anthropic_openai_images
+from fastapi import HTTPException
+import base64 as _b64
+from io import BytesIO as _BytesIO
 
 
 # =====================================================================
@@ -245,6 +251,141 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1 Line 2"
+
+    def test_image_base64_block_becomes_multimodal_part(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": "AAAA",
+                        },
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        parts = result[0]["content"]
+        assert isinstance(parts, list)
+        assert parts[0] == {"type": "text", "text": "What is this?"}
+        assert parts[1]["type"] == "image_url"
+        assert parts[1]["image_url"]["url"] == "data:image/jpeg;base64,AAAA"
+
+    def test_image_url_block_forwarded_as_url(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe it"},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://x/y.png"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://x/y.png"},
+        }
+
+    def test_image_only_user_message_emits_no_text_part(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "ZZ",
+                        },
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert len(parts) == 1
+        assert parts[0]["type"] == "image_url"
+
+    def test_image_default_media_type_when_missing(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "data": "BB"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    def test_image_text_order_preserved(self):
+        # [text1, image1, text2, image2] must not collapse to
+        # [text1+text2, image1, image2].
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AA",
+                        },
+                    },
+                    {"type": "text", "text": "after"},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://x/y.png"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert [p["type"] for p in parts] == [
+            "text",
+            "image_url",
+            "text",
+            "image_url",
+        ]
+        assert parts[0]["text"] == "before"
+        assert parts[2]["text"] == "after"
+        assert parts[1]["image_url"]["url"] == "data:image/png;base64,AA"
+        assert parts[3]["image_url"]["url"] == "https://x/y.png"
+
+    def test_malformed_image_block_is_skipped(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hi"},
+                    {"type": "image", "source": {"type": "base64"}},
+                    {"type": "image", "source": {"type": "url"}},
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        # No image parts emitted; message falls back to plain text.
+        assert result[0] == {"role": "user", "content": "Hi"}
 
 
 # =====================================================================
@@ -772,3 +913,101 @@ class TestAnthropicPassthroughEmitter:
         parsed = self._parse(events[1])
         assert parsed["content_block"]["name"] == "Read"
         assert parsed["content_block"]["id"] == "c2"
+
+
+# =====================================================================
+# Vision guard + PNG normalization (/v1/messages)
+# =====================================================================
+
+
+def _jpeg_data_url() -> str:
+    from PIL import Image
+
+    img = Image.new("RGB", (2, 2), (255, 0, 0))
+    buf = _BytesIO()
+    img.save(buf, format = "JPEG")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
+
+
+class TestNormalizeAnthropicOpenAIImages:
+    def test_noop_when_no_images(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        has_image = _normalize_anthropic_openai_images(msgs, is_vision = False)
+        assert has_image is False
+        assert msgs == [{"role": "user", "content": "hi"}]
+
+    def test_returns_true_when_image_present(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _jpeg_data_url()}},
+                ],
+            }
+        ]
+        assert _normalize_anthropic_openai_images(msgs, is_vision = True) is True
+
+    def test_rejects_image_when_model_not_vision(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _jpeg_data_url()},
+                    },
+                ],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _normalize_anthropic_openai_images(msgs, is_vision = False)
+        assert exc.value.status_code == 400
+
+    def test_reencodes_jpeg_data_url_to_png(self):
+        original_url = _jpeg_data_url()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "?"},
+                    {"type": "image_url", "image_url": {"url": original_url}},
+                ],
+            }
+        ]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        new_url = msgs[0]["content"][1]["image_url"]["url"]
+        assert new_url.startswith("data:image/png;base64,")
+        assert new_url != original_url
+
+    def test_remote_url_left_unchanged(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://x.example/y.png"},
+                    },
+                ],
+            }
+        ]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert msgs[0]["content"][0]["image_url"]["url"] == "https://x.example/y.png"
+
+    def test_bad_base64_raises_400(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64,!!!not-b64!!!"},
+                    },
+                ],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert exc.value.status_code == 400

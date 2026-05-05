@@ -144,13 +144,14 @@ class TestChatMessageToolRoles:
 
     # ── Role-aware content requirements ────────────────────────────
 
-    def test_user_empty_content_rejected(self):
-        with pytest.raises(ValidationError):
-            ChatMessage(role = "user", content = "")
+    @pytest.mark.parametrize("role", ["user", "system"])
+    def test_empty_string_content_allowed(self, role):
+        msg = ChatMessage(role = role, content = "")
+        assert msg.content == ""
 
-    def test_system_empty_content_rejected(self):
+    def test_user_missing_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role = "system", content = "")
+            ChatMessage(role = "user")
 
     def test_user_empty_list_content_rejected(self):
         with pytest.raises(ValidationError):
@@ -225,6 +226,14 @@ class TestChatCompletionRequestToolFields:
         assert req.tools is not None
         assert len(req.tools) == 1
         assert req.tools[0]["function"]["name"] == "get_weather"
+
+    def test_image_base64_allows_empty_user_text(self):
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": ""}],
+            image_base64 = "aW1hZ2U=",
+        )
+        assert req.messages[0].content == ""
+        assert req.image_base64 == "aW1hZ2U="
 
     def test_tool_choice_string_auto(self):
         assert self._make(tool_choice = "auto").tool_choice == "auto"

@@ -5,12 +5,14 @@ import { Button } from "@/components/ui/button";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { UpdateStudioInstructions } from "../components/update-studio-instructions";
 import { usePlatformStore } from "@/config/env";
+import { apiUrl } from "@/lib/api-base";
 import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import {
   ArrowUpRight01Icon,
   Book03Icon,
   Cancel01Icon,
   MessageNotification01Icon,
+  NewReleasesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -28,7 +30,7 @@ export function AboutTab() {
 
     (async () => {
       try {
-        const res = await fetch("/api/health");
+        const res = await fetch(apiUrl("/api/health"));
         if (!res.ok) return;
         const data = (await res.json()) as { version?: string };
         if (!canceled && data.version) {
@@ -47,9 +49,9 @@ export function AboutTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">About</h1>
+        <h1 className="text-lg font-semibold font-heading">Help</h1>
         <p className="text-xs text-muted-foreground">
-          Unsloth Studio build info and support.
+          Documentation, release notes, feedback, and Studio build info.
         </p>
       </header>
 
@@ -75,6 +77,18 @@ export function AboutTab() {
           >
             <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
             unsloth.ai/docs
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </SettingsRow>
+        <SettingsRow label="Release notes">
+          <a
+            href="https://unsloth.ai/docs/new/changelog"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <HugeiconsIcon icon={NewReleasesIcon} className="size-3.5" />
+            What's new
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>

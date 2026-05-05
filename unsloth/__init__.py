@@ -137,6 +137,7 @@ from .import_fixes import (
     fix_vllm_aimv2_issue,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
+    fix_trl_vllm_ascend,
     fix_vllm_pdl_blackwell,
     fix_triton_compiled_kernel_missing_attrs,
     patch_trunc_normal_precision_issue,
@@ -152,6 +153,7 @@ from .import_fixes import (
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
     disable_broken_wandb,
+    patch_peft_weight_converter_compatibility,
 )
 
 fix_xformers_performance_issue()
@@ -159,6 +161,7 @@ fix_vllm_aimv2_issue()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
+fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_triton_compiled_kernel_missing_attrs()
 patch_trunc_normal_precision_issue()
@@ -174,11 +177,13 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
+patch_peft_weight_converter_compatibility()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
+del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_triton_compiled_kernel_missing_attrs
 del patch_trunc_normal_precision_issue
@@ -194,6 +199,7 @@ del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_broken_wandb
+del patch_peft_weight_converter_compatibility
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

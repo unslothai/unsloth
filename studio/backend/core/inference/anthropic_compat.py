@@ -13,11 +13,44 @@ import json
 from typing import Any, Optional, Union
 
 
+def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
+    """Translate one Anthropic ``image`` block to an OpenAI ``image_url`` part.
+
+    Accepts both source shapes:
+      - ``{"type": "base64", "media_type": "image/jpeg", "data": "..."}``
+      - ``{"type": "url", "url": "https://..."}``
+
+    Returns ``None`` when the source is malformed so the caller can skip it.
+    """
+    source = block.get("source") or {}
+    stype = source.get("type")
+    if stype == "base64":
+        data = source.get("data")
+        if not data:
+            return None
+        media_type = source.get("media_type") or "image/jpeg"
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{data}"},
+        }
+    if stype == "url":
+        url = source.get("url")
+        if not url:
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
+    return None
+
+
 def anthropic_messages_to_openai(
     messages: list[dict],
     system: Optional[Union[str, list]] = None,
 ) -> list[dict]:
-    """Convert Anthropic messages + system to OpenAI-format message dicts."""
+    """Convert Anthropic messages + system to OpenAI-format message dicts.
+
+    User messages that carry ``image`` blocks are emitted as OpenAI
+    multimodal content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``)
+    so they flow through llama-server's native vision pathway.
+    """
     result: list[dict] = []
 
     # System prompt
@@ -42,54 +75,76 @@ def anthropic_messages_to_openai(
             result.append({"role": role, "content": content})
             continue
 
-        # Content is a list of blocks
-        text_parts: list[str] = []
-        tool_calls: list[dict] = []
-        tool_results: list[dict] = []
-
-        for block in content:
-            b = block if isinstance(block, dict) else block.model_dump()
-            btype = b.get("type", "")
-
-            if btype == "text":
-                text_parts.append(b["text"])
-            elif btype == "tool_use":
-                tool_calls.append(
-                    {
-                        "id": b["id"],
-                        "type": "function",
-                        "function": {
-                            "name": b["name"],
-                            "arguments": json.dumps(b["input"]),
-                        },
-                    }
-                )
-            elif btype == "tool_result":
-                tc = b.get("content", "")
-                if isinstance(tc, list):
-                    tc = " ".join(
-                        p["text"]
-                        for p in tc
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                tool_results.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": b["tool_use_id"],
-                        "content": str(tc),
-                    }
-                )
-
         if role == "assistant":
+            # Assistant content carries text + tool_use; images aren't
+            # part of Anthropic's assistant content model.
+            text_parts: list[str] = []
+            tool_calls: list[dict] = []
+            for block in content:
+                b = block if isinstance(block, dict) else block.model_dump()
+                btype = b.get("type", "")
+                if btype == "text":
+                    text_parts.append(b["text"])
+                elif btype == "tool_use":
+                    tool_calls.append(
+                        {
+                            "id": b["id"],
+                            "type": "function",
+                            "function": {
+                                "name": b["name"],
+                                "arguments": json.dumps(b["input"]),
+                            },
+                        }
+                    )
             msg_dict: dict[str, Any] = {"role": "assistant"}
             if text_parts:
                 msg_dict["content"] = "\n".join(text_parts)
             if tool_calls:
                 msg_dict["tool_calls"] = tool_calls
             result.append(msg_dict)
-        elif role == "user":
-            if text_parts:
-                result.append({"role": "user", "content": "\n".join(text_parts)})
+            continue
+
+        if role == "user":
+            # Build an ordered part list so text/image interleaving is
+            # preserved (e.g. [text, image, text, image]). tool_result
+            # blocks become their own OpenAI "tool" role messages.
+            user_parts: list[dict] = []
+            has_image = False
+            tool_results: list[dict] = []
+            for block in content:
+                b = block if isinstance(block, dict) else block.model_dump()
+                btype = b.get("type", "")
+                if btype == "text":
+                    user_parts.append({"type": "text", "text": b["text"]})
+                elif btype == "image":
+                    part = _anthropic_image_block_to_openai_part(b)
+                    if part is not None:
+                        user_parts.append(part)
+                        has_image = True
+                elif btype == "tool_result":
+                    tc = b.get("content", "")
+                    if isinstance(tc, list):
+                        tc = " ".join(
+                            p["text"]
+                            for p in tc
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        )
+                    tool_results.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": b["tool_use_id"],
+                            "content": str(tc),
+                        }
+                    )
+
+            if has_image:
+                result.append({"role": "user", "content": user_parts})
+            else:
+                # No images — collapse text parts to a plain string so
+                # existing text-only callers keep their simple shape.
+                text = "\n".join(p["text"] for p in user_parts)
+                if text:
+                    result.append({"role": "user", "content": text})
             for tr in tool_results:
                 result.append(tr)
 
