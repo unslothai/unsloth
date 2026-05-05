@@ -33,6 +33,7 @@ import {
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { isTauri } from "@/lib/api-base";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -290,27 +291,41 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
     [disabled],
   );
 
+  const composerContent = (
+    <>
+      <ComposerAttachments />
+      <PendingAudioChip />
+      <ToolStatusDisplay />
+      <ComposerPrimitive.Input
+        placeholder="Send a message..."
+        className="aui-composer-input composer-input"
+        minRows={1}
+        maxRows={6}
+        autoFocus={!disabled}
+        disabled={disabled}
+        aria-label="Message input"
+      />
+      <ComposerAction disabled={disabled} />
+    </>
+  );
+
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-        <ComposerAttachments />
-        <PendingAudioChip />
-        <ToolStatusDisplay />
-        <ComposerPrimitive.Input
-          placeholder="Send a message..."
-          className="aui-composer-input composer-input"
-          minRows={1}
-          maxRows={6}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label="Message input"
-        />
-        <ComposerAction disabled={disabled} />
-      </ComposerPrimitive.AttachmentDropzone>
+      {isTauri ? (
+        // Phase 1 native model drops own Tauri local-path drops. Restore browser
+        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        <div className="aui-composer-attachment-dropzone chat-composer-surface">
+          {composerContent}
+        </div>
+      ) : (
+        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          {composerContent}
+        </ComposerPrimitive.AttachmentDropzone>
+      )}
     </ComposerPrimitive.Root>
   );
 };

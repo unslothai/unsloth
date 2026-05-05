@@ -49,12 +49,13 @@ import {
   DownloadSquare01Icon,
   Edit03Icon,
   MessageSearch01Icon,
-  Search01Icon,
   NewReleasesIcon,
+  Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
+  SourceCodeSquareIcon,
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -706,6 +707,15 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>Settings</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
+                  >
+                    <HugeiconsIcon icon={SourceCodeSquareIcon} strokeWidth={1.75} className="size-[18px]" />
+                    <span>Developer</span>
+                    <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      New
+                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}

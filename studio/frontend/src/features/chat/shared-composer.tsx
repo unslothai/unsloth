@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
+import { isTauri } from "@/lib/api-base";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -493,11 +494,15 @@ export function SharedComposer({
     <div
       className={`chat-composer-surface ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
+        if (isTauri) return;
         e.preventDefault();
         setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
+        // Phase 1 native model drops own Tauri local-path drops. Restore browser
+        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        if (isTauri) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);

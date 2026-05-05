@@ -622,11 +622,11 @@ if [ -t 1 ]; then
     ) &
     # Clear traps so exec does not trigger _release_lock (the subshell owns it)
     trap - EXIT INT TERM
-    exec "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port"
+    exec "$UNSLOTH_EXE" studio -p "$_launch_port"
 else
     # ── Background mode (no TTY) ──
     # Used by macOS .app and headless invocations.
-    _launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -H 0.0.0.0 -p "$_launch_port")
+    _launch_cmd=$(printf '%q ' "$UNSLOTH_EXE" studio -p "$_launch_port")
     _launch_cmd=${_launch_cmd% }
     _spawn_terminal "$_launch_cmd"
 
@@ -974,9 +974,7 @@ case "$OS" in
         fi
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
-        if command -v dpkg >/dev/null 2>&1; then
-            dpkg -s libcurl4-openssl-dev >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-        fi
+        command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
         ;;
 esac
 
@@ -1849,28 +1847,46 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# Launch studio automatically in interactive terminals;
-# in non-interactive environments (Docker, CI, cloud-init) just print instructions.
+# In interactive terminals, ask the user before starting Studio.
+# In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ]; then
-    step "launch" "starting Unsloth Studio..."
-    "$VENV_DIR/bin/unsloth" studio -H 0.0.0.0 -p 8888
-    _LAUNCH_EXIT=$?
-    if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
-        echo ""
-        echo "⚠️  Unsloth Studio failed to start after migration."
-        echo "   Your migrated environment may be incompatible."
-        echo "   To fix, remove the environment and reinstall:"
-        echo ""
-        echo "   rm -rf $VENV_DIR"
-        echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
-        echo ""
+    echo ""
+    printf "  Start Unsloth Studio now? [Y/n] "
+    if [ -r /dev/tty ]; then
+        read -r _reply </dev/tty || _reply="y"
+    else
+        _reply="y"
     fi
-    exit "$_LAUNCH_EXIT"
+    case "${_reply:-y}" in
+        [Yy]*|"")
+            step "launch" "starting Unsloth Studio..."
+            "$VENV_DIR/bin/unsloth" studio -p 8888
+            _LAUNCH_EXIT=$?
+            if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
+                echo ""
+                echo "⚠️  Unsloth Studio failed to start after migration."
+                echo "   Your migrated environment may be incompatible."
+                echo "   To fix, remove the environment and reinstall:"
+                echo ""
+                echo "   rm -rf $VENV_DIR"
+                echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
+                echo ""
+            fi
+            exit "$_LAUNCH_EXIT"
+            ;;
+        *)
+            step "launch" "to start later, run:"
+            substep "unsloth studio -p 8888"
+            substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            echo ""
+            ;;
+    esac
 else
     step "launch" "manual commands:"
-    substep "unsloth studio -H 0.0.0.0 -p 8888"
+    substep "unsloth studio -p 8888"
     substep "or activate env first:"
     substep "source ${VENV_DIR}/bin/activate"
-    substep "unsloth studio -H 0.0.0.0 -p 8888"
+    substep "unsloth studio -p 8888"
+    substep "(add -H 0.0.0.0 to allow network / cloud access)"
     echo ""
 fi
