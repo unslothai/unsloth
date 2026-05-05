@@ -17,9 +17,9 @@
   },
   "dependencies": {
     "@assistant-ui/core": "0.1.17",
-    "@assistant-ui/react": "^0.12.19",
-    "@assistant-ui/react-markdown": "^0.12.3",
-    "@assistant-ui/react-streamdown": "^0.1.2",
+    "@assistant-ui/react": "0.12.19",
+    "@assistant-ui/react-markdown": "0.12.3",
+    "@assistant-ui/react-streamdown": "0.1.2",
     "@base-ui/react": "^1.2.0",
     "@dagrejs/dagre": "^2.0.4",
     "@dagrejs/graphlib": "^3.0.4",

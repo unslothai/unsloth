@@ -232,7 +232,6 @@ function ComparePane({
           modelType={modelType}
           pairId={pairId}
           initialThreadId={initialThreadId}
-          syncActiveThreadId={false}
         >
           <RegisterCompareHandle name={handleName} />
           <Thread hideComposer={true} hideWelcome={true} />

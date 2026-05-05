@@ -9,7 +9,6 @@ import {
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
-  RuntimeAdapterProvider,
   Suggestions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
@@ -75,7 +74,7 @@ type TitleResponse = {
 };
 
 class VisionImageAdapter implements AttachmentAdapter {
-  accept = "image/jpeg,image/png,image/webp,image/gif";
+  accept = ".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif";
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const maxSize = 20 * 1024 * 1024;
@@ -124,7 +123,7 @@ class VisionImageAdapter implements AttachmentAdapter {
 }
 
 class PDFAttachmentAdapter implements AttachmentAdapter {
-  accept = "application/pdf";
+  accept = ".pdf,application/pdf";
 
   add({ file }: { file: File }): Promise<PendingAttachment> {
     return Promise.resolve({
@@ -157,7 +156,7 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 }
 
 class TextAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+  accept = ".txt,.md,.csv,.xml,.json,.css,text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -190,7 +189,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
 }
 
 class HtmlAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/html";
+  accept = ".html,.htm,text/html";
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -229,7 +228,7 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
 
 class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   add({ file }: { file: File }): Promise<PendingAttachment> {
     return Promise.resolve({
@@ -583,9 +582,7 @@ function createDexieAdapter(
   };
 }
 
-function ThreadHistoryProvider({
-  children,
-}: { children?: ReactNode }): ReactElement {
+function useDexieRuntimeAdapters() {
   const aui = useAui();
 
   const history = useMemo<ThreadHistoryAdapter>(
@@ -711,51 +708,13 @@ function ThreadHistoryProvider({
     [history, dictation, attachments],
   );
 
-  return (
-    <RuntimeAdapterProvider adapters={adapters}>
-      {children}
-    </RuntimeAdapterProvider>
-  );
+  return adapters;
 }
 
 const chatAdapter = createOpenAIStreamAdapter();
 
 function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-  return useLocalRuntime(chatAdapter);
-}
-
-function ThreadAutoSwitch({
-  threadId,
-  syncActiveThreadId = true,
-}: {
-  threadId: string;
-  syncActiveThreadId?: boolean;
-}): ReactElement | null {
-  const aui = useAui();
-  const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-
-  useEffect(() => {
-    if (!isLoading && mainThreadId !== threadId) {
-      const switchResult = aui.threads().switchToThread(threadId) as unknown;
-      if (switchResult && typeof (switchResult as Promise<void>).catch === "function") {
-        void (switchResult as Promise<void>).catch(() => {
-          if (syncActiveThreadId) {
-            useChatRuntimeStore.getState().setActiveThreadId(null);
-          }
-        });
-      }
-    }
-  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
-
-  useEffect(() => {
-    if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
-      return;
-    }
-    useChatRuntimeStore.getState().setActiveThreadId(threadId);
-  }, [isLoading, mainThreadId, syncActiveThreadId, threadId]);
-
-  return null;
+  return useLocalRuntime(chatAdapter, { adapters: useDexieRuntimeAdapters() });
 }
 
 function ThreadNewChatSwitch({
@@ -887,21 +846,17 @@ export function ChatRuntimeProvider({
   pairId,
   initialThreadId,
   newThreadNonce,
-  syncActiveThreadId = true,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
   initialThreadId?: string;
   newThreadNonce?: string;
-  syncActiveThreadId?: boolean;
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: {
-      ...createDexieAdapter(modelType, pairId),
-      unstable_Provider: ThreadHistoryProvider,
-    },
+    adapter: createDexieAdapter(modelType, pairId),
+    threadId: newThreadNonce ? undefined : initialThreadId,
   });
 
   const aui = useAui({
@@ -911,16 +866,10 @@ export function ChatRuntimeProvider({
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
       <ActiveThreadSync
-        enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
+        enabled={modelType === "base" && !pairId && !newThreadNonce}
       />
       <ThreadDexieAutosave modelType={modelType} pairId={pairId} />
       <CancelRegistrar />
-      {initialThreadId && (
-        <ThreadAutoSwitch
-          threadId={initialThreadId}
-          syncActiveThreadId={syncActiveThreadId}
-        />
-      )}
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />
       )}
