@@ -1087,7 +1087,10 @@ class FastSentenceTransformer(FastModel):
                     Transformer.__init__
                 ).parameters
                 trust_remote_code_kwargs = {"trust_remote_code": trust_remote_code}
+                do_lower_case = getattr(tokenizer, "do_lower_case", False)
                 transformer_kwargs = {"max_seq_length": max_seq_length}
+                if "do_lower_case" in transformer_init_params:
+                    transformer_kwargs["do_lower_case"] = do_lower_case
                 if "model_kwargs" in transformer_init_params:
                     transformer_kwargs["model_kwargs"] = trust_remote_code_kwargs.copy()
                     transformer_kwargs["config_kwargs"] = trust_remote_code_kwargs.copy()
@@ -1123,6 +1126,7 @@ class FastSentenceTransformer(FastModel):
             "attention_mask",
             "token_type_ids",
             "inputs_embeds",
+            "return_dict",
         }
 
         # determine max_seq_length if not provided
