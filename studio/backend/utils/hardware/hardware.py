@@ -515,15 +515,22 @@ def get_gpu_utilization() -> Dict[str, Any]:
             result["backend"] = _backend_label(device)
             return result
 
-    # MLX path: reuse mem info from get_gpu_memory_info() (which already
-    # calls _read_apple_gpu_stats), then one extra call just for utilization %.
+    # MLX path: single _read_apple_gpu_stats() call carries both VRAM-used
+    # bytes and GPU utilization %. psutil for unified-memory total is cheap.
     if device == DeviceType.MLX:
-        mem = get_gpu_memory_info()
-        if not mem.get("available"):
+        try:
+            import psutil
+
+            agx = _read_apple_gpu_stats()
+            total_bytes = psutil.virtual_memory().total
+        except Exception as e:
+            logger.error(f"Error getting MLX GPU utilization: {e}")
+            return {"available": False, "backend": device.value, "error": str(e)}
+        if not agx:
             return {"available": False, "backend": device.value}
-        agx = _read_apple_gpu_stats()
-        vram_used_gb = mem.get("allocated_gb", 0)
-        total_gb = mem.get("total_gb", 0)
+        allocated_bytes = agx.get("vram_used_bytes", 0) or 0
+        vram_used_gb = allocated_bytes / (1024**3)
+        total_gb = total_bytes / (1024**3)
 
         try:
             from core.training import get_training_backend

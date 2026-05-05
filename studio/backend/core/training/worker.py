@@ -430,17 +430,28 @@ def _run_mlx_training(event_queue, stop_queue, config):
     from pathlib import Path
 
     def _send(event_type, **kwargs):
+        if event_type == "status" and "message" not in kwargs:
+            sm = kwargs.get("status_message")
+            if sm is not None:
+                kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
     _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
-    from unsloth_zoo.mlx_loader import FastMLXModel
-    from unsloth_zoo.mlx_trainer import (
-        MLXTrainer,
-        MLXTrainingConfig,
-        train_on_responses_only,
-    )
+    try:
+        from unsloth_zoo.mlx_loader import FastMLXModel
+        from unsloth_zoo.mlx_trainer import (
+            MLXTrainer,
+            MLXTrainingConfig,
+            train_on_responses_only,
+        )
+    except ImportError as e:
+        raise ImportError(
+            "Unsloth: MLX training requires unsloth-zoo with the MLX modules "
+            "(unsloth_zoo.mlx_loader / unsloth_zoo.mlx_trainer). Reinstall via "
+            "install.sh on Apple Silicon."
+        ) from e
     from datasets import load_dataset
 
     if mx.metal.is_available():
@@ -473,6 +484,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         load_in_4bit = config.get("load_in_4bit", True),
         full_finetuning = not use_lora,
         text_only = None if is_dataset_image else True,
+        token = hf_token,
         trust_remote_code = bool(config.get("trust_remote_code", False)),
         random_state = config.get("random_seed", 3407),
     )
@@ -544,10 +556,28 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
-            start = slice_start or 0
-            end = slice_end or len(ds)
-            ds = ds.select(range(start, min(end, len(ds))))
+            start = slice_start if slice_start is not None else 0
+            end = slice_end if slice_end is not None else len(ds) - 1
+            if end < start:
+                return ds.select([])
+            ds = ds.select(range(start, min(end + 1, len(ds))))
         return ds
+
+    def _load_local(file_paths):
+        from core.training.trainer import UnslothTrainer
+        from datasets import load_from_disk
+
+        if len(file_paths) == 1:
+            p = Path(file_paths[0])
+            if p.is_dir() and (
+                (p / "dataset_info.json").exists() or (p / "state.json").exists()
+            ):
+                return load_from_disk(str(p))
+        all_files = UnslothTrainer._resolve_local_files(file_paths)
+        if not all_files:
+            raise ValueError("No local dataset files found")
+        loader = UnslothTrainer._loader_for_files(all_files)
+        return load_dataset(loader, data_files = all_files, split = "train")
 
     if hf_dataset:
         load_kwargs = {"split": train_split, "token": hf_token}
@@ -556,9 +586,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         dataset = load_dataset(hf_dataset, **load_kwargs)
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
-        from datasets import load_from_disk
-
-        dataset = load_from_disk(config["local_datasets"][0])
+        dataset = _load_local(config["local_datasets"])
         dataset = _slice(dataset)
     else:
         raise ValueError("No dataset specified")
@@ -575,9 +603,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("status", status_message = f"Eval split load failed: {e}")
             eval_dataset = None
     elif config.get("local_eval_datasets"):
-        from datasets import load_from_disk
-
-        eval_dataset = load_from_disk(config["local_eval_datasets"][0])
+        eval_dataset = _load_local(config["local_eval_datasets"])
 
     # ── 3b. Format dataset (VLM or text) ──
     # Reuse the GPU path's format pipeline for both VLM (auto-detects OCR/caption/
@@ -755,9 +781,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
+            _wandb_sensitive = {"hf_token", "wandb_token"}
             wandb_run = _wandb.init(
                 project = config.get("wandb_project") or "unsloth-mlx",
-                config = dict(config),
+                config = {
+                    k: v for k, v in config.items() if k not in _wandb_sensitive
+                },
                 reinit = True,
             )
         except Exception as e:
@@ -856,8 +885,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     _stop_save[0] = msg.get("save", True)
                     trainer.stop_requested = True
                     return
-            except (_queue.Empty, EOFError, OSError):
+            except _queue.Empty:
                 continue
+            except (EOFError, OSError):
+                # why safe: pipe permanently broken, no further messages can arrive
+                return
 
     stop_thread = threading.Thread(target = _poll_stop, daemon = True)
     stop_thread.start()

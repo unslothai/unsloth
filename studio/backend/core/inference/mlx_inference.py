@@ -60,7 +60,13 @@ class MLXInferenceBackend:
             is_lora,
         )
 
-        from unsloth_zoo.mlx_loader import FastMLXModel
+        try:
+            from unsloth_zoo.mlx_loader import FastMLXModel
+        except ImportError as e:
+            raise ImportError(
+                "Unsloth: MLX inference requires unsloth-zoo with the MLX modules "
+                "(unsloth_zoo.mlx_loader). Reinstall via install.sh on Apple Silicon."
+            ) from e
 
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
@@ -166,6 +172,7 @@ class MLXInferenceBackend:
                 temperature,
                 top_p,
                 top_k,
+                min_p,
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
@@ -176,6 +183,7 @@ class MLXInferenceBackend:
                 temperature,
                 top_p,
                 top_k,
+                min_p,
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
@@ -187,6 +195,7 @@ class MLXInferenceBackend:
         temperature,
         top_p,
         top_k,
+        min_p,
         max_new_tokens,
         repetition_penalty,
         cancel_event,
@@ -208,6 +217,7 @@ class MLXInferenceBackend:
             temp = temperature,
             top_p = top_p,
             top_k = int(top_k or 0),
+            min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
         # Only build a logits processor when we actually have a non-trivial
@@ -266,6 +276,7 @@ class MLXInferenceBackend:
         temperature,
         top_p,
         top_k,
+        min_p,
         max_new_tokens,
         repetition_penalty,
         cancel_event,
@@ -305,6 +316,7 @@ class MLXInferenceBackend:
             temperature = temperature,
             top_p = top_p,
             top_k = int(top_k or 0),
+            min_p = float(min_p or 0.0),
         )
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
