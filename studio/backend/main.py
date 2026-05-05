@@ -23,11 +23,43 @@ if _backend_dir not in sys.path:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
+# Direct `uvicorn main:app` launches bypass run.py, so re-export here too
+# (mirrors run.py). Required BEFORE the unsloth-zoo import below, since
+# its LLAMA_CPP_DEFAULT_DIR binding is import-time.
+from utils.paths.storage_roots import studio_root as _studio_root
+
+try:
+    _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = _Path.home() / ".unsloth" / "studio"
+try:
+    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+except (OSError, ValueError):
+    _STUDIO_ROOT_RESOLVED = _studio_root()
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+
+import hashlib
 import mimetypes
 import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+
+
+_STUDIO_ROOT_ID_CACHE: str = hashlib.sha256(
+    str(_STUDIO_ROOT_RESOLVED).encode("utf-8", "surrogatepass")
+).hexdigest()
+
+
+def _studio_root_id() -> str:
+    """Same-install discriminator for /api/health (sha256 of the resolved
+    install root); avoids leaking the raw path to unauthenticated callers."""
+    return _STUDIO_ROOT_ID_CACHE
+
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -245,6 +277,10 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
+        # why: launchers compare against an install-time hash so a sibling
+        # Studio on the same port is rejected; hex digest avoids leaking the
+        # raw install path on -H 0.0.0.0.
+        "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
     }
 

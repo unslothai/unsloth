@@ -417,7 +417,36 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-STUDIO_HOME="$HOME/.unsloth/studio"
+# UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
+# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+_studio_override_var=""
+_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+if [ -n "$_studio_override" ]; then
+    _studio_override_var="UNSLOTH_STUDIO_HOME"
+else
+    _studio_override="${STUDIO_HOME:-}"
+    [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
+fi
+# Strip whitespace so " " is treated as unset (matches Python .strip()).
+_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+case "$_studio_override" in
+    "~") _studio_override="$HOME" ;;
+    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
+esac
+if [ -n "$_studio_override" ]; then
+    # setup.sh runs against an existing install (via 'unsloth studio update');
+    # a typo in the override must fail fast instead of materializing an
+    # empty workspace dir. Mirrors setup.ps1 behavior.
+    if [ ! -d "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
+        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
+        exit 1
+    fi
+    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+else
+    STUDIO_HOME="$HOME/.unsloth/studio"
+fi
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
@@ -542,9 +571,39 @@ fi
 #
 # Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
 # single .venv_t5 are always migrated to the tiered layout.
+# why: in env-override mode $STUDIO_HOME is user-chosen; require the
+# ownership marker before rm -rf so unrelated dirs survive. Gated on the
+# canonical comparison so an override pointing at the legacy default still
+# behaves like a default install.
+_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
+_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+_studio_home_canon="$STUDIO_HOME"
+if [ -d "$_studio_home_canon" ]; then
+    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
+        || _studio_home_canon="$STUDIO_HOME"
+fi
+if [ -d "$_LEGACY_STUDIO_HOME" ]; then
+    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
+        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+_STUDIO_HOME_IS_CUSTOM=false
+if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
+    _STUDIO_HOME_IS_CUSTOM=true
+fi
+_assert_studio_owned_or_absent() {
+    _aso_dir="$1"
+    _aso_label="$2"
+    [ -d "$_aso_dir" ] || return 0
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
+        exit 1
+    fi
+}
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate
+    _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
     rm -rf "$STUDIO_HOME/.venv_t5"
     _NEED_T5_INSTALL=true
 fi
@@ -554,16 +613,20 @@ fi
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
 if [ "$_NEED_T5_INSTALL" = true ]; then
+    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
     [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
     mkdir -p "$VENV_T5_530_DIR"
+    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
     run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
     step "transformers" "5.3.0 pre-installed"
 
+    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
     [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
     mkdir -p "$VENV_T5_550_DIR"
+    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
     run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
@@ -573,7 +636,13 @@ fi
 fi
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-UNSLOTH_HOME="$HOME/.unsloth"
+# Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
+# default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
+if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    UNSLOTH_HOME="$STUDIO_HOME"
+else
+    UNSLOTH_HOME="$HOME/.unsloth"
+fi
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
@@ -635,6 +704,12 @@ else
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
+    # why: install_llama_prebuilt.py uses os.replace(), which would displace
+    # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
+    # ownership check below ever runs.
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
@@ -661,6 +736,9 @@ else
             step "llama.cpp" "prebuilt up to date and validated"
         else
             step "llama.cpp" "prebuilt installed and validated"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
@@ -1032,8 +1110,10 @@ else
 
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
             rm -rf "$LLAMA_CPP_DIR"
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then

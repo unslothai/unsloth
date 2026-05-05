@@ -196,6 +196,11 @@ fn spawn_script(
         cmd.env_remove("PYTHONPATH");
     }
 
+    // Tauri only does default-root installs; install.sh / install.ps1 reject
+    // these under --tauri. Scrub so an inherited value can't trip the guard.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
     // child cleanup on crash comes from inherited job membership instead.

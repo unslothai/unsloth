@@ -95,9 +95,11 @@ TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 # Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
 
-# Pre-installed directories — created by setup.sh / setup.ps1
-_VENV_T5_530_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_530")
-_VENV_T5_550_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
+# Pre-installed directories — created by setup.sh / setup.ps1.
+from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
+
+_VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
+_VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 

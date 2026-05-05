@@ -732,22 +732,46 @@ class LlamaCppBackend:
                 if win_bin.is_file():
                     return str(win_bin)
 
-        # 2–4. ~/.unsloth/llama.cpp (primary — setup.sh / setup.ps1 build here)
-        unsloth_home = Path.home() / ".unsloth" / "llama.cpp"
-        # Root dir (make builds copy binaries here)
-        home_root = unsloth_home / binary_name
-        if home_root.is_file():
-            return str(home_root)
-        # build/bin/ (cmake builds on Linux)
-        home_linux = unsloth_home / "build" / "bin" / binary_name
-        if home_linux.is_file():
-            return str(home_linux)
+        # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
+        # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
+        legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
+        try:
+            from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
 
-        # 3. Windows MSVC build has Release subdir
-        if sys.platform == "win32":
-            home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
-            if home_win.is_file():
-                return str(home_win)
+            _resolved_sr = _sr()
+            _legacy_studio = Path.home() / ".unsloth" / "studio"
+            try:
+                _is_legacy = _resolved_sr.resolve() == _legacy_studio.resolve()
+            except (OSError, ValueError):
+                _is_legacy = _resolved_sr == _legacy_studio
+            if _is_legacy:
+                search_roots = [legacy_llama]
+            else:
+                # why: _kill_orphaned_servers excludes the legacy root in custom
+                # mode; discovery must match so we never spawn a server we then
+                # refuse to clean up. UNSLOTH_LLAMA_CPP_PATH (handled earlier)
+                # is the explicit way to share a build across roots.
+                search_roots = [_resolved_sr / "llama.cpp"]
+        except (ImportError, OSError, ValueError):
+            search_roots = [legacy_llama]
+        _seen_roots: set[str] = set()
+        _unique_roots: list[Path] = []
+        for r in search_roots:
+            k = str(r)
+            if k not in _seen_roots:
+                _seen_roots.add(k)
+                _unique_roots.append(r)
+        for unsloth_home in _unique_roots:
+            home_root = unsloth_home / binary_name
+            if home_root.is_file():
+                return str(home_root)
+            home_linux = unsloth_home / "build" / "bin" / binary_name
+            if home_linux.is_file():
+                return str(home_linux)
+            if sys.platform == "win32":
+                home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
+                if home_win.is_file():
+                    return str(home_win)
 
         # 5–6. Legacy: in-tree build (older setup.sh / setup.ps1 versions)
         project_root = Path(__file__).resolve().parents[4]
@@ -2592,8 +2616,27 @@ class LlamaCppBackend:
             #                      (binary must be *under* one of these)
             install_roots: list[Path] = []
 
-            # Primary install dir (setup.sh / prebuilt installer)
-            install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
+            # Env-mode custom root (mirrors _find_llama_server_binary).
+            _is_custom_root = False
+            try:
+                from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+
+                _resolved_sr = _sr()
+                _legacy_studio = Path.home() / ".unsloth" / "studio"
+                try:
+                    _is_custom_root = _resolved_sr.resolve() != _legacy_studio.resolve()
+                except (OSError, ValueError):
+                    _is_custom_root = _resolved_sr != _legacy_studio
+                if _is_custom_root:
+                    install_roots.append(_resolved_sr / "llama.cpp")
+            except (ImportError, OSError, ValueError):
+                pass
+
+            # Primary install dir (default mode only). Env-mode skips this so
+            # a custom-root Studio cannot kill a concurrent default-install
+            # Studio's llama-server (same OS user, different install).
+            if not _is_custom_root:
+                install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
             # Legacy in-tree build dirs (older setup.sh versions)
             project_root = Path(__file__).resolve().parents[4]
