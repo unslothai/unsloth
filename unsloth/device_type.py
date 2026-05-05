@@ -41,6 +41,8 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    elif hasattr(torch, "mps") and torch.mps.is_available():
+        return "mps"
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
@@ -48,14 +50,14 @@ def get_device_type():
                 "Unsloth cannot find any torch accelerator? You need a GPU."
             )
         accelerator = str(torch.accelerator.current_accelerator())
-        if accelerator in ("cuda", "xpu", "hip"):
+        if accelerator in ("cuda", "xpu", "hip", "mps"):
             raise RuntimeError(
                 f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()` and `is_hip` all failed.\n"
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
     raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
+        "Unsloth currently only works on NVIDIA, AMD, Intel GPUs, MAC Silicon and MLX."
     )
 
 
@@ -64,6 +66,8 @@ DEVICE_TYPE: str = get_device_type()
 DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
+elif DEVICE_TYPE_TORCH == "mps":
+    DEVICE_TYPE_TORCH = "mps"
 
 
 @functools.cache
