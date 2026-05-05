@@ -10,11 +10,19 @@ from typing import Callable, Optional
 
 import typer
 
-PROMPT_TEXT = (
-    "Tools include arbitrary code execution (Python, terminal). "
-    "You're binding to 0.0.0.0, which is reachable from your network. "
-    "If your API key leaks, anyone with it can run code on this machine. "
-    "Do not share the API key. Continue?"
+# Claude Code brand orange — used so the security warning stands out
+# in a crowded terminal.
+_PROMPT_FG = (217, 119, 87)
+
+PROMPT_TEXT = typer.style(
+    (
+        "Tools include arbitrary code execution (Python, terminal). "
+        "You're binding to 0.0.0.0, which is reachable from your network. "
+        "If your API key leaks, anyone with it can run code on this machine. "
+        "Do not share the API key. Continue?"
+    ),
+    fg = _PROMPT_FG,
+    bold = True,
 )
 
 
