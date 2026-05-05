@@ -630,7 +630,7 @@ def run(
 
     # ── Resolve the server-side tool policy. The y/N prompt (if any)
     # runs in the outer process so the re-exec'd child never re-prompts.
-    from unsloth_cli._tool_policy import resolve_tool_policy
+    from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
         host = host,
@@ -684,7 +684,11 @@ def run(
             args.append("--enable-tools")
         else:
             args.append("--disable-tools")
-        if yes:
+        # Forward --yes whenever the parent already cleared the prompt
+        # (either operator passed --yes, or the parent's resolver
+        # accepted the network-bind confirmation). Otherwise the child
+        # re-runs the resolver and prompts a second time.
+        if yes or (enable_tools and is_external_host(host)):
             args.append("--yes")
         # Forward unknown args (llama-server pass-through) to the
         # re-exec'd command so the studio venv sees them in ctx.args
@@ -756,21 +760,22 @@ def run(
     # even under --silent / --yes -- so the operator never misses the
     # current tool-execution status.
     _tool_notice_fg = (217, 119, 87)
-    if host == "0.0.0.0" and enable_tools:
+    _is_external = is_external_host(host)
+    if _is_external and enable_tools:
         _tool_notice = (
-            "Server-side tools are ENABLED on 0.0.0.0. "
-            "Anyone with the API key can run code on this machine. "
-            "Do not share the API key."
+            f"Server-side tools are ENABLED on {host} (network-reachable). "
+            f"Anyone with the API key can run code on this machine. "
+            f"Do not share the API key."
         )
-    elif host == "0.0.0.0":
+    elif _is_external:
         _tool_notice = (
-            "Server-side tools are disabled by default on 0.0.0.0. "
-            "Pass --enable-tools to turn on (you will be warned about "
-            "API-key risk)."
+            f"Server-side tools are disabled by default on {host} "
+            f"(network-reachable). Pass --enable-tools to turn on "
+            f"(you will be warned about API-key risk)."
         )
     elif enable_tools:
         _tool_notice = (
-            "Server-side tools are enabled by default for localhost. "
+            "Server-side tools are enabled by default for loopback. "
             "Pass --disable-tools to turn off."
         )
     else:

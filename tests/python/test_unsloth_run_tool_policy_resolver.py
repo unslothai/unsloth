@@ -14,7 +14,7 @@ Covers:
 import pytest
 import typer
 
-from unsloth_cli._tool_policy import resolve_tool_policy
+from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
 
 def _never_prompt(_msg: str) -> bool:
@@ -138,3 +138,64 @@ class TestZeroHost:
                 prompt = _prompt_no,
             )
         assert exc_info.value.exit_code == 1
+
+
+class TestIsExternalHost:
+    @pytest.mark.parametrize(
+        "host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"]
+    )
+    def test_loopback_aliases_are_local(self, host):
+        assert is_external_host(host) is False
+
+    @pytest.mark.parametrize(
+        "host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com"]
+    )
+    def test_non_loopback_is_external(self, host):
+        assert is_external_host(host) is True
+
+
+class TestSpecificNetworkIP:
+    """Binding to a specific LAN IP must follow the same rules as 0.0.0.0."""
+
+    def test_default_is_off(self):
+        assert (
+            resolve_tool_policy(
+                host = "192.168.1.5",
+                flag = None,
+                yes = False,
+                silent = False,
+                prompt = _never_prompt,
+            )
+            is False
+        )
+
+    def test_explicit_on_prompts(self):
+        seen = []
+
+        def _prompt(msg: str) -> bool:
+            seen.append(msg)
+            return True
+
+        assert (
+            resolve_tool_policy(
+                host = "192.168.1.5",
+                flag = True,
+                yes = False,
+                silent = False,
+                prompt = _prompt,
+            )
+            is True
+        )
+        assert any("192.168.1.5" in m for m in seen)
+
+    def test_localhost_alias_does_not_prompt(self):
+        assert (
+            resolve_tool_policy(
+                host = "localhost",
+                flag = True,
+                yes = False,
+                silent = False,
+                prompt = _never_prompt,
+            )
+            is True
+        )
