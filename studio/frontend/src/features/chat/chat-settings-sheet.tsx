@@ -878,120 +878,122 @@ export function ChatSettingsPanel({
 
       <div className="px-1.5">
         {/* mt-4 matches the Playground sidebar gap (SidebarHeader py-3 + SidebarGroup pt-1) */}
-        <div className="mt-4 px-2 pb-3">
-          <div className="space-y-1.5">
-            <div ref={presetControlRowRef} className="w-full min-w-0">
-              <DropdownMenu>
-                <InputGroup className="!h-8 min-h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
-                  <InputGroupInput
-                    id="inference-preset-name"
-                    value={presetNameInput}
-                    onChange={(e) => setPresetNameInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && presetSaveState.canSubmit) {
-                        e.preventDefault();
-                        savePresetWithName(presetNameInput);
-                      }
-                    }}
-                    placeholder="Preset name"
-                    maxLength={80}
-                    autoComplete="off"
-                    className={cn(
-                      "!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm",
-                      presetSaveState.isSaveReady &&
-                        "text-foreground placeholder:text-primary/45",
-                    )}
-                    aria-label="Inference preset name"
-                  />
-                  <InputGroupAddon
-                    align="inline-end"
-                    className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-0 has-[>button]:mr-0"
-                  >
-                    <DropdownMenuTrigger asChild={true}>
-                      <InputGroupButton
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
-                        title="Choose a preset"
-                        aria-label="Open preset list"
-                      >
-                        <HugeiconsIcon
-                          icon={ArrowDown01Icon}
-                          className="size-3.5"
-                          strokeWidth={2}
-                        />
-                      </InputGroupButton>
-                    </DropdownMenuTrigger>
-                  </InputGroupAddon>
-                </InputGroup>
-                <DropdownMenuContent
-                  align="end"
-                  className="min-w-40 max-w-none"
-                  style={
-                    presetMenuWidthPx != null
-                      ? {
-                          width: presetMenuWidthPx,
-                          minWidth: presetMenuWidthPx,
+        {!isExternalModel ? (
+          <div className="mt-4 px-2 pb-3">
+            <div className="space-y-1.5">
+              <div ref={presetControlRowRef} className="w-full min-w-0">
+                <DropdownMenu>
+                  <InputGroup className="!h-8 min-h-8 min-w-0 items-stretch gap-0 rounded-2xl pr-0 focus-within:border-input focus-within:ring-0 focus-within:shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0 has-[[data-slot=input-group-control]:focus-visible]:shadow-none">
+                    <InputGroupInput
+                      id="inference-preset-name"
+                      value={presetNameInput}
+                      onChange={(e) => setPresetNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && presetSaveState.canSubmit) {
+                          e.preventDefault();
+                          savePresetWithName(presetNameInput);
                         }
-                      : undefined
+                      }}
+                      placeholder="Preset name"
+                      maxLength={80}
+                      autoComplete="off"
+                      className={cn(
+                        "!h-8 min-h-0 min-w-0 self-stretch !pl-2.5 !pr-2 pt-1 pb-1 text-sm leading-10 md:text-sm",
+                        presetSaveState.isSaveReady &&
+                          "text-foreground placeholder:text-primary/45",
+                      )}
+                      aria-label="Inference preset name"
+                    />
+                    <InputGroupAddon
+                      align="inline-end"
+                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-0 has-[>button]:mr-0"
+                    >
+                      <DropdownMenuTrigger asChild={true}>
+                        <InputGroupButton
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="!h-8 min-h-8 !w-7 min-w-7 shrink-0 rounded-none rounded-r-2xl border-l border-border px-0 text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary data-[state=open]:bg-primary/20 data-[state=open]:text-primary"
+                          title="Choose a preset"
+                          aria-label="Open preset list"
+                        >
+                          <HugeiconsIcon
+                            icon={ArrowDown01Icon}
+                            className="size-3.5"
+                            strokeWidth={2}
+                          />
+                        </InputGroupButton>
+                      </DropdownMenuTrigger>
+                    </InputGroupAddon>
+                  </InputGroup>
+                  <DropdownMenuContent
+                    align="end"
+                    className="min-w-40 max-w-none"
+                    style={
+                      presetMenuWidthPx != null
+                        ? {
+                            width: presetMenuWidthPx,
+                            minWidth: presetMenuWidthPx,
+                          }
+                        : undefined
+                    }
+                  >
+                    {presets.map((p, index) => (
+                      <Fragment key={p.name}>
+                        <DropdownMenuItem onSelect={() => applyPreset(p.name)}>
+                          {p.name}
+                        </DropdownMenuItem>
+                        {index === BUILTIN_PRESETS.length - 1 &&
+                          presets.length > BUILTIN_PRESETS.length && (
+                            <DropdownMenuSeparator className="mx-2.5! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
+                          )}
+                      </Fragment>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <Button
+                  type="button"
+                  onClick={() => savePresetWithName(presetNameInput)}
+                  disabled={!presetSaveState.canSubmit}
+                  variant={presetSaveState.isSaveReady ? "default" : "outline"}
+                  size="sm"
+                  className={cn(
+                    "h-8 w-full text-xs",
+                    presetSaveState.isSaveReady &&
+                      "bg-primary/92 text-primary-foreground hover:bg-primary",
+                  )}
+                  title={presetSaveState.title}
+                  aria-label={presetSaveState.title}
+                >
+                  <span className="inline-flex shrink-0 items-center pr-1.5">
+                    <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
+                  </span>
+                  {presetSaveState.buttonLabel}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => deletePreset(activePreset)}
+                  disabled={!activeCustomPreset}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-full text-xs text-muted-foreground"
+                  title={
+                    activeCustomPreset
+                      ? "Delete selected preset"
+                      : "No saved override to delete"
                   }
                 >
-                  {presets.map((p, index) => (
-                    <Fragment key={p.name}>
-                      <DropdownMenuItem onSelect={() => applyPreset(p.name)}>
-                        {p.name}
-                      </DropdownMenuItem>
-                      {index === BUILTIN_PRESETS.length - 1 &&
-                        presets.length > BUILTIN_PRESETS.length && (
-                          <DropdownMenuSeparator className="mx-2.5! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
-                        )}
-                    </Fragment>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5">
-              <Button
-                type="button"
-                onClick={() => savePresetWithName(presetNameInput)}
-                disabled={!presetSaveState.canSubmit}
-                variant={presetSaveState.isSaveReady ? "default" : "outline"}
-                size="sm"
-                className={cn(
-                  "h-8 w-full text-xs",
-                  presetSaveState.isSaveReady &&
-                    "bg-primary/92 text-primary-foreground hover:bg-primary",
-                )}
-                title={presetSaveState.title}
-                aria-label={presetSaveState.title}
-              >
-                <span className="inline-flex shrink-0 items-center pr-1.5">
-                  <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
-                </span>
-                {presetSaveState.buttonLabel}
-              </Button>
-              <Button
-                type="button"
-                onClick={() => deletePreset(activePreset)}
-                disabled={!activeCustomPreset}
-                variant="outline"
-                size="sm"
-                className="h-8 w-full text-xs text-muted-foreground"
-                title={
-                  activeCustomPreset
-                    ? "Delete selected preset"
-                    : "No saved override to delete"
-                }
-              >
-                <span className="inline-flex shrink-0 items-center pr-1.5">
-                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                </span>
-                Delete
-              </Button>
+                  <span className="inline-flex shrink-0 items-center pr-1.5">
+                    <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  </span>
+                  Delete
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
+        ) : null}
 
         <div className="px-2 pb-4">
           <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1075,68 +1077,68 @@ export function ChatSettingsPanel({
                     params.repetitionPenalty === 1 ? "Off" : undefined
                   }
                 />
-                <ParamSlider
-                  label="Presence Penalty"
-                  value={params.presencePenalty}
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  onChange={set("presencePenalty")}
-                  displayValue={
-                    params.presencePenalty === 0 ? "Off" : undefined
-                  }
-                />
-                {!isGguf && (
-                  <ParamSlider
-                    label="Max Seq Length"
-                    value={params.maxSeqLength}
-                    min={128}
-                    max={32768}
-                    step={128}
-                    onChange={set("maxSeqLength")}
-                  />
-                )}
               </>
-            ) : null}
+          ): null}
+          <ParamSlider
+            label="Presence Penalty"
+            value={params.presencePenalty}
+            min={0}
+            max={2}
+            step={0.1}
+            onChange={set("presencePenalty")}
+            displayValue={
+              params.presencePenalty === 0 ? "Off" : undefined
+            }
+          />
+          {!isExternalModel && !isGguf && (
             <ParamSlider
-              label="Max Tokens"
-              value={params.maxTokens}
-              min={64}
-              max={
-                isExternalModel
-                  ? 32768
-                  : isGguf && ggufContextLength
-                    ? ggufContextLength
-                    : 32768
-              }
-              step={64}
-              onChange={set("maxTokens")}
-              displayValue={
-                isGguf &&
-                ggufContextLength &&
-                params.maxTokens >= ggufContextLength
-                  ? "Max"
-                  : undefined
-              }
+              label="Max Seq Length"
+              value={params.maxSeqLength}
+              min={128}
+              max={32768}
+              step={128}
+              onChange={set("maxSeqLength")}
             />
-          </div>
-        </CollapsibleSection>
+          )}
+          <ParamSlider
+            label="Max Tokens"
+            value={params.maxTokens}
+            min={64}
+            max={
+              isExternalModel
+                ? 32768
+                : isGguf && ggufContextLength
+                  ? ggufContextLength
+                  : 32768
+            }
+            step={64}
+            onChange={set("maxTokens")}
+            displayValue={
+              isGguf &&
+              ggufContextLength &&
+              params.maxTokens >= ggufContextLength
+                ? "Max"
+                : undefined
+            }
+          />
+        </div>
+      </CollapsibleSection>
 
-        {modelSection}
+      {modelSection}
 
-        {!isExternalModel ? (
-          <>
-            <CollapsibleSection icon={Wrench01Icon} label="Tools">
-              <div className="flex flex-col gap-3 py-1">
-                <AutoHealToolCallsToggle />
-                <MaxToolCallsSlider />
-                <ToolCallTimeoutSlider />
-              </div>
-            </CollapsibleSection>
+      {!isExternalModel ? (
+        <>
+          <CollapsibleSection icon={Wrench01Icon} label="Tools">
+            <div className="flex flex-col gap-3 py-1">
+              <AutoHealToolCallsToggle />
+              <MaxToolCallsSlider />
+              <ToolCallTimeoutSlider />
+            </div>
+          </CollapsibleSection>
 
-            <ChatTemplateSection onReloadModel={onReloadModel} />
-           </>
-          ) : null}
+          <ChatTemplateSection onReloadModel={onReloadModel} />
+         </>
+        ) : null}
       </div>
       </div>
       <Dialog
