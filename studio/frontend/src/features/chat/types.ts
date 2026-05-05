@@ -20,6 +20,7 @@ export interface ThreadRecord {
 export interface MessageRecord {
   id: string;
   threadId: string;
+  parentId?: string | null;
   role: import("@assistant-ui/react").ThreadMessage["role"];
   content: import("@assistant-ui/react").ThreadMessage["content"];
   attachments?: import("@assistant-ui/react").ThreadMessage["attachments"];

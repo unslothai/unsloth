@@ -1,5 +1,6 @@
 "use client";
 
+import { openLink } from "@/lib/open-link";
 import {
   memo,
   useState,
@@ -93,8 +94,8 @@ function Source({
   variant,
   size,
   asChild = false,
-  target = "_blank",
-  rel = "noopener noreferrer",
+  href,
+  onClick,
   ...props
 }: SourceProps) {
   return (
@@ -109,8 +110,14 @@ function Source({
     >
       <a
         data-slot="source"
-        target={target}
-        rel={rel}
+        href={href}
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          if (href && openLink(href)) {
+            e.preventDefault();
+          }
+          onClick?.(e);
+        }}
         {...(props as ComponentProps<"a">)}
       />
     </Badge>

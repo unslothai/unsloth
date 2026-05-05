@@ -1,11 +1,11 @@
 """
-Tests for UNSLOTH_LLAMA_PR_FORCE and UNSLOTH_LLAMA_SOURCE in setup.sh / setup.ps1.
+Tests for the current llama.cpp wrapper policy in setup.sh / setup.ps1.
 
 Tests cover:
   - Bash subprocess: PR_FORCE promotion, user-override, zero/empty/invalid ignored
-  - Bash subprocess: custom source URL forces build, clone URL uses variable
-  - Static source checks: defaults present, clone URLs parameterized
-  - PowerShell subprocess: PR_FORCE promotion, user-override parity
+  - Bash subprocess: source remains pinned to ggml-org even if env source is set
+  - Static source checks: mainline repo/source are hardcoded for now
+  - PowerShell subprocess: PR_FORCE promotion and fixed-source parity
 
 Run: pytest tests/studio/install/test_llama_pr_force_and_source.py -v
 """
@@ -109,7 +109,7 @@ def make_mock_git(tmp_path: Path, *, fail_on: str = "") -> tuple[Path, Path]:
 
 
 # =========================================================================
-# Bash fragment that exercises PR_FORCE and _LLAMA_SOURCE resolution
+# Bash fragment that exercises PR_FORCE and fixed _LLAMA_SOURCE resolution
 # =========================================================================
 def _bash_resolution_fragment(
     llama_pr: str = "",
@@ -125,7 +125,8 @@ def _bash_resolution_fragment(
         _DEFAULT_LLAMA_SOURCE={shlex.quote(default_source)}
 
         _LLAMA_PR_FORCE={shlex.quote(llama_pr_force) if llama_pr_force else '"$_DEFAULT_LLAMA_PR_FORCE"'}
-        _LLAMA_SOURCE={shlex.quote(llama_source) if llama_source else '"$_DEFAULT_LLAMA_SOURCE"'}
+        export UNSLOTH_LLAMA_SOURCE={shlex.quote(llama_source) if llama_source else '""'}
+        _LLAMA_SOURCE="$_DEFAULT_LLAMA_SOURCE"
         _LLAMA_SOURCE="${{_LLAMA_SOURCE%.git}}"
 
         _NEED_LLAMA_SOURCE_BUILD=false
@@ -225,20 +226,10 @@ class TestBashPrForcePromotion:
 
 
 # =========================================================================
-# TEST GROUP B: Bash custom source URL (subprocess)
+# TEST GROUP B: Bash fixed mainline source (subprocess)
 # =========================================================================
-class TestBashCustomSource:
-    """Custom _LLAMA_SOURCE forces source build."""
-
-    def test_custom_source_forces_build(self):
-        script = _bash_resolution_fragment(
-            llama_source = "https://github.com/unslothai/llama.cpp",
-        )
-        r = run_bash(script)
-        assert r.returncode == 0
-        assert "NEED_SOURCE=true" in r.stdout
-        assert "SKIP_PREBUILT=true" in r.stdout
-        assert "custom source:" in r.stdout
+class TestBashFixedMainlineSource:
+    """Source remains pinned to ggml-org while the temporary policy is active."""
 
     def test_default_source_no_force(self):
         script = _bash_resolution_fragment()
@@ -248,32 +239,23 @@ class TestBashCustomSource:
         assert "SKIP_PREBUILT=false" in r.stdout
         assert "custom source:" not in r.stdout
 
-    def test_trailing_git_stripped(self):
+    def test_env_source_override_is_ignored(self):
         script = _bash_resolution_fragment(
             llama_source = "https://github.com/unslothai/llama.cpp.git",
         )
         r = run_bash(script)
         assert r.returncode == 0
-        assert "LLAMA_SOURCE=https://github.com/unslothai/llama.cpp" in r.stdout
-        assert "NEED_SOURCE=true" in r.stdout
+        assert "LLAMA_SOURCE=https://github.com/ggml-org/llama.cpp" in r.stdout
+        assert "NEED_SOURCE=false" in r.stdout
+        assert "SKIP_PREBUILT=false" in r.stdout
 
-    def test_baked_in_source_forces_build(self):
+    def test_baked_in_source_stays_mainline(self):
         script = _bash_resolution_fragment(
-            default_source = "https://github.com/unslothai/llama.cpp",
+            default_source = "https://github.com/ggml-org/llama.cpp",
         )
         r = run_bash(script)
         assert r.returncode == 0
-        assert "NEED_SOURCE=true" in r.stdout
-
-    def test_env_source_overrides_baked_in(self):
-        """User UNSLOTH_LLAMA_SOURCE overrides _DEFAULT_LLAMA_SOURCE."""
-        script = _bash_resolution_fragment(
-            llama_source = "https://github.com/custom/llama.cpp",
-            default_source = "https://github.com/unslothai/llama.cpp",
-        )
-        r = run_bash(script)
-        assert r.returncode == 0
-        assert "LLAMA_SOURCE=https://github.com/custom/llama.cpp" in r.stdout
+        assert "LLAMA_SOURCE=https://github.com/ggml-org/llama.cpp" in r.stdout
 
 
 # =========================================================================
@@ -386,7 +368,7 @@ class TestBashCloneUrlParameterized:
 # TEST GROUP D: Static source patterns -- setup.sh
 # =========================================================================
 class TestSourcePatternsSh:
-    """Verify setup.sh has the new defaults and parameterized clone URLs."""
+    """Verify setup.sh keeps the temporary mainline-only llama.cpp policy."""
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
@@ -404,8 +386,21 @@ class TestSourcePatternsSh:
     def test_has_pr_force_env_read(self):
         assert "UNSLOTH_LLAMA_PR_FORCE" in self.content
 
-    def test_has_source_env_read(self):
-        assert "UNSLOTH_LLAMA_SOURCE" in self.content
+    def test_source_env_override_removed(self):
+        assert "UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}" not in self.content
+        assert '_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"' in self.content
+
+    def test_release_repo_override_removed(self):
+        assert "UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp" not in self.content
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' in self.content
+
+    def test_force_compile_skips_prebuilt_resolution_early(self):
+        assert 'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then' in self.content
+        assert "_SKIP_PREBUILT_INSTALL=true" in self.content
+
+    def test_force_compile_uses_requested_tag_without_helper(self):
+        assert 'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then' in self.content
+        assert '_RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"' in self.content
 
     def test_pr_force_resolution_block(self):
         assert '_LLAMA_PR="$_LLAMA_PR_FORCE"' in self.content
@@ -425,15 +420,12 @@ class TestSourcePatternsSh:
         assert "ggml-org/llama.cpp.git" not in pr_block
 
     def test_clone_urls_parameterized_tag_path(self):
-        """Non-PR clone path uses ${_LLAMA_SOURCE}.git, not hardcoded URL."""
+        """Non-PR clone path uses the resolved source URL, not a hardcoded URL."""
         # Find the non-PR clone line (after _CLONE_ARGS)
         idx = self.content.index("_CLONE_ARGS=(git clone --depth 1)")
         block = self.content[idx : idx + 400]
-        assert '"${_LLAMA_SOURCE}.git"' in block
+        assert '"${_RESOLVED_SOURCE_URL}.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
-
-    def test_custom_source_forces_build(self):
-        assert "custom source: $_LLAMA_SOURCE -- forcing source build" in self.content
 
     def test_no_hardcoded_clone_urls(self):
         """No remaining hardcoded ggml-org clone URLs in clone commands."""
@@ -449,7 +441,7 @@ class TestSourcePatternsSh:
 # TEST GROUP E: Static source patterns -- setup.ps1
 # =========================================================================
 class TestSourcePatternsPs1:
-    """Verify setup.ps1 has the new defaults and parameterized clone URLs."""
+    """Verify setup.ps1 keeps the temporary mainline-only llama.cpp policy."""
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
@@ -467,8 +459,24 @@ class TestSourcePatternsPs1:
     def test_has_pr_force_env_read(self):
         assert "$env:UNSLOTH_LLAMA_PR_FORCE" in self.content
 
-    def test_has_source_env_read(self):
-        assert "$env:UNSLOTH_LLAMA_SOURCE" in self.content
+    def test_source_env_override_removed(self):
+        assert "$LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE)" not in self.content
+        assert "$LlamaSource = $DefaultLlamaSource" in self.content
+
+    def test_release_repo_override_removed(self):
+        assert (
+            "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)"
+            not in self.content
+        )
+        assert '$HelperReleaseRepo = "ggml-org/llama.cpp"' in self.content
+
+    def test_force_compile_skips_prebuilt_resolution_early(self):
+        assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content
+        assert "$SkipPrebuiltInstall = $true" in self.content
+
+    def test_force_compile_uses_requested_tag_without_helper(self):
+        assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content
+        assert "$ResolvedLlamaTag = $RequestedLlamaTag" in self.content
 
     def test_pr_force_promotion_block(self):
         assert "$LlamaPr = $LlamaPrForce" in self.content
@@ -487,14 +495,11 @@ class TestSourcePatternsPs1:
         assert "ggml-org/llama.cpp.git" not in pr_block
 
     def test_clone_urls_parameterized_tag_path(self):
-        """Non-PR clone path uses $LlamaSource.git, not hardcoded URL."""
+        """Non-PR clone path uses the resolved source URL, not a hardcoded URL."""
         clone_args_idx = self.content.index('$cloneArgs = @("clone"')
         block = self.content[clone_args_idx : clone_args_idx + 400]
-        assert '"$LlamaSource.git"' in block
+        assert '"$ResolvedSourceUrl.git"' in block
         assert "ggml-org/llama.cpp.git" not in block
-
-    def test_custom_source_forces_build(self):
-        assert "custom source: $LlamaSource -- forcing source build" in self.content
 
     def test_no_hardcoded_clone_urls(self):
         """No remaining hardcoded ggml-org clone URLs in clone commands."""
@@ -511,7 +516,7 @@ class TestSourcePatternsPs1:
 # =========================================================================
 @requires_pwsh
 class TestPwshPrForcePromotion:
-    """PR_FORCE promotion and source URL logic via pwsh subprocess."""
+    """PR_FORCE promotion and fixed-source logic via pwsh subprocess."""
 
     FRAGMENT_TEMPLATE = textwrap.dedent("""\
         function step($a, $b, $c) { Write-Output "step:$a`:$b" }
@@ -521,7 +526,7 @@ class TestPwshPrForcePromotion:
 
         $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
         $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
-        $LlamaSource = if ($env:UNSLOTH_LLAMA_SOURCE) { $env:UNSLOTH_LLAMA_SOURCE.Trim() } else { $DefaultLlamaSource }
+        $LlamaSource = $DefaultLlamaSource
         if ($LlamaSource.EndsWith('.git')) { $LlamaSource = $LlamaSource.Substring(0, $LlamaSource.Length - 4) }
 
         $NeedLlamaSourceBuild = $false
@@ -561,7 +566,6 @@ class TestPwshPrForcePromotion:
         # Ensure env vars are unset by default
         run_env["UNSLOTH_LLAMA_PR"] = ""
         run_env["UNSLOTH_LLAMA_PR_FORCE"] = ""
-        run_env["UNSLOTH_LLAMA_SOURCE"] = ""
         if env:
             run_env.update(env)
         return run_pwsh(script, env = run_env)
@@ -599,15 +603,16 @@ class TestPwshPrForcePromotion:
         assert r.returncode == 0
         assert "baked-in PR_FORCE" not in r.stdout
 
-    def test_custom_source_forces_build(self):
+    def test_env_source_override_is_ignored(self):
         r = self._run(
             env = {
                 "UNSLOTH_LLAMA_SOURCE": "https://github.com/unslothai/llama.cpp",
             }
         )
         assert r.returncode == 0
-        assert "NEED_SOURCE=True" in r.stdout
-        assert "SKIP_PREBUILT=True" in r.stdout
+        assert "LLAMA_SOURCE=https://github.com/ggml-org/llama.cpp" in r.stdout
+        assert "NEED_SOURCE=False" in r.stdout
+        assert "SKIP_PREBUILT=False" in r.stdout
 
     def test_default_source_no_force(self):
         r = self._run()
@@ -615,16 +620,16 @@ class TestPwshPrForcePromotion:
         assert "NEED_SOURCE=False" in r.stdout
         assert "SKIP_PREBUILT=False" in r.stdout
 
-    def test_trailing_git_stripped(self):
+    def test_trailing_git_override_is_ignored(self):
         r = self._run(
             env = {
                 "UNSLOTH_LLAMA_SOURCE": "https://github.com/unslothai/llama.cpp.git",
             }
         )
         assert r.returncode == 0
-        assert "LLAMA_SOURCE=https://github.com/unslothai/llama.cpp" in r.stdout
+        assert "LLAMA_SOURCE=https://github.com/ggml-org/llama.cpp" in r.stdout
 
-    def test_baked_in_source_forces_build(self):
-        r = self._run(default_source = "https://github.com/unslothai/llama.cpp")
+    def test_baked_in_source_stays_mainline(self):
+        r = self._run(default_source = "https://github.com/ggml-org/llama.cpp")
         assert r.returncode == 0
-        assert "NEED_SOURCE=True" in r.stdout
+        assert "LLAMA_SOURCE=https://github.com/ggml-org/llama.cpp" in r.stdout

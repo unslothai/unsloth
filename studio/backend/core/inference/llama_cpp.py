@@ -11,6 +11,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import os
 import re
 import struct
 import structlog
@@ -18,14 +19,399 @@ from loggers import get_logger
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
+from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
+
+
+# ── Pre-compiled patterns for plan-without-action re-prompt ──
+# Forward-looking intent signals that indicate the model is
+# describing what it *will* do rather than giving a final answer.
+_INTENT_SIGNAL = re.compile(
+    r"(?i)("
+    # Direct intent: "I'll ...", "I will ...", "Let me ...", "I am going to ..."
+    # Handles both straight and curly apostrophes.
+    # Excludes "I can", "I should", "I want to", "let's" which
+    # appear frequently in direct answers / explanations.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    r"|"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
+    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    r"|"
+    # "Now I" / "Next I" patterns
+    r"\b(?:now i|next i)\b"
+    r")"
+)
+_MAX_REPROMPTS = 3
+
+# Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
+# 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
+# fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
+# but the llama.cpp README notes it ONLY fires after a newline has been
+# generated -- a model stuck in a long unbroken non-newline sequence is
+# unbounded by it. So we still want a token cap as the front-line limiter.
+#
+# The cap is the model's effective context length when we know it,
+# falling back to a generous floor when metadata is unavailable. 4096 was
+# too low: Qwen3 / gpt-oss reasoning traces routinely exceed it, and any
+# OpenAI-API caller that omits max_tokens (langchain, llama-index, raw
+# curl) sees responses silently truncated mid-sentence.
+_DEFAULT_MAX_TOKENS_FLOOR = 32768
+_DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
+_REPROMPT_MAX_CHARS = 2000
+
+# ── Pre-compiled patterns for GGUF shard detection ───────────
+_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+
+
+# ── Sliding-window-pattern resolver ───────────────────────────
+# Resolves the per-layer SWA mask when a GGUF reports a sliding window
+# but no `sliding_window_pattern` field. Tier order in
+# `_resolve_swa_pattern`: GGUF metadata, on-disk cache, bootstrap dict
+# below, transformers introspection, HF Hub config.json, legacy 1/4
+# fallback. Period N means layer i is SWA iff `(i + 1) % N != 0`,
+# matching transformers. Skipped on purpose: phi3 (no key/val length
+# in GGUF, window >= ctx anyway), qwen2 family (converter strips
+# sliding_window when use_sliding_window=False), mistral v0.1/v0.2
+# (all-SWA can't be expressed as a period).
+_BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
+    "gemma2": 2,  # Gemma2Config.sliding_window_pattern
+    "gemma3": 6,  # Gemma3TextConfig.sliding_window_pattern
+    "gemma3n": 5,  # text_config.layer_types: SWA*4 + FULL
+    "gpt_oss": 2,  # text_config.layer_types: alternating
+    "cohere2": 4,  # Cohere2Config.sliding_window_pattern
+}
+
+# Process-wide cache backed by JSON on disk. Values are int period or
+# list[bool] mask. Lazy-loaded.
+_SWA_CACHE: Optional[dict] = None
+_SWA_CACHE_LOCK = threading.Lock()
+
+
+def _swa_cache_path() -> Path:
+    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    base = Path(home) if home else Path.home() / ".unsloth" / "studio"
+    return base / "swa_cache.json"
+
+
+def _load_swa_cache() -> dict:
+    global _SWA_CACHE
+    with _SWA_CACHE_LOCK:
+        if _SWA_CACHE is not None:
+            return _SWA_CACHE
+        try:
+            with open(_swa_cache_path()) as f:
+                _SWA_CACHE = json.load(f)
+                if not isinstance(_SWA_CACHE, dict):
+                    _SWA_CACHE = {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            _SWA_CACHE = {}
+        return _SWA_CACHE
+
+
+def _save_swa_cache(cache: dict) -> None:
+    try:
+        path = _swa_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(cache, f, indent = 2, sort_keys = True)
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _period_from_layer_types(layer_types: list) -> Optional[int]:
+    """Smallest period N where `(i+1) % N != 0` matches the SWA mask,
+    or None if no fixed period fits."""
+    if not layer_types:
+        return None
+    is_swa = ["full" not in str(t).lower() for t in layer_types]
+    n = len(is_swa)
+    for N in range(1, n + 1):
+        if all(((i + 1) % N != 0) == is_swa[i] for i in range(n)):
+            return N
+    return None
+
+
+def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cfg_path = hf_hub_download(repo_id, "config.json", repo_type = "model")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        return None
+
+    src = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else cfg
+    period = src.get("sliding_window_pattern")
+    if isinstance(period, int) and period > 0:
+        return period
+    lt = src.get("layer_types")
+    if isinstance(lt, list) and lt:
+        return _period_from_layer_types(lt) or [
+            "full" not in str(t).lower() for t in lt
+        ]
+    return None
+
+
+def _arch_aliases(arch: str) -> tuple:
+    # GGUF emits `falcon-h1`; HF model_type is `falcon_h1`. Normalise both ways.
+    seen = []
+    for a in (arch, arch.replace("-", "_"), arch.replace("_", "-")):
+        if a and a not in seen:
+            seen.append(a)
+    return tuple(seen)
+
+
+def _swa_entry_from_config_obj(cfg) -> Optional[object]:
+    src = getattr(cfg, "text_config", None) or cfg
+    period = getattr(src, "sliding_window_pattern", None)
+    if isinstance(period, int) and period > 0:
+        return period
+    lt = getattr(src, "layer_types", None)
+    if isinstance(lt, list) and lt:
+        return _period_from_layer_types(lt) or [
+            "full" not in str(t).lower() for t in lt
+        ]
+    return None
+
+
+_SWA_PATTERN_SOURCE_RE = re.compile(
+    r"sliding_window_pattern\s*(?::\s*[\w\[\], ]*)?\s*=\s*(\d+)"
+)
+
+
+def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
+    """Default-instantiate the matching Config; on failure, regex-parse
+    its source for `sliding_window_pattern = N`."""
+    try:
+        from transformers.models.auto.configuration_auto import (
+            CONFIG_MAPPING,
+            CONFIG_MAPPING_NAMES,
+        )
+    except Exception:
+        return None
+
+    cfg_class = None
+    for alias in _arch_aliases(arch):
+        if alias in CONFIG_MAPPING_NAMES:
+            try:
+                cfg_class = CONFIG_MAPPING[alias]
+                break
+            except Exception:
+                cfg_class = None
+    if cfg_class is None:
+        return None
+
+    try:
+        if (entry := _swa_entry_from_config_obj(cfg_class())) is not None:
+            return entry
+    except Exception:
+        pass
+
+    import inspect
+
+    candidates = [cfg_class]
+    text_cfg_class = getattr(cfg_class, "sub_configs", {}).get("text_config")
+    if text_cfg_class is not None:
+        candidates.append(text_cfg_class)
+    for cls in candidates:
+        try:
+            src = inspect.getsource(cls)
+        except (OSError, TypeError):
+            continue
+        if m := _SWA_PATTERN_SOURCE_RE.search(src):
+            period = int(m.group(1))
+            if period > 0:
+                return period
+    return None
+
+
+def _resolve_swa_pattern(
+    arch: Optional[str],
+    n_layers: Optional[int],
+    source_repo_candidates: tuple = (),
+    *,
+    allow_network: Optional[bool] = None,
+) -> Optional[list]:
+    if not arch or not n_layers:
+        return None
+    if allow_network is None:
+        allow_network = os.environ.get("UNSLOTH_STUDIO_OFFLINE", "0") not in (
+            "1",
+            "true",
+            "True",
+            "yes",
+        )
+
+    cache = _load_swa_cache()
+
+    def _entry_to_mask(entry):
+        if isinstance(entry, int) and entry > 0:
+            return [(i + 1) % entry != 0 for i in range(n_layers)]
+        if isinstance(entry, list) and entry:
+            return [bool(entry[i % len(entry)]) for i in range(n_layers)]
+        return None
+
+    def _persist(entry):
+        with _SWA_CACHE_LOCK:
+            cache[arch] = entry
+        _save_swa_cache(cache)
+
+    if (entry := cache.get(arch)) is not None:
+        if (mask := _entry_to_mask(entry)) is not None:
+            return mask
+
+    if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
+        return _entry_to_mask(entry)
+
+    entry = _resolve_swa_entry_from_transformers(arch)
+    if entry is not None:
+        _persist(entry)
+        return _entry_to_mask(entry)
+
+    # Tier 3: live HF fetch (with persistent caching of the result)
+    if allow_network:
+        for repo_id in source_repo_candidates:
+            if not repo_id:
+                continue
+            entry = _fetch_swa_entry_from_hf(repo_id)
+            if entry is not None:
+                _persist(entry)
+                return _entry_to_mask(entry)
+
+    return None
+
+
+def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
+    """Strip `https://huggingface.co/owner/name(/...)` to `owner/name`."""
+    if not url or "huggingface.co/" not in url:
+        return None
+    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    parts = tail.split("/")
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+# Model size extraction — lazy import to avoid pulling in transformers
+# at module level.  See PR description for the full explanation.
+def _extract_model_size_b(model_id: str):
+    from utils.models import extract_model_size_b
+
+    return extract_model_size_b(model_id)
+
+
+# ── Pre-compiled patterns for tool XML stripping ─────────────
+_TOOL_CLOSED_PATS = [
+    re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
+    re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
+]
+_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
+    re.compile(r"<tool_call>.*$", re.DOTALL),
+    re.compile(r"<function=\w+>.*$", re.DOTALL),
+]
+
+# ── Pre-compiled patterns for tool-call XML parsing ──────────
+_TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
+_TC_FUNC_START_RE = re.compile(r"<function=(\w+)>\s*")
+_TC_END_TAG_RE = re.compile(r"</tool_call>")
+_TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
+_TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
+_TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
+
+
+_TOOL_TEMPLATE_MARKERS = (
+    "{%- if tools %}",
+    "{%- if tools -%}",
+    "{% if tools %}",
+    "{% if tools -%}",
+    '"role" == "tool"',
+    "'role' == 'tool'",
+    'message.role == "tool"',
+    "message.role == 'tool'",
+)
+
+
+def detect_reasoning_flags(
+    chat_template: Optional[str],
+    model_identifier: Optional[str] = None,
+    *,
+    log_source: Optional[str] = None,
+) -> dict:
+    """Classify a chat template's reasoning and tool-calling capabilities.
+
+    Returns a dict with the same five keys populated by the GGUF sniffer:
+    ``supports_reasoning``, ``reasoning_style``
+    (``"enable_thinking"`` | ``"reasoning_effort"``),
+    ``reasoning_always_on``, ``supports_preserve_thinking``, and
+    ``supports_tools``. Used by both the llama-server backend at load
+    time and the safetensors/transformers paths in ``routes/inference``
+    so the two agree on what the frontend will see.
+    """
+    flags = {
+        "supports_reasoning": False,
+        "reasoning_style": "enable_thinking",
+        "reasoning_always_on": False,
+        "supports_preserve_thinking": False,
+        "supports_tools": False,
+    }
+    if not chat_template:
+        return flags
+    tpl = chat_template
+    prefix = f"{log_source}: " if log_source else ""
+
+    if "enable_thinking" in tpl:
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking"
+        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+    elif "reasoning_effort" in tpl:
+        # gpt-oss / Harmony templates use reasoning_effort
+        # ("low" | "medium" | "high") instead of a boolean.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "reasoning_effort"
+        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+    elif "thinking" in tpl:
+        # DeepSeek uses 'thinking' instead of 'enable_thinking'
+        normalized_id = (model_identifier or "").lower()
+        if "deepseek" in normalized_id:
+            flags["supports_reasoning"] = True
+            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+
+    # Hardcoded <think> tags or reasoning_content in the template mean
+    # thinking is always on (no toggle to disable it).
+    if not flags["supports_reasoning"]:
+        if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
+            flags["supports_reasoning"] = True
+            flags["reasoning_always_on"] = True
+            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+
+    # preserve_thinking is an independent kwarg on some Qwen templates
+    # that keeps historical <think> blocks in prior assistant turns.
+    if "preserve_thinking" in tpl:
+        flags["supports_preserve_thinking"] = True
+        logger.info(f"{prefix}model supports preserve_thinking")
+
+    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+        flags["supports_tools"] = True
+        logger.info(f"{prefix}model supports tool calling")
+
+    return flags
 
 
 class LlamaCppBackend:
@@ -53,23 +439,33 @@ class LlamaCppBackend:
         self._chat_template: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
+        self._reasoning_style: str = "enable_thinking"
+        self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
+        self._speculative_type: Optional[str] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
+        self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
-        # Architecture-aware KV fields (8 new fields for 5-path estimation)
+        # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
         self._kv_value_length: Optional[int] = None
         self._sliding_window: Optional[int] = None
+        self._sliding_window_pattern: Optional[list[bool]] = None
         self._full_attention_interval: Optional[int] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
+        self._kv_key_length_swa: Optional[int] = None
+        self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
         self._ssm_state_size: Optional[int] = None
+        # Last N layers reuse KV from earlier layers and don't allocate
+        # their own cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
+        self._shared_kv_layers: Optional[int] = None
         self._lock = threading.Lock()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
@@ -113,13 +509,113 @@ class LlamaCppBackend:
 
     @property
     def max_context_length(self) -> Optional[int]:
-        """Return the maximum context currently available on this hardware."""
+        """Return the largest context that fits on this hardware at load time.
+
+        This is the "safe zone" threshold the UI renders warnings
+        against. For a model whose weights fit on some GPU subset, it
+        is the binary-search cap from ``_fit_context_to_vram`` for that
+        subset. For a model whose weights exceed 90% of every GPU
+        subset, it is the 4096 fallback -- the spec's default when the
+        model will not fit. The UI slider ceiling is
+        ``native_context_length``; dragging above ``max_context_length``
+        triggers the "might be slower" warning.
+        """
         return self._max_context_length or self._context_length
 
     @property
     def native_context_length(self) -> Optional[int]:
         """Return the model's native context length from GGUF metadata."""
         return self._context_length
+
+    def load_progress(self) -> Optional[dict]:
+        """Return live model-load progress, or None if not loading.
+
+        While llama-server is warming up, its process is typically in
+        kernel state D (disk sleep) mmap'ing the weight shards into
+        page cache before pushing layers to VRAM. During that window
+        ``/api/inference/status`` only reports ``loading``, which gives
+        the UI nothing to display besides a spinner that looks stuck
+        for minutes on large MoE models.
+
+        This method samples ``/proc/<pid>/status VmRSS`` against the
+        sum of the GGUF shard sizes so the UI can render a real bar
+        and compute rate / ETA. Returns ``None`` when no load is in
+        flight (no process, or process already healthy).
+
+        Shape::
+
+            {
+                "phase": "mmap" | "ready",
+                "bytes_loaded": int,   # VmRSS of the llama-server
+                "bytes_total":  int,   # sum of shard file sizes
+                "fraction": float,     # bytes_loaded / bytes_total, 0..1
+            }
+
+        Linux-only in the current implementation. On macOS/Windows the
+        equivalent would be a different API; this returns ``None`` on
+        platforms where ``/proc/<pid>/status`` is unavailable.
+        """
+        proc = self._process
+        if proc is None:
+            return None
+        pid = proc.pid
+        if pid is None:
+            return None
+
+        # Sum up shard sizes (primary + any extras sitting alongside).
+        bytes_total = 0
+        gguf_path = self._gguf_path
+        if gguf_path:
+            primary = Path(gguf_path)
+            try:
+                if primary.is_file():
+                    bytes_total += primary.stat().st_size
+            except OSError:
+                pass
+            # Extra shards live alongside the primary with the same prefix
+            # before the shard index (e.g. ``-00001-of-00004.gguf``).
+            try:
+                parent = primary.parent
+                stem = primary.name
+                m = _SHARD_RE.match(stem)
+                prefix = m.group(1) if m else None
+                if prefix and parent.is_dir():
+                    for sibling in parent.iterdir():
+                        if (
+                            sibling.is_file()
+                            and sibling.name.startswith(prefix)
+                            and sibling.name != stem
+                            and sibling.suffix == ".gguf"
+                        ):
+                            try:
+                                bytes_total += sibling.stat().st_size
+                            except OSError:
+                                pass
+            except OSError:
+                pass
+
+        # Read VmRSS from /proc/<pid>/status. Kilobytes on Linux.
+        bytes_loaded = 0
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = int(line.split()[1])
+                        bytes_loaded = kb * 1024
+                        break
+        except (FileNotFoundError, PermissionError, ValueError, OSError):
+            return None
+
+        phase = "ready" if self._healthy else "mmap"
+        fraction = 0.0
+        if bytes_total > 0:
+            fraction = min(1.0, bytes_loaded / bytes_total)
+        return {
+            "phase": phase,
+            "bytes_loaded": bytes_loaded,
+            "bytes_total": bytes_total,
+            "fraction": round(fraction, 4),
+        }
 
     @property
     def chat_template(self) -> Optional[str]:
@@ -134,8 +630,49 @@ class LlamaCppBackend:
         return self._reasoning_always_on
 
     @property
+    def reasoning_style(self) -> str:
+        return self._reasoning_style
+
+    @property
+    def supports_preserve_thinking(self) -> bool:
+        return self._supports_preserve_thinking
+
+    @property
     def reasoning_default(self) -> bool:
         return self._reasoning_default
+
+    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+        if self._reasoning_style == "reasoning_effort":
+            return {"reasoning_effort": "high" if enable_thinking else "low"}
+        return {"enable_thinking": enable_thinking}
+
+    def _request_reasoning_kwargs(
+        self,
+        enable_thinking: Optional[bool],
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+    ) -> Optional[dict]:
+        """Build chat_template_kwargs from per-request reasoning fields.
+
+        Produces a merged dict covering the active model's reasoning style
+        (``enable_thinking`` or ``reasoning_effort``) plus the independent
+        ``preserve_thinking`` kwarg when the template supports it.
+        """
+        kwargs: dict = {}
+        # Always-on reasoning models hardcode <think> tags in their template
+        # and do not consume enable_thinking / reasoning_effort -- skip.
+        if self._supports_reasoning and not self._reasoning_always_on:
+            if self._reasoning_style == "reasoning_effort":
+                if reasoning_effort in ("low", "medium", "high"):
+                    kwargs["reasoning_effort"] = reasoning_effort
+                elif enable_thinking is not None:
+                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+            else:
+                if enable_thinking is not None:
+                    kwargs["enable_thinking"] = enable_thinking
+        if self._supports_preserve_thinking and preserve_thinking is not None:
+            kwargs["preserve_thinking"] = preserve_thinking
+        return kwargs or None
 
     @property
     def supports_tools(self) -> bool:
@@ -144,6 +681,10 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def speculative_type(self) -> Optional[str]:
+        return self._speculative_type
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -242,14 +783,11 @@ class LlamaCppBackend:
     @staticmethod
     def _get_gguf_size_bytes(model_path: str) -> int:
         """Get total GGUF size in bytes, including split shards."""
-        import re
-
         main = Path(model_path)
         total = main.stat().st_size
 
         # Check for split shards (e.g., model-00001-of-00003.gguf)
-        shard_pat = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
-        m = shard_pat.match(main.name)
+        m = _SHARD_FULL_RE.match(main.name)
         if m:
             prefix, _, num_total = m.group(1), m.group(2), m.group(3)
             sibling_pat = re.compile(
@@ -267,14 +805,24 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU via nvidia-smi.
+        """Query free memory per GPU.
 
-        Returns list of (gpu_index, free_mib) sorted by index.
-        Respects CUDA_VISIBLE_DEVICES if set.
-        Returns empty list if nvidia-smi is not available.
+        Order:
+          1. ``nvidia-smi`` (NVIDIA CUDA hosts) -- respects
+             ``CUDA_VISIBLE_DEVICES``.
+          2. ``torch.cuda.mem_get_info`` -- universal fallback that
+             works on AMD ROCm too because the HIP runtime
+             reuses the entire ``torch.cuda.*`` namespace. Covers the
+             AMD case for issue #5106 (nvidia-smi-only probe silently
+             returned [] on AMD hosts) and also rescues NVIDIA hosts
+             where ``nvidia-smi`` is missing from PATH.
+
+        Returns list of (gpu_index, free_mib) sorted by index. Empty
+        list if no supported GPU is reachable.
         """
         import os
 
+        # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
                 [
@@ -285,31 +833,98 @@ class LlamaCppBackend:
                 capture_output = True,
                 text = True,
                 timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode != 0:
-                return []
-
-            # Parse which GPUs are allowed by existing CUDA_VISIBLE_DEVICES
-            allowed = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None and cvd.strip():
-                try:
-                    allowed = set(int(x.strip()) for x in cvd.split(","))
-                except ValueError:
-                    pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
-
-            gpus = []
-            for line in result.stdout.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) == 2:
-                    idx = int(parts[0].strip())
-                    free_mib = int(parts[1].strip())
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib))
-            return gpus
+            if result.returncode == 0:
+                allowed: Optional[set[int]] = None
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cvd is not None:
+                    try:
+                        # `if x.strip()` filters trailing-comma masks like
+                        # "0,1," which would otherwise raise ValueError on
+                        # an empty token. An explicitly empty mask (CVD="")
+                        # yields an empty `allowed` set so all GPUs are
+                        # filtered out, matching the codebase convention.
+                        allowed = set(
+                            int(x.strip()) for x in cvd.split(",") if x.strip()
+                        )
+                    except ValueError:
+                        pass
+                gpus: list[tuple[int, int]] = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip())
+                        free_mib = int(parts[1].strip())
+                        if allowed is not None and idx not in allowed:
+                            continue
+                        gpus.append((idx, free_mib))
+                # Match the docstring's sort-by-id guarantee. nvidia-smi
+                # almost always returns sorted output, but driver order
+                # is not formally guaranteed.
+                gpus.sort(key = lambda g: g[0])
+                if gpus:
+                    return gpus
         except Exception as e:
-            logger.debug(f"Failed to query GPU free memory via nvidia-smi: {e}")
+            logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        try:
+            import torch
+
+            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
+                return []
+            if not hasattr(torch.cuda, "mem_get_info"):
+                return []
+            # torch.cuda enumerates GPUs RELATIVE to the visibility mask.
+            # On NVIDIA builds the mask is CUDA_VISIBLE_DEVICES; on AMD
+            # ROCm builds it is HIP_VISIBLE_DEVICES (or ROCR_VISIBLE_DEVICES
+            # if HIP is unset). Downstream we feed these IDs back into the
+            # llama-server subprocess as CVD, so we must translate visible
+            # ordinals back to physical indices first; otherwise launching
+            # with ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
+            # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
+            physical_ids: Optional[list[int]] = None
+            # Match the codebase convention in
+            # ``utils/hardware/hardware.py::_get_parent_visible_gpu_spec``:
+            # treat an explicitly empty mask (``HIP_VISIBLE_DEVICES=""``)
+            # as "set to no GPUs" rather than falling through to the next
+            # var. ``or`` would coerce empty string to falsy and silently
+            # promote the wrong source.
+            if getattr(torch.version, "hip", None) is not None:
+                hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+                rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+                cvd = (
+                    hip_v
+                    if hip_v is not None
+                    else rocr_v
+                    if rocr_v is not None
+                    else os.environ.get("CUDA_VISIBLE_DEVICES")
+                )
+            else:
+                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    # Empty mask (CVD="") yields an empty list so the
+                    # below loop produces no GPUs, consistent with the
+                    # nvidia-smi path and utils/hardware/hardware.py.
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+            gpus = []
+            for ordinal in range(torch.cuda.device_count()):
+                free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
+                idx = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                gpus.append((idx, free_bytes // (1024 * 1024)))
+            # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
+            return sorted(gpus, key = lambda g: g[0])
+        except Exception as e:
+            logger.debug(f"torch GPU probe failed: {e}")
             return []
 
     @staticmethod
@@ -369,13 +984,29 @@ class LlamaCppBackend:
         # New-style: need both explicit key AND value dimensions
         if self._kv_key_length is not None and self._kv_value_length is not None:
             return True
-        # Legacy: need embedding_length + head count
+        # Legacy: need embedding_length + a head count (scalar or per-layer).
         return self._embedding_length is not None and (
-            self._n_kv_heads is not None or self._n_heads is not None
+            self._n_kv_heads is not None
+            or self._n_heads is not None
+            or self._n_kv_heads_by_layer is not None
         )
 
+    def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
+        if self._n_kv_heads_by_layer is not None and layer_idx < len(
+            self._n_kv_heads_by_layer
+        ):
+            return self._n_kv_heads_by_layer[layer_idx]
+        return fallback
+
     def _estimate_kv_cache_bytes(
-        self, n_ctx: int, cache_type_kv: Optional[str] = None
+        self,
+        n_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        ctx_checkpoints: int = 0,
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
 
@@ -386,12 +1017,34 @@ class LlamaCppBackend:
           4. GQA      -- standard full KV with explicit key/value dimensions
           5. Legacy   -- fallback using embed // n_heads
 
+        Server-flag knobs (mirror llama-server's CLI):
+          swa_full        -- ``--swa-full``: force SWA layers to cache the
+                             full ``n_ctx`` (collapses path 3 to path 4
+                             sizing for the SWA layers).
+          n_parallel      -- ``--parallel``: number of server slots.
+                             Verified empirically against llama-server:
+                             non-SWA layers stay constant (cells split
+                             across slots), SWA layers scale linearly
+                             (per-slot window).
+          kv_unified      -- ``--kv-unified`` (default on): retained for
+                             API forward-compat. Currently a no-op for
+                             memory math because the unified buffer total
+                             matches per-slot buffers in measured cases.
+          ctx_checkpoints -- ``--ctx-checkpoints``: SWA snapshot count per
+                             slot (PR #15293). Each snapshot stores one
+                             sliding-window of state per SWA layer.
+
         Returns 0 if metadata is insufficient for estimation.
         """
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
         n_layers = self._n_layers  # type: ignore[assignment]
+        # Gemma 3n / Gemma 4 reuse KV from earlier layers in the last
+        # ``shared_kv_layers`` blocks -- those don't allocate their own
+        # cache.  Floor at 1 so a misconfigured GGUF can't zero out KV.
+        shared = self._shared_kv_layers or 0
+        n_layers_kv = max(1, n_layers - shared)
         n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
 
         # Bytes per element depends on KV cache quantization
@@ -407,6 +1060,8 @@ class LlamaCppBackend:
             "iq4_nl": 0.5625,
         }.get(cache_type_kv or "f16", 2.0)
 
+        slots = max(1, n_parallel)
+
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # MLA stores one compressed KV latent per token/layer (shared across heads).
         # V is reconstructed from the latent on the fly -- no separate V cache.
@@ -417,7 +1072,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers * n_ctx * n_kv_mla * key_len * bpe)
+            return int(n_layers_kv * n_ctx * n_kv_mla * key_len * bpe)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -435,11 +1090,19 @@ class LlamaCppBackend:
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
-        # Path 3: Sliding Window (Gemma-3, gpt-oss)
-        # SWA layers only cache min(ctx, window) tokens; global layers cache full ctx.
-        # Most SWA architectures use few global layers (e.g., Gemma-3 uses 1 in 6).
-        # Without an explicit field, we conservatively assume 1/4 of layers are global
-        # which is still far more accurate than the legacy formula (which ignores SWA).
+        # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
+        # Pattern is filled in by the resolver at parse time; if absent,
+        # falls through to the legacy 1/4-global heuristic below.
+        # Per-layer-type ``--parallel N`` accounting (verified empirically
+        # against ``llama-server``):
+        #   * non-SWA layers:    total cells = n_ctx, partitioned across
+        #                         slots -> total memory CONSTANT in slots.
+        #   * SWA layers:         per-slot cells = 2 * sliding_window
+        #                         (capped at n_ctx and at per_slot_ctx
+        #                         when ctx is split among many slots) ->
+        #                         total memory grows LINEARLY in slots.
+        # ``--swa-full`` forces full n_ctx for SWA layers instead.
+        # ``--ctx-checkpoints N`` adds N snapshots per SWA layer per slot.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -447,20 +1110,72 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
-            n_global = max(1, n_layers // 4)
-            n_swa = n_layers - n_global
+            per_slot_ctx = max(1, n_ctx // slots)
+            # ``--swa-full`` makes SWA layers cache the full context just
+            # like non-SWA: cells get partitioned across slots, so per-slot
+            # cells = per_slot_ctx and the slots*per-slot product collapses
+            # back to the constant ``n_ctx`` total.  Otherwise SWA caches
+            # 2*sliding_window per slot, clamped at the per-slot ctx.
+            swa_cells_per_slot = (
+                per_slot_ctx if swa_full else min(n_ctx, 2 * swa, per_slot_ctx)
+            )
+            key_len_swa = self._kv_key_length_swa or key_len
+            val_len_swa = self._kv_value_length_swa or val_len
+            if self._sliding_window_pattern is not None:
+                global_bytes = 0.0  # constant across slots
+                swa_bytes_per_slot = 0.0  # multiplied by slots
+                checkpoint_extra_per_slot = 0.0
+                # Iterate only over layers that allocate their own KV;
+                # the trailing ``shared`` layers reuse earlier caches.
+                for layer_idx in range(n_layers_kv):
+                    layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
+                    is_swa = (
+                        layer_idx < len(self._sliding_window_pattern)
+                        and self._sliding_window_pattern[layer_idx]
+                    )
+                    if is_swa:
+                        swa_bytes_per_slot += (
+                            swa_cells_per_slot
+                            * layer_n_kv
+                            * (key_len_swa + val_len_swa)
+                            * bpe
+                        )
+                        if ctx_checkpoints > 0 and not swa_full:
+                            checkpoint_extra_per_slot += (
+                                ctx_checkpoints
+                                * swa
+                                * layer_n_kv
+                                * (key_len_swa + val_len_swa)
+                                * bpe
+                            )
+                    else:
+                        global_bytes += n_ctx * layer_n_kv * (key_len + val_len) * bpe
+                return int(
+                    global_bytes
+                    + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
+                )
+            n_global = max(1, n_layers_kv // 4)
+            n_swa = n_layers_kv - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
+            kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
+            global_bytes = n_global * n_ctx * kv_per_token
+            swa_bytes_per_slot = n_swa * swa_cells_per_slot * kv_per_token_swa
+            checkpoint_extra_per_slot = (
+                ctx_checkpoints * n_swa * swa * kv_per_token_swa
+                if ctx_checkpoints > 0 and not swa_full
+                else 0.0
+            )
             return int(
-                n_global * n_ctx * kv_per_token + n_swa * min(n_ctx, swa) * kv_per_token
+                global_bytes + slots * (swa_bytes_per_slot + checkpoint_extra_per_slot)
             )
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            return int(n_layers * n_ctx * n_kv * (key_len + val_len) * bpe)
+            return int(n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe)
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-        return int(2 * n_kv * head_dim * n_layers * n_ctx * bpe)
+        return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
 
     def _fit_context_to_vram(
         self,
@@ -469,6 +1184,12 @@ class LlamaCppBackend:
         model_size_bytes: int,
         cache_type_kv: Optional[str] = None,
         min_ctx: int = 4096,
+        *,
+        swa_full: bool = False,
+        n_parallel: int = 1,
+        kv_unified: bool = True,
+        ctx_checkpoints: int = 0,
+        kv_on_gpu: bool = True,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
@@ -476,6 +1197,11 @@ class LlamaCppBackend:
         threshold -- 10% reserved for compute buffers, CUDA context,
         scratch space, flash-attn workspace, etc.).
         If the model weights alone don't fit, returns min_ctx unchanged.
+
+        ``kv_on_gpu`` mirrors ``--kv-offload`` (default on). When False
+        the KV cache lives in CPU RAM and doesn't compete with weights
+        for VRAM; the requested context is honored verbatim. The other
+        keyword args mirror ``_estimate_kv_cache_bytes``.
         """
         if not self._can_estimate_kv():
             logger.debug(
@@ -485,11 +1211,22 @@ class LlamaCppBackend:
             )
             return requested_ctx
 
+        # KV lives off-GPU: no VRAM accounting needed for the cache itself.
+        if not kv_on_gpu:
+            return requested_ctx
+
+        kv_kwargs = dict(
+            swa_full = swa_full,
+            n_parallel = n_parallel,
+            kv_unified = kv_unified,
+            ctx_checkpoints = ctx_checkpoints,
+        )
+
         budget_bytes = available_mib * 1024 * 1024 * 0.90
         model_footprint = model_size_bytes
 
         # Check if requested context already fits
-        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv)
+        kv = self._estimate_kv_cache_bytes(requested_ctx, cache_type_kv, **kv_kwargs)
         if model_footprint + kv <= budget_bytes:
             return requested_ctx
 
@@ -511,7 +1248,7 @@ class LlamaCppBackend:
         best = effective_min
         while lo <= hi:
             mid = (lo + hi) // 2
-            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv)
+            kv = self._estimate_kv_cache_bytes(mid, cache_type_kv, **kv_kwargs)
             if kv <= remaining:
                 best = mid
                 lo = mid + 1
@@ -539,8 +1276,6 @@ class LlamaCppBackend:
 
         Returns (first_shard_filename, total_size_bytes) or None if nothing fits.
         """
-        import re
-
         try:
             from huggingface_hub import get_paths_info, list_repo_files
 
@@ -556,10 +1291,9 @@ class LlamaCppBackend:
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group files by variant: shards share a prefix before -NNNNN-of-NNNNN
-            shard_pat = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
             variants: dict[str, list[str]] = {}
             for f in gguf_files:
-                m = shard_pat.match(f)
+                m = _SHARD_RE.match(f)
                 key = m.group(1) if m else f
                 variants.setdefault(key, []).append(f)
 
@@ -647,6 +1381,19 @@ class LlamaCppBackend:
                 for _ in range(alen):
                     LlamaCppBackend._gguf_skip_value(f, atype)
 
+    @staticmethod
+    def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
+        if atype == 4:  # UINT32
+            return [struct.unpack("<I", f.read(4))[0] for _ in range(alen)]
+        if atype == 5:  # INT32
+            return [struct.unpack("<i", f.read(4))[0] for _ in range(alen)]
+        if atype == 7:  # BOOL
+            return [struct.unpack("<?", f.read(1))[0] for _ in range(alen)]
+
+        for _ in range(alen):
+            LlamaCppBackend._gguf_skip_value(f, atype)
+        return None
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -659,26 +1406,50 @@ class LlamaCppBackend:
         self._chat_template = None
         self._supports_reasoning = False
         self._reasoning_always_on = False
+        self._reasoning_style = "enable_thinking"
+        self._reasoning_default = True
+        self._supports_preserve_thinking = False
         self._supports_tools = False
         self._n_layers = None
         self._n_kv_heads = None
+        self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
         self._kv_key_length = None
         self._kv_value_length = None
         self._sliding_window = None
+        self._sliding_window_pattern = None
         self._full_attention_interval = None
         self._kv_lora_rank = None
         self._key_length_mla = None
+        self._kv_key_length_swa = None
+        self._kv_value_length_swa = None
         self._ssm_inner_size = None
         self._ssm_state_size = None
+        self._shared_kv_layers = None
 
         try:
-            WANTED = {"general.architecture", "tokenizer.chat_template"}
+            WANTED = {
+                "general.architecture",
+                "tokenizer.chat_template",
+                # Source-repo hints for the SWA resolver's HF fallback.
+                "general.source.huggingface.repository",
+                "general.source.url",
+                "general.source.repo_url",
+                "general.base_model.0.repo_url",
+                "general.base_model.0.organization",
+                "general.base_model.0.name",
+                "general.basename",
+                "general.organization",
+                "general.size_label",
+                "general.finetune",
+            }
             # Additional arch-specific keys are added dynamically once
             # we know the architecture name.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            sliding_window_pattern_period: Optional[int] = None
+            general: dict[str, str] = {}
 
             with open(gguf_path, "rb") as f:
                 magic = struct.unpack("<I", f.read(4))[0]
@@ -688,49 +1459,141 @@ class LlamaCppBackend:
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
 
                 for _ in range(kv_count):
-                    key_len = struct.unpack("<Q", f.read(8))[0]
-                    key = f.read(key_len).decode("utf-8")
-                    vtype = struct.unpack("<I", f.read(4))[0]
+                    # Tolerate truncated input (e.g., a partial header
+                    # fetched via HTTP byte-range): bail out gracefully
+                    # so the resolver fallback still runs on whatever
+                    # we did manage to parse.
+                    try:
+                        key_len_bytes = f.read(8)
+                        if len(key_len_bytes) < 8:
+                            break
+                        key_len = struct.unpack("<Q", key_len_bytes)[0]
+                        key_bytes = f.read(key_len)
+                        if len(key_bytes) < key_len:
+                            break
+                        key = key_bytes.decode("utf-8")
+                        vtype_bytes = f.read(4)
+                        if len(vtype_bytes) < 4:
+                            break
+                        vtype = struct.unpack("<I", vtype_bytes)[0]
+                    except (struct.error, UnicodeDecodeError):
+                        break
 
-                    if key in WANTED or key in arch_keys:
-                        # Read this value
-                        if vtype == 8:  # STRING
-                            slen = struct.unpack("<Q", f.read(8))[0]
-                            val_s = f.read(slen).decode("utf-8")
-                            if key == "general.architecture":
-                                arch = val_s
-                                # Register arch-specific keys to look for
-                                arch_keys = {
-                                    f"{arch}.context_length": "context_length",
-                                    f"{arch}.block_count": "n_layers",
-                                    f"{arch}.attention.head_count_kv": "n_kv_heads",
-                                    f"{arch}.attention.head_count": "n_heads",
-                                    f"{arch}.embedding_length": "embedding_length",
-                                    # Architecture-aware KV cache fields
-                                    f"{arch}.attention.key_length": "kv_key_length",
-                                    f"{arch}.attention.value_length": "kv_value_length",
-                                    f"{arch}.attention.sliding_window": "sliding_window",
-                                    f"{arch}.full_attention_interval": "full_attention_interval",
-                                    f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
-                                    f"{arch}.attention.key_length_mla": "key_length_mla",
-                                    f"{arch}.ssm.inner_size": "ssm_inner_size",
-                                    f"{arch}.ssm.state_size": "ssm_state_size",
-                                }
-                            elif key == "tokenizer.chat_template":
-                                self._chat_template = val_s
-                        elif vtype in (4, 10):  # UINT32 or UINT64
-                            val_i = (
-                                struct.unpack("<I", f.read(4))[0]
-                                if vtype == 4
-                                else struct.unpack("<Q", f.read(8))[0]
-                            )
-                            attr = arch_keys.get(key)
-                            if attr:
-                                setattr(self, f"_{attr}", val_i)
+                    try:
+                        if key in WANTED or key in arch_keys:
+                            if vtype == 8:  # STRING
+                                slen = struct.unpack("<Q", f.read(8))[0]
+                                val_s = f.read(slen).decode("utf-8")
+                                if (
+                                    key.startswith("general.")
+                                    and key != "general.architecture"
+                                ):
+                                    general[key] = val_s
+                                if key == "general.architecture":
+                                    arch = val_s
+                                    arch_keys = {
+                                        f"{arch}.context_length": "context_length",
+                                        f"{arch}.block_count": "n_layers",
+                                        f"{arch}.attention.head_count_kv": "n_kv_heads",
+                                        f"{arch}.attention.head_count": "n_heads",
+                                        f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.attention.key_length": "kv_key_length",
+                                        f"{arch}.attention.value_length": "kv_value_length",
+                                        f"{arch}.attention.sliding_window": "sliding_window",
+                                        f"{arch}.attention.sliding_window_pattern": "sliding_window_pattern",
+                                        f"{arch}.full_attention_interval": "full_attention_interval",
+                                        f"{arch}.attention.kv_lora_rank": "kv_lora_rank",
+                                        f"{arch}.attention.key_length_mla": "key_length_mla",
+                                        f"{arch}.attention.key_length_swa": "kv_key_length_swa",
+                                        f"{arch}.attention.value_length_swa": "kv_value_length_swa",
+                                        f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
+                                        f"{arch}.ssm.inner_size": "ssm_inner_size",
+                                        f"{arch}.ssm.state_size": "ssm_state_size",
+                                    }
+                                elif key == "tokenizer.chat_template":
+                                    self._chat_template = val_s
+                            elif vtype in (4, 10):  # UINT32 or UINT64
+                                val_i = (
+                                    struct.unpack("<I", f.read(4))[0]
+                                    if vtype == 4
+                                    else struct.unpack("<Q", f.read(8))[0]
+                                )
+                                attr = arch_keys.get(key)
+                                if attr:
+                                    if attr == "sliding_window_pattern":
+                                        sliding_window_pattern_period = val_i
+                                    else:
+                                        setattr(self, f"_{attr}", val_i)
+                            elif vtype == 9:  # ARRAY
+                                atype = struct.unpack("<I", f.read(4))[0]
+                                alen = struct.unpack("<Q", f.read(8))[0]
+                                val_a = self._gguf_read_array_value(f, atype, alen)
+                                attr = arch_keys.get(key)
+                                if attr == "n_kv_heads" and val_a is not None:
+                                    self._n_kv_heads_by_layer = [int(x) for x in val_a]
+                                    if self._n_kv_heads is None and val_a:
+                                        self._n_kv_heads = max(int(x) for x in val_a)
+                                elif (
+                                    attr == "sliding_window_pattern"
+                                    and val_a is not None
+                                ):
+                                    self._sliding_window_pattern = [
+                                        bool(x) for x in val_a
+                                    ]
+                                    sliding_window_pattern_period = None
+                            else:
+                                self._gguf_skip_value(f, vtype)
                         else:
                             self._gguf_skip_value(f, vtype)
-                    else:
-                        self._gguf_skip_value(f, vtype)
+                    except (struct.error, UnicodeDecodeError):
+                        # Truncated input (e.g., HTTP byte-range fetch
+                        # of just the GGUF header); break so the
+                        # resolver fallback still runs on what we have.
+                        break
+
+            # Expand a scalar period straight from the GGUF first.
+            if (
+                self._sliding_window_pattern is None
+                and sliding_window_pattern_period
+                and self._n_layers
+            ):
+                self._sliding_window_pattern = [
+                    (i + 1) % sliding_window_pattern_period != 0
+                    for i in range(self._n_layers)
+                ]
+
+            # Otherwise hand off to the resolver (cache / bootstrap /
+            # transformers / HF). See `_resolve_swa_pattern`.
+            if (
+                self._sliding_window_pattern is None
+                and self._sliding_window
+                and self._n_layers
+            ):
+                hf_repo_candidates = (
+                    general.get("general.source.huggingface.repository"),
+                    _hf_repo_from_url(general.get("general.source.url")),
+                    _hf_repo_from_url(general.get("general.source.repo_url")),
+                    _hf_repo_from_url(general.get("general.base_model.0.repo_url")),
+                    (
+                        f"{general['general.base_model.0.organization']}/"
+                        f"{general['general.base_model.0.name']}".replace(" ", "-")
+                        if general.get("general.base_model.0.organization")
+                        and general.get("general.base_model.0.name")
+                        else None
+                    ),
+                    (
+                        f"{general['general.organization']}/"
+                        f"{general['general.basename']}".replace(" ", "-")
+                        if general.get("general.organization")
+                        and general.get("general.basename")
+                        else None
+                    ),
+                )
+                self._sliding_window_pattern = _resolve_swa_pattern(
+                    arch,
+                    self._n_layers,
+                    hf_repo_candidates,
+                )
 
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
@@ -739,46 +1602,16 @@ class LlamaCppBackend:
                     f"GGUF metadata: chat_template={len(self._chat_template)} chars"
                 )
                 # Detect thinking/reasoning support from chat template
-                tpl = self._chat_template
-                if "enable_thinking" in tpl:
-                    self._supports_reasoning = True
-                    logger.info(
-                        "GGUF metadata: model supports reasoning (enable_thinking)"
-                    )
-                elif "thinking" in tpl:
-                    # DeepSeek uses 'thinking' instead of 'enable_thinking'
-                    normalized_id = (self._model_identifier or "").lower()
-                    if "deepseek" in normalized_id:
-                        self._supports_reasoning = True
-                        logger.info(
-                            "GGUF metadata: model supports reasoning (DeepSeek thinking)"
-                        )
-                # Models with hardcoded <think> tags or reasoning_content
-                # in their chat template always produce thinking output
-                # (no toggle to disable it).
-                if not self._supports_reasoning:
-                    if (
-                        "<think>" in tpl
-                        and "</think>" in tpl
-                        or "reasoning_content" in tpl
-                    ):
-                        self._supports_reasoning = True
-                        self._reasoning_always_on = True
-                        logger.info(
-                            "GGUF metadata: model always reasons (<think> tags in template)"
-                        )
-                # Detect tool calling support from chat template
-                tool_markers = [
-                    "{%- if tools %}",
-                    "{% if tools %}",
-                    '"role" == "tool"',
-                    "'role' == 'tool'",
-                    'message.role == "tool"',
-                    "message.role == 'tool'",
-                ]
-                if any(marker in tpl for marker in tool_markers):
-                    self._supports_tools = True
-                    logger.info("GGUF metadata: model supports tool calling")
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF metadata",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
 
@@ -810,7 +1643,6 @@ class LlamaCppBackend:
         gguf_extra_shards: list[str] = []
         if hf_variant:
             try:
-                import re
                 from huggingface_hub import list_repo_files
 
                 files = list_repo_files(hf_repo, token = hf_token)
@@ -825,11 +1657,10 @@ class LlamaCppBackend:
                 )
                 if gguf_files:
                     gguf_filename = gguf_files[0]
-                    shard_pat = re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$")
-                    m = shard_pat.match(gguf_filename)
+                    m = _SHARD_FULL_RE.match(gguf_filename)
                     if m:
                         prefix = m.group(1)
-                        total = m.group(2)
+                        total = m.group(3)
                         sibling_pat = re.compile(
                             r"^"
                             + re.escape(prefix)
@@ -852,10 +1683,34 @@ class LlamaCppBackend:
         try:
             import os
 
-            from huggingface_hub import get_paths_info
+            from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
-            total_download_bytes = sum((p.size or 0) for p in path_infos)
+            total_bytes = sum((p.size or 0) for p in path_infos)
+
+            # Subtract bytes already present in the HF cache so we only
+            # preflight against what we actually have to download. Without
+            # this, re-loading a cached large model (e.g. MiniMax-M2.7-GGUF
+            # at 131 GB) fails cold whenever free disk is below the full
+            # weight footprint, even though nothing needs downloading.
+            already_cached_bytes = 0
+            for p in path_infos:
+                if not p.size:
+                    continue
+                try:
+                    cached_path = try_to_load_from_cache(hf_repo, p.path)
+                except Exception:
+                    cached_path = None
+                if isinstance(cached_path, str) and os.path.exists(cached_path):
+                    try:
+                        on_disk = os.path.getsize(cached_path)
+                    except OSError:
+                        on_disk = 0
+                    # Count as satisfied only when the full blob is present.
+                    if on_disk >= p.size:
+                        already_cached_bytes += p.size
+
+            total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
             if total_download_bytes > 0:
                 cache_dir = os.environ.get(
@@ -867,9 +1722,11 @@ class LlamaCppBackend:
 
                 total_gb = total_download_bytes / (1024**3)
                 free_gb = free_bytes / (1024**3)
+                cached_gb = already_cached_bytes / (1024**3)
 
                 logger.info(
-                    f"GGUF download: {total_gb:.1f} GB needed, "
+                    f"GGUF download: {total_gb:.1f} GB needed "
+                    f"({cached_gb:.1f} GB already cached), "
                     f"{free_gb:.1f} GB free on disk"
                 )
 
@@ -886,10 +1743,7 @@ class LlamaCppBackend:
                             f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                         )
                         gguf_filename = fallback_file
-                        import re as _re
-
-                        _shard_pat = _re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
-                        _m = _shard_pat.match(gguf_filename)
+                        _m = _SHARD_RE.match(gguf_filename)
                         _prefix = _m.group(1) if _m else None
                         if _prefix:
                             gguf_extra_shards = sorted(
@@ -975,7 +1829,7 @@ class LlamaCppBackend:
             # Prefer F16 variant
             target = None
             for f in mmproj_files:
-                if "f16" in f.lower():
+                if f.lower().endswith("-f16.gguf"):
                     target = f
                     break
             if target is None:
@@ -1011,8 +1865,11 @@ class LlamaCppBackend:
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
+        speculative_type: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
+        n_parallel: int = 1,
+        extra_args: Optional[List[str]] = None,
     ) -> bool:
         """
         Start llama-server with a GGUF model.
@@ -1135,43 +1992,38 @@ class LlamaCppBackend:
                                 pool_mib,
                                 model_size,
                                 cache_type_kv,
+                                n_parallel = n_parallel,
                             )
-                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv, n_parallel = n_parallel
+                            )
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.90:
                                 best_cap = max(best_cap, capped)
                         if best_cap > 0:
                             max_available_ctx = best_cap
+                        else:
+                            # Weights exceed 90% of every GPU subset's free
+                            # memory, so there is no fitting context. Anchor
+                            # the UI's "safe zone" threshold at 4096 (the
+                            # spec's default when the model cannot fit) so
+                            # the ctx slider shows the "might be slower"
+                            # warning as soon as the user drags above the
+                            # fallback default instead of never.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
 
                     if explicit_ctx:
-                        # Try to honor the user's requested context exactly.
+                        # Honor the user's requested context verbatim. If it
+                        # fits, pin GPUs and skip --fit; if it doesn't, ship
+                        # -c <user_ctx> --fit on and let llama-server flex
+                        # -ngl (CPU layer offload). The UI is expected to
+                        # have surfaced the "might be slower" warning before
+                        # the user submitted a ctx above the fit ceiling.
                         requested_total = model_size + self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv
+                            effective_ctx, cache_type_kv, n_parallel = n_parallel
                         )
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
-
-                        # Full context doesn't fit anywhere -- cap it on the
-                        # best GPU subset we can find (fewest GPUs first).
-                        if use_fit:
-                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                            for n_gpus in range(1, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
-                                pool_mib = sum(free for _, free in subset)
-                                capped = self._fit_context_to_vram(
-                                    effective_ctx,
-                                    pool_mib,
-                                    model_size,
-                                    cache_type_kv,
-                                )
-                                kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv
-                                )
-                                total_mib = (model_size + kv) / (1024 * 1024)
-                                if total_mib <= pool_mib * 0.90:
-                                    effective_ctx = capped
-                                    gpu_indices = sorted(idx for idx, _ in subset)
-                                    use_fit = False
-                                    break
+                        # No silent shrink: effective_ctx stays == n_ctx.
                     else:
                         # Auto context: prefer fewer GPUs, cap context to fit.
                         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
@@ -1183,14 +2035,24 @@ class LlamaCppBackend:
                                 pool_mib,
                                 model_size,
                                 cache_type_kv,
+                                n_parallel = n_parallel,
                             )
-                            kv = self._estimate_kv_cache_bytes(capped, cache_type_kv)
+                            kv = self._estimate_kv_cache_bytes(
+                                capped, cache_type_kv, n_parallel = n_parallel
+                            )
                             total_mib = (model_size + kv) / (1024 * 1024)
                             if total_mib <= pool_mib * 0.90:
                                 effective_ctx = capped
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
+                        else:
+                            # No subset can host the weights (weights alone
+                            # exceed 90% of every pool). Per spec, default
+                            # the UI-visible context to 4096 and let
+                            # --fit on flex -ngl so llama-server offloads
+                            # layers to CPU RAM.
+                            effective_ctx = min(4096, effective_ctx)
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check.
@@ -1201,9 +2063,18 @@ class LlamaCppBackend:
                         model_size_gb = round(model_size / (1024**3), 2),
                     )
                     gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                    if use_fit and not explicit_ctx:
+                        # Weights don't fit on any subset. Default the UI to
+                        # 4096 so the slider doesn't land on an unusable native
+                        # context. --fit on will flex -ngl at runtime.
+                        effective_ctx = (
+                            min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        )
 
                 if effective_ctx < original_ctx:
-                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                    kv_est = self._estimate_kv_cache_bytes(
+                        effective_ctx, cache_type_kv, n_parallel = n_parallel
+                    )
                     logger.info(
                         f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
                         f"(model: {model_size / (1024**3):.1f} GB, "
@@ -1211,7 +2082,7 @@ class LlamaCppBackend:
                     )
 
                 kv_cache_bytes = self._estimate_kv_cache_bytes(
-                    effective_ctx, cache_type_kv
+                    effective_ctx, cache_type_kv, n_parallel = n_parallel
                 )
                 logger.info(
                     f"GGUF size: {model_size / (1024**3):.1f} GB, "
@@ -1233,9 +2104,11 @@ class LlamaCppBackend:
                 "-c",
                 str(effective_ctx) if effective_ctx > 0 else "0",
                 "--parallel",
-                "1",  # Single-user studio, saves VRAM
+                str(n_parallel),
                 "--flash-attn",
                 "on",  # Force flash attention for speed
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                "--no-context-shift",
             ]
 
             if use_fit:
@@ -1244,8 +2117,10 @@ class LlamaCppBackend:
                 # Model fits on selected GPU(s) -- offload all layers
                 cmd.extend(["-ngl", "-1"])
 
-            if n_threads is not None:
-                cmd.extend(["--threads", str(n_threads)])
+            # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
+            # do not inherit llama-server's internal default, which has historically
+            # varied (hardware concurrency incl. hyperthreads on some builds).
+            cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
 
             # Always enable Jinja chat template rendering for proper template support
             cmd.extend(["--jinja"])
@@ -1271,9 +2146,71 @@ class LlamaCppBackend:
             else:
                 self._cache_type_kv = None
 
+            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+            # variable draft lengths.  Helps most when the model repeats
+            # existing text (code refactoring, summarization, reasoning).
+            # For general chat with low repetition, overhead is ~5 ms.
+            #
+            # Benchmarks from upstream llama.cpp speculative-decoding PRs:
+            #   Scenario                        | Without | With    | Speedup
+            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+            #
+            # Params from llama.cpp docs (docs/speculative.md):
+            #   --spec-ngram-size-n 24  (small n not recommended)
+            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+            #     dense models can reduce these)
+            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            # ``"default"`` -> let llama-server pick a sensible spec
+            # config via ``--spec-default``. Explicit type names are
+            # passed through with the manual draft tuning we've shipped
+            # historically so power users keep their overrides.
+            _valid_spec_types = {"ngram-simple", "ngram-mod"}
+            normalized_spec = (
+                speculative_type.lower().strip() if speculative_type else None
+            )
+            if normalized_spec and normalized_spec != "off" and not is_vision:
+                if normalized_spec == "default":
+                    cmd.append("--spec-default")
+                    self._speculative_type = "default"
+                elif normalized_spec in _valid_spec_types:
+                    cmd.extend(["--spec-type", normalized_spec])
+                    if normalized_spec == "ngram-mod":
+                        cmd.extend(
+                            [
+                                "--spec-ngram-size-n",
+                                "24",
+                                "--draft-min",
+                                "48",
+                                "--draft-max",
+                                "64",
+                            ]
+                        )
+                    self._speculative_type = normalized_spec
+                else:
+                    self._speculative_type = None
+            else:
+                self._speculative_type = None
+
             # Apply custom chat template override if provided
             if chat_template_override:
                 import tempfile
+
+                self._chat_template = chat_template_override
+                flags = detect_reasoning_flags(
+                    self._chat_template,
+                    self._model_identifier,
+                    log_source = "GGUF chat template override",
+                )
+                self._supports_reasoning = flags["supports_reasoning"]
+                self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_always_on = flags["reasoning_always_on"]
+                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._supports_tools = flags["supports_tools"]
 
                 self._chat_template_file = tempfile.NamedTemporaryFile(
                     mode = "w",
@@ -1289,30 +2226,25 @@ class LlamaCppBackend:
                 )
 
             # For reasoning models, set default thinking mode.
-            # Qwen3.5 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
             # Only 9B and larger enable thinking.
-            if self._supports_reasoning:
-                import re
-
+            # Always-on templates ignore the kwarg entirely, so skip.
+            if self._supports_reasoning and not self._reasoning_always_on:
                 thinking_default = True
                 mid = (model_identifier or "").lower()
-                if "qwen3.5" in mid:
-                    # Extract size like "0.8b", "4b", "35b" etc.
-                    size_match = re.search(r"(\d+\.?\d*)\s*b", mid)
-                    if size_match:
-                        size_val = float(size_match.group(1))
-                        if size_val < 9:
-                            thinking_default = False
+                if "qwen3.5" in mid or "qwen3.6" in mid:
+                    size_val = _extract_model_size_b(mid)
+                    if size_val is not None and size_val < 9:
+                        thinking_default = False
                 self._reasoning_default = thinking_default
+                reasoning_kw = self._reasoning_kwargs(thinking_default)
                 cmd.extend(
                     [
                         "--chat-template-kwargs",
-                        json.dumps({"enable_thinking": thinking_default}),
+                        json.dumps(reasoning_kw),
                     ]
                 )
-                logger.info(
-                    f"Reasoning model: enable_thinking={thinking_default} by default"
-                )
+                logger.info(f"Reasoning model: {reasoning_kw} by default")
 
             if mmproj_path:
                 if not Path(mmproj_path).is_file():
@@ -1332,6 +2264,17 @@ class LlamaCppBackend:
             else:
                 self._api_key = None
 
+            # User-supplied pass-through args go last so llama.cpp's
+            # last-wins flag parsing lets the user override Studio's
+            # auto-set tier-2 flags (e.g. --cache-type-k, --spec-type).
+            # The route layer has already validated this list against
+            # the managed-flag denylist via validate_extra_args().
+            if extra_args:
+                cmd.extend(str(a) for a in extra_args)
+                logger.info(
+                    f"Appending user extra args to llama-server: {list(extra_args)}"
+                )
+
             _log_cmd = list(cmd)
             if "--api-key" in _log_cmd:
                 _ki = _log_cmd.index("--api-key") + 1
@@ -1343,7 +2286,7 @@ class LlamaCppBackend:
             import os
             import sys
 
-            env = os.environ.copy()
+            env = child_env_without_native_path_secret()
             binary_dir = str(Path(binary).parent)
 
             if sys.platform == "win32":
@@ -1427,9 +2370,29 @@ class LlamaCppBackend:
                     f"{new_ld}:{existing_ld}" if existing_ld else new_ld
                 )
 
-            # Pin to selected GPU(s) via CUDA_VISIBLE_DEVICES
+            # Pin to selected GPU(s). On ROCm, llama-server (and any torch
+            # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
+            # narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
+            # the full HIP/ROCR set the parent inherited.
             if gpu_indices is not None:
-                env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+                pinned = ",".join(str(i) for i in gpu_indices)
+                env["CUDA_VISIBLE_DEVICES"] = pinned
+                try:
+                    import torch as _torch
+
+                    if getattr(_torch.version, "hip", None) is not None:
+                        env["HIP_VISIBLE_DEVICES"] = pinned
+                        env["ROCR_VISIBLE_DEVICES"] = pinned
+                except Exception as e:
+                    logger.debug(
+                        "Failed to set ROCm visibility env vars for child: %s", e
+                    )
+
+            # Defensive kill: if a concurrent load slipped past Phase 1
+            # (because its `self._process` was None at the time) and
+            # already stored a Popen handle here, drop that orphan
+            # before we overwrite the reference. See issue #5161.
+            self._kill_process()
 
             self._stdout_lines = []
             self._process = subprocess.Popen(
@@ -1438,6 +2401,7 @@ class LlamaCppBackend:
                 stderr = subprocess.STDOUT,
                 text = True,
                 env = env,
+                **_windows_hidden_subprocess_kwargs(),
             )
 
             # Start background thread to drain stdout and prevent pipe deadlock
@@ -1446,7 +2410,12 @@ class LlamaCppBackend:
             )
             self._stdout_thread.start()
 
-            self._gguf_path = gguf_path
+            # Store the resolved on-disk path, not the caller's kwarg. In
+            # HF mode the caller passes gguf_path=None and the real path
+            # (``model_path``) is what llama-server is actually mmap'ing.
+            # Downstream consumers (load_progress, log lines, etc.) need
+            # the path that exists on disk.
+            self._gguf_path = model_path
             self._hf_repo = hf_repo
             # For local GGUF files, extract variant from filename if not provided
             if hf_variant:
@@ -1478,6 +2447,28 @@ class LlamaCppBackend:
             # Wait for llama-server to become healthy
             if not self._wait_for_health(timeout = 600.0):
                 self._kill_process()
+                _gguf = gguf_path or ""
+                _is_ollama = (
+                    ".studio_links" in _gguf
+                    or os.sep + "ollama_links" + os.sep in _gguf
+                    or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
+                    or (self._model_identifier or "").startswith("ollama/")
+                )
+                # Only show the Ollama-specific message when the server
+                # output indicates a GGUF compatibility issue, not for
+                # unrelated failures like OOM or missing binaries.
+                if _is_ollama:
+                    _output = "\n".join(self._stdout_lines[-50:]).lower()
+                    _gguf_compat_hints = (
+                        "key not found",
+                        "unknown model architecture",
+                        "failed to load model",
+                    )
+                    if any(h in _output for h in _gguf_compat_hints):
+                        raise RuntimeError(
+                            "Some Ollama models do not work with llama.cpp. "
+                            "Try a different model, or use this model directly through Ollama instead."
+                        )
                 raise RuntimeError(
                     "llama-server failed to start. "
                     "Check that the GGUF file is valid and you have enough memory."
@@ -1512,20 +2503,29 @@ class LlamaCppBackend:
             self._chat_template = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
+            self._reasoning_style = "enable_thinking"
+            self._reasoning_default = True
+            self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._speculative_type = None
             self._n_layers = None
             self._n_kv_heads = None
+            self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None
+            self._sliding_window_pattern = None
             self._full_attention_interval = None
             self._kv_lora_rank = None
             self._key_length_mla = None
+            self._kv_key_length_swa = None
+            self._kv_value_length_swa = None
             self._ssm_inner_size = None
             self._ssm_state_size = None
+            self._shared_kv_layers = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -1681,6 +2681,7 @@ class LlamaCppBackend:
                     capture_output = True,
                     text = True,
                     timeout = 5,
+                    env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
                     return
@@ -1775,13 +2776,11 @@ class LlamaCppBackend:
         Closing tags (</tool_call>, </function>, </parameter>) are all optional
         since models frequently omit them.
         """
-        import re
-
         tool_calls = []
 
         # Pattern 1: JSON inside <tool_call> tags.
         # Use balanced-brace extraction that skips braces inside JSON strings.
-        for m in re.finditer(r"<tool_call>\s*\{", content):
+        for m in _TC_JSON_START_RE.finditer(content):
             brace_start = m.end() - 1  # position of the opening {
             depth, i = 0, brace_start
             in_string = False
@@ -1831,7 +2830,7 @@ class LlamaCppBackend:
             # boundaries.  We avoid using </function> as a boundary because
             # code parameter values can contain that literal string.
             # After extracting, we trim a trailing </function> if present.
-            func_starts = list(re.finditer(r"<function=(\w+)>\s*", content))
+            func_starts = list(_TC_FUNC_START_RE.finditer(content))
             for idx, fm in enumerate(func_starts):
                 func_name = fm.group(1)
                 body_start = fm.end()
@@ -1841,7 +2840,7 @@ class LlamaCppBackend:
                     if idx + 1 < len(func_starts)
                     else len(content)
                 )
-                end_tag = re.search(r"</tool_call>", content[body_start:])
+                end_tag = _TC_END_TAG_RE.search(content[body_start:])
                 if end_tag:
                     body_end = body_start + end_tag.start()
                 else:
@@ -1849,20 +2848,20 @@ class LlamaCppBackend:
                 body_end = min(body_end, next_func)
                 body = content[body_start:body_end]
                 # Trim trailing </function> if present (it's the real closing tag)
-                body = re.sub(r"\s*</function>\s*$", "", body)
+                body = _TC_FUNC_CLOSE_RE.sub("", body)
 
                 # Step 2: Extract parameters from body.
                 # For single-parameter functions (the common case: code, command,
                 # query), use body end as the only boundary to avoid false matches
                 # on </parameter> inside code strings.
                 arguments = {}
-                param_starts = list(re.finditer(r"<parameter=(\w+)>\s*", body))
+                param_starts = list(_TC_PARAM_START_RE.finditer(body))
                 if len(param_starts) == 1:
                     # Single parameter: value is everything from after the tag
                     # to end of body, trimming any trailing </parameter>.
                     pm = param_starts[0]
                     val = body[pm.end() :]
-                    val = re.sub(r"\s*</parameter>\s*$", "", val)
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)
                     arguments[pm.group(1)] = val.strip()
                 else:
                     for pidx, pm in enumerate(param_starts):
@@ -1876,7 +2875,7 @@ class LlamaCppBackend:
                         )
                         val = body[val_start:next_param]
                         # Trim trailing </parameter> if present
-                        val = re.sub(r"\s*</parameter>\s*$", "", val)
+                        val = _TC_PARAM_CLOSE_RE.sub("", val)
                         arguments[param_name] = val.strip()
 
                 tc = {
@@ -2063,6 +3062,8 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion request to llama-server and stream tokens back.
@@ -2087,11 +3088,21 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        # Pass enable_thinking per-request for reasoning models
-        if self._supports_reasoning and enable_thinking is not None:
-            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        # Pass enable_thinking / reasoning_effort / preserve_thinking per-request
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        if _reasoning_kw is not None:
+            payload["chat_template_kwargs"] = _reasoning_kw
+        # Default cap to the model's effective context length when known,
+        # otherwise the conservative floor. The wall-clock backstop below
+        # keeps a stuck model from running indefinitely either way.
+        payload["max_tokens"] = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             payload["stop"] = stop
         payload["stream_options"] = {"include_usage": True}
@@ -2111,7 +3122,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
@@ -2225,6 +3238,8 @@ class LlamaCppBackend:
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
@@ -2234,7 +3249,7 @@ class LlamaCppBackend:
         Agentic loop: let the model call tools, execute them, and continue.
 
         Yields dicts with:
-          {"type": "status", "text": "Searching: ..."}   -- tool status updates
+          {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
@@ -2249,22 +3264,10 @@ class LlamaCppBackend:
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
 
-        # ── Shared patterns for stripping tool XML from streamed content ──
-        import re as _re_tool
-
-        _TOOL_CLOSED_PATTERNS = [
-            _re_tool.compile(r"<tool_call>.*?</tool_call>", _re_tool.DOTALL),
-            _re_tool.compile(r"<function=\w+>.*?</function>", _re_tool.DOTALL),
-        ]
-        _TOOL_ALL_PATTERNS = _TOOL_CLOSED_PATTERNS + [
-            _re_tool.compile(r"<tool_call>.*$", _re_tool.DOTALL),
-            _re_tool.compile(r"<function=\w+>.*$", _re_tool.DOTALL),
-        ]
-
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
-            patterns = _TOOL_ALL_PATTERNS if final else _TOOL_CLOSED_PATTERNS
+            patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
             for pat in patterns:
                 text = pat.sub("", text)
             return text.strip() if final else text
@@ -2284,7 +3287,19 @@ class LlamaCppBackend:
         # identical call succeeded).
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
 
-        for iteration in range(max_tool_iterations):
+        # ── Re-prompt on plan-without-action ─────────────────
+        # When the model describes what it intends to do (forward-looking
+        # language) without actually calling a tool, re-prompt once.
+        # Only triggers on responses that signal intent/planning -- a
+        # direct answer like "4" or "Hello!" will not match.
+        # Pattern is compiled once at module level (_INTENT_SIGNAL).
+        _reprompt_count = 0
+
+        # Reserve extra iterations for re-prompts so they don't
+        # consume the caller's tool-call budget.  Only add the
+        # extra slot when tool iterations are actually allowed.
+        _extra = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+        for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
 
@@ -2303,10 +3318,17 @@ class LlamaCppBackend:
                 "tools": tools,
                 "tool_choice": "auto",
             }
-            if self._supports_reasoning and enable_thinking is not None:
-                payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
-            if max_tokens is not None:
-                payload["max_tokens"] = max_tokens
+            _reasoning_kw = self._request_reasoning_kwargs(
+                enable_thinking, reasoning_effort, preserve_thinking
+            )
+            if _reasoning_kw is not None:
+                payload["chat_template_kwargs"] = _reasoning_kw
+            payload["max_tokens"] = (
+                max_tokens
+                if max_tokens is not None
+                else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+            )
+            payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
             if stop:
                 payload["stop"] = stop
 
@@ -2345,7 +3367,10 @@ class LlamaCppBackend:
                     write = 10,
                     pool = 10,
                 )
-                with httpx.Client(timeout = stream_timeout) as client:
+                with httpx.Client(
+                    timeout = stream_timeout,
+                    limits = httpx.Limits(max_keepalive_connections = 0),
+                ) as client:
                     with self._stream_with_retry(
                         client,
                         url,
@@ -2595,6 +3620,57 @@ class LlamaCppBackend:
                             content_accum,
                         )
                     if not _safety_tc:
+                        # ── Re-prompt on plan-without-action ──
+                        # If the model described what it intends to do
+                        # (forward-looking language) without calling any
+                        # tool, nudge it to act.  Only fires once per
+                        # request and only on short responses that
+                        # contain intent signals -- a direct answer
+                        # like "4" or "Hello!" won't trigger this.
+                        # Use content if available, otherwise fall back
+                        # to reasoning text (reasoning-only stalls).
+                        _stripped = content_accum.strip()
+                        if not _stripped:
+                            _stripped = reasoning_accum.strip()
+                        if (
+                            tools
+                            and _reprompt_count < _MAX_REPROMPTS
+                            and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
+                            and _INTENT_SIGNAL.search(_stripped)
+                        ):
+                            _reprompt_count += 1
+                            logger.info(
+                                f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "
+                                f"model responded without calling tools "
+                                f"({len(_stripped)} chars)"
+                            )
+                            conversation.append(
+                                {
+                                    "role": "assistant",
+                                    "content": _stripped,
+                                }
+                            )
+                            conversation.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "STOP. Do NOT write code or explain. "
+                                        "You MUST call a tool NOW. "
+                                        "Call web_search or python immediately."
+                                    ),
+                                }
+                            )
+                            # Accumulate tokens and timing from this iteration
+                            _fu_r = _iter_usage or {}
+                            _accumulated_completion_tokens += _fu_r.get(
+                                "completion_tokens", 0
+                            )
+                            _it_r = _iter_timings or {}
+                            _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            yield {"type": "status", "text": ""}
+                            continue
+
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
                         _fu = _iter_usage or {}
@@ -2750,7 +3826,18 @@ class LlamaCppBackend:
                         arguments = raw_args
 
                     if tool_name == "web_search":
-                        status_text = f"Searching: {arguments.get('query', '')}"
+                        _ws_url = (arguments.get("url") or "").strip()
+                        if _ws_url:
+                            _parsed = urlparse(_ws_url)
+                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
+                                _ws_host = _parsed.hostname
+                                if _ws_host.startswith("www."):
+                                    _ws_host = _ws_host[4:]
+                                status_text = f"Reading: {_ws_host}"
+                            else:
+                                status_text = "Reading page..."
+                        else:
+                            status_text = f"Searching: {arguments.get('query', '')}"
                     elif tool_name == "python":
                         preview = (
                             (arguments.get("code") or "").strip().split("\n")[0][:60]
@@ -2827,10 +3914,15 @@ class LlamaCppBackend:
                         _error_prefixes
                     )
                     _tool_call_history.append((_tc_key, _is_error))
+                    # Strip image sentinel before feeding result to the LLM
+                    # (the full result with sentinel is still yielded via
+                    # tool_end so the frontend can extract image paths).
                     _result_content = result
+                    if "\n__IMAGES__:" in _result_content:
+                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
                     if _is_error:
                         _result_content = (
-                            result + "\n\nThe tool call encountered an issue. "
+                            _result_content + "\n\nThe tool call encountered an issue. "
                             "Please try a different approach or rephrase your request."
                         )
 
@@ -2886,12 +3978,17 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        if self._supports_reasoning and enable_thinking is not None:
-            stream_payload["chat_template_kwargs"] = {
-                "enable_thinking": enable_thinking
-            }
-        if max_tokens is not None:
-            stream_payload["max_tokens"] = max_tokens
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        if _reasoning_kw is not None:
+            stream_payload["chat_template_kwargs"] = _reasoning_kw
+        stream_payload["max_tokens"] = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        stream_payload["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
         if stop:
             stream_payload["stop"] = stop
         stream_payload["stream_options"] = {"include_usage": True}
@@ -2910,7 +4007,9 @@ class LlamaCppBackend:
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
-            with httpx.Client(timeout = stream_timeout) as client:
+            with httpx.Client(
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            ) as client:
                 with self._stream_with_retry(
                     client,
                     url,

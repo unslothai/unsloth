@@ -109,12 +109,13 @@ class InferenceOrchestrator:
         self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # GGUFs first, then hub models, then static fallbacks.
+        # Curated static defaults first (editorial picks like new models),
+        # then HF download-ranked models to backfill.
         # Send extras so the frontend still has 4 per category
         # after removing already-downloaded models.
         result: list[str] = []
         seen: set[str] = set()
-        for m in top_gguf + top_hub + self._static_models:
+        for m in self._static_models + top_gguf + top_hub:
             if m not in seen:
                 result.append(m)
                 seen.add(m)
@@ -165,23 +166,30 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+
         from .worker import run_inference_process
 
-        self._cmd_queue = _CTX.Queue()
-        self._resp_queue = _CTX.Queue()
-        self._cancel_event = _CTX.Event()
+        with native_path_secret_removed_for_child_start():
+            self._cmd_queue = _CTX.Queue()
+            self._resp_queue = _CTX.Queue()
+            self._cancel_event = _CTX.Event()
 
-        self._proc = _CTX.Process(
-            target = run_inference_process,
-            kwargs = {
-                "cmd_queue": self._cmd_queue,
-                "resp_queue": self._resp_queue,
-                "cancel_event": self._cancel_event,
-                "config": config,
-            },
-            daemon = True,
-        )
-        self._proc.start()
+            self._proc = _CTX.Process(
+                target = run_without_native_path_secret,
+                args = (run_inference_process,),
+                kwargs = {
+                    "cmd_queue": self._cmd_queue,
+                    "resp_queue": self._resp_queue,
+                    "cancel_event": self._cancel_event,
+                    "config": config,
+                },
+                daemon = True,
+            )
+            self._proc.start()
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:
@@ -707,6 +715,17 @@ class InferenceOrchestrator:
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
+        if model_name in self.loading_models:
+            logger.info(
+                "Cancelling in-flight load for model '%s' by terminating subprocess",
+                model_name,
+            )
+            self._shutdown_subprocess(timeout = 0.5)
+            self.loading_models.discard(model_name)
+            self.active_model_name = None
+            self.models.clear()
+            return True
+
         if not self._ensure_subprocess_alive():
             # No subprocess — just clear local state
             self.models.pop(model_name, None)

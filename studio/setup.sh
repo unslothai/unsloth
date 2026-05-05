@@ -8,15 +8,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Parse flags ──
+# --local: install from the local repo checkout (overlays unsloth as editable
+# and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
+# path that runs setup.sh directly without going through install.sh.
+if [ "$#" -gt 0 ]; then
+    for _arg in "$@"; do
+        case "$_arg" in
+            --local)
+                export STUDIO_LOCAL_INSTALL=1
+                export STUDIO_LOCAL_REPO="$REPO_ROOT"
+                ;;
+        esac
+    done
+fi
+
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
 #
 #   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
+#   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
+#                             "master" = bleeding-edge, "bNNNN" = specific tag)
+#                             Prefer "latest" over "master" -- "master" bypasses
+#                             the prebuilt resolver (no matching GitHub release),
+#                             forces a source build, and causes HTTP 422 errors.
+#                             Only use "master" temporarily when the latest release
+#                             is missing support for a new model architecture.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
+_DEFAULT_LLAMA_TAG="latest"
+_DEFAULT_LLAMA_FORCE_COMPILE_REF="master"
 
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
@@ -113,6 +137,45 @@ print_llama_error_log() {
     tail -n 120 "$log_file" | sed 's/^/   | /' >&2
 }
 
+installed_llama_prebuilt_release() {
+    local install_dir=${1:-}
+    local metadata_path="$install_dir/UNSLOTH_PREBUILT_INFO.json"
+    [ -f "$metadata_path" ] || return 0
+    python - "$metadata_path" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+repo = str(payload.get("published_repo") or "").strip()
+release_tag = str(payload.get("release_tag") or "").strip()
+llama_tag = str(payload.get("tag") or "").strip()
+if not repo or not release_tag:
+    raise SystemExit(0)
+
+message = f"installed release: {repo}@{release_tag}"
+if llama_tag and llama_tag != release_tag:
+    message += f" (tag {llama_tag})"
+print(message)
+PY
+}
+
+print_installed_llama_prebuilt_release() {
+    local install_dir=${1:-}
+    local installed_release
+    installed_release="$(installed_llama_prebuilt_release "$install_dir")"
+    if [ -n "$installed_release" ]; then
+        substep "$installed_release"
+    fi
+}
+
 # ── Banner ──
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
@@ -121,6 +184,9 @@ verbose_substep "verbose diagnostics enabled"
 _LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
 if [ "$_LLAMA_ONLY" = "1" ]; then
     substep "llama.cpp only mode"
+fi
+if [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
+    substep "local mode: overlaying $REPO_ROOT (editable) + unsloth-zoo from git main"
 fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
@@ -135,7 +201,13 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 if [ "$_LLAMA_ONLY" != "1" ]; then
-# ── Frontend ──
+# ── Detect whether frontend needs building ──
+# Skip if SKIP_STUDIO_FRONTEND=1 (Tauri desktop app bundles its own frontend),
+# or if dist/ exists AND no tracked input is newer than dist/.
+if [ "${SKIP_STUDIO_FRONTEND:-0}" = "1" ]; then
+    _NEED_FRONTEND_BUILD=false
+    step "frontend" "bundled (Tauri)"
+else
 _NEED_FRONTEND_BUILD=true
 if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 -type f \
@@ -147,6 +219,7 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+fi  # end SKIP_STUDIO_FRONTEND guard
 
 if [ "$_NEED_FRONTEND_BUILD" = false ]; then
     step "frontend" "up to date"
@@ -346,11 +419,14 @@ fi
 # ── Python venv + deps ──
 STUDIO_HOME="$HOME/.unsloth/studio"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_DIR="$STUDIO_HOME/.venv_t5"
+VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
+VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
 [ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
+[ -d "$REPO_ROOT/.venv_t5_530" ] && rm -rf "$REPO_ROOT/.venv_t5_530"
+[ -d "$REPO_ROOT/.venv_t5_550" ] && rm -rf "$REPO_ROOT/.venv_t5_550"
 # Note: do NOT delete $STUDIO_HOME/.venv here — install.sh handles migration
 
 _COLAB_NO_VENV=false
@@ -433,9 +509,9 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
-from importlib.metadata import version
-print(version('$_PKG_NAME'))
-" 2>/dev/null || echo "")
+import sys; from importlib.metadata import version
+print(version(sys.argv[1]))
+" "$_PKG_NAME" 2>/dev/null || echo "")
 
     LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
@@ -453,20 +529,46 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
-
-    # ── 6b. Pre-install transformers 5.x into .venv_t5/ ──
-    # Models like GLM-4.7-Flash need transformers>=5.3.0. Instead of pip-installing
-    # at runtime (slow, ~10-15s), we pre-install into a separate directory.
-    # The training subprocess just prepends .venv_t5/ to sys.path -- instant switch.
-    mkdir -p "$VENV_T5_DIR"
-    run_quiet "install transformers 5.x" fast_install --target "$VENV_T5_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5" fast_install --target "$VENV_T5_DIR" --no-deps "huggingface_hub==1.7.1"
-    run_quiet "install hf_xet for t5" fast_install --target "$VENV_T5_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5" fast_install --target "$VENV_T5_DIR" "tiktoken"
-    step "transformers" "5.x pre-installed"
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
+fi
+
+# ── 6b. Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
+# Gemma 4 models need transformers>=5.5.0.
+# Pre-install into separate directories to avoid runtime pip overhead.
+# The training subprocess prepends the appropriate dir to sys.path.
+#
+# Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
+# single .venv_t5 are always migrated to the tiered layout.
+_NEED_T5_INSTALL=false
+if [ -d "$STUDIO_HOME/.venv_t5" ]; then
+    # Legacy layout — migrate
+    rm -rf "$STUDIO_HOME/.venv_t5"
+    _NEED_T5_INSTALL=true
+fi
+[ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
+[ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
+# Also reinstall when python deps were updated (packages may need rebuild)
+[ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
+
+if [ "$_NEED_T5_INSTALL" = true ]; then
+    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
+    mkdir -p "$VENV_T5_530_DIR"
+    run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
+    run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
+    step "transformers" "5.3.0 pre-installed"
+
+    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
+    mkdir -p "$VENV_T5_550_DIR"
+    run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
+    run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
+    step "transformers" "5.5.0 pre-installed"
 fi
 fi
 
@@ -478,17 +580,24 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
-_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-latest}"
-_HELPER_RELEASE_REPO="${UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp}"
+_REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
+_HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+else
+    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
+fi
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
-
+_SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
-_LLAMA_SOURCE="${UNSLOTH_LLAMA_SOURCE:-${_DEFAULT_LLAMA_SOURCE}}"
+_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"
 _LLAMA_SOURCE="${_LLAMA_SOURCE%.git}"  # normalize: strip trailing .git
+_RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+_RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+_RESOLVED_SOURCE_REF_KIND="tag"
+_RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
 
-# Non-default source URL forces source build (fork has different code than prebuilt).
-if [ "$_LLAMA_SOURCE" != "https://github.com/ggml-org/llama.cpp" ]; then
-    step "llama.cpp" "custom source: $_LLAMA_SOURCE -- forcing source build" "$C_WARN"
+if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
 fi
@@ -507,128 +616,73 @@ if [ -n "$_LLAMA_PR" ]; then
     fi
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
+    _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+    _RESOLVED_SOURCE_REF="pr-$_LLAMA_PR"
+    _RESOLVED_SOURCE_REF_KIND="pull"
     _NEED_LLAMA_SOURCE_BUILD=true
     _SKIP_PREBUILT_INSTALL=true
-elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
-    # Custom source or other override already forced source build; skip
-    # the prebuilt release resolution entirely. When building from a custom
-    # fork, the fork may not carry upstream bNNNN tags, so resolve the tag
-    # only when the source is the default ggml-org repo.
-    if [ "$_LLAMA_SOURCE" = "https://github.com/ggml-org/llama.cpp" ]; then
-        _RESOLVE_TAG_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _RESOLVE_TAG_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        set +e
-        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
-        _RESOLVE_UPSTREAM_STATUS=$?
-        set -e
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-        fi
-    else
-        _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-    fi
-else
-    _RESOLVE_INSTALL_ARGS=(--resolve-install-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-        _RESOLVE_INSTALL_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-    fi
-    _RESOLVE_LLAMA_LOG="$(mktemp)"
-    set +e
-    python "$SCRIPT_DIR/install_llama_prebuilt.py" \
-        "${_RESOLVE_INSTALL_ARGS[@]}" >"$_RESOLVE_LLAMA_LOG" 2>&1
-    _RESOLVE_LLAMA_STATUS=$?
-    set -e
-    if [ "$_RESOLVE_LLAMA_STATUS" -eq 0 ]; then
-        _RESOLVED_LLAMA_TAG="$(tail -n 1 "$_RESOLVE_LLAMA_LOG" | tr -d '\r')"
-    else
-        _RESOLVED_LLAMA_TAG=""
-    fi
-    if [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-        step "llama.cpp" "failed to resolve a published llama.cpp release via $_HELPER_RELEASE_REPO" "$C_WARN"
-        print_llama_error_log "$_RESOLVE_LLAMA_LOG"
-        set +e
-        # Resolve the llama.cpp tag for source-build fallback. Pass --published-repo
-        # so the resolver prefers the latest usable Unsloth-published upstream tag
-        # before falling back to the bleeding-edge ggml-org/llama.cpp tag.
-        _RESOLVE_FALLBACK_ARGS=(--resolve-llama-tag "$_REQUESTED_LLAMA_TAG" --published-repo "$_HELPER_RELEASE_REPO")
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _RESOLVE_FALLBACK_ARGS+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        _RESOLVED_LLAMA_TAG="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_FALLBACK_ARGS[@]}" 2>/dev/null)"
-        _RESOLVE_UPSTREAM_STATUS=$?
-        set -e
-        if [ "$_RESOLVE_UPSTREAM_STATUS" -ne 0 ] || [ -z "$_RESOLVED_LLAMA_TAG" ]; then
-            _RESOLVED_LLAMA_TAG="$_REQUESTED_LLAMA_TAG"
-        fi
-        _NEED_LLAMA_SOURCE_BUILD=true
-        _SKIP_PREBUILT_INSTALL=true
-    fi
-    rm -f "$_RESOLVE_LLAMA_LOG"
 fi
 
-substep "resolved llama.cpp tag: $_RESOLVED_LLAMA_TAG"
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
 if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
+elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
+    substep "prebuilt install skipped -- falling back to source build"
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
-    if [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
-        substep "prebuilt tag resolution failed -- falling back to source build"
+    _PREBUILT_CMD=(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py"
+        --install-dir "$LLAMA_CPP_DIR"
+        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --published-repo "$_HELPER_RELEASE_REPO"
+        --simple-policy
+    )
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+    fi
+    _PREBUILT_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+        _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
-        _PREBUILT_CMD=(
-            python "$SCRIPT_DIR/install_llama_prebuilt.py"
-            --install-dir "$LLAMA_CPP_DIR"
-            --llama-tag "$_REQUESTED_LLAMA_TAG"
-            --published-repo "$_HELPER_RELEASE_REPO"
-        )
-        if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-            _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
-        fi
-        _PREBUILT_LOG="$(mktemp)"
-        set +e
-        if _is_verbose; then
-            "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
-            _PREBUILT_STATUS=${PIPESTATUS[0]}
-        else
-            "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
-            _PREBUILT_STATUS=$?
-        fi
-        set -e
+        "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
+        _PREBUILT_STATUS=$?
+    fi
+    set -e
 
-        if [ "$_PREBUILT_STATUS" -eq 0 ]; then
-            if grep -Fq "already matches" "$_PREBUILT_LOG"; then
-                step "llama.cpp" "prebuilt up to date and validated"
-            else
-                step "llama.cpp" "prebuilt installed and validated"
-            fi
-            verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
-            rm -f "$_PREBUILT_LOG"
-        elif [ "$_PREBUILT_STATUS" -eq 3 ]; then
-            step "llama.cpp" "install blocked by active llama.cpp process" "$C_WARN"
-            print_llama_error_log "$_PREBUILT_LOG"
-            rm -f "$_PREBUILT_LOG"
-            if [ -d "$LLAMA_CPP_DIR" ]; then
-                substep "existing install was restored"
-            fi
-            substep "close Studio or other llama.cpp users and retry"
-            exit 3
+    if [ "$_PREBUILT_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_PREBUILT_LOG"; then
+            step "llama.cpp" "prebuilt up to date and validated"
         else
-            step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
-            print_llama_error_log "$_PREBUILT_LOG"
-            rm -f "$_PREBUILT_LOG"
-            if [ -d "$LLAMA_CPP_DIR" ]; then
-                substep "prebuilt update failed; existing install restored"
-            fi
-            substep "falling back to source build"
-            _NEED_LLAMA_SOURCE_BUILD=true
+            step "llama.cpp" "prebuilt installed and validated"
         fi
+        print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+        verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
+        rm -f "$_PREBUILT_LOG"
+    elif [ "$_PREBUILT_STATUS" -eq 3 ]; then
+        step "llama.cpp" "install blocked by active llama.cpp process" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored"
+        fi
+        substep "close Studio or other llama.cpp users and retry"
+        exit 3
+    else
+        step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "prebuilt update failed; existing install restored"
+        fi
+        substep "falling back to source build"
+        _NEED_LLAMA_SOURCE_BUILD=true
     fi
 fi
 
@@ -645,7 +699,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         case "$_pkg" in
             build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) command -v curl-config >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
         esac
     done
@@ -701,7 +755,48 @@ else
         step "llama.cpp" "skipped (git not found)" "$C_WARN"
         [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     else
+        if [ -z "$_LLAMA_PR" ]; then
+            _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+            if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+                if [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+                    _RESOLVED_SOURCE_REF="${UNSLOTH_LLAMA_FORCE_COMPILE_REF:-${_DEFAULT_LLAMA_FORCE_COMPILE_REF}}"
+                    _RESOLVED_SOURCE_REF_KIND="branch"
+                else
+                    _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+                    _RESOLVED_SOURCE_REF_KIND="tag"
+                fi
+            elif [ "$_REQUESTED_LLAMA_TAG" = "latest" ]; then
+                _RESOLVE_TAG_ARGS=(--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp" --output-format json)
+                set +e
+                _RESOLVE_TAG_JSON="$(python "$SCRIPT_DIR/install_llama_prebuilt.py" "${_RESOLVE_TAG_ARGS[@]}" 2>/dev/null)"
+                _RESOLVE_TAG_STATUS=$?
+                set -e
+                if [ "$_RESOLVE_TAG_STATUS" -eq 0 ] && [ -n "${_RESOLVE_TAG_JSON:-}" ]; then
+                    _RESOLVED_SOURCE_REF="$(
+                        printf '%s' "$_RESOLVE_TAG_JSON" | python -c 'import json,sys; print(json.load(sys.stdin).get("llama_tag",""))' 2>/dev/null || true
+                    )"
+                else
+                    _RESOLVED_SOURCE_REF=""
+                fi
+                if [ -z "$_RESOLVED_SOURCE_REF" ]; then
+                    _RESOLVED_SOURCE_REF="latest"
+                fi
+                _RESOLVED_SOURCE_REF_KIND="tag"
+            else
+                _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+                _RESOLVED_SOURCE_REF_KIND="tag"
+            fi
+            if [ -z "$_RESOLVED_SOURCE_URL" ]; then
+                _RESOLVED_SOURCE_URL="$_LLAMA_SOURCE"
+            fi
+            if [ -z "$_RESOLVED_SOURCE_REF" ]; then
+                _RESOLVED_SOURCE_REF="$_REQUESTED_LLAMA_TAG"
+            fi
+        fi
+        verbose_substep "source build repo: $_RESOLVED_SOURCE_URL"
+        verbose_substep "source build ref: ${_RESOLVED_SOURCE_REF:-latest} (${_RESOLVED_SOURCE_REF_KIND})"
         BUILD_OK=true
+        mkdir -p "$(dirname "$LLAMA_CPP_DIR")"
         _BUILD_TMP="${LLAMA_CPP_DIR}.build.$$"
         rm -rf "$_BUILD_TMP"
         if [ -n "$_LLAMA_PR" ]; then
@@ -715,12 +810,34 @@ else
                 run_quiet_no_exit "checkout PR #$_LLAMA_PR" \
                     git -C "$_BUILD_TMP" checkout "pr-$_LLAMA_PR" || BUILD_OK=false
             fi
+        elif [ "$_RESOLVED_SOURCE_REF_KIND" = "pull" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch source PR ref" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "$_RESOLVED_SOURCE_REF" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout source PR ref" \
+                    git -C "$_BUILD_TMP" checkout -B unsloth-llama-build FETCH_HEAD || BUILD_OK=false
+            fi
+        elif [ "$_RESOLVED_SOURCE_REF_KIND" = "commit" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+            run_quiet_no_exit "clone llama.cpp" \
+                git clone --depth 1 "${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP" || BUILD_OK=false
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "fetch source commit" \
+                    git -C "$_BUILD_TMP" fetch --depth 1 origin "$_RESOLVED_SOURCE_REF" || BUILD_OK=false
+            fi
+            if [ "$BUILD_OK" = true ]; then
+                run_quiet_no_exit "checkout source commit" \
+                    git -C "$_BUILD_TMP" checkout -B unsloth-llama-build FETCH_HEAD || BUILD_OK=false
+            fi
         else
             _CLONE_ARGS=(git clone --depth 1)
-            if [ "$_RESOLVED_LLAMA_TAG" != "latest" ] && [ -n "$_RESOLVED_LLAMA_TAG" ]; then
-                _CLONE_ARGS+=(--branch "$_RESOLVED_LLAMA_TAG")
+            if [ "$_RESOLVED_SOURCE_REF" != "latest" ] && [ -n "$_RESOLVED_SOURCE_REF" ]; then
+                _CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")
             fi
-            _CLONE_ARGS+=("${_LLAMA_SOURCE}.git" "$_BUILD_TMP")
+            _CLONE_ARGS+=("${_RESOLVED_SOURCE_URL}.git" "$_BUILD_TMP")
             run_quiet_no_exit "clone llama.cpp" \
                 "${_CLONE_ARGS[@]}" || BUILD_OK=false
         fi
@@ -836,6 +953,20 @@ else
                     _valid_gfx=""
                     for _gfx in $_gfx_list; do
                         if [[ "$_gfx" =~ ^gfx[0-9]{2,4}[a-z]?$ ]]; then
+                            # Drop bare family-level targets (gfx10, gfx11, gfx12, ...)
+                            # when a specific sibling is present in the same list.
+                            # rocminfo on ROCm 6.1+ emits both the specific GPU and
+                            # the LLVM generic family line (e.g. gfx1100 alongside
+                            # gfx11-generic), and the outer grep above captures the
+                            # bare family prefix from the generic line. Passing that
+                            # bare prefix to -DGPU_TARGETS breaks the HIP/llama.cpp
+                            # build because clang only accepts specific gfxNNN ids.
+                            # No real AMD GPU has a 2-digit gfx id, so this filter
+                            # can only ever drop family prefixes, never real targets.
+                            if [[ "$_gfx" =~ ^gfx[0-9]{2}$ ]] \
+                               && echo "$_gfx_list" | grep -qE "^${_gfx}[0-9][0-9a-z]?$"; then
+                                continue
+                            fi
                             _valid_gfx="${_valid_gfx}${_valid_gfx:+;}$_gfx"
                         fi
                     done
@@ -956,10 +1087,11 @@ else
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
-        printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+        printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else
-        printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+        printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
 fi
 echo ""
 

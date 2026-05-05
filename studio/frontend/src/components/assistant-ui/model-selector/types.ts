@@ -8,6 +8,7 @@ export interface ModelOption {
   name: string;
   description?: string;
   icon?: ReactNode;
+  isGguf?: boolean;
 }
 
 export interface LoraModelOption extends ModelOption {
@@ -32,3 +33,7 @@ export interface ModelSelectorChangeMeta {
   expectedBytes?: number;
 }
 
+export interface DeletedModelRef {
+  id: string;
+  ggufVariant?: string;
+}

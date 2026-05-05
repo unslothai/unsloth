@@ -35,6 +35,8 @@ export function parseModelProvider(
     extra_body: isRecord(provider.extra_body)
       ? JSON.stringify(provider.extra_body, null, 2)
       : "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    is_local: provider.is_local === true,
   };
 }
 

@@ -141,6 +141,10 @@ export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
 
 
 export const PRIORITY_TRAINING_MODELS: readonly string[] = [
+  "unsloth/gemma-4-E2B-it",
+  "unsloth/gemma-4-E4B-it",
+  "unsloth/gemma-4-31B-it",
+  "unsloth/gemma-4-26B-A4B-it",
   "unsloth/Qwen3.5-2B",
   "unsloth/Qwen3.5-9B",
   "unsloth/gpt-oss-20b",
