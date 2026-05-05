@@ -5,7 +5,7 @@
 Pydantic schemas for Training API
 """
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
 
@@ -231,7 +231,9 @@ class TrainingRunSummary(BaseModel):
 class TrainingRunUpdateRequest(BaseModel):
     """Mutable fields on a training run."""
 
-    display_name: Optional[str] = None
+    model_config = ConfigDict(extra = "forbid")
+
+    display_name: Optional[str] = Field(None, max_length = 120)
 
 
 class TrainingRunListResponse(BaseModel):

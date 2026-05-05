@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator, model_validator
 
 
 class LoadRequest(BaseModel):
@@ -43,6 +43,14 @@ class LoadRequest(BaseModel):
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
+
+    @field_validator("chat_template_override")
+    @classmethod
+    def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value.strip() == "":
+            return None
+        return value
+
     cache_type_kv: Optional[str] = Field(
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",

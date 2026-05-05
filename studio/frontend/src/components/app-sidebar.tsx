@@ -264,10 +264,12 @@ export function AppSidebar() {
   );
   const [renameDraft, setRenameDraft] = useState("");
   const renameTrimmed = renameDraft.trim();
+  const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =
     renamingTarget !== null &&
-    renameTrimmed.length > 0 &&
-    renameTrimmed !== renamingTarget.current;
+    (renamingTarget.kind === "chat"
+      ? renameTrimmed.length > 0 && renameTrimmed !== renamingTarget.current
+      : nextRunDisplayName !== (renamingTarget.run.display_name ?? null));
 
   function openRenameChat(item: SidebarItem) {
     setRenameDraft(item.title);
@@ -293,7 +295,7 @@ export function AppSidebar() {
       return;
     }
     try {
-      const updated = await renameTrainingRun(target.run.id, renameTrimmed);
+      const updated = await renameTrainingRun(target.run.id, nextRunDisplayName);
       emitTrainingRunUpdated(updated);
     } catch (err) {
       toast.error("Failed to rename run", {
@@ -320,6 +322,10 @@ export function AppSidebar() {
           description: err instanceof Error ? err.message : undefined,
         });
       }
+      return;
+    }
+    if (target.run.status === "running") {
+      toast.error("Cannot delete a running training run");
       return;
     }
     try {
@@ -650,6 +656,7 @@ export function AppSidebar() {
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               variant="destructive"
+                              disabled={run.status === "running"}
                               onSelect={() =>
                                 setConfirmingDelete({ kind: "run", run })
                               }

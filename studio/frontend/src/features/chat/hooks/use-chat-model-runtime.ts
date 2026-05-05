@@ -512,6 +512,8 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: activePresetSource,
             });
+            const effectiveChatTemplateOverride =
+              chatTemplateOverride?.trim() ? chatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
@@ -521,7 +523,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
-              chat_template_override: chatTemplateOverride,
+              chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
             });
@@ -588,8 +590,8 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
-              chatTemplateOverride: chatTemplateOverride,
-              loadedChatTemplateOverride: chatTemplateOverride,
+              chatTemplateOverride: effectiveChatTemplateOverride,
+              loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               activeNativePathToken: nativePathToken ?? null,
             });

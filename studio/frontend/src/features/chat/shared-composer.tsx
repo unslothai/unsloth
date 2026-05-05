@@ -358,6 +358,8 @@ export function SharedComposer({
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const chatTemplateOverride = store.chatTemplateOverride;
+      const effectiveChatTemplateOverride =
+        chatTemplateOverride?.trim() ? chatTemplateOverride : null;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -379,7 +381,7 @@ export function SharedComposer({
             is_lora: sel.isLora,
             gguf_variant: sel.ggufVariant ?? null,
             trust_remote_code: trustRemoteCode,
-            chat_template_override: chatTemplateOverride,
+            chat_template_override: effectiveChatTemplateOverride,
           });
           if (validation.requires_trust_remote_code && !trustRemoteCode) {
             throw new Error(
@@ -395,7 +397,7 @@ export function SharedComposer({
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
-          chat_template_override: chatTemplateOverride,
+          chat_template_override: effectiveChatTemplateOverride,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(

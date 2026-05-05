@@ -72,14 +72,20 @@ export interface GgufVariantsResponse {
 
 export function isMultimodalResponse(
   response:
-    | { is_vision?: boolean; is_audio?: boolean; has_audio_input?: boolean }
+    | {
+        is_vision?: boolean;
+        is_audio?: boolean;
+        audio_type?: string | null;
+        has_audio_input?: boolean;
+      }
     | null
     | undefined,
 ): boolean {
   return (
     Boolean(response?.is_vision) ||
     Boolean(response?.is_audio) ||
-    Boolean(response?.has_audio_input)
+    Boolean(response?.has_audio_input) ||
+    response?.audio_type === "audio_vlm"
   );
 }
 

@@ -22,11 +22,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
-  InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
 import {
@@ -535,7 +533,8 @@ export function ChatSettingsPanel({
     return (
       Boolean(m?.isVision) ||
       Boolean(m?.isAudio) ||
-      Boolean(m?.hasAudioInput)
+      Boolean(m?.hasAudioInput) ||
+      m?.audioType === "audio_vlm"
     );
   });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
@@ -1408,7 +1407,9 @@ function ChatTemplateFields() {
     setEditorOpen(true);
   };
   const saveEditor = () => {
-    setOverride(draft === defaultTemplate ? null : draft);
+    setOverride(
+      draft.trim().length === 0 || draft === defaultTemplate ? null : draft,
+    );
     setEditorOpen(false);
   };
 

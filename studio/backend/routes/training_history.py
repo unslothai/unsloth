@@ -91,10 +91,11 @@ async def update_training_run(
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
-    next_display = payload.display_name
-    if next_display is not None:
-        next_display = next_display.strip() or None
-    update_run_display_name(run_id, next_display)
+    if "display_name" in payload.model_fields_set:
+        next_display = payload.display_name
+        if next_display is not None:
+            next_display = next_display.strip() or None
+        update_run_display_name(run_id, next_display)
 
     refreshed = get_run(run_id)
     if refreshed is None:
