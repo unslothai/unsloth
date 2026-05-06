@@ -65,7 +65,12 @@ _ROCM_WINDOWS_WHEEL_BASE = (
 ).rstrip("/")
 # Maps (major, minor) → (release_folder, torch_ver, torchvision_ver, torchaudio_ver)
 _ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, str, str, str]] = {
-    (7, 2): ("rocm-rel-7.2.1", "2.9.1+rocm7.2.1", "0.24.1+rocm7.2.1", "2.9.1+rocm7.2.1"),
+    (7, 2): (
+        "rocm-rel-7.2.1",
+        "2.9.1+rocm7.2.1",
+        "0.24.1+rocm7.2.1",
+        "2.9.1+rocm7.2.1",
+    ),
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
@@ -295,9 +300,7 @@ def _ensure_rocm_torch() -> None:
         entry = next(
             (
                 v
-                for (maj, mn), v in sorted(
-                    _ROCM_WINDOWS_RELEASES.items(), reverse = True
-                )
+                for (maj, mn), v in sorted(_ROCM_WINDOWS_RELEASES.items(), reverse = True)
                 if ver >= (maj, mn)
             ),
             None,
