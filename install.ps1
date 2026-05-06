@@ -1209,6 +1209,7 @@ shell.Run cmd, 0, False
     # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
     $HasROCm = $false
     $ROCmGpuLabel = $null
+    $ROCmVersion = $null
     if (-not $HasNvidiaSmi) {
         $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
         if ($hipinfoExe) {
@@ -1243,6 +1244,29 @@ shell.Run cmd, 0, False
                     Select-Object -First 1
                 if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
             } catch {}
+        }
+        # Capture ROCm version for wheel selection (hipconfig, then amd-smi)
+        if ($HasROCm) {
+            $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+            if ($hipConfigExe) {
+                try {
+                    $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $hipVerOut -match '(\d+\.\d+)') {
+                        $ROCmVersion = $Matches[1]
+                    }
+                } catch {}
+            }
+            if (-not $ROCmVersion) {
+                $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+                if ($amdSmiVer) {
+                    try {
+                        $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                        if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') {
+                            $ROCmVersion = $Matches[1]
+                        }
+                    } catch {}
+                }
+            }
         }
     }
 
@@ -1281,12 +1305,39 @@ shell.Run cmd, 0, False
         return "$baseUrl/cu126"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
-    $TorchIndexFamily = Get-TauriTorchIndexFamily $TorchIndexUrl
+
+    # ── AMD Windows ROCm wheel override ──
+    # AMD publishes direct torch wheels for Windows (cp312 only) at repo.radeon.com.
+    # When the HIP SDK is present and Python 3.12 is in use, swap in the AMD wheel
+    # URL and clear $TorchIndexUrl so the standard --index-url path is skipped.
+    $ROCmTorchWheelUrl = $null
+    if ($HasROCm -and -not $SkipTorch) {
+        $pyMajMin = if ($DetectedPython) { ($DetectedPython.Version -split '\.')[0..1] -join '.' } else { "" }
+        if ($pyMajMin -eq "3.12") {
+            $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
+            if ($ROCmVersion -and $ROCmVersion -match '^7\.2') {
+                $ROCmTorchWheelUrl = "$amdWheelBase/rocm-rel-7.2.1/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+                $TorchIndexUrl = $null
+            }
+            if ($ROCmTorchWheelUrl) {
+                substep "AMD ROCm $ROCmVersion (Python 3.12) -- AMD Windows torch wheel selected" "Cyan"
+            } elseif ($ROCmVersion) {
+                substep "No AMD Windows torch wheel for ROCm $ROCmVersion -- falling back to CPU-only PyTorch" "Yellow"
+            } else {
+                substep "ROCm version unknown -- falling back to CPU-only PyTorch" "Yellow"
+            }
+        } else {
+            substep "AMD Windows ROCm wheels require Python 3.12 (detected: $pyMajMin) -- using CPU-only PyTorch" "Yellow"
+            substep "To enable ROCm training, reinstall with Python 3.12." "Yellow"
+        }
+    }
+
+    $TorchIndexFamily = Get-TauriTorchIndexFamily $(if ($ROCmTorchWheelUrl) { "rocm7.2" } else { $TorchIndexUrl })
     $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
     Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
     # ── Print CPU-only hint when no GPU detected ──
-    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+    if (-not $SkipTorch -and -not $ROCmTorchWheelUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($HasROCm -or $ROCmGpuLabel) {
             substep "Installing CPU-only PyTorch (ROCm wheels require the HIP SDK)." "Yellow"
@@ -1364,9 +1415,17 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
-    } elseif ($TorchIndexUrl) {
+    } elseif ($TorchIndexUrl -or $ROCmTorchWheelUrl) {
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
+        } elseif ($ROCmTorchWheelUrl) {
+            Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
+            substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-cache-dir $ROCmTorchWheelUrl }
+            if ($torchInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+            }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."

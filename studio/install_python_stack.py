@@ -57,6 +57,17 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
+# AMD Windows ROCm wheels — repo.radeon.com (cp312 only; AMD does not publish
+# Windows ROCm wheels for other Python versions)
+_ROCM_WINDOWS_WHEEL_BASE = (
+    os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR")
+    or "https://repo.radeon.com/rocm/windows"
+).rstrip("/")
+# Maps (major, minor) → (release_folder, torch_version_string)
+_ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, str]] = {
+    (7, 2): ("rocm-rel-7.2.1", "2.9.1+rocm7.2.1"),
+}
+
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
 # AMD GPU. Drop the pin once bnb 0.50+ ships on PyPI.
@@ -241,20 +252,70 @@ def _has_usable_nvidia_gpu() -> bool:
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
-    Runs only on Linux x86_64 hosts where an AMD GPU is present and the
-    ROCm runtime is detectable (rocminfo / amd-smi / hipconfig /
-    rocm-core package).  No-op when torch already links against HIP
-    (ROCm), on Windows / macOS, on non-x86_64 Linux (PyTorch does not
-    publish ROCm wheels for aarch64 / arm64), or on mixed AMD+NVIDIA
-    hosts (NVIDIA takes precedence).
+    On Linux x86_64: uses pytorch.org ROCm wheel index tags.
+    On Windows (cp312 only): uses AMD's repo.radeon.com direct wheel releases.
+    No-op on macOS, non-x86_64 Linux, NVIDIA-primary hosts, or when torch
+    already links against HIP.
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
-    # Explicit OS / architecture guards so the helper is safe to call
-    # from any context -- PyTorch only publishes ROCm wheels for
-    # linux_x86_64, so aarch64 / arm64 hosts must skip this repair path
-    # instead of failing the update with a missing-wheel error.
-    if IS_WINDOWS or IS_MACOS:
+    if IS_MACOS:
         return
+
+    if IS_WINDOWS:
+        # AMD only publishes Windows ROCm wheels for Python 3.12 (cp312)
+        if sys.version_info[:2] != (3, 12):
+            print(
+                f"   ROCm torch on Windows requires Python 3.12 "
+                f"(current: {sys.version_info[0]}.{sys.version_info[1]}) -- skipping"
+            )
+            return
+        if _has_usable_nvidia_gpu():
+            return
+        if not _has_rocm_gpu():
+            return
+        try:
+            probe = subprocess.run(
+                [sys.executable, "-c", "import torch; print(getattr(torch.version,'hip','') or '')"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                timeout = 30,
+            )
+            if probe.returncode == 0 and probe.stdout.decode().strip():
+                return  # already ROCm torch
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        ver = _detect_rocm_version()
+        if ver is None:
+            print("   ROCm detected but version unreadable -- skipping torch reinstall")
+            return
+        entry = next(
+            ((rt, tv) for (maj, mn), (rt, tv) in sorted(_ROCM_WINDOWS_RELEASES.items(), reverse = True)
+             if ver >= (maj, mn)),
+            None,
+        )
+        if entry is None:
+            print(
+                f"   No AMD Windows torch wheel for ROCm {ver[0]}.{ver[1]} -- skipping"
+            )
+            return
+        rel_tag, torch_ver = entry
+        wheel_url = (
+            f"{_ROCM_WINDOWS_WHEEL_BASE}/{rel_tag}/"
+            f"torch-{torch_ver}-cp312-cp312-win_amd64.whl"
+        )
+        print(f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {wheel_url}")
+        pip_install(
+            f"ROCm torch (Windows, {rel_tag})",
+            "--force-reinstall",
+            "--no-cache-dir",
+            wheel_url,
+            constrain = False,
+        )
+        return
+
+    # ── Linux x86_64 path ──────────────────────────────────────────────────────
+    # PyTorch only publishes ROCm wheels for linux_x86_64; skip aarch64 / arm64
+    # to avoid a missing-wheel error on `unsloth studio update`.
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
     # NVIDIA takes precedence on mixed hosts -- but only if an actual GPU is usable
