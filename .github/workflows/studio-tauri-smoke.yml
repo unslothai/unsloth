@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# PR-time smoke for the Tauri desktop wrapper. Builds the frontend and the
+# Tauri Linux debug binary, with no codesigning. Catches:
+#   - tauri.conf.json drift
+#   - src-tauri Cargo.toml or rust source breakage
+#   - Tauri CLI version drift (we pin 2.10.1, matching release-desktop.yml)
+#   - frontend output not picked up by Tauri's distDir
+#
+# Linux-only on a free `ubuntu-latest` runner. Mac and Windows desktop builds
+# stay in release-desktop.yml (manual `workflow_dispatch`) because they need
+# code-signing secrets and ~30 min of runner time each.
+
+name: Studio Tauri CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      - '.github/workflows/studio-tauri-smoke.yml'
+  push:
+    branches: [main, pip]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-debug-build:
+    name: Tauri Linux debug build (no codesign)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux native deps for Tauri / WebKit2GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: studio/src-tauri -> target
+
+      - name: Install pinned Tauri CLI (matches release-desktop.yml)
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1
+
+      - name: Verify pinned Tauri CLI version
+        run: |
+          out="$(npx --prefix studio tauri --version)"
+          echo "$out"
+          [ "$out" = "tauri-cli 2.10.1" ] || { echo "::error::expected tauri-cli 2.10.1, got $out"; exit 1; }
+
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+          test -f dist/index.html
+
+      - name: Tauri debug build (Linux, no bundle, no codesign)
+        # `--debug` + `--no-bundle` keeps this lean: compiles the Rust crate,
+        # confirms the frontend dist is wired into Tauri, but skips the AppImage
+        # / .deb production. Code signing is irrelevant because we never produce
+        # a distributable artifact.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx --prefix studio tauri build --debug --no-bundle
+
+      - name: Inspect produced binary
+        run: |
+          BIN=$(find studio/src-tauri/target/debug -maxdepth 1 -type f -executable 2>/dev/null \
+                | grep -Ev '\.(d|so|dylib|dll)$' \
+                | grep -Ev '/(deps|build|examples)$' \
+                | head -1)
+          echo "binary: $BIN"
+          if [ -z "$BIN" ]; then
+            echo "::error::Tauri debug binary not produced"
+            ls -la studio/src-tauri/target/debug/ || true
+            exit 1
+          fi
+          file "$BIN"
+          du -h "$BIN"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: tauri-debug-build
+          path: |
+            studio/src-tauri/target/debug
+            studio/frontend/dist
+          retention-days: 3
