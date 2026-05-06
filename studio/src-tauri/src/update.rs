@@ -61,6 +61,11 @@ fn spawn_update(
         cmd.env_remove("PYTHONPATH");
     }
 
+    // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
+    // the same install the desktop app uses, not an inherited custom root.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
