@@ -59,18 +59,22 @@ function subscribe(cb: () => void) {
   };
 }
 
-function getSnapshot(): Theme {
-  return readStoredTheme();
+type ThemeSnapshot = `${Theme}:${ResolvedTheme}`;
+
+function getSnapshot(): ThemeSnapshot {
+  const theme = readStoredTheme();
+  return `${theme}:${resolveTheme(theme)}`;
 }
 
-function getServerSnapshot(): Theme {
-  return "system";
+function getServerSnapshot(): ThemeSnapshot {
+  return "system:light";
 }
 
 /**
  * Single source of truth for setting the theme. The initial DOM class is
- * applied by an inline script in index.html (to avoid FOUC); this function
- * keeps the class, localStorage, and React subscribers in sync after that.
+ * applied by public/theme-init.js (to avoid FOUC and stay within Tauri's
+ * default-src 'self' CSP); this function keeps the class, localStorage,
+ * and React subscribers in sync after that.
  */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
@@ -88,7 +92,11 @@ export function useTheme(): {
   resolved: ResolvedTheme;
   setTheme: (next: Theme) => void;
 } {
-  const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  const resolved = resolveTheme(theme);
+  const snapshot = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshot,
+  );
+  const [theme, resolved] = snapshot.split(":") as [Theme, ResolvedTheme];
   return { theme, resolved, setTheme };
 }
