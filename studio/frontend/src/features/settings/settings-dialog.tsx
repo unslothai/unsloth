@@ -10,11 +10,11 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  Globe02Icon,
+  HelpCircleIcon,
   Message01Icon,
   PaintBrush02Icon,
   Settings02Icon,
-  SourceCodeSquareIcon,
-  SparklesIcon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -40,8 +40,8 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
-  { id: "api-keys", label: "Developer", icon: SourceCodeSquareIcon, badge: "New" },
-  { id: "about", label: "Help", icon: SparklesIcon },
+  { id: "api-keys", label: "API", icon: Globe02Icon, badge: "New" },
+  { id: "about", label: "Help", icon: HelpCircleIcon },
 ];
 
 function renderTab(tab: SettingsTab) {
