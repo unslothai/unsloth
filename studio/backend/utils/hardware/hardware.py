@@ -468,6 +468,16 @@ def get_gpu_utilization() -> Dict[str, Any]:
         result = _smi_query("get_primary_gpu_utilization")
         if result is not None:
             result["backend"] = _backend_label(device)
+            if IS_ROCM:
+                # Mirror the unified-memory reconciliation done in the
+                # visible-GPU path. amd-smi on AMD iGPUs (Strix Halo etc.)
+                # reports only the dedicated VRAM slice; torch.mem_get_info
+                # sees the full GTT pool. Without this the /api/train/hardware
+                # endpoint and the live GPU monitor still display the wrong
+                # VRAM total even after auto-selection has been corrected.
+                _reconcile_primary_rocm_unified_memory(
+                    result, _get_parent_visible_gpu_spec()
+                )
             return result
 
     mem = get_gpu_memory_info()
@@ -488,6 +498,35 @@ def get_gpu_utilization() -> Dict[str, Any]:
     return {"available": False, "backend": _backend_label(device)}
 
 
+def _apply_unified_memory_correction(
+    device_metrics: Dict[str, Any], torch_info: Dict[str, Any]
+) -> None:
+    """Per-device reconciliation: when torch reports a larger memory total
+    than amd-smi, overwrite the smi VRAM fields in place.
+
+    Used by both the multi-device and primary-device reconciliation helpers
+    so the two endpoints stay in sync on AMD iGPUs with unified memory.
+    """
+    torch_total_gb = torch_info["total_gb"]
+    smi_total_gb = device_metrics.get("vram_total_gb") or 0.0
+    if torch_total_gb > smi_total_gb:
+        torch_used_gb = torch_info["used_gb"]
+        device_metrics["vram_total_gb"] = torch_total_gb
+        device_metrics["vram_used_gb"] = torch_used_gb
+        device_metrics["vram_utilization_pct"] = (
+            round((torch_used_gb / torch_total_gb) * 100, 1)
+            if torch_total_gb > 0
+            else None
+        )
+        logger.debug(
+            "ROCm unified memory: replaced amd-smi VRAM (%.2f GB) with "
+            "torch mem_get_info total (%.2f GB) for device %s",
+            smi_total_gb,
+            torch_total_gb,
+            torch_info.get("index"),
+        )
+
+
 def _reconcile_rocm_unified_memory(
     utilization: Dict[str, Any], device_indices: list[int]
 ) -> None:
@@ -505,28 +544,34 @@ def _reconcile_rocm_unified_memory(
         return
     torch_by_index = {td["index"]: td for td in torch_devices}
     for dev in utilization.get("devices", []):
-        idx = dev.get("index")
-        td = torch_by_index.get(idx)
+        td = torch_by_index.get(dev.get("index"))
         if td is None:
             continue
-        torch_total_gb = td["total_gb"]
-        smi_total_gb = dev.get("vram_total_gb") or 0.0
-        if torch_total_gb > smi_total_gb:
-            torch_used_gb = td["used_gb"]
-            dev["vram_total_gb"] = torch_total_gb
-            dev["vram_used_gb"] = torch_used_gb
-            dev["vram_utilization_pct"] = (
-                round((torch_used_gb / torch_total_gb) * 100, 1)
-                if torch_total_gb > 0
-                else None
-            )
-            logger.debug(
-                "ROCm unified memory: replaced amd-smi VRAM (%.2f GB) with "
-                "torch mem_get_info total (%.2f GB) for device %d",
-                smi_total_gb,
-                torch_total_gb,
-                idx,
-            )
+        _apply_unified_memory_correction(dev, td)
+
+
+def _reconcile_primary_rocm_unified_memory(
+    utilization: Dict[str, Any], parent_visible_spec: Dict[str, Any]
+) -> None:
+    """Primary-GPU variant of the unified-memory reconciliation.
+
+    ``get_primary_gpu_utilization`` returns a flat metrics dict (no nested
+    ``devices`` list) for the first visible AMD GPU. Run the same correction
+    against torch.mem_get_info for that single device so the live training
+    hardware endpoint and the GPU monitor surface the real unified-memory
+    pool on Strix Halo and similar iGPUs.
+    """
+    numeric_ids = parent_visible_spec.get("numeric_ids")
+    if numeric_ids:
+        primary_idx = [int(numeric_ids[0])]
+    else:
+        # No CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES set: torch ordinal 0
+        # is the primary visible device.
+        primary_idx = [0]
+    torch_devices = _torch_get_per_device_info(primary_idx)
+    if not torch_devices:
+        return
+    _apply_unified_memory_correction(utilization, torch_devices[0])
 
 
 def get_visible_gpu_utilization() -> Dict[str, Any]:
