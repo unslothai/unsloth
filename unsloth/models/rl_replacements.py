@@ -1119,16 +1119,31 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 rows_per_image = image_grid_thw.prod(dim = -1)
                 rows_per_sample = torch.split(rows_per_image, num_images)
                 rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                # why: cum_rows is indexed via .item() inside the per-chunk loop;
+                # keeping it on CPU avoids per-iteration GPU->CPU sync.
                 cum_rows = torch.cat(
                     [
                         torch.tensor([0], device = rows_per_sample.device),
                         rows_per_sample.cumsum(0),
                     ]
-                )
+                ).cpu()
                 cum_imgs = torch.tensor([0] + num_images).cumsum(0)
             else:
                 cum_rows = None
                 cum_imgs = None
+
+            def _first_dim_len(value):
+                if value is None:
+                    return None
+                if hasattr(value, "shape"):
+                    return value.shape[0]
+                try:
+                    return len(value)
+                except TypeError:
+                    return None
+
+            total_images = sum(num_images) if num_images is not None else None
+            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
@@ -1146,7 +1161,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
-                image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
                 token_type_ids_chunks.append(
                     slice_sample_axis(token_type_ids, start, end)
                 )
@@ -1161,10 +1175,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         start_pixel_idx = current_pixel_idx
                         end_pixel_idx = current_pixel_idx + batch_pixel_count
                         current_pixel_idx = end_pixel_idx
+                        img_start = img_end = None
                     else:
                         start_pixel_idx = cum_rows[start].item()
                         end_pixel_idx = cum_rows[end].item()
-                        img_start, img_end = cum_imgs[start], cum_imgs[end]
+                        img_start = cum_imgs[start].item()
+                        img_end = cum_imgs[end].item()
                         grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
 
@@ -1172,22 +1188,49 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
-                    if pixel_attention_mask is not None:
-                        if pixel_attention_mask.shape[0] == pixel_values.shape[0]:
-                            pixel_attention_mask_chunks.append(
-                                pixel_attention_mask[start_pixel_idx:end_pixel_idx]
-                            )
-                        else:
-                            pixel_attention_mask_chunks.append(
-                                pixel_attention_mask[start:end]
-                            )
+                    if image_sizes is None:
+                        image_sizes_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and _image_sizes_n == total_images
+                        and img_start is not None
+                    ):
+                        image_sizes_chunks.append(image_sizes[img_start:img_end])
                     else:
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
+
+                    if pixel_attention_mask is None:
                         pixel_attention_mask_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and img_start is not None
+                        and pixel_attention_mask.shape[0]
+                            == image_grid_thw.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
+                    elif (
+                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
+                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start_pixel_idx:end_pixel_idx]
+                        )
+                    else:
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
             logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
@@ -1518,6 +1561,20 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
+            if num_images is not None and not getattr(
+                self, "_unsloth_grpo_zoo_checked", False
+            ):
+                try:
+                    _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                except (TypeError, OSError):
+                    _zoo_src = ""
+                if _zoo_src and "num_images" not in _zoo_src:
+                    raise RuntimeError(
+                        "Multi-image GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles num_images. Please upgrade "
+                        "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
+                    )
+                self._unsloth_grpo_zoo_checked = True
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
