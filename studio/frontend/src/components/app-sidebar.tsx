@@ -37,12 +37,13 @@ import {
   Delete02Icon,
   Download03Icon,
   GemIcon,
+  Globe02Icon,
+  HelpCircleIcon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
-  SourceCodeSquareIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -527,7 +528,7 @@ export function AppSidebar() {
                   </div>
                   <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
-                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
+                    <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Unsloth</span>
                   </div>
                   <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
                 </SidebarMenuButton>
@@ -548,8 +549,8 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                   >
-                    <HugeiconsIcon icon={SourceCodeSquareIcon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>Developer</span>
+                    <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                    <span>API</span>
                     <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                       New
                     </span>
@@ -578,6 +579,12 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuItem
+                  onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                >
+                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-[18px]" />
+                  <span>Help</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-[18px]" />
                   <span>Shutdown</span>
