@@ -105,6 +105,24 @@ LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
 LEMONADE_ROCM_RELEASES_API = (
     f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
 )
+
+
+def _lemonade_release_api_for(llama_tag: str) -> str:
+    """Return the GitHub API URL for the lemonade release that matches a
+    requested llama.cpp tag.
+
+    When llama_tag is unset or "latest", point at /releases/latest. When the
+    caller has pinned a specific tag (e.g. "b1260"), point at the same tag in
+    lemonade -- lemonade tags llama.cpp upstream tags 1:1 -- so the resolver
+    honours the pin instead of silently drifting to whatever lemonade ships
+    as latest.
+    """
+    normalized = (llama_tag or "").strip()
+    if not normalized or normalized.lower() == "latest":
+        return LEMONADE_ROCM_RELEASES_API
+    return (
+        f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/{normalized}"
+    )
 TEST_MODEL_URL = (
     "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 )
@@ -3152,11 +3170,18 @@ def resolve_lemonade_rocm_choice(
     host: HostInfo,
     os_prefix: str,
     install_kind: str,
+    llama_tag: str = "latest",
 ) -> "AssetChoice | None":
     """Return an AssetChoice from lemonade-sdk/llamacpp-rocm for the detected GPU, or None.
 
     os_prefix: "ubuntu" or "windows"
     install_kind: "linux-rocm" or "windows-hip"
+    llama_tag:   the requested upstream llama.cpp tag ("latest" or a pinned
+                 release like "b1260"). When pinned, the resolver fetches
+                 the matching lemonade release. When the pinned tag is not
+                 published by lemonade we skip silently (and the caller
+                 falls through to upstream) rather than drift to whatever
+                 lemonade ships as latest.
     """
     if not host.rocm_gfx_target:
         return None
@@ -3167,10 +3192,23 @@ def resolve_lemonade_rocm_choice(
             "skipping lemonade prebuilt"
         )
         return None
+    api_url = _lemonade_release_api_for(llama_tag)
     try:
-        release = fetch_json(LEMONADE_ROCM_RELEASES_API)
+        release = fetch_json(api_url)
     except Exception as exc:
-        log(f"Could not fetch {LEMONADE_ROCM_REPO} latest release: {exc}")
+        normalized = (llama_tag or "").strip().lower()
+        if normalized and normalized != "latest":
+            # A pinned tag that lemonade has not published surfaces here as
+            # an HTTP error from /releases/tags/<tag>. Skip silently and let
+            # the caller fall through to the upstream tarball -- this keeps
+            # pinned installs reproducible instead of silently picking up a
+            # different lemonade release.
+            log(
+                f"Could not fetch {LEMONADE_ROCM_REPO} release for "
+                f"llama_tag={llama_tag!r} ({exc}); skipping lemonade prebuilt"
+            )
+        else:
+            log(f"Could not fetch {LEMONADE_ROCM_REPO} latest release: {exc}")
         return None
     release_tag = release.get("tag_name") if isinstance(release, dict) else None
     if not isinstance(release_tag, str) or not release_tag:
@@ -3210,7 +3248,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_rocm and not host.has_usable_nvidia:
             # Try lemonade-sdk per-GPU prebuilt first: these are built against
             # specific gfx targets and bundle all required ROCm runtime libs.
-            lemonade_choice = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm")
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "ubuntu", "linux-rocm", llama_tag = llama_tag
+            )
             if lemonade_choice is not None:
                 return lemonade_choice
 
@@ -3297,7 +3337,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # AMD ROCm on Windows: try lemonade per-GPU prebuilt first, then upstream HIP
         if host.has_rocm:
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "windows", "windows-hip"
+                host, "windows", "windows-hip", llama_tag = llama_tag
             )
             if lemonade_choice is not None:
                 return lemonade_choice
