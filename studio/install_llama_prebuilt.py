@@ -102,7 +102,9 @@ UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
 
 LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
-LEMONADE_ROCM_RELEASES_API = f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
+LEMONADE_ROCM_RELEASES_API = (
+    f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
+)
 TEST_MODEL_URL = (
     "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 )
@@ -3172,7 +3174,9 @@ def resolve_lemonade_rocm_choice(
         return None
     release_tag = release.get("tag_name") if isinstance(release, dict) else None
     if not isinstance(release_tag, str) or not release_tag:
-        log(f"Unexpected {LEMONADE_ROCM_REPO} release payload; skipping lemonade prebuilt")
+        log(
+            f"Unexpected {LEMONADE_ROCM_REPO} release payload; skipping lemonade prebuilt"
+        )
         return None
     assets = release_asset_map(release)
     asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx_family}-x64.zip"
@@ -3292,7 +3296,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
 
         # AMD ROCm on Windows: try lemonade per-GPU prebuilt first, then upstream HIP
         if host.has_rocm:
-            lemonade_choice = resolve_lemonade_rocm_choice(host, "windows", "windows-hip")
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "windows", "windows-hip"
+            )
             if lemonade_choice is not None:
                 return lemonade_choice
 
