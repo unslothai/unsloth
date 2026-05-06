@@ -123,6 +123,8 @@ def _lemonade_release_api_for(llama_tag: str) -> str:
     return (
         f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/{normalized}"
     )
+
+
 TEST_MODEL_URL = (
     "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 )
