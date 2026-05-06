@@ -63,9 +63,9 @@ _ROCM_WINDOWS_WHEEL_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR")
     or "https://repo.radeon.com/rocm/windows"
 ).rstrip("/")
-# Maps (major, minor) → (release_folder, torch_version_string)
-_ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, str]] = {
-    (7, 2): ("rocm-rel-7.2.1", "2.9.1+rocm7.2.1"),
+# Maps (major, minor) → (release_folder, torch_ver, torchvision_ver, torchaudio_ver)
+_ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, str, str, str]] = {
+    (7, 2): ("rocm-rel-7.2.1", "2.9.1+rocm7.2.1", "0.24.1+rocm7.2.1", "2.9.1+rocm7.2.1"),
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
@@ -294,8 +294,8 @@ def _ensure_rocm_torch() -> None:
             return
         entry = next(
             (
-                (rt, tv)
-                for (maj, mn), (rt, tv) in sorted(
+                v
+                for (maj, mn), v in sorted(
                     _ROCM_WINDOWS_RELEASES.items(), reverse = True
                 )
                 if ver >= (maj, mn)
@@ -307,19 +307,19 @@ def _ensure_rocm_torch() -> None:
                 f"   No AMD Windows torch wheel for ROCm {ver[0]}.{ver[1]} -- skipping"
             )
             return
-        rel_tag, torch_ver = entry
-        wheel_url = (
-            f"{_ROCM_WINDOWS_WHEEL_BASE}/{rel_tag}/"
-            f"torch-{torch_ver}-cp312-cp312-win_amd64.whl"
-        )
-        print(
-            f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {wheel_url}"
-        )
+        rel_tag, torch_ver, tv_ver, ta_ver = entry
+        base = f"{_ROCM_WINDOWS_WHEEL_BASE}/{rel_tag}"
+        torch_url = f"{base}/torch-{torch_ver}-cp312-cp312-win_amd64.whl"
+        tv_url = f"{base}/torchvision-{tv_ver}-cp312-cp312-win_amd64.whl"
+        ta_url = f"{base}/torchaudio-{ta_ver}-cp312-cp312-win_amd64.whl"
+        print(f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {base}/")
         pip_install(
             f"ROCm torch (Windows, {rel_tag})",
             "--force-reinstall",
             "--no-cache-dir",
-            wheel_url,
+            torch_url,
+            tv_url,
+            ta_url,
             constrain = False,
         )
         return

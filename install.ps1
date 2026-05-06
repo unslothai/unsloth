@@ -1316,7 +1316,10 @@ shell.Run cmd, 0, False
         if ($pyMajMin -eq "3.12") {
             $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
             if ($ROCmVersion -and $ROCmVersion -match '^7\.2') {
-                $ROCmTorchWheelUrl = "$amdWheelBase/rocm-rel-7.2.1/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+                $amdRelBase = "$amdWheelBase/rocm-rel-7.2.1"
+                $ROCmTorchWheelUrl = "$amdRelBase/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+                $ROCmTorchVisionUrl = "$amdRelBase/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+                $ROCmTorchAudioUrl = "$amdRelBase/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
                 $TorchIndexUrl = $null
             }
             if ($ROCmTorchWheelUrl) {
@@ -1421,7 +1424,7 @@ shell.Run cmd, 0, False
         } elseif ($ROCmTorchWheelUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-cache-dir $ROCmTorchWheelUrl }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-cache-dir $ROCmTorchWheelUrl $ROCmTorchVisionUrl $ROCmTorchAudioUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
