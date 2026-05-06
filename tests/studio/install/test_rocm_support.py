@@ -1188,7 +1188,7 @@ class TestAmdGpuMonitoring:
         assert metrics["vram_utilization_pct"] is not None
         assert metrics["power_utilization_pct"] is not None
 
-    def test_amd_primary_gpu_with_mock(self):
+    def test_amd_primary_gpu_with_mock(self, monkeypatch):
         """get_primary_gpu_utilization returns correct dict with mocked amd-smi."""
         amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
         _amd_spec = importlib.util.spec_from_file_location("test_amd2", amd_path)
@@ -1202,6 +1202,17 @@ class TestAmdGpuMonitoring:
             _amd_spec.loader.exec_module(amd_mod)
         except Exception:
             pytest.skip("Could not load amd module")
+
+        # _first_visible_amd_gpu_id() short-circuits to None when any of
+        # HIP / ROCR / CUDA_VISIBLE_DEVICES is set to "" or "-1". CI runners
+        # often unset CUDA at the env level by setting CUDA_VISIBLE_DEVICES
+        # to "" so the test must not inherit that.
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        ):
+            monkeypatch.delenv(var, raising = False)
 
         mock_json = json.dumps(
             [

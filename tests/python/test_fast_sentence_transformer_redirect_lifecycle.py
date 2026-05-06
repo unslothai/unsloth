@@ -8,10 +8,44 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import pathlib
 import sys
 import types
+
+import pytest
+
+
+def _stub_module(name: str) -> types.ModuleType:
+    # __spec__ must be set so importlib.util.find_spec(name) does not raise
+    # ValueError if a downstream test imports the real package.
+    mod = types.ModuleType(name)
+    mod.__spec__ = importlib.util.spec_from_loader(name, loader = None)
+    return mod
+
+
+_STUB_KEYS = (
+    "transformers",
+    "sentence_transformers",
+    "sentence_transformers.models",
+)
+
+
+@pytest.fixture(autouse = True)
+def _restore_sys_modules():
+    """Snapshot the entries we shadow with stubs and restore them after each
+    test so a downstream test that does `import transformers` for real does
+    not pick up our non-package stub."""
+    saved = {k: sys.modules.get(k) for k in _STUB_KEYS}
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
 
 
 class _FakeAuto:
@@ -45,14 +79,14 @@ class _RaisingTransformer:
 
 
 def _build_driver(transformer_class):
-    transformers_mod = types.ModuleType("transformers")
+    transformers_mod = _stub_module("transformers")
     transformers_mod.AutoModel = _FakeAuto("AutoModel")
     transformers_mod.AutoProcessor = _FakeAuto("AutoProcessor")
     transformers_mod.AutoTokenizer = _FakeAuto("AutoTokenizer")
     sys.modules["transformers"] = transformers_mod
 
-    st_root = types.ModuleType("sentence_transformers")
-    st_models = types.ModuleType("sentence_transformers.models")
+    st_root = _stub_module("sentence_transformers")
+    st_models = _stub_module("sentence_transformers.models")
     st_models.Transformer = transformer_class
     sys.modules["sentence_transformers"] = st_root
     sys.modules["sentence_transformers.models"] = st_models
