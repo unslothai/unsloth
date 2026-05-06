@@ -32,34 +32,46 @@ def _run(block: str, env_setup: str) -> str:
     script = f"set -eu\n{env_setup}\n{block}\nprintf '%s' \"$NVM_DIR\"\n"
     out = subprocess.run(
         ["bash", "-c", script],
-        capture_output=True,
-        text=True,
-        check=True,
+        capture_output = True,
+        text = True,
+        check = True,
     )
     return out.stdout
 
 
 def test_explicit_nvm_dir_is_preserved():
     block = _extract_nvm_dir_block()
-    got = _run(block, 'export NVM_DIR="/opt/custom/nvm"\nexport HOME="/home/u"\nexport XDG_CONFIG_HOME="/home/u/.config"')
+    got = _run(
+        block,
+        'export NVM_DIR="/opt/custom/nvm"\nexport HOME="/home/u"\nexport XDG_CONFIG_HOME="/home/u/.config"',
+    )
     assert got == "/opt/custom/nvm", got
 
 
 def test_explicit_nvm_dir_wins_over_xdg():
     block = _extract_nvm_dir_block()
-    got = _run(block, 'export NVM_DIR="/opt/custom/nvm"\nexport HOME="/home/u"\nunset XDG_CONFIG_HOME')
+    got = _run(
+        block,
+        'export NVM_DIR="/opt/custom/nvm"\nexport HOME="/home/u"\nunset XDG_CONFIG_HOME',
+    )
     assert got == "/opt/custom/nvm", got
 
 
 def test_xdg_config_home_used_when_nvm_dir_unset():
     block = _extract_nvm_dir_block()
-    got = _run(block, 'unset NVM_DIR\nexport HOME="/home/u"\nexport XDG_CONFIG_HOME="/home/u/.config"')
+    got = _run(
+        block,
+        'unset NVM_DIR\nexport HOME="/home/u"\nexport XDG_CONFIG_HOME="/home/u/.config"',
+    )
     assert got == "/home/u/.config/nvm", got
 
 
 def test_xdg_config_home_used_when_nvm_dir_empty():
     block = _extract_nvm_dir_block()
-    got = _run(block, 'export NVM_DIR=""\nexport HOME="/home/u"\nexport XDG_CONFIG_HOME="/home/u/.config"')
+    got = _run(
+        block,
+        'export NVM_DIR=""\nexport HOME="/home/u"\nexport XDG_CONFIG_HOME="/home/u/.config"',
+    )
     assert got == "/home/u/.config/nvm", got
 
 
@@ -78,7 +90,7 @@ def test_home_nvm_fallback_when_xdg_empty():
 def test_block_runs_clean_under_set_u():
     block = _extract_nvm_dir_block()
     script = f'set -eu\nunset NVM_DIR\nunset XDG_CONFIG_HOME\nexport HOME="/home/u"\n{block}\nprintf "%s" "$NVM_DIR"\n'
-    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert out.returncode == 0, out.stderr
     assert out.stdout == "/home/u/.nvm", out.stdout
 
