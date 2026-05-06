@@ -38,11 +38,11 @@ import {
   Download03Icon,
   GemIcon,
   Globe02Icon,
+  HelpCircleIcon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  HelpCircleIcon,
   Settings02Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";

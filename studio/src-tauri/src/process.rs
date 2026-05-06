@@ -316,6 +316,12 @@ pub fn start_backend(
         cmd.env_remove("PYTHONPATH");
     }
 
+    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
+    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
+    // is a pre-existing user-controlled llama.cpp dir override; keep it.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+
     // On Windows, launch the backend directly with hidden-window flags.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
     // children inherit crash-safe cleanup without the buggy per-child JobObject wrapper.

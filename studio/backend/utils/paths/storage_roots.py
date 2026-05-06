@@ -5,17 +5,59 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 
 
+def _infer_studio_home_from_venv() -> Path | None:
+    """Return parent dir of sys.prefix as STUDIO_HOME if running from an
+    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
+    or bin shim) so a developer venv named unsloth_studio is not misidentified.
+    """
+    try:
+        prefix = Path(sys.prefix).resolve()
+    except (OSError, ValueError):
+        return None
+    if prefix.name != "unsloth_studio":
+        return None
+    candidate = prefix.parent
+    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
+    try:
+        has_sentinel = (candidate / "share" / "studio.conf").is_file() or (
+            candidate / "bin" / shim_name
+        ).is_file()
+    except OSError:
+        return None
+    if has_sentinel:
+        return candidate
+    return None
+
+
 def studio_root() -> Path:
+    """Studio install root.
+
+    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
+    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins when
+    both are set (the more specific signal beats the generic alias).
+    """
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve()
+        except (OSError, ValueError):
+            return Path(override).expanduser()
+    inferred = _infer_studio_home_from_venv()
+    if inferred is not None:
+        return inferred
     return Path.home() / ".unsloth" / "studio"
 
 
 def cache_root() -> Path:
     """Central cache directory for all studio downloads (models, datasets, etc.)."""
-    return Path.home() / ".unsloth" / "studio" / "cache"
+    return studio_root() / "cache"
 
 
 def assets_root() -> Path:
