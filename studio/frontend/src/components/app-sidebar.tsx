@@ -267,7 +267,9 @@ export function AppSidebar() {
     renamingTarget !== null &&
     (renamingTarget.kind === "chat"
       ? renameTrimmed.length > 0 && renameTrimmed !== renamingTarget.current
-      : nextRunDisplayName !== (renamingTarget.run.display_name ?? null));
+      : renameTrimmed.length > 0
+        ? renameTrimmed !== renamingTarget.current
+        : renamingTarget.run.display_name != null);
 
   function openRenameChat(item: SidebarItem) {
     setRenameDraft(item.title);
