@@ -1207,7 +1207,11 @@ class TestAmdGpuMonitoring:
         # HIP / ROCR / CUDA_VISIBLE_DEVICES is set to "" or "-1". CI runners
         # often unset CUDA at the env level by setting CUDA_VISIBLE_DEVICES
         # to "" so the test must not inherit that.
-        for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        ):
             monkeypatch.delenv(var, raising = False)
 
         mock_json = json.dumps(
