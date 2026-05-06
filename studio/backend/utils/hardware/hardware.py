@@ -648,7 +648,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # Use explicit None checks (not `or`) so empty string "" is honoured
     # as "no visible GPUs" rather than falling through to CUDA_VISIBLE_DEVICES.
     cuda_visible = None
-    if IS_ROCM:
+    _is_rocm_spec = IS_ROCM or (
+        "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
+    )
+    if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
         rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
         if hip_vis is not None:
@@ -1511,14 +1514,38 @@ def apply_gpu_ids(gpu_ids) -> None:
     # parent process already set a ROCm visibility variable -- that
     # way a downstream ROCm process inherits the narrowed mask even
     # before Studio's hardware detection has classified the host.
+    # As a final fallback, probe torch.version.hip directly so spawned
+    # training workers on AMD hosts where the user never set HIP_VISIBLE_DEVICES
+    # still get the correct ROCm visibility mask (mirrors the llama_cpp.py
+    # approach for llama-server subprocess GPU pinning).
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
-    if IS_ROCM or _inherits_rocm_visibility:
+    _is_rocm = IS_ROCM or _inherits_rocm_visibility
+    if not _is_rocm:
+        # Use ``is not None`` here to match the detect_hardware() check at
+        # module top -- torch ships HIP version as a non-empty string on
+        # ROCm builds and None on CUDA builds, so the two forms agree on
+        # every shipping torch wheel; the ``is not None`` form is the one
+        # the rest of the codebase reads for "this torch was built with
+        # HIP". Keep the broad ``except`` as a safety net (we never want
+        # apply_gpu_ids to crash a worker over a probe failure) but log at
+        # debug level so the skip is observable when needed.
+        try:
+            import torch as _torch
+
+            _is_rocm = getattr(_torch.version, "hip", None) is not None
+        except Exception as e:
+            logger.debug(
+                "apply_gpu_ids: torch.version.hip probe skipped (%s: %s)",
+                type(e).__name__,
+                e,
+            )
+    if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
         os.environ["ROCR_VISIBLE_DEVICES"] = value
     _visible_gpu_count = None
-    if IS_ROCM or _inherits_rocm_visibility:
+    if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)
     else:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
