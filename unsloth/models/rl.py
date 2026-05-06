@@ -194,8 +194,7 @@ def PatchRL(FastLanguageModel):
             (
                 v
                 for v in (
-                    getattr(m, "gradient_checkpointing", False)
-                    for m in model.modules()
+                    getattr(m, "gradient_checkpointing", False) for m in model.modules()
                 )
                 if v
             ),
@@ -224,7 +223,7 @@ def PatchRL(FastLanguageModel):
                 unwrapped_model.generate = original_generate
                 FastLanguageModel.for_training(
                     model,
-                    use_gradient_checkpointing=use_gradient_checkpointing,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
 
     from transformers import Trainer

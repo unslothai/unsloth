@@ -2153,7 +2153,7 @@ def unsloth_fast_generate(
     if restore_training_mode:
         FastLlamaModel.for_training(
             self,
-            use_gradient_checkpointing=use_gradient_checkpointing,
+            use_gradient_checkpointing = use_gradient_checkpointing,
         )
 
     return output
