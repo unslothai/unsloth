@@ -515,10 +515,7 @@ def _is_vlm(config) -> bool:
         or hasattr(config, "vision_config")
         or hasattr(config, "img_processor")
         or hasattr(config, "image_token_index")
-        or (
-            model_type is not None
-            and any(model_type.startswith(vlm_type) for vlm_type in _VLM_MODEL_TYPES)
-        )
+        or model_type in _VLM_MODEL_TYPES
     )
 
 
@@ -539,11 +536,36 @@ def _raw_config_has_vision_config(
                 )
             )
         config = json.loads(config_path.read_text())
-        return "vision_config" in config and bool(config["vision_config"])
+        architectures = config.get("architectures") or []
+        model_type = config.get("model_type")
+        return (
+            any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+            or bool(config.get("vision_config"))
+            or "img_processor" in config
+            or "image_token_index" in config
+            or model_type in _VLM_MODEL_TYPES
+        )
     except Exception as exc:
         logger.warning("Could not read config.json for '%s': %s", model_name, exc)
         return None
 
+
+# why: inline _is_vlm and constants are prepended so the subprocess stays
+# self-contained and does not import the parent backend module graph.
+_VISION_CHECK_INLINE_HELPERS = (
+    "_VLM_ARCH_SUFFIXES = " + repr(_VLM_ARCH_SUFFIXES) + "\n"
+    "_VLM_MODEL_TYPES = " + repr(_VLM_MODEL_TYPES) + "\n"
+    "def _is_vlm(config):\n"
+    "    architectures = getattr(config, 'architectures', None) or []\n"
+    "    model_type = getattr(config, 'model_type', None)\n"
+    "    return (\n"
+    "        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
+    "        or hasattr(config, 'vision_config')\n"
+    "        or hasattr(config, 'img_processor')\n"
+    "        or hasattr(config, 'image_token_index')\n"
+    "        or model_type in _VLM_MODEL_TYPES\n"
+    "    )\n"
+)
 
 # Inline script executed in a subprocess with transformers 5.x activated.
 # Receives model_name and token via argv, prints JSON result to stdout.
@@ -561,9 +583,9 @@ sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
+""" + _VISION_CHECK_INLINE_HELPERS + r"""
 try:
     from transformers import AutoConfig
-    from utils.models.model_config import _is_vlm
 
     kwargs = {"trust_remote_code": True}
     if token:
@@ -763,7 +785,13 @@ def _is_vision_model_uncached(
             return False
 
         if _is_vlm(config):
-            logger.info(f"Model {model_name} detected as VLM")
+            archs = getattr(config, "architectures", None) or []
+            logger.info(
+                "Model %s detected as VLM (model_type=%s, architectures=%s)",
+                model_name,
+                model_type,
+                archs,
+            )
             return True
 
         return False
