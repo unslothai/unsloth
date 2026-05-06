@@ -42,7 +42,7 @@ def _component_class_string(src: str, fn_name: str) -> str:
     """Return the first className string literal inside the named function."""
     fn_match = re.search(rf"function\s+{re.escape(fn_name)}\s*\(", src)
     assert fn_match, f"could not locate {fn_name} in source"
-    tail = src[fn_match.end():]
+    tail = src[fn_match.end() :]
     cls_match = re.search(r'"([^"]*?cursor-[^"]*?)"', tail)
     assert cls_match, f"could not locate className for {fn_name}"
     return cls_match.group(1)
@@ -134,7 +134,9 @@ def test_chat_search_dialog_command_item_uses_cursor_pointer():
         r"<CommandPrimitive\.Item\b[\s\S]*?className=\"([^\"]+)\"",
         src,
     )
-    assert item_match, "could not locate CommandPrimitive.Item className in chat search dialog"
+    assert (
+        item_match
+    ), "could not locate CommandPrimitive.Item className in chat search dialog"
     cls = item_match.group(1)
     assert "cursor-pointer" in cls
     assert "cursor-default" not in cls
@@ -146,7 +148,9 @@ def test_index_css_has_base_interactive_cursor_rule_with_disabled_exclusions():
         r":where\(\s*([^)]*?)\)\s*:not\(([^)]*?)\)\s*\{\s*cursor:\s*pointer;\s*\}",
         css,
     )
-    assert where_block, "expected base-layer :where(...):not(...) cursor:pointer rule in index.css"
+    assert (
+        where_block
+    ), "expected base-layer :where(...):not(...) cursor:pointer rule in index.css"
     selectors = where_block.group(1)
     exclusions = where_block.group(2)
     for token in (
@@ -164,7 +168,9 @@ def test_index_css_has_base_interactive_cursor_rule_with_disabled_exclusions():
     ):
         assert token in selectors, f"base :where(...) is missing selector: {token}"
     for token in (":disabled", '[aria-disabled="true"]', "[data-disabled]"):
-        assert token in exclusions, f":where(...):not(...) is missing exclusion: {token}"
+        assert (
+            token in exclusions
+        ), f":where(...):not(...) is missing exclusion: {token}"
 
 
 def test_index_css_label_has_rule_excludes_disabled_inputs():
