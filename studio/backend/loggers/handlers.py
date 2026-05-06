@@ -29,7 +29,16 @@ _EXCLUDED_PATHS = {
     "/api/train/hardware",
     "/api/system",
 }
-_EXCLUDED_SUFFIXES = (".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".ttf")
+_EXCLUDED_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+)
 
 
 class LoggingMiddleware:

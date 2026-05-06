@@ -82,7 +82,7 @@ def test_svg_is_in_excluded_suffixes():
 
 
 def test_excluded_path_success_emits_no_log(caplog):
-    mw = LoggingMiddleware(_make_inner(messages=_ok_messages()))
+    mw = LoggingMiddleware(_make_inner(messages = _ok_messages()))
 
     async def sink(_msg):
         pass
@@ -94,7 +94,7 @@ def test_excluded_path_success_emits_no_log(caplog):
 def test_all_excluded_paths_skip_success_log(caplog):
     for path in _EXCLUDED_PATHS:
         caplog.reset()
-        mw = LoggingMiddleware(_make_inner(messages=_ok_messages()))
+        mw = LoggingMiddleware(_make_inner(messages = _ok_messages()))
 
         async def sink(_msg):
             pass
@@ -106,7 +106,7 @@ def test_all_excluded_paths_skip_success_log(caplog):
 def test_excluded_suffix_success_skips_logging(caplog):
     for path in ("/huggingface.svg", "/favicon.png", "/foo.woff2"):
         caplog.reset()
-        mw = LoggingMiddleware(_make_inner(messages=_ok_messages()))
+        mw = LoggingMiddleware(_make_inner(messages = _ok_messages()))
 
         async def sink(_msg):
             pass
@@ -116,7 +116,7 @@ def test_excluded_suffix_success_skips_logging(caplog):
 
 
 def test_assets_prefix_success_skips_logging(caplog):
-    mw = LoggingMiddleware(_make_inner(messages=_ok_messages()))
+    mw = LoggingMiddleware(_make_inner(messages = _ok_messages()))
 
     async def sink(_msg):
         pass
@@ -129,7 +129,7 @@ def test_assets_prefix_success_skips_logging(caplog):
 
 
 def test_excluded_path_exception_still_emits_request_failed(caplog):
-    mw = LoggingMiddleware(_make_inner(exc=RuntimeError("boom")))
+    mw = LoggingMiddleware(_make_inner(exc = RuntimeError("boom")))
 
     async def sink(_msg):
         pass
@@ -145,7 +145,7 @@ def test_excluded_path_exception_still_emits_request_failed(caplog):
 
 
 def test_excluded_path_pre_response_exception_keeps_default_status(caplog):
-    mw = LoggingMiddleware(_make_inner(exc=ValueError("early")))
+    mw = LoggingMiddleware(_make_inner(exc = ValueError("early")))
 
     async def sink(_msg):
         pass
@@ -199,16 +199,18 @@ def test_assets_path_streaming_then_raise_logs_real_status(caplog):
 
 
 def test_non_excluded_success_logs_request_completed(caplog):
-    inner = _make_inner(messages=[
-        {"type": "http.response.start", "status": 201, "headers": []},
-        {"type": "http.response.body", "body": b"ok"},
-    ])
+    inner = _make_inner(
+        messages = [
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.body", "body": b"ok"},
+        ]
+    )
     mw = LoggingMiddleware(inner)
 
     async def sink(_msg):
         pass
 
-    _run(mw(_http_scope("/api/health", method="POST"), _noop_receive, sink))
+    _run(mw(_http_scope("/api/health", method = "POST"), _noop_receive, sink))
 
     assert len(caplog.events) == 1
     kind, ev, kw = caplog.events[0]
@@ -220,7 +222,7 @@ def test_non_excluded_success_logs_request_completed(caplog):
 
 
 def test_non_excluded_exception_logs_request_failed_with_timing(caplog):
-    mw = LoggingMiddleware(_make_inner(exc=ValueError("nope")))
+    mw = LoggingMiddleware(_make_inner(exc = ValueError("nope")))
 
     async def sink(_msg):
         pass
@@ -292,7 +294,13 @@ def test_non_excluded_path_inner_app_receives_send_wrapper():
 
 def test_send_wrapper_forwards_messages_unchanged():
     async def inner(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": [(b"x-test", b"1")]})
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"x-test", b"1")],
+            }
+        )
         for chunk in (b"a", b"bb", b"ccc"):
             await send({"type": "http.response.body", "body": chunk, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
