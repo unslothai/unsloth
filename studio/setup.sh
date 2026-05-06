@@ -582,11 +582,42 @@ _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+_HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+
+# Pick the release repo install_llama_prebuilt.py should plan against.
+#
+# macOS already routes to ggml-org/llama.cpp because that is where the
+# bin-macos-{arm64,x64}.tar.gz prebuilts live. Windows routes to ggml-org
+# from setup.ps1 for the same reason.
+#
+# On Linux we previously hard-coded unslothai/llama.cpp, which only
+# publishes Linux CUDA bundles (app-*-linux-x64-cuda*.tar.gz). That left
+# CPU-only Linux hosts (most CI runners, plenty of laptops, anyone without
+# a GPU) walking ~30 releases looking for a non-existent app-*-linux-x64-cpu
+# asset and falling through to a source build.
+#
+# Route CPU-only Linux x86_64 to ggml-org/llama.cpp so install_llama_prebuilt
+# picks up upstream's bin-ubuntu-x64.tar.gz. Hosts with NVIDIA (cuda bundle
+# from unslothai), AMD ROCm (source build with -DGGML_HIP=ON), arm64 Linux
+# (source build), and any other accelerator stay on the existing path.
+_LINUX_HAS_GPU=false
+for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
+    if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
+        _LINUX_HAS_GPU=true
+        break
+    fi
+done
+
 if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+elif [ "$_HOST_SYSTEM" = "Linux" ] \
+        && [ "$_HOST_MACHINE" = "x86_64" ] \
+        && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
+unset _GPU_TOOL
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
