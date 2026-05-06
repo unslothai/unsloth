@@ -24,8 +24,16 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { isTauri } from "@/lib/api-base";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -291,27 +299,41 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
     [disabled],
   );
 
+  const composerContent = (
+    <>
+      <ComposerAttachments />
+      <PendingAudioChip />
+      <ToolStatusDisplay />
+      <ComposerPrimitive.Input
+        placeholder="Send a message..."
+        className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+        minRows={1}
+        maxRows={6}
+        autoFocus={!disabled}
+        disabled={disabled}
+        aria-label="Message input"
+      />
+      <ComposerAction disabled={disabled} />
+    </>
+  );
+
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-        <ComposerAttachments />
-        <PendingAudioChip />
-        <ToolStatusDisplay />
-        <ComposerPrimitive.Input
-          placeholder="Send a message..."
-          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
-          minRows={1}
-          maxRows={6}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label="Message input"
-        />
-        <ComposerAction disabled={disabled} />
-      </ComposerPrimitive.AttachmentDropzone>
+      {isTauri ? (
+        // Phase 1 native model drops own Tauri local-path drops. Restore browser
+        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        <div className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow">
+          {composerContent}
+        </div>
+      ) : (
+        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          {composerContent}
+        </ComposerPrimitive.AttachmentDropzone>
+      )}
     </ComposerPrimitive.Root>
   );
 };
@@ -373,18 +395,6 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-/** Qwen3/3.5 recommended params differ between thinking on/off. */
-function applyQwenThinkingParams(thinkingOn: boolean): void {
-  const store = useChatRuntimeStore.getState();
-  const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
-  if (!checkpoint.includes("qwen3")) {
-    return;
-  }
-  const params = thinkingOn
-    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-  store.setParams({ ...store.params, ...params });
-}
 
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
@@ -393,7 +403,48 @@ const ReasoningToggle: FC = () => {
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
+  const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
   const disabled = !(modelLoaded && supportsReasoning);
+
+  if (reasoningStyle === "reasoning_effort") {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            disabled={disabled}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              disabled
+                ? "cursor-not-allowed opacity-40"
+                : "bg-primary/10 text-primary hover:bg-primary/20",
+            )}
+            aria-label={`Reasoning effort: ${reasoningEffort}`}
+          >
+            <LightbulbIcon className="size-3.5" />
+            <span>
+              Think:{" "}
+              {reasoningEffort.charAt(0).toUpperCase() +
+                reasoningEffort.slice(1)}
+            </span>
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {(["low", "medium", "high"] as const).map((level) => (
+            <DropdownMenuItem
+              key={level}
+              onSelect={() => setReasoningEffort(level)}
+            >
+              {level.charAt(0).toUpperCase() + level.slice(1)}
+              {reasoningEffort === level ? " \u2713" : ""}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
 
   return (
     <button
@@ -420,6 +471,44 @@ const ReasoningToggle: FC = () => {
         <LightbulbOffIcon className="size-3.5" />
       )}
       <span>Think</span>
+    </button>
+  );
+};
+
+const PreserveThinkingToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const supportsPreserveThinking = useChatRuntimeStore(
+    (s) => s.supportsPreserveThinking,
+  );
+  const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
+  const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
+  if (!supportsPreserveThinking) return null;
+  const disabled = !modelLoaded;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setPreserveThinking(!preserveThinking)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : preserveThinking
+            ? "bg-primary/10 text-primary hover:bg-primary/20"
+            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+      )}
+      aria-label={
+        preserveThinking ? "Disable preserve think" : "Enable preserve think"
+      }
+    >
+      {preserveThinking && !disabled ? (
+        <LightbulbIcon className="size-3.5" />
+      ) : (
+        <LightbulbOffIcon className="size-3.5" />
+      )}
+      <span>Preserve Think</span>
     </button>
   );
 };
@@ -551,6 +640,7 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
         <ComposerAddAttachment />
         <ComposerAudioUpload />
         <ReasoningToggle />
+        <PreserveThinkingToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
       </div>

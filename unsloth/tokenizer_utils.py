@@ -434,8 +434,25 @@ def fix_sentencepiece_gguf(saved_location):
     Fixes sentencepiece tokenizers which did not extend the vocabulary with
     user defined tokens.
     Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert_hf_to_gguf.py
+
+    Also fixes special tokens (e.g. Gemma 3's <start_of_turn>/<end_of_turn>) that are
+    already present in the sentencepiece model but are incorrectly typed as NORMAL instead
+    of CONTROL. This causes them to be written to GGUF with token_type=1 (NORMAL) instead
+    of token_type=3 (CONTROL), which breaks chat inference in llama.cpp since parse_special
+    only matches CONTROL tokens.
     """
     from copy import deepcopy
+    import sys
+
+    try:
+        from transformers.convert_slow_tokenizer import import_protobuf
+
+        sys.modules.setdefault(
+            "transformers.utils.sentencepiece_model_pb2",
+            import_protobuf(),
+        )
+    except Exception:
+        pass
     from transformers.utils import sentencepiece_model_pb2
     import json
     from enum import IntEnum
@@ -457,12 +474,45 @@ def fix_sentencepiece_gguf(saved_location):
     )
     sentence_piece_size = len(tokenizer_file.pieces)
 
+    # Build a set of token IDs that are marked as special in tokenizer.json.
+    # These tokens should use CONTROL type in the sentencepiece model so that
+    # llama.cpp writes them as CONTROL (type=3) in the GGUF token_type array.
+    special_token_ids = set()
+    if os.path.isfile(f"{saved_location}/tokenizer.json"):
+        with open(f"{saved_location}/tokenizer.json", "r", encoding = "utf-8") as f:
+            tokenizer_json = json.load(f)
+        for entry in tokenizer_json.get("added_tokens", []):
+            token_id = entry.get("id")
+            if entry.get("special", False) and isinstance(token_id, int):
+                special_token_ids.add(token_id)
+
+    # Fix existing sentencepiece tokens that are marked as special in tokenizer.json
+    # but have the wrong type (NORMAL instead of CONTROL) in the sentencepiece model.
+    patched = 0
+    for token_id in special_token_ids:
+        if 0 <= token_id < sentence_piece_size:
+            piece = tokenizer_file.pieces[token_id]
+            if piece.type == SentencePieceTokenTypes.NORMAL:
+                piece.type = SentencePieceTokenTypes.CONTROL
+                patched += 1
+    if patched > 0:
+        logger.warning(
+            f"Unsloth: Patched {patched} special token(s) in {saved_location}/tokenizer.model "
+            f"from NORMAL to CONTROL type so llama.cpp / GGUF chat inference works correctly."
+        )
+
     # Load added_tokens_json
     if not os.path.isfile(f"{saved_location}/added_tokens.json"):
+        if patched > 0:
+            with open(f"{saved_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
         return
     with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
         added_tokens_json = json.load(file)
     if len(added_tokens_json) == 0:
+        if patched > 0:
+            with open(f"{saved_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
         return
 
     added_tokens_json = dict(
@@ -472,10 +522,20 @@ def fix_sentencepiece_gguf(saved_location):
 
     # Confirm added_tokens_json is correct
     added_tokens_ids = np.array(list(added_tokens_json.values()))
+    _real_added_tokens_ids = added_tokens_ids
+    if len(added_tokens_ids) < 2:
+        added_tokens_ids = np.array([sentence_piece_size, sentence_piece_size + 1])
     diff = np.diff(added_tokens_ids)
     if diff.min() != 1 or diff.max() != 1:
+        if patched > 0:
+            with open(f"{saved_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
         return
+    added_tokens_ids = _real_added_tokens_ids
     if added_tokens_ids.min() != sentence_piece_size:
+        if patched > 0:
+            with open(f"{saved_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
         return
 
     # Edit sentence piece tokens with added_tokens_json
@@ -485,10 +545,16 @@ def fix_sentencepiece_gguf(saved_location):
         f"But we need to extend to sentencepiece vocab size ({new_size})."
     )
     new_tokens = deepcopy(tokenizer_file.pieces[-len(added_tokens_ids) :])
-    for new_token, added_token in zip(new_tokens, added_tokens_json.keys()):
-        new_token.piece = added_token.encode("utf-8")
+    for new_token, added_token_str in zip(new_tokens, added_tokens_json.keys()):
+        added_token_id = added_tokens_json[added_token_str]
+        new_token.piece = added_token_str.encode("utf-8")
         new_token.score = -1000.0
-        new_token.type = SentencePieceTokenTypes.USER_DEFINED
+        # Use CONTROL type for tokens marked as special in tokenizer.json,
+        # otherwise fall back to USER_DEFINED.
+        if added_token_id in special_token_ids:
+            new_token.type = SentencePieceTokenTypes.CONTROL
+        else:
+            new_token.type = SentencePieceTokenTypes.USER_DEFINED
 
     tokenizer_file.pieces.extend(new_tokens)
 

@@ -1,22 +1,70 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import importlib.util
+import hashlib
+import json
 import os
 import platform
+import secrets
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
+import types
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
+DESKTOP_SECRET_FILE = ".desktop_secret"
+DEFAULT_ADMIN_USERNAME = "unsloth"
+DESKTOP_SECRET_PREFIX = "desktop-"
+API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
+DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
+DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
+PBKDF2_ITERATIONS = 100_000
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
 # (either site-packages or the repo root for editable installs).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _should_hide_windows_subprocesses() -> bool:
+    """Hide child console windows only for non-interactive Windows launches."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        return not sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
+def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
+    """Return Windows-only Popen kwargs that suppress transient console windows."""
+    if not _should_hide_windows_subprocesses():
+        return {}
+
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_factory is not None and startf_use_showwindow:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
 
 
 def _studio_venv_python() -> Optional[Path]:
@@ -97,10 +145,226 @@ def _create_api_key_inprocess(name: str) -> str:
     ``POST /api/auth/api-keys`` on fresh installs.  Safe because the
     CLI already has filesystem access to ``~/.unsloth/studio``.
     """
-    from auth.storage import create_api_key, DEFAULT_ADMIN_USERNAME
+    storage = _load_backend_auth_storage()
 
-    raw_key, _row = create_api_key(username = DEFAULT_ADMIN_USERNAME, name = name)
+    raw_key, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = name,
+    )
     return raw_key
+
+
+def _load_backend_auth_storage():
+    run_py = _find_run_py()
+    backend_dir = (
+        run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
+    )
+    if backend_dir.is_dir() and str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+
+    auth_dir = backend_dir / "auth"
+    storage_py = auth_dir / "storage.py"
+    loaded = sys.modules.get("auth.storage")
+    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
+    if loaded is not None and loaded_path == storage_py:
+        return loaded
+
+    package = sys.modules.get("auth")
+    package_paths = [Path(path).resolve() for path in getattr(package, "__path__", [])]
+    if package is None or auth_dir.resolve() not in package_paths:
+        package = types.ModuleType("auth")
+        package.__path__ = [str(auth_dir)]
+        package.__package__ = "auth"
+        package.__file__ = str(auth_dir / "__init__.py")
+        sys.modules["auth"] = package
+
+    spec = importlib.util.spec_from_file_location("auth.storage", storage_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load backend auth storage from {storage_py}")
+    storage = importlib.util.module_from_spec(spec)
+    sys.modules["auth.storage"] = storage
+    spec.loader.exec_module(storage)
+
+    return storage
+
+
+def _write_auth_secret(path: Path, secret: str) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w") as f:
+            fd = -1
+            f.write(secret)
+        os.replace(tmp_path, path)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        tmp_path.unlink(missing_ok = True)
+        raise
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _connect_auth_db() -> sqlite3.Connection:
+    auth_dir = STUDIO_HOME / "auth"
+    auth_dir.mkdir(parents = True, exist_ok = True)
+    conn = sqlite3.connect(auth_dir / "auth.db")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_user (
+            id INTEGER PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            jwt_secret TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id INTEGER PRIMARY KEY,
+            token_hash TEXT NOT NULL,
+            username TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            is_desktop INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            expires_at TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_secrets (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
+    auth_columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    if "must_change_password" not in auth_columns:
+        conn.execute(
+            "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+        )
+    refresh_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+    }
+    if "is_desktop" not in refresh_columns:
+        conn.execute(
+            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.commit()
+    return conn
+
+
+def _pbkdf2_hex(value: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        value.encode("utf-8"),
+        salt,
+        PBKDF2_ITERATIONS,
+    ).hex()
+
+
+def _hash_password(password: str) -> tuple[str, str]:
+    salt = secrets.token_hex(16)
+    pwd_hash = _pbkdf2_hex(password, salt.encode("utf-8"))
+    return salt, pwd_hash
+
+
+def _get_or_create_api_key_pbkdf2_salt(conn: sqlite3.Connection) -> bytes:
+    row = conn.execute(
+        "SELECT value FROM app_secrets WHERE key = ?",
+        (API_KEY_PBKDF2_SALT_KEY,),
+    ).fetchone()
+    if row is None:
+        salt_hex = secrets.token_hex(32)
+        conn.execute(
+            "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+            (API_KEY_PBKDF2_SALT_KEY, salt_hex),
+        )
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (API_KEY_PBKDF2_SALT_KEY,),
+        ).fetchone()
+    return bytes.fromhex(row[0])
+
+
+def _ensure_cli_default_admin(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM auth_user WHERE username = ?",
+        (DEFAULT_ADMIN_USERNAME,),
+    ).fetchone()
+    if row is not None:
+        return
+
+    bootstrap_password = secrets.token_urlsafe(32)
+    password_salt, password_hash = _hash_password(bootstrap_password)
+    conn.execute(
+        """
+        INSERT INTO auth_user (
+            username,
+            password_salt,
+            password_hash,
+            jwt_secret,
+            must_change_password
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            DEFAULT_ADMIN_USERNAME,
+            password_salt,
+            password_hash,
+            secrets.token_urlsafe(64),
+            1,
+        ),
+    )
+    _write_auth_secret(
+        STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE,
+        bootstrap_password,
+    )
+
+
+def _create_desktop_secret_in_cli() -> str:
+    raw_secret = DESKTOP_SECRET_PREFIX + secrets.token_urlsafe(48)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect_auth_db()
+    try:
+        _ensure_cli_default_admin(conn)
+        secret_hash = _pbkdf2_hex(raw_secret, _get_or_create_api_key_pbkdf2_salt(conn))
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (DESKTOP_SECRET_HASH_KEY, secret_hash),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (DESKTOP_SECRET_CREATED_AT_KEY, now),
+        )
+        conn.commit()
+        return raw_secret
+    finally:
+        conn.close()
 
 
 def _load_model_via_http(
@@ -110,6 +374,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
@@ -124,6 +389,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if llama_extra_args:
+        payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -150,9 +417,14 @@ def _load_model_via_http(
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    api_only: bool = typer.Option(
+        False,
+        "--api-only",
+        help = "Run API server only, no frontend serving (for Tauri desktop app)",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     if ctx.invoked_subcommand is not None:
@@ -180,13 +452,15 @@ def studio_default(
                 args.extend(["--frontend", str(frontend)])
             if silent:
                 args.append("--silent")
+            if api_only:
+                args.append("--api-only")
             # On Windows, os.execvp() spawns a child but the parent lingers,
             # so Ctrl+C only kills the parent leaving the child orphaned.
             # Use subprocess.run() on Windows so the parent waits for the child.
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                proc = _sp.Popen(args)
+                proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -217,7 +491,7 @@ def studio_default(
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
-    run_kwargs = dict(host = host, port = port, silent = silent)
+    run_kwargs = dict(host = host, port = port, silent = silent, api_only = api_only)
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)
@@ -243,9 +517,57 @@ def studio_default(
 # ── unsloth studio run ───────────────────────────────────────────────
 
 
-@studio_app.command()
+def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
+    """Split ``org/name:variant`` HF-style identifiers into (repo, variant).
+
+    Mirrors llama.cpp's ``-hf <repo>:<quant>`` convention so users can
+    write ``unsloth/gpt-oss-20b-GGUF:UD-Q4_K_XL`` instead of passing
+    ``--gguf-variant`` separately. Local paths (absolute, ``./``,
+    ``~/``, Windows drive letters) and identifiers without a ``:``
+    suffix are returned verbatim.
+    """
+    s = model_arg.strip()
+    if not s:
+        return s, None
+    if s.startswith(("/", "./", "../", "~")) or s == ".":
+        return s, None
+    # Windows drive letter (e.g. "C:\\path" or "C:/path") -- the colon
+    # here is a path separator, not a variant suffix.
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        return s, None
+    if ":" not in s:
+        return s, None
+    repo, _, variant = s.rpartition(":")
+    if not repo or not variant:
+        return s, None
+    # A real quant label has no slashes; ``foo:bar/baz`` is not
+    # ``repo:variant`` syntax.
+    if "/" in variant:
+        return s, None
+    return repo, variant
+
+
+@studio_app.command(
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    },
+)
 def run(
-    model: str = typer.Option(..., "--model", "-m", help = "Model path or HF repo"),
+    ctx: typer.Context,
+    model: str = typer.Option(
+        ...,
+        "--model",
+        "-m",
+        "-hf",
+        "-hfr",
+        "--hf-repo",
+        help = (
+            "Model path or HF repo. Accepts llama.cpp-style "
+            "`org/repo:variant` syntax. The `-hf` / `--hf-repo` aliases "
+            "match llama-server's spelling."
+        ),
+    ),
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
@@ -257,15 +579,66 @@ def run(
         "cli", "--api-key-name", help = "Label for the auto-generated API key"
     ),
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = (
+            "Force server-side tools on/off for all requests. "
+            "Default: on for 127.0.0.1, off for 0.0.0.0."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+    ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
+    Any flag this command does not recognize is forwarded verbatim to
+    the underlying llama-server (GGUF only). Studio-managed flags
+    (--port, -c / --ctx-size, --api-key, -ngl, --jinja, --flash-attn,
+    --no-context-shift, model-identity flags, ...) are rejected with
+    HTTP 400.
+
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42
+        unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
     """
+    extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # ── 0. Parse llama.cpp-style ``repo:variant`` syntax in --model. ───
+    # Lets users write ``--model unsloth/foo-GGUF:UD-Q4_K_XL`` instead
+    # of pairing ``--model`` with ``--gguf-variant``. If both are given
+    # and disagree, fail loudly instead of silently picking one.
+    parsed_repo, embedded_variant = _split_repo_variant(model)
+    if embedded_variant:
+        if gguf_variant and gguf_variant != embedded_variant:
+            typer.echo(
+                f"Error: --model embeds variant '{embedded_variant}' but "
+                f"--gguf-variant '{gguf_variant}' was also provided.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        model = parsed_repo
+        gguf_variant = gguf_variant or embedded_variant
+
+    # ── Resolve the server-side tool policy. The y/N prompt (if any)
+    # runs in the outer process so the re-exec'd child never re-prompts.
+    from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
+
+    enable_tools = resolve_tool_policy(
+        host = host,
+        flag = enable_tools,
+        yes = yes,
+        silent = silent,
+    )
+
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
@@ -305,6 +678,23 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        # Forward the resolved tool policy (always concrete True/False
+        # at this point — the resolver above ran before the re-exec).
+        if enable_tools:
+            args.append("--enable-tools")
+        else:
+            args.append("--disable-tools")
+        # Forward --yes whenever the parent already cleared the prompt
+        # (either operator passed --yes, or the parent's resolver
+        # accepted the network-bind confirmation). Otherwise the child
+        # re-runs the resolver and prompts a second time.
+        if yes or (enable_tools and is_external_host(host)):
+            args.append("--yes")
+        # Forward unknown args (llama-server pass-through) to the
+        # re-exec'd command so the studio venv sees them in ctx.args
+        # and the re-execed run() can include them in the load payload.
+        if extra_llama_args:
+            args.extend(extra_llama_args)
 
         if sys.platform == "win32":
             proc = subprocess.Popen(args)
@@ -324,6 +714,17 @@ def run(
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
+
+    # ── Apply the resolved tool policy as a process-level override.
+    # Must use the same import path the route handlers use --
+    # `studio/backend/run.py` adds `studio/backend/` to sys.path so the
+    # routes import this module as top-level `state.tool_policy`. If we
+    # imported via `studio.backend.state.tool_policy` instead, Python
+    # would cache two different module objects with two different
+    # `_tool_policy` globals, and the gates would never see our value.
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
 
     # ── 3. Wait for server health ─────────────────────────────────────
     if not silent:
@@ -346,6 +747,7 @@ def run(
             gguf_variant = gguf_variant,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            llama_extra_args = extra_llama_args,
         )
     except RuntimeError as exc:
         typer.echo(f"Error: {exc}", err = True)
@@ -359,6 +761,32 @@ def run(
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
+    # Claude orange (Claude Code's brand color) for tool-policy notices
+    # so they stand out from the surrounding banner. Always printed --
+    # even under --silent / --yes -- so the operator never misses the
+    # current tool-execution status.
+    _tool_notice_fg = (217, 119, 87)
+    _is_external = is_external_host(host)
+    if _is_external and enable_tools:
+        _tool_notice = (
+            f"Server-side tools are ENABLED on {host} (network-reachable). "
+            f"Anyone with the API key can run code on this machine. "
+            f"Do not share the API key."
+        )
+    elif _is_external:
+        _tool_notice = (
+            f"Server-side tools are disabled by default on {host} "
+            f"(network-reachable). Pass --enable-tools to turn on "
+            f"(you will be warned about API-key risk)."
+        )
+    elif enable_tools:
+        _tool_notice = (
+            "Server-side tools are enabled by default for loopback. "
+            "Pass --disable-tools to turn off."
+        )
+    else:
+        _tool_notice = "Server-side tools are disabled."
+
     if not silent:
         typer.echo("")
         typer.echo("=" * 56)
@@ -369,6 +797,7 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
@@ -392,6 +821,13 @@ def run(
         typer.echo('    -H "Content-Type: application/json" \\')
         typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
+    else:
+        # Silent mode still prints the essentials (URL, API key) plus
+        # the orange tool-status notice so the operator never loses
+        # visibility into the security-relevant policy.
+        typer.echo(f"URL:     {base_url}")
+        typer.echo(f"API Key: {api_key}")
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
@@ -489,9 +925,16 @@ def _run_setup_script(*, verbose: bool = False) -> None:
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
 
     if platform.system() == "Windows":
+        powershell_args = ["powershell.exe"]
+        if _should_hide_windows_subprocesses():
+            powershell_args.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
+        powershell_args.extend(["-ExecutionPolicy", "Bypass", "-File", str(script)])
         result = subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            powershell_args,
             env = env,
+            **_windows_hidden_subprocess_kwargs(),
         )
     else:
         result = subprocess.run(["bash", str(script)], env = env)
@@ -547,6 +990,44 @@ def update(
 # ── unsloth studio reset-password ────────────────────────────────────
 
 
+@studio_app.command("desktop-capabilities", hidden = True)
+def desktop_capabilities(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help = "Emit machine-readable JSON.",
+    ),
+):
+    payload = {
+        "desktop_protocol_version": 1,
+        "supports_provision_desktop_auth": True,
+        "supports_api_only": True,
+        "version": "unknown",
+    }
+    try:
+        from importlib.metadata import version as package_version
+
+        payload["version"] = package_version("unsloth")
+    except Exception:
+        pass
+
+    if json_output:
+        typer.echo(json.dumps(payload, sort_keys = True))
+        return
+
+    for key, value in payload.items():
+        typer.echo(f"{key}: {value}")
+
+
+@studio_app.command("provision-desktop-auth", hidden = True)
+def provision_desktop_auth():
+    """Create/repair desktop auth state for the local machine."""
+    auth_dir = STUDIO_HOME / "auth"
+    secret = _create_desktop_secret_in_cli()
+    _write_auth_secret(auth_dir / DESKTOP_SECRET_FILE, secret)
+    typer.echo("Desktop auth ready.")
+
+
 @studio_app.command("reset-password")
 def reset_password():
     """Reset the Studio admin password.
@@ -557,13 +1038,18 @@ def reset_password():
     """
     auth_dir = STUDIO_HOME / "auth"
     db_file = auth_dir / "auth.db"
-    pw_file = auth_dir / ".bootstrap_password"
-
-    if not db_file.exists():
-        typer.echo("No auth database found -- nothing to reset.")
-        raise typer.Exit(0)
+    stale_files = [
+        auth_dir / BOOTSTRAP_PASSWORD_FILE,
+        auth_dir / DESKTOP_SECRET_FILE,
+    ]
+    had_db = db_file.exists()
 
     db_file.unlink(missing_ok = True)
-    pw_file.unlink(missing_ok = True)
+    for path in stale_files:
+        path.unlink(missing_ok = True)
+
+    if not had_db:
+        typer.echo("No auth database found -- nothing to reset.")
+        raise typer.Exit(0)
 
     typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")

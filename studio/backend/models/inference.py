@@ -18,6 +18,9 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    native_path_lease: Optional[str] = Field(
+        None, description = "Frontend-visible signed native path grant"
+    )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )
@@ -52,6 +55,16 @@ class LoadRequest(BaseModel):
         None,
         description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Extra arguments forwarded verbatim to llama-server for GGUF models. "
+            "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
+            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
+            "non-GGUF models."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -69,6 +82,9 @@ class ValidateModelRequest(BaseModel):
     """
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    native_path_lease: Optional[str] = Field(
+        None, description = "Frontend-visible signed native path grant"
+    )
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )
@@ -157,11 +173,19 @@ class LoadResponse(BaseModel):
     )
     supports_reasoning: bool = Field(
         False,
-        description = "Whether model supports thinking/reasoning mode (enable_thinking)",
+        description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
+    )
+    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
+        "enable_thinking",
+        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
     )
     reasoning_always_on: bool = Field(
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
+    )
+    supports_preserve_thinking: bool = Field(
+        False,
+        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
     )
     supports_tools: bool = Field(
         False,
@@ -261,11 +285,23 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
+    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
+        "enable_thinking",
+        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
     )
+    supports_preserve_thinking: bool = Field(
+        False,
+        description = "Whether the active model's template understands the optional preserve_thinking kwarg",
+    )
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Jinja2 chat template string for the active model",
     )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
@@ -380,7 +416,10 @@ class ChatMessage(BaseModel):
         if self.name is not None and self.role != "tool":
             raise ValueError('"name" is only valid on role="tool" messages.')
 
-        # Per-role content requirements.
+        # Per-role content requirements. OpenAI-compatible clients may send
+        # ``content=""`` for image-only turns when the image travels in a
+        # companion field such as Studio's ``image_base64`` extension, so treat
+        # empty strings as present content for user/system messages.
         if self.role == "tool":
             if not self.tool_call_id:
                 raise ValueError(
@@ -395,10 +434,8 @@ class ChatMessage(BaseModel):
                     'role="assistant" messages require either "content" or "tool_calls".'
                 )
         else:  # "user" | "system"
-            if not self.content:
-                raise ValueError(
-                    f'role="{self.role}" messages require non-empty "content".'
-                )
+            if self.content is None or self.content == []:
+                raise ValueError(f'role="{self.role}" messages require "content".')
         return self
 
 
@@ -481,6 +518,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -506,6 +551,10 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    cancel_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
     )
 
 
@@ -968,6 +1017,7 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    cancel_id: Optional[str] = None
     model_config = {"extra": "allow"}
 
 

@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "windows": {
+      "signCommand": {
+        "cmd": "trusted-signing-cli",
+        "args": ["-e", "https://eus.codesigning.azure.net", "-d", "Unsloth Studio (Desktop)", "%1"]
+      }
+    }
+  }
+}
