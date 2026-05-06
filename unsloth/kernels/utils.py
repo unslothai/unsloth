@@ -169,6 +169,7 @@ else:
     def _gpu_getCurrentRawStream(_index = 0):
         return 0
 
+
 c_void_p = ctypes.c_void_p
 
 
