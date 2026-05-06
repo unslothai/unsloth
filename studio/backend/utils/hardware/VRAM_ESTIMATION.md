@@ -33,7 +33,13 @@ Non-quantizable = 2*H*L + V*H + (V*H if not tie_embeddings else 0)
 | QLoRA 4-bit | `Quantizable * 2 / 3.2 + Non-quantizable * 2` |
 | LoRA / Full fp16 | `(Quantizable + Non-quantizable) * 2` |
 
-The 3.2 factor (`16/5`) accounts for BNB NF4 blockwise scales.
+The 3.2 factor (`16/5`) accounts for BNB NF4 blockwise scales. Repos whose
+quantization config enables `bnb_4bit_use_double_quant` use a tighter, still
+conservative 3.6 factor for the quantized portion of the weights.
+When a 4-bit config has `llm_int8_skip_modules` entries that point to language
+model layers or submodules, those quantizable weights are charged at fp16
+instead of NF4. Generic embedding and multimodal skip names are already covered
+by non-quantizable terms or excluded from text training weights.
 
 ## 2. LoRA Adapters
 
@@ -52,6 +58,18 @@ MLP modules multiply by `E` for MoE.
 ```
 LoRA_bytes = sum(A + B per selected module) * L * 2
 ```
+
+`all-linear` is treated as all known text linear modules in the table above.
+The estimator deliberately does not infer multimodal or vision-tower LoRA
+modules from config shapes; those modules vary too much across VLM families for
+a generic config formula.
+
+Some decoder configs expose layer-shape fields such as `layer_types`,
+`head_dim`, `global_head_dim`, `num_global_key_value_heads`, `attention_k_eq_v`,
+`num_kv_shared_layers`, `use_double_wide_mlp`, `vocab_size_per_layer_input`, and
+`hidden_size_per_layer_input`. When those fields are present, the estimator
+derives text weight and LoRA counts from the per-layer shapes instead of
+assuming every layer has the same seven projection modules.
 
 ## 3. Optimizer States (calibrated)
 
@@ -77,6 +95,21 @@ Per-layer (from `unsloth_zoo/vllm_utils.py`):
 Per_layer = (S*B*(H+K+K) + S*B*2 + S*B*(M+M)) * 2 * 1.25
 ```
 
+When the resolved attention implementation is none of `flash_attention_2`,
+`sdpa`, or `flex_attention` (PyTorch SDPA dispatches to flash or
+memory-efficient kernels and FlexAttention is also a memory-efficient
+kernel, all of which are O(n) in memory), activation memory also includes
+a quadratic attention-score/workspace estimate:
+
+```
+Non_flash_attention = B * num_attention_heads * S^2 * 2 * 12.0 * effective_layers
+Activations = max(Per_layer_with_gc, Non_flash_attention)
+```
+
+Studio resolves the attention implementation with Unsloth's
+`resolve_attention_implementation` helper and uses that result directly. The
+estimator does not duplicate model-family attention policy.
+
 | GC Mode | Full FT | LoRA/QLoRA |
 |---------|---------|------------|
 | none | `L` layers | `L` layers |
@@ -85,12 +118,32 @@ Per_layer = (S*B*(H+K+K) + S*B*2 + S*B*(M+M)) * 2 * 1.25
 
 ## 6. Floors
 
-Gradients and activations have minimum floors at **15% of model weight memory** to account for autograd overhead, attention score matrices, NCCL buffers, mixed-precision scaling, and PyTorch fragmentation.
+Activations use the computed formula directly:
 
 ```
-gradient_bytes  = max(computed, weights * 0.15)
-activation_bytes = max(computed, weights * 0.15 * B/2)
+activation_bytes = computed_activation_bytes
 ```
+
+Full fine-tuning keeps the gradient floor at **15% of model weight memory** to
+account for autograd overhead, NCCL buffers, mixed-precision scaling, and
+PyTorch fragmentation:
+
+```
+gradient_bytes = max(computed_gradient_bytes, weights * 0.15)
+```
+
+For LoRA/QLoRA, the base model is frozen, so the weight-derived gradient floor
+is capped by trainable-state and live-activation scale:
+
+```
+raw_gradient_bytes = trainable_params * 2
+gradient_floor = min(weights * 0.15, max(computed_activation_bytes, optimizer_bytes))
+gradient_bytes = max(raw_gradient_bytes, gradient_floor)
+```
+
+This prevents frozen quantized model size from dominating gradient/state
+overhead when the measured runtime footprint is governed by LoRA optimizer
+states and live activations.
 
 ## 7. CUDA Overhead
 
@@ -103,34 +156,6 @@ When sharding across multiple GPUs, each additional GPU (beyond the first) contr
 ```
 usable_gb = free[gpu_0] + sum(free[gpu_i] * 0.85 for i in 1..N)
 ```
-
----
-
-## Reference Table (bsz=2, seq=2048, rank=16, GC=unsloth, adamw_8bit)
-
-| Model | Weights | LoRA | Optim | Grad | Act | CUDA | Total |
-|-------|---------|------|-------|------|-----|------|-------|
-| 0.5B QLoRA | 0.5 | 0.0 | 0.0 | 0.1 | 0.1 | 1.4 | **2.1** |
-| 1B QLoRA | 1.1 | 0.0 | 0.0 | 0.2 | 0.2 | 1.4 | **2.9** |
-| 3B QLoRA | 2.4 | 0.0 | 0.1 | 0.5 | 0.5 | 1.4 | **4.9** |
-| 8B QLoRA | 6.0 | 0.1 | 0.2 | 1.2 | 1.2 | 1.4 | **10.1** |
-| 8B LoRA fp16 | 15.0 | 0.1 | 0.2 | 3.0 | 3.0 | 1.4 | **22.6** |
-| 8B Full FT | 15.0 | — | 29.9 | 15.0 | 3.0 | 1.4 | **64.2** |
-| 32B LoRA fp16 | 61.0 | 0.2 | 0.5 | 12.2 | 12.2 | 1.4 | **87.6** |
-| 72B QLoRA | 45.5 | 0.4 | 0.8 | 9.1 | 9.1 | 1.4 | **66.3** |
-
-## E2E Validation (Llama-3.2-1B, B200 emulating 24GB)
-
-| Config | Estimated | Actual (nvsmi) | Error |
-|--------|----------|----------------|-------|
-| QLoRA bsz=2 seq=512 | 2.55 GB | 2.65 GB | -3.7% |
-| QLoRA bsz=2 seq=2048 | 2.60 GB | 2.65 GB | -1.8% |
-| QLoRA bsz=4 seq=2048 | 2.65 GB | 2.65 GB | +0.0% |
-| LoRA fp16 bsz=2 | 3.84 GB | 3.88 GB | -1.0% |
-| Full FT adamw_8bit | 10.89 GB | 10.80 GB | +0.8% |
-| Full FT adamw_torch | 13.19 GB | 12.93 GB | +2.0% |
-
-*Note: e2e numbers predate the 15% floors, which add safety margin on top.*
 
 ---
 

@@ -71,6 +71,7 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -378,6 +379,7 @@ class UnslothTrainer:
     def _finalize_training(self, output_dir, label = ""):
         """Save model after training and update progress. Used by all training branches."""
         if self.should_stop and self.save_on_stop:
+            self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
@@ -1777,6 +1779,7 @@ class UnslothTrainer:
                     spark_code_dir,
                 ],
                 check = True,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
 
@@ -2011,6 +2014,7 @@ class UnslothTrainer:
                     outetts_code_dir,
                 ],
                 check = True,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             for fpath in [
@@ -2909,7 +2913,9 @@ class UnslothTrainer:
                     total_steps = total, status_message = "Starting CSM training..."
                 )
                 logger.info(f"CSM training config: {config}\n")
-                self.trainer.train()
+                self.trainer.train(
+                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                )
                 self._finalize_training(output_dir, "CSM")
                 return
 
@@ -2948,7 +2954,9 @@ class UnslothTrainer:
                     total_steps = total, status_message = "Starting SNAC training..."
                 )
                 logger.info(f"SNAC training config: {config}\n")
-                self.trainer.train()
+                self.trainer.train(
+                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                )
                 self._finalize_training(output_dir, "SNAC")
                 return
 
@@ -2994,7 +3002,9 @@ class UnslothTrainer:
                     total_steps = total, status_message = "Starting Whisper training..."
                 )
                 logger.info(f"Whisper training config: {config}\n")
-                self.trainer.train()
+                self.trainer.train(
+                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                )
                 self._finalize_training(output_dir, "Whisper")
                 return
 
@@ -3551,7 +3561,9 @@ class UnslothTrainer:
             # ========== START TRAINING ==========
             self._update_progress(status_message = "Starting training...")
             logger.info("Starting training...\n")
-            self.trainer.train()
+            self.trainer.train(
+                resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+            )
 
             # ========== SAVE MODEL ==========
             self._finalize_training(output_dir)

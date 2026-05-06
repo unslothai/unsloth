@@ -31,20 +31,18 @@ import {
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
-  Book03Icon,
   ChefHatIcon,
   ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   Download03Icon,
   GemIcon,
-  MessageSearch01Icon,
   Search01Icon,
-  NewReleasesIcon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
+  SourceCodeSquareIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -527,7 +525,7 @@ export function AppSidebar() {
                       className="!size-8"
                     />
                   </div>
-                  <div className="flex flex-col gap-0.5 leading-none group-data-[collapsible=icon]:hidden">
+                  <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13px] tracking-[0.02em] font-semibold text-[#383835] dark:text-[#c7c7c4]">{displayTitle}</span>
                     <span className="truncate text-[11px] tracking-[0.01em] text-muted-foreground">Studio</span>
                   </div>
@@ -546,6 +544,15 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>Settings</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
+                  >
+                    <HugeiconsIcon icon={SourceCodeSquareIcon} strokeWidth={1.75} className="size-[18px]" />
+                    <span>Developer</span>
+                    <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      New
+                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}
@@ -568,47 +575,6 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>Guided Tour</span>
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
-                <DropdownMenuGroup>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://unsloth.ai/docs"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <HugeiconsIcon icon={Book03Icon} strokeWidth={1.75} className="size-[18px]" />
-                      <span>Learn More</span>
-                    </a>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://unsloth.ai/docs/new/changelog"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <HugeiconsIcon
-                        icon={NewReleasesIcon}
-                        strokeWidth={1.75}
-                        className="size-[18px]"
-                      />
-                      <span>What's New</span>
-                    </a>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://github.com/unslothai/unsloth/issues"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <HugeiconsIcon
-                        icon={MessageSearch01Icon}
-                        strokeWidth={1.75}
-                        className="size-[18px]"
-                      />
-                      <span>Feedback</span>
-                    </a>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />

@@ -23,7 +23,12 @@ from functools import wraps
 import trl
 import inspect
 from trl import SFTTrainer
-from . import is_bfloat16_supported
+# Import via the concrete _utils module instead of the partially-initialized
+# `unsloth` namespace. The MLX-aware `unsloth/__init__.py` loads the GPU
+# surface via `from ._gpu_init import *`, which transitively triggers
+# `from .trainer import *` BEFORE the star export has propagated back to
+# `unsloth`, so `from . import is_bfloat16_supported` raises at import time.
+from .models._utils import is_bfloat16_supported
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,
