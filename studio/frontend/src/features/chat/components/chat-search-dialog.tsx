@@ -97,7 +97,7 @@ export function ChatSearchDialog() {
                   });
                   close();
                 }}
-                className="relative flex cursor-default select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
+                className="relative flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
               >
                 <HugeiconsIcon
                   icon={Message01Icon}
