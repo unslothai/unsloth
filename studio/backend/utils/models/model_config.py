@@ -499,6 +499,10 @@ _VLM_MODEL_TYPES = {
     "gemma4",
 }
 
+# Audio-only models that share the ForConditionalGeneration suffix
+# (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration).
+_AUDIO_ONLY_MODEL_TYPES = {"csm", "whisper"}
+
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses 5.5.0 (newest, recognizes all architectures).
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
@@ -510,6 +514,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 def _is_vlm(config) -> bool:
     architectures = getattr(config, "architectures", None) or []
     model_type = getattr(config, "model_type", None)
+    if model_type in _AUDIO_ONLY_MODEL_TYPES:
+        return False
     return (
         any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
         or hasattr(config, "vision_config")
@@ -538,6 +544,8 @@ def _raw_config_has_vision_config(
         config = json.loads(config_path.read_text())
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
+        if model_type in _AUDIO_ONLY_MODEL_TYPES:
+            return False
         return (
             any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
             or bool(config.get("vision_config"))
@@ -555,9 +563,12 @@ def _raw_config_has_vision_config(
 _VISION_CHECK_INLINE_HELPERS = (
     "_VLM_ARCH_SUFFIXES = " + repr(_VLM_ARCH_SUFFIXES) + "\n"
     "_VLM_MODEL_TYPES = " + repr(_VLM_MODEL_TYPES) + "\n"
+    "_AUDIO_ONLY_MODEL_TYPES = " + repr(_AUDIO_ONLY_MODEL_TYPES) + "\n"
     "def _is_vlm(config):\n"
     "    architectures = getattr(config, 'architectures', None) or []\n"
     "    model_type = getattr(config, 'model_type', None)\n"
+    "    if model_type in _AUDIO_ONLY_MODEL_TYPES:\n"
+    "        return False\n"
     "    return (\n"
     "        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
     "        or hasattr(config, 'vision_config')\n"
@@ -779,9 +790,8 @@ def _is_vision_model_uncached(
 
         # Exclude audio-only models that share ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
-        _audio_only_model_types = {"csm", "whisper"}
         model_type = getattr(config, "model_type", None)
-        if model_type in _audio_only_model_types:
+        if model_type in _AUDIO_ONLY_MODEL_TYPES:
             return False
 
         if _is_vlm(config):
