@@ -207,6 +207,7 @@ async def start_training(
             "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,
+            "embedding_learning_rate": request.embedding_learning_rate,
             "batch_size": request.batch_size,
             "gradient_accumulation_steps": request.gradient_accumulation_steps,
             "warmup_steps": request.warmup_steps,

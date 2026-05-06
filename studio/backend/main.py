@@ -23,11 +23,66 @@ if _backend_dir not in sys.path:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
+# Direct `uvicorn main:app` launches bypass run.py, so re-export here too
+# (mirrors run.py). Required BEFORE the unsloth-zoo import below, since
+# its LLAMA_CPP_DEFAULT_DIR binding is import-time.
+from utils.paths.storage_roots import studio_root as _studio_root
+
+try:
+    _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = _Path.home() / ".unsloth" / "studio"
+try:
+    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+except (OSError, ValueError):
+    _STUDIO_ROOT_RESOLVED = _studio_root()
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+
 import mimetypes
+import re as _re
 import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+
+
+_STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
+
+
+def _read_studio_install_id() -> str:
+    """Per-install opaque id written by install.sh / install.ps1 at
+    $STUDIO_HOME/share/studio_install_id. Returns "" when the file is
+    absent (pre-PR install, fresh tree never run through the installer)
+    or contains anything other than a 64-char lowercase-hex token --
+    in which case /api/health emits "" and the launcher's _check_health
+    falls back to the existing "no baked id, accept any healthy
+    Unsloth backend" path. This intentionally replaces a previous
+    sha256(resolved_install_path) so the field carries no install-path
+    information for callers reaching /api/health (relevant when Studio
+    is run with -H 0.0.0.0)."""
+    try:
+        token = (
+            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+        )
+    except (OSError, ValueError):
+        return ""
+    return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else ""
+
+
+_STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
+
+
+def _studio_root_id() -> str:
+    """Same-install discriminator for /api/health: a per-install opaque
+    token written once by the installer and read once at module import.
+    Empty when no installer-written token is present; the launcher
+    contract treats "" as "no baked id, accept any healthy backend"."""
+    return _STUDIO_ROOT_ID_CACHE
+
 
 # Fix broken Windows registry MIME types.  Some Windows installs map .js to
 # "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
@@ -245,6 +300,10 @@ async def health_check():
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         "supports_desktop_auth": True,
+        # why: launchers compare against an install-time hash so a sibling
+        # Studio on the same port is rejected; hex digest avoids leaking the
+        # raw install path on -H 0.0.0.0.
+        "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
     }
 

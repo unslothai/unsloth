@@ -62,6 +62,7 @@ from datasets import Dataset, load_dataset
 from utils.models import is_vision_model, detect_audio_type
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets.raw_text import prepare_raw_text_dataset
 from utils.paths import (
     ensure_dir,
     resolve_dataset_path,
@@ -125,6 +126,7 @@ class UnslothTrainer:
         self.load_in_4bit = True  # Track quantization mode for metadata
 
         # Model state tracking
+        self.is_cpt = False  # Set to True for Continued Pretraining
         self.is_vlm = False
         self.is_audio = False
         self.is_audio_vlm = (
@@ -925,6 +927,7 @@ class UnslothTrainer:
         use_gradient_checkpointing: str = "unsloth",
         use_rslora: bool = False,
         use_loftq: bool = False,
+        modules_to_save: list = None,
     ) -> bool:
         """
         Prepare model for training (with optional LoRA).
@@ -1121,11 +1124,14 @@ class UnslothTrainer:
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
                     if use_loftq
                     else None,
+                    modules_to_save = modules_to_save,
                 )
             else:
                 # Text model LoRA
                 logger.info(f"Text model LoRA configuration:")
                 logger.info(f"  - Target modules: {target_modules}\n")
+                if modules_to_save:
+                    logger.info(f"  - Modules to save: {modules_to_save}\n")
 
                 self.model = FastLanguageModel.get_peft_model(
                     self.model,
@@ -1140,6 +1146,7 @@ class UnslothTrainer:
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
                     if use_loftq
                     else None,
+                    modules_to_save = modules_to_save,
                 )
 
             # Check if stopped during LoRA preparation
@@ -2342,6 +2349,7 @@ class UnslothTrainer:
         eval_steps: float = 0.00,
         dataset_slice_start: int = None,
         dataset_slice_end: int = None,
+        is_cpt: bool = False,
     ) -> Optional[tuple]:
         """
         Load and prepare dataset for training.
@@ -2360,6 +2368,35 @@ class UnslothTrainer:
                 False  # True if eval comes from a separate HF split
             )
             eval_enabled = eval_steps is not None and eval_steps > 0
+            raw_text_mode = is_cpt or format_type == "raw"
+
+            def _raw_mode_label() -> str:
+                return "CPT" if is_cpt else "raw text"
+
+            def _apply_raw_text_prep(ds: Dataset, split_name: str) -> Dataset:
+                try:
+                    result = prepare_raw_text_dataset(
+                        ds,
+                        mode_label = _raw_mode_label(),
+                        split_name = split_name,
+                        eos_token = getattr(self.tokenizer, "eos_token", None),
+                        append_eos = True,
+                    )
+                except ValueError as exc:
+                    error_msg = str(exc)
+                    logger.error(error_msg)
+                    self._update_progress(error = error_msg)
+                    raise
+
+                for notice in result.notices:
+                    if notice.level == "warning":
+                        logger.warning(notice.message)
+                        if notice.update_status:
+                            self._update_progress(status_message = notice.message)
+                    else:
+                        logger.info(f"{notice.message}\n")
+
+                return result.dataset
 
             if local_datasets:
                 # Load local datasets using load_dataset() so the result is
@@ -2534,6 +2571,48 @@ class UnslothTrainer:
                 processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
                 return ({"dataset": processed, "final_format": "audio_dac"}, None)
 
+            # ========== RAW TEXT BYPASS ==========
+            if raw_text_mode:
+                logger.info(
+                    f"{_raw_mode_label().capitalize()} mode: bypassing chat template, "
+                    "using raw text\n"
+                )
+                dataset = _apply_raw_text_prep(dataset, "train")
+                if has_separate_eval_source and eval_dataset is not None:
+                    eval_dataset = _apply_raw_text_prep(eval_dataset, "eval")
+
+                dataset_info = {
+                    "dataset": dataset,
+                    "detected_format": "raw_text",
+                    "final_format": "raw_text",
+                    "success": True,
+                }
+
+                if has_separate_eval_source and eval_dataset is not None:
+                    logger.info(
+                        f"{_raw_mode_label().capitalize()}: eval dataset "
+                        f"({len(eval_dataset)} rows) kept as raw text\n"
+                    )
+                elif eval_enabled and not has_separate_eval_source:
+                    split_result = self._resolve_eval_split_from_dataset(dataset)
+                    if split_result is not None:
+                        train_portion, eval_dataset = split_result
+                        dataset_info["dataset"] = train_portion
+
+                train_dataset = dataset_info["dataset"]
+                n = len(train_dataset) if hasattr(train_dataset, "__len__") else None
+                n_display = f"{n:,}" if isinstance(n, int) else "streaming"
+                self._update_progress(
+                    status_message = f"Dataset ready ({n_display} samples, raw text)"
+                )
+                logger.info(f"Raw-text dataset ready ({n_display} samples)\n")
+
+                if "text" not in train_dataset.column_names:
+                    raise ValueError(
+                        f"Raw-text dataset missing 'text' column: {train_dataset.column_names}"
+                    )
+                return (dataset_info, eval_dataset)
+
             elif self.is_audio_vlm:
                 formatted = self._format_audio_vlm_dataset(
                     dataset, custom_format_mapping
@@ -2676,6 +2755,7 @@ class UnslothTrainer:
         output_dir: str | None = None,
         num_epochs: int = 3,
         learning_rate: float = 2e-4,
+        embedding_learning_rate: float | None = None,
         batch_size: int = 2,
         gradient_accumulation_steps: int = 4,
         warmup_steps: int = None,
@@ -2728,6 +2808,7 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "num_epochs": num_epochs,
                 "learning_rate": learning_rate,
+                "embedding_learning_rate": embedding_learning_rate,
                 "batch_size": batch_size,
                 "gradient_accumulation_steps": gradient_accumulation_steps,
                 "warmup_steps": warmup_steps,
@@ -2945,6 +3026,13 @@ class UnslothTrainer:
 
             logger.info("Configuring data collator...\n")
 
+            dataset_final_format = (
+                str(dataset.get("final_format", "")).lower()
+                if isinstance(dataset, dict)
+                else ""
+            )
+            raw_text_mode = dataset_final_format == "raw_text"
+
             data_collator = None  # Default to built-in data collator
             if is_deepseek_ocr:
                 # Special DeepSeek OCR collator - auto-install if needed
@@ -2984,7 +3072,7 @@ class UnslothTrainer:
                     self._update_progress(error = error_msg, is_training = False)
                     return
 
-            elif self.is_audio_vlm:
+            elif self.is_audio_vlm and not raw_text_mode:
                 # Audio VLM collator (e.g. Gemma 3N with audio data)
                 # Mirrors the collate_fn from Gemma3N_(4B)-Audio notebook
                 logger.info("Configuring audio VLM data collator...\n")
@@ -3026,7 +3114,7 @@ class UnslothTrainer:
                 data_collator = audio_vlm_collate_fn
                 logger.info("Audio VLM data collator configured\n")
 
-            elif self.is_vlm:
+            elif self.is_vlm and not raw_text_mode:
                 # Standard VLM collator (images)
                 logger.info("Using UnslothVisionDataCollator for vision model\n")
                 from unsloth.trainer import UnslothVisionDataCollator
@@ -3137,8 +3225,9 @@ class UnslothTrainer:
             optim_value = training_args.get("optim", "adamw_8bit")
             lr_scheduler_type_value = training_args.get("lr_scheduler_type", "linear")
 
-            if self.is_vlm or self.is_audio_vlm:
+            if (self.is_vlm or self.is_audio_vlm) and not raw_text_mode:
                 # Vision / audio VLM config (both need skip_prepare_dataset + remove_unused_columns)
+                # Raw-text runs on VLM-capable models are routed to the text path below.
                 label = "audio VLM" if self.is_audio_vlm else "vision"
                 logger.info(f"Configuring {label} model training parameters\n")
                 # Use provided values or defaults for vision models
@@ -3160,7 +3249,14 @@ class UnslothTrainer:
                     }
                 )
             else:
-                logger.info("Configuring text model training parameters\n")
+                is_cpt = training_args.get("is_cpt", False)
+                self.is_cpt = is_cpt
+                if is_cpt:
+                    logger.info("Configuring Continued Pretraining (CPT) parameters\n")
+                elif raw_text_mode:
+                    logger.info("Configuring raw-text training parameters\n")
+                else:
+                    logger.info("Configuring text model training parameters\n")
                 config_args.update(
                     {
                         "optim": optim_value,
@@ -3189,9 +3285,10 @@ class UnslothTrainer:
 
             logger.info("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
-            if self.is_audio_vlm:
+            if self.is_audio_vlm and not raw_text_mode:
                 # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset
                 # Notebook uses processing_class=processor.tokenizer (text tokenizer only)
+                # Raw-text runs are routed to the text path below.
                 train_dataset = (
                     dataset if isinstance(dataset, Dataset) else dataset["dataset"]
                 )
@@ -3210,8 +3307,9 @@ class UnslothTrainer:
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
-            elif self.is_vlm:
+            elif self.is_vlm and not raw_text_mode:
                 # Image VLM: dataset is dict wrapper from format_and_template_dataset
+                # Raw-text runs are routed to the text path below.
                 train_dataset = (
                     dataset["dataset"] if isinstance(dataset, dict) else dataset
                 )
@@ -3242,16 +3340,48 @@ class UnslothTrainer:
                     )
                     sft_tokenizer = self.tokenizer.tokenizer
 
-                trainer_kwargs = {
-                    "model": self.model,
-                    "tokenizer": sft_tokenizer,
-                    "train_dataset": dataset["dataset"],
-                    "data_collator": data_collator,
-                    "args": SFTConfig(**config_args),
-                }
-                if eval_dataset is not None:
-                    trainer_kwargs["eval_dataset"] = eval_dataset
-                self.trainer = SFTTrainer(**trainer_kwargs)
+                if is_cpt:
+                    try:
+                        from unsloth import (
+                            UnslothTrainer as _UnslothCPTTrainer,
+                            UnslothTrainingArguments as _UnslothTrainingArguments,
+                        )
+                    except ImportError as exc:
+                        raise RuntimeError(
+                            "CPT requires a newer Unsloth install that exports "
+                            "`UnslothTrainer` and `UnslothTrainingArguments` "
+                            "(for embedding_learning_rate support). "
+                            "Upgrade with: `pip install -U unsloth unsloth_zoo`."
+                        ) from exc
+
+                    embedding_lr = training_args.get("embedding_learning_rate")
+                    logger.info(
+                        f"CPT: using UnslothTrainer with embedding_learning_rate={embedding_lr}\n"
+                    )
+                    trainer_kwargs = {
+                        "model": self.model,
+                        "tokenizer": sft_tokenizer,
+                        "train_dataset": dataset["dataset"],
+                        "data_collator": data_collator,
+                        "args": _UnslothTrainingArguments(
+                            embedding_learning_rate = embedding_lr,
+                            **config_args,
+                        ),
+                    }
+                    if eval_dataset is not None:
+                        trainer_kwargs["eval_dataset"] = eval_dataset
+                    self.trainer = _UnslothCPTTrainer(**trainer_kwargs)
+                else:
+                    trainer_kwargs = {
+                        "model": self.model,
+                        "tokenizer": sft_tokenizer,
+                        "train_dataset": dataset["dataset"],
+                        "data_collator": data_collator,
+                        "args": SFTConfig(**config_args),
+                    }
+                    if eval_dataset is not None:
+                        trainer_kwargs["eval_dataset"] = eval_dataset
+                    self.trainer = SFTTrainer(**trainer_kwargs)
                 # Restore the full processor as processing_class so checkpoint
                 # saves include preprocessor_config.json (needed for GGUF export).
                 if sft_tokenizer is not self.tokenizer:
@@ -3260,11 +3390,24 @@ class UnslothTrainer:
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Determine if we should train on responses only
+            # Raw-text datasets always train on all tokens.
             instruction_part = None
             response_part = None
-            train_on_responses_enabled = training_args.get(
-                "train_on_completions", False
+            is_cpt = training_args.get("is_cpt", False)
+            train_on_responses_enabled = (
+                False
+                if (is_cpt or raw_text_mode)
+                else training_args.get("train_on_completions", False)
             )
+
+            if is_cpt:
+                logger.info(
+                    "CPT mode: skipping train_on_responses_only — training on all tokens\n"
+                )
+            elif raw_text_mode:
+                logger.info(
+                    "Raw-text mode: skipping train_on_responses_only — training on all tokens\n"
+                )
 
             # DeepSeek OCR handles this internally in its collator, so skip
             # Audio VLM handles label masking in its collator, so skip
@@ -3272,7 +3415,7 @@ class UnslothTrainer:
                 train_on_responses_enabled
                 and not self.is_audio_vlm
                 and not self.is_audio
-                and not (is_deepseek_ocr or dataset["final_format"].lower() == "alpaca")
+                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
             ):
                 try:
                     logger.info("Configuring train on responses only...\n")
@@ -3318,7 +3461,7 @@ class UnslothTrainer:
                 and response_part
                 and not self.is_audio_vlm
                 and not self.is_audio
-                and not (is_deepseek_ocr or dataset["final_format"].lower() == "alpaca")
+                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
             ):
                 try:
                     from unsloth.chat_templates import train_on_responses_only
@@ -3451,7 +3594,9 @@ class UnslothTrainer:
                 config = json.load(f)
 
             # Determine the training method
-            if self.load_in_4bit:
+            if self.is_cpt:
+                method = "CPT"
+            elif self.load_in_4bit:
                 method = "qlora"
             else:
                 method = "lora"

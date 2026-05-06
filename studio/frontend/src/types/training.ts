@@ -2,15 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export type ModelType = "vision" | "audio" | "embeddings" | "text";
-export type TrainingMethod = "qlora" | "lora" | "full";
+export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
 export function isAdapterMethod(method: TrainingMethod): boolean {
-  return method === "lora" || method === "qlora";
+  return method === "lora" || method === "qlora" || method === "cpt";
 }
 export type StepNumber = 1 | 2 | 3 | 4 | 5;
 export type DatasetSource = "huggingface" | "upload";
-export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt";
-export type GradientCheckpointing = "none" | "true" | "unsloth";
+export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt" | "raw";
+export type GradientCheckpointing = "none" | "true" | "unsloth" | "mlx";
 
 export interface WizardState {
   currentStep: StepNumber;

@@ -76,6 +76,13 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
+/** CPT requires embed_tokens and lm_head in addition to standard LoRA modules. */
+export const CPT_TARGET_MODULES = [
+  ...TARGET_MODULES,
+  "embed_tokens",
+  "lm_head",
+];
+
 export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "adamw_8bit", label: "AdamW 8-bit" },
   { value: "paged_adamw_8bit", label: "Paged AdamW 8-bit" },
@@ -96,11 +103,14 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string 
  */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
+export const LR_DEFAULT_CPT = 5e-5;
 
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
   learningRate: LR_DEFAULT_LORA,
+  // null = let backend auto-compute (lr/10 per Unsloth CPT recipe). Only used by CPT.
+  embeddingLearningRate: null as number | null,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",
   loraRank: 16,
