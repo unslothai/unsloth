@@ -388,7 +388,6 @@ class TestRawConfigVlmDetection:
 
 
 class TestSubprocessScript:
-
     def test_does_not_import_parent_module(self):
         assert "from utils.models.model_config" not in _VISION_CHECK_SCRIPT
 
@@ -402,15 +401,25 @@ class TestSubprocessScript:
                 for k, v in kw.items():
                     setattr(self, k, v)
 
-        assert inline_is_vlm(
-            _C(model_type="gemma4", architectures=["Gemma4ForConditionalGeneration"])
-        ) is True
-        assert inline_is_vlm(
-            _C(model_type="gemma4_text", architectures=["Gemma4ForCausalLM"])
-        ) is False
-        assert inline_is_vlm(
-            _C(model_type="llama", architectures=["LlamaForCausalLM"])
-        ) is False
+        assert (
+            inline_is_vlm(
+                _C(
+                    model_type = "gemma4",
+                    architectures = ["Gemma4ForConditionalGeneration"],
+                )
+            )
+            is True
+        )
+        assert (
+            inline_is_vlm(
+                _C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"])
+            )
+            is False
+        )
+        assert (
+            inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"]))
+            is False
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +436,7 @@ class TestVlmAudioExclusion:
         assert _AUDIO_ONLY_MODEL_TYPES == {"csm", "whisper"}
 
     def test_is_vlm_excludes_whisper(self):
-        cfg = MagicMock(spec=[])
+        cfg = MagicMock(spec = [])
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         assert _is_vlm(cfg) is False
@@ -445,7 +454,7 @@ class TestVlmAudioExclusion:
     def test_inline_subprocess_helper_excludes_whisper(self):
         ns: dict = {}
         exec(_VISION_CHECK_INLINE_HELPERS, ns)
-        cfg = MagicMock(spec=[])
+        cfg = MagicMock(spec = [])
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         assert ns["_is_vlm"](cfg) is False

@@ -547,7 +547,10 @@ def _raw_config_has_vision_config(
         if model_type in _AUDIO_ONLY_MODEL_TYPES:
             return False
         return (
-            any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
+            any(
+                isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES)
+                for x in architectures
+            )
             or bool(config.get("vision_config"))
             or "img_processor" in config
             or "image_token_index" in config
@@ -580,7 +583,8 @@ _VISION_CHECK_INLINE_HELPERS = (
 
 # Inline script executed in a subprocess with transformers 5.x activated.
 # Receives model_name and token via argv, prints JSON result to stdout.
-_VISION_CHECK_SCRIPT = r"""
+_VISION_CHECK_SCRIPT = (
+    r"""
 import sys, os, json
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -594,7 +598,9 @@ sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-""" + _VISION_CHECK_INLINE_HELPERS + r"""
+"""
+    + _VISION_CHECK_INLINE_HELPERS
+    + r"""
 try:
     from transformers import AutoConfig
 
@@ -613,6 +619,7 @@ except Exception as exc:
     print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
+)
 
 
 def _is_vision_model_subprocess(
