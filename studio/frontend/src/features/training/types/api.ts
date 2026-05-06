@@ -21,6 +21,8 @@ export interface TrainingStartRequest {
   custom_format_mapping?: Record<string, unknown> | null;
   num_epochs: number;
   learning_rate: string;
+  /** Optional CPT embedding LR. If omitted, backend uses lr/10; typical range is 2x-10x smaller than main LR. */
+  embedding_learning_rate?: number | null;
   batch_size: number;
   gradient_accumulation_steps: number;
   warmup_steps: number | null;
@@ -54,6 +56,7 @@ export interface TrainingStartRequest {
   wandb_project: string | null;
   enable_tensorboard: boolean;
   tensorboard_dir: string | null;
+  resume_from_checkpoint?: string | null;
 }
 
 export interface TrainingStartResponse {

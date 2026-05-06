@@ -23,6 +23,7 @@ from ._utils import (
 import inspect
 import json
 import os
+import threading
 import types
 from huggingface_hub import hf_hub_download
 from typing import Optional
@@ -40,6 +41,9 @@ from huggingface_hub import HfApi, get_token
 from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
 import contextlib
 import shutil
+
+
+_CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 
 
 def _save_pretrained_torchao(
@@ -1012,37 +1016,128 @@ class FastSentenceTransformer(FastModel):
         from sentence_transformers.models import Transformer
 
         # prevents sentence-transformers from loading the model a second time, thanks Etherl
-        original_from_pretrained = AutoModel.from_pretrained
+        # Also redirect AutoProcessor / AutoTokenizer so the Transformer.__init__
+        # picks up our pre-fixed tokenizer. On sentence-transformers >=5.4 the
+        # `tokenizer` attribute became a read-only @property backed by `self.processor`,
+        # so a post-init assignment raises AttributeError; redirecting the constructor's
+        # AutoProcessor.from_pretrained call sets self.processor correctly and keeps
+        # downstream state (input_formatter) consistent.
+        from transformers import AutoProcessor, AutoTokenizer
 
-        def return_existing_model(*args, **kwargs):
-            return model
+        def is_requested_model_name(args, kwargs):
+            requested = None
+            if args:
+                requested = args[0]
+            else:
+                requested = kwargs.get("pretrained_model_name_or_path")
+                if requested is None:
+                    requested = kwargs.get("model_name_or_path")
+            if requested is None:
+                return False
 
-        try:
-            # Temporarily redirect AutoModel loading to return our pre-loaded model
-            AutoModel.from_pretrained = return_existing_model
+            try:
+                requested = os.fspath(requested)
+                expected = os.fspath(model_name)
+            except (TypeError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not normalize SentenceTransformer model path: %s",
+                    exception,
+                )
+                return False
+            if requested == expected:
+                return True
 
-            # Initialize Transformer
-            transformer_module = Transformer(
-                model_name,
-                max_seq_length = max_seq_length,
-                model_args = {"trust_remote_code": trust_remote_code},
-                config_args = {"trust_remote_code": trust_remote_code},
-            )
-        finally:
-            # Restore original functionality immediately
-            AutoModel.from_pretrained = original_from_pretrained
+            try:
+                if os.path.exists(requested) or os.path.exists(expected):
+                    return os.path.abspath(requested) == os.path.abspath(expected)
+            except (OSError, TypeError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not compare SentenceTransformer model paths: %s",
+                    exception,
+                )
+            return False
 
-        transformer_module.tokenizer = tokenizer
+        with _CREATE_TRANSFORMER_MODULE_LOCK:
+            original_model_from_pretrained = AutoModel.from_pretrained
+            original_processor_from_pretrained = AutoProcessor.from_pretrained
+            original_tokenizer_from_pretrained = AutoTokenizer.from_pretrained
+
+            def return_existing_model(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return model
+                return original_model_from_pretrained(*args, **kwargs)
+
+            def return_existing_tokenizer(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return tokenizer
+                return original_tokenizer_from_pretrained(*args, **kwargs)
+
+            def return_existing_processor(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return tokenizer
+                return original_processor_from_pretrained(*args, **kwargs)
+
+            try:
+                # Temporarily redirect Auto* loading to return our pre-loaded objects
+                AutoModel.from_pretrained = return_existing_model
+                AutoProcessor.from_pretrained = return_existing_processor
+                AutoTokenizer.from_pretrained = return_existing_tokenizer
+
+                transformer_init_params = inspect.signature(
+                    Transformer.__init__
+                ).parameters
+                trust_remote_code_kwargs = {"trust_remote_code": trust_remote_code}
+                do_lower_case = getattr(tokenizer, "do_lower_case", False)
+                transformer_kwargs = {"max_seq_length": max_seq_length}
+                if "do_lower_case" in transformer_init_params:
+                    transformer_kwargs["do_lower_case"] = do_lower_case
+                if "model_kwargs" in transformer_init_params:
+                    transformer_kwargs["model_kwargs"] = trust_remote_code_kwargs.copy()
+                    transformer_kwargs["config_kwargs"] = (
+                        trust_remote_code_kwargs.copy()
+                    )
+                else:
+                    transformer_kwargs["model_args"] = trust_remote_code_kwargs.copy()
+                    transformer_kwargs["config_args"] = trust_remote_code_kwargs.copy()
+                if "processor_kwargs" in transformer_init_params:
+                    transformer_kwargs["processor_kwargs"] = (
+                        trust_remote_code_kwargs.copy()
+                    )
+                elif "tokenizer_args" in transformer_init_params:
+                    transformer_kwargs["tokenizer_args"] = (
+                        trust_remote_code_kwargs.copy()
+                    )
+
+                # Initialize Transformer
+                transformer_module = Transformer(model_name, **transformer_kwargs)
+            finally:
+                # Restore original functionality immediately
+                AutoModel.from_pretrained = original_model_from_pretrained
+                AutoProcessor.from_pretrained = original_processor_from_pretrained
+                AutoTokenizer.from_pretrained = original_tokenizer_from_pretrained
+
+        # On sentence-transformers >=5.4 `tokenizer` is a read-only property backed
+        # by `self.processor` (already wired via the redirect above). On older
+        # versions it's a regular attribute and the explicit assignment is required.
+        if not isinstance(
+            getattr(type(transformer_module), "tokenizer", None), property
+        ):
+            transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
         # sentence-transformers only passes along known keys to model.forward
+        preinit_model_forward_params = getattr(
+            transformer_module, "model_forward_params", set()
+        )
         model_forward_params = list(inspect.signature(model.forward).parameters)
         transformer_module.model_forward_params = set(model_forward_params) | {
             "input_ids",
             "attention_mask",
             "token_type_ids",
             "inputs_embeds",
+            "return_dict",
         }
+        transformer_module.model_forward_params |= preinit_model_forward_params
 
         # determine max_seq_length if not provided
         if max_seq_length is None:
@@ -1056,13 +1151,40 @@ class FastSentenceTransformer(FastModel):
                 max_seq_length = 512
 
         transformer_module.max_seq_length = max_seq_length
-        transformer_module.config_keys = ["max_seq_length", "do_lower_case"]
+        config_keys = list(getattr(transformer_module, "config_keys", []) or [])
+        for config_key in ("max_seq_length", "do_lower_case"):
+            if config_key not in config_keys:
+                config_keys.append(config_key)
+        transformer_module.config_keys = config_keys
         transformer_module.save_in_root = True
 
         if hasattr(model, "config"):
             model.config.tokenizer_class = tokenizer.__class__.__name__
 
         return transformer_module
+
+    @staticmethod
+    def _is_transformer_module_ref(class_ref):
+        if class_ref in {
+            "sentence_transformers.models.Transformer",
+            "sentence_transformers.models.transformer.Transformer",
+            "sentence_transformers.base.modules.transformer.Transformer",
+        }:
+            return True
+
+        try:
+            from sentence_transformers.models import Transformer
+            from sentence_transformers.util import import_from_string
+
+            module_class = import_from_string(class_ref)
+            return module_class is Transformer
+        except (ImportError, AttributeError, TypeError, ValueError) as exception:
+            logging.debug(
+                "Unsloth: Could not resolve SentenceTransformer module ref %r: %s",
+                class_ref,
+                exception,
+            )
+            return False
 
     @staticmethod
     def _load_modules(
@@ -1096,7 +1218,7 @@ class FastSentenceTransformer(FastModel):
                     "name", str(module_config.get("idx", len(modules)))
                 )
 
-                if class_ref == "sentence_transformers.models.Transformer":
+                if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                     transformer_module = (
                         FastSentenceTransformer._create_transformer_module(
                             model_name,
@@ -1299,7 +1421,10 @@ class FastSentenceTransformer(FastModel):
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
-            model[0].auto_model = compiled
+            if isinstance(getattr(type(model[0]), "auto_model", None), property):
+                model[0].model = compiled
+            else:
+                model[0].auto_model = compiled
             # Fix for accelerate unwrap_model bug:
             # When SentenceTransformer contains a compiled inner model,
             # accelerate checks has_compiled_regions() which returns True,
@@ -1933,8 +2058,15 @@ class FastSentenceTransformer(FastModel):
                         "Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported"
                     )
 
-                # Re-assign the peft model back to the transformer module
-                transformer_module.auto_model = peft_model
+                # Re-assign the peft model back to the transformer module.
+                # On sentence-transformers >=5.4 `auto_model` is a read-only property
+                # backed by `self.model`, so write to the backing attribute there.
+                if isinstance(
+                    getattr(type(transformer_module), "auto_model", None), property
+                ):
+                    transformer_module.model = peft_model
+                else:
+                    transformer_module.auto_model = peft_model
 
                 # Store compile info for auto-compile at trainer time
                 # torch.compile is deferred until training starts so we can check max_steps
@@ -1980,8 +2112,15 @@ class FastSentenceTransformer(FastModel):
                 **kwargs,
             )
 
-            # re-assign the peft model back to the transformer module
-            transformer_module.auto_model = peft_model
+            # re-assign the peft model back to the transformer module.
+            # On sentence-transformers >=5.4 `auto_model` is a read-only property
+            # backed by `self.model`, so write to the backing attribute there.
+            if isinstance(
+                getattr(type(transformer_module), "auto_model", None), property
+            ):
+                transformer_module.model = peft_model
+            else:
+                transformer_module.auto_model = peft_model
             return model
         else:
             return FastModel.get_peft_model(

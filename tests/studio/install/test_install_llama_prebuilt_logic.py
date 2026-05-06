@@ -754,6 +754,9 @@ def write_linux_install_shape(install_dir: Path) -> None:
     (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    # Mirror the runtime payload health groups in install_llama_prebuilt.py:
+    # libllama-common.so* was added by PR #5135 and is required.
+    (runtime_dir / "libllama-common.so.0").write_bytes(b"DLL")
     (runtime_dir / "libllama.so.0").write_bytes(b"DLL")
     (runtime_dir / "libggml.so.0").write_bytes(b"DLL")
     (runtime_dir / "libggml-base.so.0").write_bytes(b"DLL")

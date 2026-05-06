@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
+import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface UpdateScreenProps {
   status: UpdateStatus;
@@ -12,6 +13,7 @@ interface UpdateScreenProps {
   error: string | null;
   onRetry: () => void;
   onSkipRestart: () => void;
+  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
@@ -96,11 +98,34 @@ export function UpdateScreen({
   error,
   onRetry,
   onSkipRestart,
+  onCopyDiagnostics,
 }: UpdateScreenProps) {
   const isError = status === "error";
+  const [copying, setCopying] = useState(false);
+  const [manualReport, setManualReport] = useState<string | null>(null);
+  const [manualMessage, setManualMessage] = useState<string | null>(null);
+
+  async function handleCopyDiagnostics() {
+    setCopying(true);
+    try {
+      const result = await onCopyDiagnostics();
+      if (result.ok) {
+        setManualReport(null);
+        setManualMessage(null);
+      } else {
+        setManualReport(result.report);
+        setManualMessage(result.error ?? "Clipboard copy failed. Select and copy the diagnostics below.");
+      }
+    } catch (copyError) {
+      setManualReport(null);
+      setManualMessage(`Diagnostics copy failed: ${String(copyError)}`);
+    } finally {
+      setCopying(false);
+    }
+  }
 
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-background">
+    <div className="flex h-full w-full items-center justify-center bg-background">
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -150,6 +175,13 @@ export function UpdateScreen({
           <div className="mt-4 flex items-center gap-2">
             <button
               type="button"
+              className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
+              onClick={() => void handleCopyDiagnostics()}
+            >
+              {copying ? "Copying..." : "Copy Diagnostics"}
+            </button>
+            <button
+              type="button"
               className="rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
               onClick={onRetry}
             >
@@ -163,6 +195,18 @@ export function UpdateScreen({
               Skip & Restart
             </button>
           </div>
+        )}
+
+        {manualMessage && (
+          <p className="mt-3 max-w-xl text-center text-xs text-destructive">{manualMessage}</p>
+        )}
+        {manualReport && (
+          <textarea
+            readOnly
+            value={manualReport}
+            onFocus={(event) => event.currentTarget.select()}
+            className="mt-2 h-32 w-full max-w-xl resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+          />
         )}
 
         {/* Log viewer */}

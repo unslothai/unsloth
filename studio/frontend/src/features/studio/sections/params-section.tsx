@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { SectionCard } from "@/components/section-card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -33,11 +34,14 @@ import {
 } from "@/components/ui/tooltip";
 import {
   CONTEXT_LENGTHS,
+  CPT_TARGET_MODULES,
   LR_SCHEDULER_OPTIONS,
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
 import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
+import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
+import { isAdapterMethod } from "@/types/training";
 import type { GradientCheckpointing } from "@/types/training";
 import {
   ArrowDown01Icon,
@@ -124,10 +128,14 @@ function SliderRow({
 
 export function ParamsSection(): ReactElement {
   const store = useTrainingConfigStore();
-  const isLora = store.trainingMethod !== "full";
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const isLora = isAdapterMethod(store.trainingMethod);
+  const isCpt = store.trainingMethod === "cpt";
+  const isRawText = isRawTextDatasetFormat(store.datasetFormat);
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
+  const needsExpandedHeight = isCpt || (isLora && loraOpen) || hyperOpen;
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
@@ -166,7 +174,7 @@ export function ParamsSection(): ReactElement {
         title="Parameters"
         description="Configure training hyperparameters"
         accent="orange"
-        className={`${(isLora && loraOpen) || hyperOpen
+        className={`${needsExpandedHeight
           ? "min-h-studio-config-column"
           : "h-studio-config-column"} duration-150`}
       >
@@ -376,9 +384,61 @@ export function ParamsSection(): ReactElement {
               className="w-full font-mono"
             />
             <p className="text-[10px] text-muted-foreground">
-              Recommended: 2e-4 for LoRA, 2e-5 for full fine-tune
+              Recommended: 2e-4 for LoRA, 5e-5 for CPT, 2e-5 for full fine-tune
             </p>
           </div>
+
+          {/* Embedding Learning Rate (CPT only) */}
+          {isCpt && (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                Embedding Learning Rate
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-foreground/70 hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Only used when CPT is training <code>embed_tokens</code>.
+                    Embeddings are easier to destabilize than LoRA weights, so
+                    they usually need a smaller LR. Leave blank to use
+                    <code>lr/10</code>; typical working range is 2x-10x smaller
+                    than the main LR. Increase it only if vocabulary or
+                    domain-token adaptation is too slow.
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+              <Input
+                type="number"
+                step="0.00001"
+                min="0"
+                max="1"
+                placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
+                value={store.embeddingLearningRate ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === "") {
+                    store.setEmbeddingLearningRate(null);
+                    return;
+                  }
+                  const n = Number(raw);
+                  store.setEmbeddingLearningRate(Number.isFinite(n) ? n : null);
+                }}
+                className="w-full font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Leave blank to use lr/10 (recommended). Typical range is
+                2x-10x smaller than the main learning rate.
+              </p>
+            </div>
+          )}
 
           {/* LoRA Settings */}
           {isLora && (
@@ -514,7 +574,7 @@ export function ParamsSection(): ReactElement {
                       Target Modules
                     </span>
                     <div className="flex flex-wrap gap-1.5">
-                      {TARGET_MODULES.map((mod) => {
+                      {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((mod) => {
                         const active = store.targetModules.includes(mod);
                         return (
                           <button
@@ -883,7 +943,11 @@ export function ParamsSection(): ReactElement {
                       <SelectContent>
                         <SelectItem value="none">None</SelectItem>
                         <SelectItem value="true">Standard</SelectItem>
-                        <SelectItem value="unsloth">Unsloth</SelectItem>
+                        {platformDeviceType === "mac" ? (
+                          <SelectItem value="mlx">MLX</SelectItem>
+                        ) : (
+                          <SelectItem value="unsloth">Unsloth</SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                   </Row>
@@ -902,7 +966,7 @@ export function ParamsSection(): ReactElement {
                       </label>
                     </div>
                   )}
-                  {!store.isEmbeddingModel && (
+                  {!store.isEmbeddingModel && !isCpt && !isRawText && (
                     <div className="flex items-center gap-2">
                       <Checkbox
                         id="trainOnCompletions"
