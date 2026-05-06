@@ -1206,8 +1206,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     elif (
                         num_images is not None
                         and img_start is not None
-                        and pixel_attention_mask.shape[0]
-                            == image_grid_thw.shape[0]
+                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
                     ):
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[img_start:img_end]
@@ -1561,6 +1560,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
+
             def _unsloth_requires_multi_image_zoo(value):
                 if value is None:
                     return False
@@ -1574,8 +1574,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 self, "_unsloth_grpo_zoo_checked", False
             ):
                 _supports_num_images = (
-                    "num_images"
-                    in inspect.signature(grpo_accumulated_loss).parameters
+                    "num_images" in inspect.signature(grpo_accumulated_loss).parameters
                 )
                 if not _supports_num_images:
                     try:

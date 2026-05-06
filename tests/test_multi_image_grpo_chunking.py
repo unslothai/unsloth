@@ -23,11 +23,11 @@ def test_cum_rows_materialized_on_cpu():
     src = _read_source()
     idx = src.find("cum_rows = torch.cat")
     assert idx != -1, "cum_rows assignment must exist"
-    window = src[idx: idx + 400]
+    window = src[idx : idx + 400]
     assert "rows_per_sample.cumsum(0)" in window
-    assert ").cpu()" in window, (
-        "cum_rows must be moved to CPU once via .cpu() after construction"
-    )
+    assert (
+        ").cpu()" in window
+    ), "cum_rows must be moved to CPU once via .cpu() after construction"
 
 
 def test_cum_imgs_slice_indices_use_item():
@@ -79,18 +79,23 @@ def _simulate_chunk_indices(num_images, B):
 
 
 def test_simulate_multi_image_chunk_image_axis_correct():
-    chunks = _simulate_chunk_indices([2, 1, 3, 1], B=2)
+    chunks = _simulate_chunk_indices([2, 1, 3, 1], B = 2)
     assert chunks == [(0, 2, 0, 3), (2, 4, 3, 7)]
 
 
 def test_simulate_uniform_image_chunking_unchanged():
-    chunks = _simulate_chunk_indices([1, 1, 1, 1], B=2)
+    chunks = _simulate_chunk_indices([1, 1, 1, 1], B = 2)
     assert chunks == [(0, 2, 0, 2), (2, 4, 2, 4)]
 
 
 def test_simulate_pixel_attention_mask_axis_decision():
-    def select_axis(pam_shape0, pixel_values_shape0, image_grid_thw_shape0,
-                    input_ids_shape0, num_images_provided):
+    def select_axis(
+        pam_shape0,
+        pixel_values_shape0,
+        image_grid_thw_shape0,
+        input_ids_shape0,
+        num_images_provided,
+    ):
         if num_images_provided and pam_shape0 == image_grid_thw_shape0:
             return "image"
         if pam_shape0 == pixel_values_shape0 and pam_shape0 != input_ids_shape0:
@@ -160,9 +165,9 @@ def test_guard_prefers_inspect_signature_over_getsource():
     src_call = body.find("inspect.getsource(grpo_accumulated_loss)")
     assert sig_call != -1
     assert src_call != -1
-    assert sig_call < src_call, (
-        "signature.parameters must run before the getsource fallback"
-    )
+    assert (
+        sig_call < src_call
+    ), "signature.parameters must run before the getsource fallback"
 
 
 def test_guard_only_raises_when_both_checks_fail():
@@ -173,16 +178,16 @@ def test_guard_only_raises_when_both_checks_fail():
         r"if not _supports_num_images:\s*\n\s*raise RuntimeError",
         re.DOTALL,
     )
-    assert pattern.search(src), (
-        "guard flow must be: signature check, source fallback, then raise"
-    )
+    assert pattern.search(
+        src
+    ), "guard flow must be: signature check, source fallback, then raise"
 
 
 def test_guard_introspection_failure_does_not_silent_no_op():
     src = _read_source()
-    assert "(TypeError, OSError)" in src, (
-        "guard must catch inspect.getsource failures explicitly"
-    )
-    assert re.search(r"_zoo_src\s*=\s*['\"]{2}", src), (
-        "introspection failure path must default _zoo_src to empty string"
-    )
+    assert (
+        "(TypeError, OSError)" in src
+    ), "guard must catch inspect.getsource failures explicitly"
+    assert re.search(
+        r"_zoo_src\s*=\s*['\"]{2}", src
+    ), "introspection failure path must default _zoo_src to empty string"
