@@ -1206,11 +1206,58 @@ shell.Run cmd, 0, False
             }
         }
     }
+    # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
+    $HasROCm = $false
+    $ROCmGpuLabel = $null
+    if (-not $HasNvidiaSmi) {
+        $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+        if ($hipinfoExe) {
+            try {
+                $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                    $HasROCm = $true
+                    if ($hipOut -match "(?im)^\s*gcnArchName\s*:\s*(\S+)") {
+                        $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                    } else {
+                        $ROCmGpuLabel = "AMD ROCm"
+                    }
+                }
+            } catch {}
+        }
+        if (-not $HasROCm) {
+            $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiExe) {
+                try {
+                    $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
+                        $HasROCm = $true
+                        $ROCmGpuLabel = "AMD ROCm"
+                    }
+                } catch {}
+            }
+        }
+        if (-not $HasROCm) {
+            try {
+                $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" } |
+                    Select-Object -First 1
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            } catch {}
+        }
+    }
+
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
+    } elseif ($HasROCm) {
+        step "gpu" $ROCmGpuLabel
+    } elseif ($ROCmGpuLabel) {
+        step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+        substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
-        substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+        substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
