@@ -84,12 +84,13 @@ jobs:
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
   repo-cpu-tests:
-    # Top-level tests/ tree was previously not run anywhere in CI. The
-    # tests/conftest.py harness (mirrors unsloth-zoo PR #624) pre-loads
-    # unsloth_zoo.device_type and unsloth.device_type under a mocked
-    # torch.cuda.is_available so the unsloth import chain succeeds on
-    # CPU. Locally validated: 302 passed, 9 skipped, 12 deselected in
-    # ~7 seconds.
+    # Auto-discover everything under tests/ that is not GPU-bound by
+    # design. New tests added in covered directories are picked up
+    # without a workflow edit. Locally validated: 779 passed, 11
+    # skipped, 23 deselected. tests/conftest.py (mirroring unsloth-zoo
+    # PR #624) pre-loads unsloth_zoo.device_type and unsloth.device_type
+    # under a mocked torch.cuda.is_available so the unsloth import
+    # chain succeeds on CPU.
     name: Repo tests (CPU)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -117,38 +118,64 @@ jobs:
           pip install 'unsloth_zoo>=2026.5.1'
           pip install -e . --no-deps
 
-      - name: Repo tests (CPU)
+      - name: Repo tests (CPU, auto-discovered)
         env:
           # tests/python/* import install_python_stack from studio/.
           PYTHONPATH: ${{ github.workspace }}/studio
           # Skip lazy compilation work the unsloth import chain wants to
           # do at import time on a real GPU.
           UNSLOTH_COMPILE_DISABLE: '1'
+        # --ignore: GPU-bound directories (qlora and saving need real
+        #   weights / GPU; tests/sh is a shell suite the next step
+        #   handles; tests/utils is a helpers folder, not tests).
+        # State-sensitive hardware-spoofing files are pulled out and run
+        # in isolation in the next step because they mutate
+        # hardware.py module globals (IS_ROCM / DEVICE) and pollute
+        # downstream tests.
+        # -m: honour markers already declared in tests/python/conftest.py
+        #   (`server` = needs studio venv, `e2e` = needs network).
+        # --deselect: two registry tests that hit huggingface_hub for
+        #   live model existence checks; they belong on a network job.
         run: |
-          python -m pytest -q --tb=short -m 'not server and not e2e' \
-            tests/test_loader_glob_skip.py \
-            tests/test_raw_text.py \
-            tests/test_cli_export_unpacking.py \
-            tests/test_studio_install_workspace_guard.py \
-            tests/test_studio_root_resilience.py \
-            tests/python/test_install_python_stack.py \
-            tests/python/test_no_torch_filtering.py \
-            tests/python/test_studio_import_no_torch.py \
-            tests/python/test_tokenizers_and_torch_constraint.py \
-            tests/python/test_unsloth_run_tool_policy_resolver.py \
-            tests/python/test_flash_attn_install_python_stack.py \
-            tests/python/test_cross_platform_parity.py \
-            tests/python/test_fast_sentence_transformer_redirect_lifecycle.py \
-            tests/studio/test_chat_preset_builtin_invariants.py \
-            tests/studio/test_cli_studio_defaults.py \
-            tests/studio/test_studio_gguf_export_script_pin.py \
-            tests/studio/test_cli_repo_variant.py \
-            tests/studio/test_cli_run_alias.py \
-            tests/studio/test_llama_cpp_wall_clock_cap.py \
-            tests/studio/test_cancel_atomicity.py \
-            tests/studio/test_cancel_id_wiring.py \
-            tests/studio/test_stream_cancel_registration_timing.py \
-            tests/studio/test_studio_text_descender_clipping.py
+          python -m pytest tests/ -q --tb=short \
+            --ignore=tests/qlora \
+            --ignore=tests/saving \
+            --ignore=tests/utils \
+            --ignore=tests/sh \
+            --ignore=tests/studio/test_hardware_dispatch_matrix.py \
+            --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
+            -m 'not server and not e2e' \
+            --deselect tests/test_model_registry.py::test_model_registration \
+            --deselect tests/test_model_registry.py::test_all_model_registration
+
+      - name: Hardware-spoof tests (state-sensitive, run in isolation)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio
+          UNSLOTH_COMPILE_DISABLE: '1'
+        # These two files mutate hardware.py module globals at runtime
+        # via the spoof fixtures, which leaks state into any other test
+        # that imports hardware. Run them in their own pytest invocation
+        # so the leak does not cross file boundaries.
+        run: |
+          python -m pytest -q --tb=short \
+            tests/studio/test_hardware_dispatch_matrix.py \
+            tests/studio/test_is_mlx_dispatch_gate.py
+
+      - name: Shell installer tests
+        # Subset that does not depend on a writable / pristine install.sh
+        # tree; test_install_host_defaults.sh checks install.ps1 layout
+        # which has drifted (separate followup).
+        run: |
+          set -e
+          for s in \
+              tests/sh/test_get_torch_index_url.sh \
+              tests/sh/test_mac_intel_compat.sh \
+              tests/sh/test_tauri_install_exit_order.sh \
+              tests/sh/test_torch_constraint.sh; do
+              echo "::group::$s"
+              bash "$s"
+              echo "::endgroup::"
+          done
 
   ruff:
     name: Backend ruff lint (non-blocking)
