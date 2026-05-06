@@ -43,17 +43,25 @@ function isUpdateInstallSource(value: unknown): value is UpdateInstallSource {
   );
 }
 
-async function fetchStudioReleaseVersion(): Promise<string | null> {
+async function fetchStudioVersions(): Promise<{
+  packageVersion: string | null;
+  studioVersion: string | null;
+}> {
   try {
     const res = await fetch(apiUrl("/api/health"));
     if (!res.ok) {
-      return null;
+      return { packageVersion: null, studioVersion: null };
     }
     const data = (await res.json()) as ApiObject;
+    const packageVersion = data.version;
     const studioVersion = data.studio_version;
-    return typeof studioVersion === "string" ? studioVersion : null;
+    return {
+      packageVersion:
+        typeof packageVersion === "string" ? packageVersion : null,
+      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
+    };
   } catch {
-    return null;
+    return { packageVersion: null, studioVersion: null };
   }
 }
 
@@ -86,6 +94,7 @@ export function AboutTab() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [packageVersion, setPackageVersion] = useState("dev");
   const [studioVersion, setStudioVersion] = useState("dev");
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
@@ -94,9 +103,15 @@ export function AboutTab() {
   useEffect(() => {
     let canceled = false;
 
-    fetchStudioReleaseVersion().then((nextVersion) => {
-      if (!canceled && nextVersion) {
-        setStudioVersion(nextVersion);
+    fetchStudioVersions().then((nextVersions) => {
+      if (canceled) {
+        return;
+      }
+      if (nextVersions.packageVersion) {
+        setPackageVersion(nextVersions.packageVersion);
+      }
+      if (nextVersions.studioVersion) {
+        setStudioVersion(nextVersions.studioVersion);
       }
     });
 
@@ -124,6 +139,11 @@ export function AboutTab() {
         <SettingsRow label="Studio Version">
           <code className="font-mono text-xs text-muted-foreground">
             {studioVersion}
+          </code>
+        </SettingsRow>
+        <SettingsRow label="Package Version">
+          <code className="font-mono text-xs text-muted-foreground">
+            {packageVersion}
           </code>
         </SettingsRow>
       </SettingsSection>
