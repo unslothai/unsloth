@@ -10,7 +10,7 @@ This module provides FastAPI middleware and structlog processors for:
 - Error handling with detailed context
 
 Key Components:
-- LoggingMiddleware: FastAPI middleware for request/response logging
+- LoggingMiddleware: Pure ASGI middleware for request/response logging
 - filter_sensitive_data: Structlog processor for data sanitization
 - get_logger: Factory function for structured loggers
 """
@@ -29,7 +29,7 @@ _EXCLUDED_PATHS = {
     "/api/train/hardware",
     "/api/system",
 }
-_EXCLUDED_SUFFIXES = (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
+_EXCLUDED_SUFFIXES = (".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".ttf")
 
 
 class LoggingMiddleware:
@@ -51,13 +51,11 @@ class LoggingMiddleware:
             return
 
         path = scope["path"]
-        if (
+        excluded = (
             path in _EXCLUDED_PATHS
             or path.startswith("/assets/")
             or path.endswith(_EXCLUDED_SUFFIXES)
-        ):
-            await self.app(scope, receive, send)
-            return
+        )
 
         start_time = time.perf_counter()
         status_code = 500
@@ -77,17 +75,19 @@ class LoggingMiddleware:
                 method = scope["method"],
                 status_code = status_code,
                 error = str(exc),
+                process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
                 exc_info = True,
             )
             raise
         else:
-            logger.info(
-                "request_completed",
-                method = scope["method"],
-                path = path,
-                status_code = status_code,
-                process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
-            )
+            if not excluded:
+                logger.info(
+                    "request_completed",
+                    method = scope["method"],
+                    path = path,
+                    status_code = status_code,
+                    process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
+                )
 
 
 def filter_sensitive_data(logger, method_name, event_dict):
