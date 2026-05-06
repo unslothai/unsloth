@@ -1400,12 +1400,24 @@ def apply_gpu_ids(gpu_ids) -> None:
     )
     _is_rocm = IS_ROCM or _inherits_rocm_visibility
     if not _is_rocm:
+        # Use ``is not None`` here to match the detect_hardware() check at
+        # module top -- torch ships HIP version as a non-empty string on
+        # ROCm builds and None on CUDA builds, so the two forms agree on
+        # every shipping torch wheel; the ``is not None`` form is the one
+        # the rest of the codebase reads for "this torch was built with
+        # HIP". Keep the broad ``except`` as a safety net (we never want
+        # apply_gpu_ids to crash a worker over a probe failure) but log at
+        # debug level so the skip is observable when needed.
         try:
             import torch as _torch
 
-            _is_rocm = bool(getattr(_torch.version, "hip", None))
-        except Exception:
-            pass
+            _is_rocm = getattr(_torch.version, "hip", None) is not None
+        except Exception as e:
+            logger.debug(
+                "apply_gpu_ids: torch.version.hip probe skipped (%s: %s)",
+                type(e).__name__,
+                e,
+            )
     if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
         os.environ["ROCR_VISIBLE_DEVICES"] = value
