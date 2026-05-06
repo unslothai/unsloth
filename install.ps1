@@ -1321,6 +1321,12 @@ shell.Run cmd, 0, False
                 $ROCmTorchVisionUrl = "$amdRelBase/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
                 $ROCmTorchAudioUrl = "$amdRelBase/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
                 $TorchIndexUrl = $null
+            } elseif ($ROCmVersion -and $ROCmVersion -match '^7\.1') {
+                $amdRelBase = "$amdWheelBase/rocm-rel-7.1.1"
+                $ROCmTorchWheelUrl = "$amdRelBase/torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+                $ROCmTorchVisionUrl = "$amdRelBase/torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+                $ROCmTorchAudioUrl = "$amdRelBase/torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+                $TorchIndexUrl = $null
             }
             if ($ROCmTorchWheelUrl) {
                 substep "AMD ROCm $ROCmVersion (Python 3.12) -- AMD Windows torch wheel selected" "Cyan"

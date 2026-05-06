@@ -71,6 +71,12 @@ _ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, str, str, str]] = {
         "0.24.1+rocm7.2.1",
         "2.9.1+rocm7.2.1",
     ),
+    (7, 1): (
+        "rocm-rel-7.1.1",
+        "2.9.0+rocmsdk20251116",
+        "0.24.0+rocmsdk20251116",
+        "2.9.0+rocmsdk20251116",
+    ),
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
