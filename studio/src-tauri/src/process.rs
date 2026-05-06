@@ -7,7 +7,7 @@ use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
@@ -297,6 +297,13 @@ pub fn start_backend(
     cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
+        cmd.env(
+            crate::native_backend_lease::LEASE_SECRET_ENV,
+            native_state.lease_secret_env(),
+        );
+    }
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks the spawned
     // Python process (wrong libpython/libz → "No module named encodings").

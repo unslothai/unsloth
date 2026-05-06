@@ -13,18 +13,25 @@ import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
+  FolderSearchIcon,
   Logout01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 
-export type { LoraModelOption, ModelOption, ModelSelectorChangeMeta } from "./model-selector/types";
+export type {
+  DeletedModelRef,
+  LoraModelOption,
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "./model-selector/types";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -35,6 +42,9 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onPickLocalModel?: () => void | Promise<void>;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -109,6 +119,9 @@ function ModelSelectorContent({
   onSelect,
   onEject,
   onFoldersChange,
+  onPickLocalModel,
+  onModelsChange,
+  deleteDisabled,
   className,
   dataTour,
 }: {
@@ -118,6 +131,9 @@ function ModelSelectorContent({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
+  onPickLocalModel?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
 }) {
@@ -151,11 +167,26 @@ function ModelSelectorContent({
               loraModels={loraModels}
               value={value}
               onSelect={onSelect}
+              onModelsChange={onModelsChange}
+              deleteDisabled={deleteDisabled}
             />
           </TabsContent>
         </Tabs>
       )}
 
+      {onPickLocalModel ? (
+        <div className="mt-2 border-t border-border/70 pt-2">
+          <button
+            type="button"
+            onClick={onPickLocalModel}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+            title="Pick a model file from disk"
+          >
+            <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+            Pick a model file from disk
+          </button>
+        </div>
+      ) : null}
       {hasSelection && onEject ? (
         <div className="mt-2 border-t border-border/70 pt-2">
           <button
@@ -182,6 +213,9 @@ export function ModelSelector({
   onValueChange,
   onEject,
   onFoldersChange,
+  onPickLocalModel,
+  onModelsChange,
+  deleteDisabled,
   variant = "outline",
   size = "default",
   className,
@@ -259,6 +293,11 @@ export function ModelSelector({
     setOpen(false);
   }
 
+  function handlePickLocalModel() {
+    setOpen(false);
+    void onPickLocalModel?.();
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -276,6 +315,9 @@ export function ModelSelector({
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
+        onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
+        onModelsChange={onModelsChange}
+        deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
       />

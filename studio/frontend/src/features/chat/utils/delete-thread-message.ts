@@ -19,8 +19,8 @@ import type {
  * surface area.
  */
 import { MessageRepository } from "@assistant-ui/core/internal";
-import { db } from "@/features/chat/db";
-import type { MessageRecord } from "@/features/chat/types";
+import { db } from "../db";
+import type { MessageRecord } from "../types";
 
 function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
   if (typeof content === "string") {
@@ -71,21 +71,24 @@ function exportedItemToRecord(
 }
 
 /**
- * Persist the exact message list represented by `exp` for this thread, removing
- * Dexie rows that are no longer present (e.g. after a delete).
+ * Persist exported messages, pruning only for explicit delete flows.
  */
-async function syncExportedRepositoryToDexie(
+export async function syncExportedRepositoryToDexie(
   remoteId: string,
   exp: ExportedMessageRepository,
+  options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
   await db.transaction("rw", db.messages, async () => {
-    const keepIds = new Set(exp.messages.map((x) => x.message.id));
-    const existing = await db.messages.where("threadId").equals(remoteId).toArray();
-    const idsToDelete = existing
-      .filter((m) => !keepIds.has(m.id))
-      .map((m) => m.id);
-    if (idsToDelete.length > 0) {
-      await db.messages.bulkDelete(idsToDelete);
+    if (options.pruneMissing) {
+      const keepIds = new Set(exp.messages.map((x) => x.message.id));
+      const existingIds = await db.messages
+        .where("threadId")
+        .equals(remoteId)
+        .primaryKeys();
+      const idsToDelete = existingIds.filter((id) => !keepIds.has(String(id)));
+      if (idsToDelete.length > 0) {
+        await db.messages.bulkDelete(idsToDelete);
+      }
     }
     await db.messages.bulkPut(
       exp.messages.map(({ message, parentId }) =>
@@ -115,7 +118,7 @@ export async function deleteThreadMessage(args: {
   repo.deleteMessage(messageId);
   const next = repo.export();
   if (remoteId) {
-    await syncExportedRepositoryToDexie(remoteId, next);
+    await syncExportedRepositoryToDexie(remoteId, next, { pruneMissing: true });
   }
   thread.import(next);
 }

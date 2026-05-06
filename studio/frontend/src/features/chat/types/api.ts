@@ -32,6 +32,7 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
   load_in_4bit: boolean;
@@ -129,6 +130,7 @@ export interface InferenceStatusResponse {
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
+  chat_template?: string | null;
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;

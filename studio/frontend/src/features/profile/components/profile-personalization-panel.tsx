@@ -139,7 +139,7 @@ export function ProfilePersonalizationPanel() {
             }}
             autoComplete="off"
             placeholder={sessionSub || "Unsloth"}
-            className="h-10 min-w-0 flex-1 rounded-lg text-sm"
+            className="h-10 min-w-0 flex-1 rounded-full text-sm"
           />
           <Button type="button" size="sm" className="h-10 px-5" onClick={saveName} disabled={!hasNameChanges}>
             Save
