@@ -85,7 +85,9 @@ unsloth studio -p 8888
 > For cloud VMs or LAN access, add `-H 0.0.0.0` to bind on all interfaces.
 
 #### Update
-To update, use the same install commands as above. Or run (does not work on Windows):
+To update on Windows, rerun the same PowerShell install command: `irm https://unsloth.ai/install.ps1 | iex`. This ensures dependencies and binaries are updated correctly on Windows.
+
+On macOS, Linux, and WSL, you can also run:
 ```bash
 unsloth studio update
 ```
@@ -184,9 +186,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
 unsloth studio -p 8888
 ```
-Then to update :
-```bash
-unsloth studio update
+To update this local Windows install, pull the latest changes and rerun the local installer:
+```powershell
+git pull
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1 --local
 ```
 
 #### Nightly: MacOS, Linux, WSL:
@@ -203,8 +207,8 @@ unsloth studio -p 8888
 ```
 
 #### Nightly: Windows:
-Run in Windows Powershell:
-```bash
+Run in Windows PowerShell:
+```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 git checkout nightly
@@ -218,9 +222,9 @@ unsloth studio -p 8888
 ```
 
 #### Uninstall
-You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
+You can uninstall Unsloth Studio by deleting its install folder, usually located under `$HOME/.unsloth/studio` on macOS/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. These commands delete everything in that Studio folder, including history and cache:
 
-* ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
+* ​ **macOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
 * ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
 
 For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
