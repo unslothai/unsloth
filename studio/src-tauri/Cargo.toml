@@ -11,6 +11,9 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
@@ -23,7 +26,9 @@ fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 tauri-plugin-opener = "2.5.3"
 tauri-plugin-updater = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
 rand = "0.10.0"
+tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
