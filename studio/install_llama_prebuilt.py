@@ -100,6 +100,9 @@ DEFAULT_PUBLISHED_SHA256_ASSET = os.environ.get(
 )
 UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
+
+LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
+LEMONADE_ROCM_RELEASES_API = f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
 TEST_MODEL_URL = (
     "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 )
@@ -196,6 +199,7 @@ class HostInfo:
     has_physical_nvidia: bool
     has_usable_nvidia: bool
     has_rocm: bool = False
+    rocm_gfx_target: str | None = None
 
 
 @dataclass
@@ -2597,6 +2601,7 @@ def detect_host() -> HostInfo:
         return bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
 
     has_rocm = False
+    rocm_gfx_target: str | None = None
     if is_linux:
         for _cmd, _check in (
             # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
@@ -2619,6 +2624,9 @@ def detect_host() -> HostInfo:
             if _result.returncode == 0 and _result.stdout.strip():
                 if _check(_result.stdout):
                     has_rocm = True
+                    _gfx_m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _result.stdout.lower())
+                    if _gfx_m:
+                        rocm_gfx_target = _gfx_m.group(0)
                     break
     elif is_windows:
         # Windows: prefer active probes that validate GPU presence
@@ -2636,6 +2644,10 @@ def detect_host() -> HostInfo:
             if _result.returncode == 0 and _result.stdout.strip():
                 if _check(_result.stdout):
                     has_rocm = True
+                    # hipinfo reports "gcnArchName: gfx1100" -- extract if present
+                    _gfx_m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _result.stdout.lower())
+                    if _gfx_m:
+                        rocm_gfx_target = _gfx_m.group(0)
                     break
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
@@ -2655,6 +2667,7 @@ def detect_host() -> HostInfo:
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
+        rocm_gfx_target = rocm_gfx_target,
     )
 
 
@@ -3114,6 +3127,75 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     return None
 
 
+# Map detected gfx IDs to lemonade-sdk asset family suffixes.
+# More-specific prefixes must come before shorter ones (e.g. gfx1151 before gfx110).
+_LEMONADE_GFX_FAMILIES: list[tuple[str, str]] = [
+    ("gfx1151", "gfx1151"),
+    ("gfx1150", "gfx1150"),
+    ("gfx120", "gfx120X"),
+    ("gfx110", "gfx110X"),
+    ("gfx103", "gfx103X"),
+]
+
+
+def _lemonade_gfx_family(gfx_id: str) -> str | None:
+    gfx_id = gfx_id.lower().strip()
+    for prefix, family in _LEMONADE_GFX_FAMILIES:
+        if gfx_id.startswith(prefix):
+            return family
+    return None
+
+
+def resolve_lemonade_rocm_choice(
+    host: HostInfo,
+    os_prefix: str,
+    install_kind: str,
+) -> "AssetChoice | None":
+    """Return an AssetChoice from lemonade-sdk/llamacpp-rocm for the detected GPU, or None.
+
+    os_prefix: "ubuntu" or "windows"
+    install_kind: "linux-rocm" or "windows-hip"
+    """
+    if not host.rocm_gfx_target:
+        return None
+    gfx_family = _lemonade_gfx_family(host.rocm_gfx_target)
+    if gfx_family is None:
+        log(
+            f"AMD GPU {host.rocm_gfx_target!r} is not covered by lemonade-sdk ROCm prebuilts; "
+            "skipping lemonade prebuilt"
+        )
+        return None
+    try:
+        release = fetch_json(LEMONADE_ROCM_RELEASES_API)
+    except Exception as exc:
+        log(f"Could not fetch {LEMONADE_ROCM_REPO} latest release: {exc}")
+        return None
+    release_tag = release.get("tag_name") if isinstance(release, dict) else None
+    if not isinstance(release_tag, str) or not release_tag:
+        log(f"Unexpected {LEMONADE_ROCM_REPO} release payload; skipping lemonade prebuilt")
+        return None
+    assets = release_asset_map(release)
+    asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx_family}-x64.zip"
+    if asset_name not in assets:
+        log(
+            f"{LEMONADE_ROCM_REPO}@{release_tag} has no asset {asset_name!r}; "
+            "skipping lemonade prebuilt"
+        )
+        return None
+    log(
+        f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
+        f"trying lemonade-sdk ROCm prebuilt {asset_name}"
+    )
+    return AssetChoice(
+        repo = LEMONADE_ROCM_REPO,
+        tag = release_tag,
+        name = asset_name,
+        url = assets[asset_name],
+        source_label = "lemonade",
+        install_kind = install_kind,
+    )
+
+
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
@@ -3122,6 +3204,13 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # the exact GPU target via rocminfo, which is more reliable for consumer
         # GPUs (e.g. gfx1151) that may not be in the prebuilt.
         if host.has_rocm and not host.has_usable_nvidia:
+            # Try lemonade-sdk per-GPU prebuilt first: these are built against
+            # specific gfx targets and bundle all required ROCm runtime libs.
+            lemonade_choice = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm")
+            if lemonade_choice is not None:
+                return lemonade_choice
+
+            # Fall back to upstream combined ROCm tarball.
             # Scan upstream assets for any rocm-<version> prebuilt. When the
             # host ROCm runtime version is known, pick the newest candidate
             # whose major.minor is <= host version -- otherwise a ROCm 6.4
@@ -3201,8 +3290,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 return attempts[0]
             raise PrebuiltFallback("no compatible Windows CUDA asset was found")
 
-        # AMD ROCm on Windows: try HIP prebuilt
+        # AMD ROCm on Windows: try lemonade per-GPU prebuilt first, then upstream HIP
         if host.has_rocm:
+            lemonade_choice = resolve_lemonade_rocm_choice(host, "windows", "windows-hip")
+            if lemonade_choice is not None:
+                return lemonade_choice
+
             hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
             if hip_name in upstream_assets:
                 log(
