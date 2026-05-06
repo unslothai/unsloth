@@ -15,7 +15,7 @@
 #   - Studio backend imports cleanly from the installed wheel with the
 #     lightweight dep set below.
 
-name: Wheel build + smoke
+name: Wheel CI
 
 on:
   pull_request:

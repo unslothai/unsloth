@@ -9,7 +9,7 @@
 # the count in CI lets us drive it down without forcing a fleet-wide cleanup
 # in the same PR. Drop `continue-on-error` once that number is zero.
 
-name: Studio frontend CI
+name: Frontend CI
 
 on:
   pull_request:

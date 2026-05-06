@@ -10,7 +10,7 @@
 # is cheap and inference fits in the 25 min CPU-runner budget. GGUF is cached
 # across runs via actions/cache.
 
-name: Studio inference smoke
+name: Studio GGUF CI
 
 on:
   pull_request:

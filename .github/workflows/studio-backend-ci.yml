@@ -14,7 +14,7 @@
 #
 # ruff is non-blocking initially; remove `|| true` once the backend lints clean.
 
-name: Studio backend CI
+name: Backend CI
 
 on:
   pull_request:
@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   pytest:
-    name: Backend pytest (Python ${{ matrix.python }})
+    name: (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
