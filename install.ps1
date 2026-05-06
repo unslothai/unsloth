@@ -1288,7 +1288,11 @@ shell.Run cmd, 0, False
     # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
-        substep "No NVIDIA GPU detected." "Yellow"
+        if ($HasROCm -or $ROCmGpuLabel) {
+            substep "Installing CPU-only PyTorch (ROCm wheels require the HIP SDK)." "Yellow"
+        } else {
+            substep "No NVIDIA GPU detected." "Yellow"
+        }
         substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
         substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
         substep ".\install.ps1 --no-torch" "Yellow"
