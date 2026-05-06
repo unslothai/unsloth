@@ -48,12 +48,13 @@ import {
   DownloadSquare01Icon,
   Edit03Icon,
   Globe02Icon,
+  HelpCircleIcon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  HelpCircleIcon,
   Settings02Icon,
+  SourceCodeSquareIcon,
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -716,8 +717,8 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                   >
-                    <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>API</span>
+                    <HugeiconsIcon icon={SourceCodeSquareIcon} strokeWidth={1.75} className="size-[18px]" />
+                    <span>Developer</span>
                     <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                       New
                     </span>

@@ -500,7 +500,9 @@ _VLM_MODEL_TYPES = {
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses 5.5.0 (newest, recognizes all architectures).
-_VENV_T5_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
+from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
+
+_VENV_T5_DIR = str(_studio_root() / ".venv_t5_550")
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 # Inline script executed in a subprocess with transformers 5.x activated.

@@ -12,348 +12,117 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings, importlib, sys
-from packaging.version import Version
-import os, re, subprocess, inspect, functools
-import numpy as np
+import os, platform, importlib.util
 
-# Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Check if modules that need patching are already imported
-critical_modules = ["trl", "transformers", "peft"]
-already_imported = [mod for mod in critical_modules if mod in sys.modules]
-
-# Fix some issues before importing other packages
-from .import_fixes import (
-    fix_message_factory_issue,
-    check_fbgemm_gpu_version,
-    disable_broken_causal_conv1d,
-    disable_broken_vllm,
-    configure_amdgpu_asic_id_table_path,
-    torchvision_compatibility_check,
-    fix_diffusers_warnings,
-    fix_huggingface_hub,
+# Detect Apple Silicon + MLX before any torch/numpy imports
+_IS_MLX = (
+    platform.system() == "Darwin"
+    and platform.machine() == "arm64"
+    and importlib.util.find_spec("mlx") is not None
 )
 
-# Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
-configure_amdgpu_asic_id_table_path()
-disable_broken_causal_conv1d()
-disable_broken_vllm()
-fix_message_factory_issue()
-check_fbgemm_gpu_version()
-torchvision_compatibility_check()
-fix_diffusers_warnings()
-fix_huggingface_hub()
-del configure_amdgpu_asic_id_table_path
-del disable_broken_causal_conv1d
-del disable_broken_vllm
-del fix_message_factory_issue
-del check_fbgemm_gpu_version
-del torchvision_compatibility_check
-del fix_diffusers_warnings
-del fix_huggingface_hub
-
-# This check is critical because Unsloth optimizes these libraries by modifying
-# their code at import time. If they're imported first, the original (slower,
-# more memory-intensive) implementations will be used instead of Unsloth's
-# optimized versions, potentially causing OOM errors or slower training.
-if already_imported:
-    # stacklevel=2 makes warning point to user's import line rather than this library code,
-    # showing them exactly where to fix the import order in their script
-    warnings.warn(
-        f"WARNING: Unsloth should be imported before [{', '.join(already_imported)}] "
-        f"to ensure all optimizations are applied. Your code may run slower or encounter "
-        f"memory issues without these optimizations.\n\n"
-        f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel = 2,
-    )
-del already_imported, critical_modules
-
-# Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
-# enabling it will require much more work, so we have to prioritize. Please understand!
-# We do have a beta version, which you can contact us about!
-# Thank you for your understanding and we appreciate it immensely!
-
-# Fixes https://github.com/unslothai/unsloth/issues/1266
-os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-
-# [TODO] Check why some GPUs don't work
-#    "pinned_use_cuda_host_register:True,"\
-#    "pinned_num_register_threads:8"
-
-
-from importlib.metadata import version as importlib_version
-from importlib.metadata import PackageNotFoundError
-
-# Check for unsloth_zoo
-try:
-    unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.3.4"):
-        print(
-            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
-            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
-        )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
-except PackageNotFoundError:
-    raise ImportError(
-        f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
-    )
-except:
-    raise
-del PackageNotFoundError, importlib_version
-
-# Try importing PyTorch and check version
-try:
-    import torch
-except ModuleNotFoundError:
-    raise ImportError(
-        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"
-        "We have some installation instructions on our Github page."
-    )
-except:
-    raise
-
-from unsloth_zoo.device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
-)
-
-# Fix other issues
-from .import_fixes import (
-    fix_xformers_performance_issue,
-    fix_vllm_aimv2_issue,
-    check_vllm_torch_sm100_compatibility,
-    fix_vllm_guided_decoding_params,
-    fix_trl_vllm_ascend,
-    fix_vllm_pdl_blackwell,
-    fix_triton_compiled_kernel_missing_attrs,
-    patch_trunc_normal_precision_issue,
-    ignore_logger_messages,
-    patch_ipykernel_hf_xet,
-    patch_trackio,
-    patch_datasets,
-    patch_enable_input_require_grads,
-    fix_openenv_no_vllm,
-    patch_openspiel_env_async,
-    fix_executorch,
-    patch_vllm_for_notebooks,
-    patch_torchcodec_audio_decoder,
-    disable_torchcodec_if_broken,
-    disable_broken_wandb,
-    patch_peft_weight_converter_compatibility,
-)
-
-fix_xformers_performance_issue()
-fix_vllm_aimv2_issue()
-# Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
-check_vllm_torch_sm100_compatibility()
-fix_vllm_guided_decoding_params()
-fix_trl_vllm_ascend()
-fix_vllm_pdl_blackwell()
-fix_triton_compiled_kernel_missing_attrs()
-patch_trunc_normal_precision_issue()
-ignore_logger_messages()
-patch_ipykernel_hf_xet()
-patch_trackio()
-patch_datasets()
-patch_enable_input_require_grads()
-fix_openenv_no_vllm()
-patch_openspiel_env_async()
-fix_executorch()
-patch_vllm_for_notebooks()
-patch_torchcodec_audio_decoder()
-disable_torchcodec_if_broken()
-disable_broken_wandb()
-patch_peft_weight_converter_compatibility()
-
-del fix_xformers_performance_issue
-del fix_vllm_aimv2_issue
-del check_vllm_torch_sm100_compatibility
-del fix_vllm_guided_decoding_params
-del fix_trl_vllm_ascend
-del fix_vllm_pdl_blackwell
-del fix_triton_compiled_kernel_missing_attrs
-del patch_trunc_normal_precision_issue
-del ignore_logger_messages
-del patch_ipykernel_hf_xet
-del patch_trackio
-del patch_datasets
-del patch_enable_input_require_grads
-del fix_openenv_no_vllm
-del patch_openspiel_env_async
-del fix_executorch
-del patch_vllm_for_notebooks
-del patch_torchcodec_audio_decoder
-del disable_torchcodec_if_broken
-del disable_broken_wandb
-del patch_peft_weight_converter_compatibility
-
-# Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
-    major_version, minor_version = torch.cuda.get_device_capability()
-    SUPPORTS_BFLOAT16 = major_version >= 8
-
-    old_is_bf16_supported = torch.cuda.is_bf16_supported
-    if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
-
-        def is_bf16_supported(including_emulation = False):
-            return old_is_bf16_supported(including_emulation)
-
-        torch.cuda.is_bf16_supported = is_bf16_supported
-    else:
-
-        def is_bf16_supported():
-            return SUPPORTS_BFLOAT16
-
-        torch.cuda.is_bf16_supported = is_bf16_supported
-    del major_version, minor_version
-elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-elif DEVICE_TYPE == "xpu":
-    # torch.xpu.is_bf16_supported() does not have including_emulation
-    # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
-    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
-
-# For Gradio HF Spaces?
-# if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
-
-if DEVICE_TYPE == "cuda":
-    libcuda_dirs = lambda: None
-    if Version(triton.__version__) >= Version("3.0.0"):
-        try:
-            from triton.backends.nvidia.driver import libcuda_dirs
-        except:
-            pass
-    else:
-        from triton.common.build import libcuda_dirs
-
-    # Try loading bitsandbytes and triton
+if _IS_MLX:
     try:
-        import bitsandbytes as bnb
-    except:
-        print(
-            "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
-        )
-        bnb = None
+        import unsloth_zoo
+    except ImportError as _e:
+        raise ImportError(
+            "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
+            "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
+        ) from _e
+    # The mlx_trainer / mlx_loader submodules ship with unsloth-zoo's MLX
+    # support. An older installed unsloth-zoo (e.g. from PyPI before the
+    # MLX release lands) will satisfy `import unsloth_zoo` but be missing
+    # these submodules. Surface the same friendly install hint instead of
+    # a raw ImportError on the submodule path.
     try:
-        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-        libcuda_dirs()
-    except:
-        # Only run the ldconfig recovery when we can actually run
-        # ldconfig (root). On non-root environments (shared HPC,
-        # locked-down containers, CI runners, etc.) the recovery would
-        # shell out to `ldconfig` and fail with "Permission denied",
-        # which is especially noisy for users who don't even have
-        # bitsandbytes installed and are just doing 16bit/full
-        # finetuning. libcuda_dirs() is used by both triton and bnb,
-        # so we still run the recovery whenever we're root, regardless
-        # of whether bnb is installed.
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
+        from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
+        from unsloth_zoo.mlx_loader import FastMLXModel
+    except ImportError as _e:
+        raise ImportError(
+            "Unsloth: MLX support requires an unsloth-zoo build that includes "
+            "`unsloth_zoo.mlx_trainer` and `unsloth_zoo.mlx_loader`. Upgrade with "
+            "`pip install -U unsloth-zoo` or rerun install.sh."
+        ) from _e
 
-            if os.path.exists("/usr/lib64-nvidia"):
-                os.system("ldconfig /usr/lib64-nvidia")
-            elif os.path.exists("/usr/local"):
-                # Sometimes bitsandbytes cannot be linked properly in Runpod for example
-                possible_cudas = (
-                    subprocess.check_output(["ls", "-al", "/usr/local"])
-                    .decode("utf-8")
-                    .split("\n")
-                )
-                find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
-                possible_cudas = [find_cuda.search(x) for x in possible_cudas]
-                possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
+    # Load raw_text helpers without executing dataprep/__init__.py, which
+    # imports synthetic.py -> torch and would defeat the torch-free MLX path.
+    from pathlib import Path as _Path
 
-                # Try linking cuda folder, or everything in local
-                if len(possible_cudas) == 0:
-                    os.system("ldconfig /usr/local/")
-                else:
-                    find_number = re.compile(r"([\d\.]{2,})")
-                    latest_cuda = np.argsort(
-                        [float(find_number.search(x).group(1)) for x in possible_cudas]
-                    )[::-1][0]
-                    latest_cuda = possible_cudas[latest_cuda]
-                    os.system(f"ldconfig /usr/local/{latest_cuda}")
-                    del find_number, latest_cuda
-                del possible_cudas, find_cuda
+    _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
+    _raw_text_spec = importlib.util.spec_from_file_location(
+        "unsloth._mlx_raw_text", _raw_text_path
+    )
+    if _raw_text_spec is None or _raw_text_spec.loader is None:
+        raise ImportError("Unsloth: could not load MLX raw_text dataprep helpers.")
+    _raw_text = importlib.util.module_from_spec(_raw_text_spec)
+    _raw_text_spec.loader.exec_module(_raw_text)
+    RawTextDataLoader = _raw_text.RawTextDataLoader
+    TextPreprocessor = _raw_text.TextPreprocessor
+    del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
-            if bnb is not None:
-                importlib.reload(bnb)
-            importlib.reload(triton)
-            try:
-                libcuda_dirs = lambda: None
-                if Version(triton.__version__) >= Version("3.0.0"):
-                    try:
-                        from triton.backends.nvidia.driver import libcuda_dirs
-                    except:
-                        pass
-                else:
-                    from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = (
-                    bnb.functional.lib.cdequantize_blockwise_fp32
-                )
-                libcuda_dirs()
-            except:
-                warnings.warn(
-                    "Unsloth: CUDA is not linked properly.\n"
-                    "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"
-                    "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"
-                    "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"
-                    "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"
-                    "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
-                )
-        elif bnb is not None:
-            # Non-root + bnb installed: we can't run ldconfig ourselves,
-            # but bnb is going to crash later when the user actually uses
-            # 4bit quantization - tell them how to fix it manually so
-            # they're not surprised by an opaque error down the road.
-            warnings.warn(
-                "Unsloth: CUDA is not linked properly.\n"
-                "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"
-                "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"
-                "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+    __version__ = unsloth_zoo.__version__
+    DEVICE_TYPE = "mlx"
+
+    class FastLanguageModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return FastMLXModel.from_pretrained(*args, **kwargs)
+
+        @staticmethod
+        def get_peft_model(*args, **kwargs):
+            return FastMLXModel.get_peft_model(*args, **kwargs)
+
+        @staticmethod
+        def for_inference(*args, **kwargs):
+            return args[0] if args else None
+
+    class FastVisionModel(FastLanguageModel):
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            kwargs.setdefault("text_only", False)
+            return FastMLXModel.from_pretrained(*args, **kwargs)
+
+        @staticmethod
+        def for_training(*args, **kwargs):
+            return args[0] if args else None
+
+    FastTextModel = FastLanguageModel
+    FastModel = FastLanguageModel
+
+    class FastSentenceTransformer:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            raise NotImplementedError(
+                "Unsloth: FastSentenceTransformer is not yet supported on MLX."
             )
-    del libcuda_dirs
-elif DEVICE_TYPE == "hip":
-    # NO-OP for rocm device
-    pass
-elif DEVICE_TYPE == "xpu":
-    import bitsandbytes as bnb
 
-    # TODO: check triton for intel installed properly.
-    pass
+        @staticmethod
+        def get_peft_model(*args, **kwargs):
+            raise NotImplementedError(
+                "Unsloth: FastSentenceTransformer is not yet supported on MLX."
+            )
 
-from .models import *
-from .models import __version__
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
+    def is_bfloat16_supported():
+        try:
+            import mlx.core as mx
 
-# Export dataprep utilities for CLI and downstream users
-from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
-from unsloth_zoo.rl_environments import (
-    check_python_modules,
-    create_locked_down_function,
-    execute_with_time_limit,
-    Benchmarker,
-    is_port_open,
-    launch_openenv,
-)
+            name = mx.device_info().get("device_name", "") or ""
+            return not name.startswith(("Apple M1", "Apple M2"))
+        except Exception:
+            return True
 
-# Patch TRL trainers for backwards compatibility
-_patch_trl_trainer()
+    is_bf16_supported = is_bfloat16_supported
+
+    class UnslothVisionDataCollator:
+        def __init__(self, *args, **kwargs):
+            raise NotImplementedError(
+                "Unsloth: UnslothVisionDataCollator is not used on MLX. "
+                "Use the MLX trainer/data path instead."
+            )
+
+else:
+    # GPU path: load everything from _gpu_init
+    from ._gpu_init import *
+    from ._gpu_init import __version__

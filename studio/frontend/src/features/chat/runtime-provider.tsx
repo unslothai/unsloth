@@ -9,8 +9,8 @@ import {
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
-  RuntimeAdapterProvider,
   Suggestions,
+  type LocalRuntimeOptions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -583,9 +583,9 @@ function createDexieAdapter(
   };
 }
 
-function ThreadHistoryProvider({
-  children,
-}: { children?: ReactNode }): ReactElement {
+type StudioRuntimeAdapters = NonNullable<LocalRuntimeOptions["adapters"]>;
+
+function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
   const aui = useAui();
 
   const history = useMemo<ThreadHistoryAdapter>(
@@ -711,17 +711,14 @@ function ThreadHistoryProvider({
     [history, dictation, attachments],
   );
 
-  return (
-    <RuntimeAdapterProvider adapters={adapters}>
-      {children}
-    </RuntimeAdapterProvider>
-  );
+  return adapters;
 }
 
 const chatAdapter = createOpenAIStreamAdapter();
 
 function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-  return useLocalRuntime(chatAdapter);
+  const adapters = useStudioRuntimeAdapters();
+  return useLocalRuntime(chatAdapter, { adapters });
 }
 
 function ThreadAutoSwitch({
@@ -898,10 +895,7 @@ export function ChatRuntimeProvider({
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: {
-      ...createDexieAdapter(modelType, pairId),
-      unstable_Provider: ThreadHistoryProvider,
-    },
+    adapter: createDexieAdapter(modelType, pairId),
   });
 
   const aui = useAui({

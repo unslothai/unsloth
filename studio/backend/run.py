@@ -159,7 +159,27 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
-_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+from utils.paths.storage_roots import studio_root as _studio_root
+
+_PID_FILE = _studio_root() / "studio.pid"
+
+# Direct backend launches bypass the CLI's env re-export; do it here for
+# real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
+# picks up the custom build. Skip for legacy-default to avoid flipping
+# default-mode installs into env-override.
+try:
+    _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
+try:
+    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+except (OSError, ValueError):
+    _STUDIO_ROOT_RESOLVED = _studio_root()
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
 
 def _write_pid_file():
