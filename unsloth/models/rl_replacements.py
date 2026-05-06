@@ -1561,14 +1561,29 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
-            if num_images is not None and not getattr(
+            def _unsloth_requires_multi_image_zoo(value):
+                if value is None:
+                    return False
+                if isinstance(value, torch.Tensor):
+                    counts = value.detach().cpu().reshape(-1).tolist()
+                else:
+                    counts = list(value)
+                return any(int(n) != 1 for n in counts)
+
+            if _unsloth_requires_multi_image_zoo(num_images) and not getattr(
                 self, "_unsloth_grpo_zoo_checked", False
             ):
-                try:
-                    _zoo_src = inspect.getsource(grpo_accumulated_loss)
-                except (TypeError, OSError):
-                    _zoo_src = ""
-                if _zoo_src and "num_images" not in _zoo_src:
+                _supports_num_images = (
+                    "num_images"
+                    in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_num_images:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_num_images = "num_images" in _zoo_src
+                if not _supports_num_images:
                     raise RuntimeError(
                         "Multi-image GRPO requires an unsloth_zoo build whose "
                         "grpo_accumulated_loss handles num_images. Please upgrade "
