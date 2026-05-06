@@ -242,11 +242,19 @@ if [ "$NEED_NODE" = true ]; then
         curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
     fi
 
-    # Respect a user-specified NVM_DIR (e.g. $HOME/.config/nvm on non-default
-    # installations such as Distrobox or some system-managed nvm setups).
-    # The nvm install script above already honours the existing NVM_DIR, so
-    # unconditionally overriding it here would break sourcing on those systems.
-    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    # Mirror nvm's own install-directory selection (nvm_install_dir /
+    # nvm_default_install_dir in nvm v0.40.1 install.sh): an explicitly set
+    # NVM_DIR wins, otherwise $XDG_CONFIG_HOME/nvm if XDG_CONFIG_HOME is set
+    # (Distrobox / system-managed setups), otherwise $HOME/.nvm. The nvm
+    # install script above uses the same precedence, so we must match it
+    # here or the subsequent source path will point at the wrong directory.
+    if [ -n "${NVM_DIR:-}" ]; then
+        export NVM_DIR
+    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        export NVM_DIR="$XDG_CONFIG_HOME/nvm"
+    else
+        export NVM_DIR="$HOME/.nvm"
+    fi
     set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
