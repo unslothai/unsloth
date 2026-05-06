@@ -488,6 +488,47 @@ def get_gpu_utilization() -> Dict[str, Any]:
     return {"available": False, "backend": _backend_label(device)}
 
 
+def _reconcile_rocm_unified_memory(
+    utilization: Dict[str, Any], device_indices: list[int]
+) -> None:
+    """Cross-check amd-smi VRAM data against torch mem_get_info for ROCm.
+
+    On AMD iGPUs with unified/shared memory (e.g. Strix Halo / Radeon 8060S),
+    amd-smi reports only the dedicated VRAM slice (typically 512 MB) in its
+    metric output, while torch.cuda.mem_get_info() surfaces the full GTT /
+    unified pool (~128 GB). When torch reports a larger total than amd-smi,
+    replace the per-device VRAM fields so auto_select_gpu_ids sees the real
+    usable memory instead of the tiny dedicated slice.
+    """
+    torch_devices = _torch_get_per_device_info(device_indices)
+    if not torch_devices:
+        return
+    torch_by_index = {td["index"]: td for td in torch_devices}
+    for dev in utilization.get("devices", []):
+        idx = dev.get("index")
+        td = torch_by_index.get(idx)
+        if td is None:
+            continue
+        torch_total_gb = td["total_gb"]
+        smi_total_gb = dev.get("vram_total_gb") or 0.0
+        if torch_total_gb > smi_total_gb:
+            torch_used_gb = td["used_gb"]
+            dev["vram_total_gb"] = torch_total_gb
+            dev["vram_used_gb"] = torch_used_gb
+            dev["vram_utilization_pct"] = (
+                round((torch_used_gb / torch_total_gb) * 100, 1)
+                if torch_total_gb > 0
+                else None
+            )
+            logger.debug(
+                "ROCm unified memory: replaced amd-smi VRAM (%.2f GB) with "
+                "torch mem_get_info total (%.2f GB) for device %d",
+                smi_total_gb,
+                torch_total_gb,
+                idx,
+            )
+
+
 def get_visible_gpu_utilization() -> Dict[str, Any]:
     device = get_device()
 
@@ -500,6 +541,14 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         )
         if result is not None:
             result["backend"] = _backend_label(device)
+            if IS_ROCM:
+                # amd-smi on iGPUs with unified memory (e.g. Strix Halo)
+                # reports only the dedicated VRAM slice; torch mem_get_info
+                # sees the full unified pool. Reconcile so downstream GPU
+                # selection uses the real available memory.
+                _reconcile_rocm_unified_memory(
+                    result, parent_visible_spec["numeric_ids"]
+                )
             return result
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
