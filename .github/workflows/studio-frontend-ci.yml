@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Frontend PR gate: lockfile freshness, typecheck, build, and a bundle grep
+# that catches the 2026.5.1 chat-history regression at the JS level.
+#
+# biome runs as non-blocking for now: the codebase currently has accumulated
+# ~470 errors and ~1650 warnings against the existing biome config. Surfacing
+# the count in CI lets us drive it down without forcing a fleet-wide cleanup
+# in the same PR. Drop `continue-on-error` once that number is zero.
+
+name: Frontend CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/**'
+      - '.github/workflows/studio-frontend-ci.yml'
+  push:
+    branches: [main, pip]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Frontend build + bundle sanity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # FIXME: drop this step once @assistant-ui/* and assistant-stream
+      # leave 0.x -- on 1.x, caret ranges are conventional. Until then,
+      # every 0.minor on this surface is a SemVer-major (this is exactly
+      # how 2026.5.1 shipped a broken chat runtime: ^0.12.19 quietly
+      # resolved to 0.12.28).
+      - name: '@assistant-ui must be pinned exactly (no caret/tilde)'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          if grep -nE '"(@assistant-ui/[a-z-]+|assistant-stream)":[[:space:]]*"[\^~]' studio/frontend/package.json; then
+            echo "::error file=studio/frontend/package.json::These packages must be pinned to exact versions until they leave 0.x. Drop the leading ^ or ~."
+            exit 1
+          fi
+          echo "All assistant-ui packages are pinned exactly."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - name: Lockfile must agree with package.json (npm ci is strict)
+        run: npm ci --no-fund --no-audit
+
+      - name: npm ci must not have modified the working tree
+        working-directory: ${{ github.workspace }}
+        run: |
+          if ! git diff --quiet -- studio/frontend; then
+            echo "::error::npm ci modified files; commit the updated lockfile"
+            git status -- studio/frontend
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Built bundle must not contain Studio's unstable_Provider call site
+        run: |
+          set -e
+          JS=$(ls dist/assets/index-*.js | head -1)
+          HITS=$(grep -c 'unstable_Provider:' "$JS" || echo 0)
+          echo "main bundle: $JS"
+          echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
+          if [ "$HITS" -gt 3 ]; then
+            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Studio bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
+            exit 1
+          fi
+
+      - name: Bundle size budget (75 MB)
+        run: |
+          SIZE=$(du -sb dist | cut -f1)
+          BUDGET=$((75 * 1024 * 1024))
+          echo "dist size: $SIZE bytes ($((SIZE/1024/1024)) MB), budget: $BUDGET bytes (75 MB)"
+          if [ "$SIZE" -gt "$BUDGET" ]; then
+            echo "::error::studio/frontend/dist/ exceeded the 75 MB budget. Drop dead deps (e.g. the unused next dep) or split chunks."
+            exit 1
+          fi
+
+      - name: Biome (non-blocking until accumulated drift is cleared)
+        continue-on-error: true
+        run: npm run biome:check
+
+      - name: Upload built dist on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-frontend-dist
+          path: studio/frontend/dist
+          retention-days: 3

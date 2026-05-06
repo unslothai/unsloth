@@ -208,6 +208,20 @@ def spoof_hardware(monkeypatch):
 
         # torch.cuda.is_available
         monkeypatch.setattr(torch.cuda, "is_available", lambda: profile.cuda_available)
+        # detect_hardware reads torch.cuda.get_device_properties(0).name when
+        # cuda_available is True. On a CPU CI runner that triggers _cuda_init
+        # and crashes with "No CUDA GPUs are available". Stub it so the
+        # dispatch path under test runs end-to-end.
+        if profile.cuda_available:
+            stub_props = types.SimpleNamespace(
+                name = "Stub GPU" if not profile.hip_version else "Stub AMD GPU",
+            )
+            monkeypatch.setattr(
+                torch.cuda,
+                "get_device_properties",
+                lambda i = 0: stub_props,
+                raising = False,
+            )
 
         # torch.version.hip — None on NVIDIA, "6.1" etc. on ROCm
         torch_version = torch.version
