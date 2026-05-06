@@ -2065,10 +2065,18 @@ def unsloth_fast_generate(
 ):
     # If the model starts out in training mode, restore training mode after generation
     restore_training_mode = self.training
-    # why: snapshot GC before for_inference clears it, so the post-generate
-    # restore preserves the caller's gradient_checkpointing setting.
-    use_gradient_checkpointing = any(
-        getattr(m, "gradient_checkpointing", False) for m in self.modules()
+    # why: snapshot the actual GC mode value (e.g. "unsloth") before for_inference
+    # clears it, so the post-generate restore preserves the caller's configured GC
+    # mode rather than collapsing it to a plain bool.
+    use_gradient_checkpointing = next(
+        (
+            v
+            for v in (
+                getattr(m, "gradient_checkpointing", False) for m in self.modules()
+            )
+            if v
+        ),
+        False,
     )
 
     FastLlamaModel.for_inference(self)

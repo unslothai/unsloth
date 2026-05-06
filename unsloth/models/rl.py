@@ -186,12 +186,22 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
+        # why: snapshot before TRL's unwrap context manager, which calls
+        # gradient_checkpointing_disable() before yielding; preserve the actual
+        # mode value (e.g. "unsloth") rather than collapsing it to a bool, so
+        # the finally restore matches the caller's configured GC mode.
+        use_gradient_checkpointing = next(
+            (
+                v
+                for v in (
+                    getattr(m, "gradient_checkpointing", False)
+                    for m in model.modules()
+                )
+                if v
+            ),
+            False,
+        )
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
-            # why: snapshot GC before for_inference clears it, so the finally
-            # restore preserves the caller's gradient_checkpointing setting.
-            use_gradient_checkpointing = any(
-                getattr(m, "gradient_checkpointing", False) for m in model.modules()
-            )
             # Put the model in inference mode.
             FastLanguageModel.for_inference(model)
 
