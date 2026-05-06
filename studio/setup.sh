@@ -928,8 +928,19 @@ else
                 _BUILD_DESC="building (ROCm)"
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
 
-                # Use upstream-recommended HIP compiler (not legacy hipcc-as-CXX)
+                # Match the upstream-recommended HIP build command:
+                #   HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+                #     cmake -S . -B build -DGGML_HIP=ON ...
+                # Export HIP_PATH (HIP runtime root) but not ROCM_PATH: forcing
+                # ROCM_PATH overrides the HIP toolchain's device-lib discovery
+                # on distros where ROCm is packaged outside the default prefix
+                # (Fedora 43, see #5093), which breaks the CMake compiler test.
+                # HIP_PATH alone tells clang where the HIP runtime lives and
+                # leaves device-lib discovery to the system, matching what the
+                # standalone llama.cpp build relies on.
                 if command -v hipconfig &>/dev/null; then
+                    _HIP_PATH="$(hipconfig -R 2>/dev/null || true)"
+                    [ -n "$_HIP_PATH" ] && export HIP_PATH="$_HIP_PATH"
                     _HIP_CLANG_DIR="$(hipconfig -l 2>/dev/null || true)"
                     [ -n "$_HIP_CLANG_DIR" ] && export HIPCXX="$_HIP_CLANG_DIR/clang"
                 fi

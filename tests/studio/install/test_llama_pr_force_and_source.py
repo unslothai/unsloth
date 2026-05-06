@@ -444,11 +444,23 @@ class TestSourcePatternsSh:
         )
         return self.content[start:end]
 
-    def test_rocm_block_does_not_force_rocm_or_hip_path_exports(self):
-        """Regression for #5093: avoid forcing ROCM/HIP path exports in source build."""
+    def test_rocm_block_does_not_force_rocm_path(self):
+        """Regression for #5093: do not force ROCM_PATH, the source-of-truth bug."""
         rocm_block = self._rocm_build_block()
+        # Either form of the old override stays gone.
         assert 'export ROCM_PATH="$ROCM_ROOT"' not in rocm_block
+        assert "export ROCM_PATH=" not in rocm_block
+
+    def test_rocm_block_keeps_hip_path_export(self):
+        """Match upstream llama.cpp build: HIP_PATH=$(hipconfig -R) is set,
+        but sourced from a HIP-only var so it does not double as ROCM_PATH.
+        ROCM_PATH was the override that broke device-lib lookup on Fedora 43;
+        HIP_PATH alone is the upstream-recommended form."""
+        rocm_block = self._rocm_build_block()
+        # The export must use the HIP-runtime root, not the (now removed)
+        # ROCM_ROOT variable.
         assert 'export HIP_PATH="$ROCM_ROOT"' not in rocm_block
+        assert 'export HIP_PATH="$_HIP_PATH"' in rocm_block
 
     def test_rocm_block_keeps_hip_backend_enablement(self):
         """The #5093 fix should not change HIP backend activation behavior."""
