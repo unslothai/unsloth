@@ -53,6 +53,32 @@ _has_usable_nvidia_gpu = stack_mod._has_usable_nvidia_gpu
 _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
 
 
+def _extract_sh_function_body(source: str, name: str) -> str:
+    """Return the body of a shell function from `source` by brace matching.
+
+    Used by structural tests that need to assert ordering of helper
+    calls inside a specific function rather than across the whole
+    install.sh file.
+    """
+    needle = f"{name}() {{"
+    start = source.find(needle)
+    if start < 0:
+        return ""
+    depth = 0
+    i = start + len(needle) - 1  # land on the opening brace
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : i + 1]
+        i += 1
+    return source[start:]
+
+
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
 
 
@@ -561,12 +587,13 @@ class TestEnsureRocmTorch:
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_cpu_torch_gets_rocm_reinstall(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
         """CPU-only torch on ROCm host should trigger reinstall."""
         mock_probe = MagicMock()
@@ -575,12 +602,11 @@ class TestEnsureRocmTorch:
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
-        # Should call pip_install twice: once for torch, once for bitsandbytes
-        assert mock_pip.call_count == 2
-        torch_call = mock_pip.call_args_list[0]
-        assert "rocm7.1" in str(torch_call)
-        bnb_call = mock_pip.call_args_list[1]
-        assert "bitsandbytes" in str(bnb_call)
+        # Should install torch via pip_install and bitsandbytes via pip_install_try.
+        assert mock_pip.call_count == 1
+        assert "rocm7.1" in str(mock_pip.call_args_list[0])
+        assert mock_pip_try.call_count >= 1
+        assert "bitsandbytes" in str(mock_pip_try.call_args_list[0])
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -642,12 +668,13 @@ class TestEnsureRocmTorch:
         torch_call = mock_pip.call_args_list[0]
         assert "rocm7.1" in str(torch_call)
 
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_probe_timeout_triggers_reinstall(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
         with patch("os.path.isdir", return_value = True):
@@ -656,8 +683,10 @@ class TestEnsureRocmTorch:
             ):
                 _ensure_rocm_torch()
         # If probe times out, the function should treat torch as unusable and reinstall
-        assert mock_pip.call_count == 2
+        # both torch (via pip_install) and bitsandbytes (via pip_install_try).
+        assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
+        assert mock_pip_try.call_count >= 1
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -857,15 +886,33 @@ class TestInstallShStructure:
         assert "rocm" in source.lower()
 
     def test_cuda_precedence(self):
-        """ROCm detection should only run when nvidia-smi is absent."""
+        """ROCm detection should only run when nvidia-smi is absent.
+
+        install.sh defines _has_amd_rocm_gpu and _has_usable_nvidia_gpu
+        helpers near each other (file-position order has no semantic
+        meaning), so check the runtime ordering inside
+        get_torch_index_url instead: NVIDIA branch runs first and the
+        AMD/ROCm branch only fires inside the `if [ -z "$_smi" ]`
+        block.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text()
-        # The ROCm block should be inside the "if [ -z "$_smi" ]" branch
-        smi_block_start = source.find('if [ -z "$_smi" ]')
-        rocm_block_start = source.find("amd-smi")
+        body = _extract_sh_function_body(source, "get_torch_index_url")
+        nvidia_call = body.find("_has_usable_nvidia_gpu")
+        no_nvidia_branch = body.find('if [ -z "$_smi" ]')
+        rocm_call = body.find("_has_amd_rocm_gpu")
         assert (
-            smi_block_start < rocm_block_start
-        ), "ROCm detection should be inside the 'no nvidia-smi' branch"
+            nvidia_call >= 0
+        ), "get_torch_index_url should call _has_usable_nvidia_gpu"
+        assert (
+            no_nvidia_branch >= 0
+        ), "get_torch_index_url should gate ROCm on no-nvidia-smi"
+        assert (
+            rocm_call > no_nvidia_branch
+        ), "ROCm detection should sit inside the 'no nvidia-smi' branch"
+        assert (
+            nvidia_call < no_nvidia_branch
+        ), "NVIDIA detection should run before the no-nvidia-smi branch"
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
@@ -963,15 +1010,31 @@ class TestLiveRegression:
 
         if not shutil.which("nvidia-smi"):
             pytest.skip("No nvidia-smi available")
-        sh_path = PACKAGE_ROOT / "install.sh"
-        # Extract just the function (don't source the whole installer)
-        result = subprocess.run(
+        # Skip if nvidia-smi exists but does not actually list a GPU on this
+        # host (containers occasionally ship the binary without a driver).
+        check = subprocess.run(
             [
                 "bash",
                 "-c",
-                f"eval \"$(sed -n '/^get_torch_index_url()/,/^}}/p' '{sh_path}')\"; "
-                "get_torch_index_url",
+                "nvidia-smi -L 2>/dev/null | "
+                "awk '/^GPU[[:space:]]+[0-9]+:/{f=1} END{exit !f}'",
             ],
+            capture_output = True,
+        )
+        if check.returncode != 0:
+            pytest.skip("nvidia-smi is on PATH but no GPU is listed")
+
+        sh_path = PACKAGE_ROOT / "install.sh"
+        # get_torch_index_url calls _has_usable_nvidia_gpu and
+        # _has_amd_rocm_gpu, so all three function definitions must be
+        # in scope when we eval the extract.
+        extract_cmd = (
+            f"sed -n '/^_has_amd_rocm_gpu()/,/^}}$/p; "
+            f"/^_has_usable_nvidia_gpu()/,/^}}$/p; "
+            f"/^get_torch_index_url()/,/^}}$/p' '{sh_path}'"
+        )
+        result = subprocess.run(
+            ["bash", "-c", f'eval "$({extract_cmd})"; get_torch_index_url'],
             capture_output = True,
             text = True,
             timeout = 30,
@@ -988,19 +1051,23 @@ class TestLiveRegression:
 
 # Load worker.py module
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+# The wheel-probe subprocess was hoisted out of worker.py into wheel_utils
+# during the wheel-resolver refactor; the probe script literal lives there.
+_WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
 
 
 class TestWorkerRocmMambaSsm:
     """Verify worker.py Mamba/SSM install logic on ROCm."""
 
     def test_probe_returns_hip_version_field(self):
-        """_probe_causal_conv1d_env probe script should include hip_version."""
-        source = _WORKER_PATH.read_text()
-        assert "hip_version" in source
+        """The wheel probe should include hip_version, and worker.py should
+        consume it."""
+        assert "hip_version" in _WHEEL_UTILS_PATH.read_text()
+        assert "hip_version" in _WORKER_PATH.read_text()
 
     def test_probe_script_has_getattr_hip(self):
         """Probe script should use getattr for torch.version.hip (safe on CUDA)."""
-        source = _WORKER_PATH.read_text()
+        source = _WHEEL_UTILS_PATH.read_text()
         assert "getattr(torch.version, 'hip', None)" in source
 
     def test_direct_wheel_url_returns_none_without_cuda_major(self):
@@ -1216,27 +1283,45 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
-        """get_gpu_utilization should check IS_ROCM before choosing backend."""
+        """get_gpu_utilization should dispatch to amd.py via _smi_query
+        when IS_ROCM, and the dispatcher itself must check IS_ROCM and
+        import the amd backend."""
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
         source = hw_path.read_text()
-        # Find the get_gpu_utilization function
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert "IS_ROCM" in func_body
-        assert "amd.get_primary_gpu_utilization" in func_body
+        assert '_smi_query("get_primary_gpu_utilization"' in func_body
+        smi = source[
+            source.find("def _smi_query") : source.find(
+                "\ndef ", source.find("def _smi_query") + 1
+            )
+        ]
+        assert "IS_ROCM" in smi
+        assert "from . import amd" in smi
 
     def test_hardware_branches_on_is_rocm_for_visible(self):
-        """get_visible_gpu_utilization should check IS_ROCM."""
+        """get_visible_gpu_utilization should dispatch to amd.py via
+        _smi_query when IS_ROCM."""
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
         source = hw_path.read_text()
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert "IS_ROCM" in func_body
-        assert "amd.get_visible_gpu_utilization" in func_body
+        # The dispatcher call may wrap onto multiple lines; allow whitespace
+        # between the open paren and the literal func name argument.
+        import re as _re
+
+        assert _re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', func_body)
+        smi = source[
+            source.find("def _smi_query") : source.find(
+                "\ndef ", source.find("def _smi_query") + 1
+            )
+        ]
+        assert "IS_ROCM" in smi
+        assert "from . import amd" in smi
 
     def test_hardware_branches_on_is_rocm_for_physical_count(self):
         """get_physical_gpu_count should try amd.py when IS_ROCM."""
@@ -1247,7 +1332,7 @@ class TestHardwareAmdBranching:
         func_start = source.find("def get_physical_gpu_count")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "IS_ROCM" in func_body
-        assert "amd.get_physical_gpu_count" in func_body
+        assert "from . import amd" in func_body
 
 
 # =============================================================================

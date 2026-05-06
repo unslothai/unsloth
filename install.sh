@@ -2017,6 +2017,12 @@ else
     fi
 fi
 
+# ── Install mlx-vlm on Apple Silicon (optional, for VLM training) ──
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    substep "installing mlx-vlm (VLM training support)..."
+    run_install_cmd "install mlx-vlm" uv pip install --python "$_VENV_PY" mlx-vlm
+fi
+
 # ── Run studio setup ──
 tauri_log "STEP" "Running Studio setup"
 # When --local, use the repo's own setup.sh directly.
