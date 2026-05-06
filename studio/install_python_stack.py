@@ -275,7 +275,11 @@ def _ensure_rocm_torch() -> None:
             return
         try:
             probe = subprocess.run(
-                [sys.executable, "-c", "import torch; print(getattr(torch.version,'hip','') or '')"],
+                [
+                    sys.executable,
+                    "-c",
+                    "import torch; print(getattr(torch.version,'hip','') or '')",
+                ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 timeout = 30,
@@ -289,8 +293,13 @@ def _ensure_rocm_torch() -> None:
             print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
         entry = next(
-            ((rt, tv) for (maj, mn), (rt, tv) in sorted(_ROCM_WINDOWS_RELEASES.items(), reverse = True)
-             if ver >= (maj, mn)),
+            (
+                (rt, tv)
+                for (maj, mn), (rt, tv) in sorted(
+                    _ROCM_WINDOWS_RELEASES.items(), reverse = True
+                )
+                if ver >= (maj, mn)
+            ),
             None,
         )
         if entry is None:
@@ -303,7 +312,9 @@ def _ensure_rocm_torch() -> None:
             f"{_ROCM_WINDOWS_WHEEL_BASE}/{rel_tag}/"
             f"torch-{torch_ver}-cp312-cp312-win_amd64.whl"
         )
-        print(f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {wheel_url}")
+        print(
+            f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {wheel_url}"
+        )
         pip_install(
             f"ROCm torch (Windows, {rel_tag})",
             "--force-reinstall",
