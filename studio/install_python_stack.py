@@ -334,6 +334,7 @@ def _ensure_rocm_torch() -> None:
             f"ROCm torch (Windows, {rel_tag})",
             "--force-reinstall",
             "--no-cache-dir",
+            "--no-deps",
             *wheel_urls,
             constrain = False,
         )
