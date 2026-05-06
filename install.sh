@@ -1491,7 +1491,7 @@ _has_amd_rocm_gpu() {
         return 0
     elif [ -e /dev/kfd ] && \
          awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
-             /sys/class/kfd/kfd/topology/nodes/*/gpu_id 2>/dev/null; then
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         return 0
     fi
     return 1
