@@ -1478,14 +1478,20 @@ _find_no_torch_runtime() {
 
 # ── AMD ROCm GPU detection helper ──
 # Returns 0 (true) if an actual AMD GPU is present, 1 (false) otherwise.
-# Checks rocminfo for gfx[1-9]* (excludes gfx000 CPU agent) and
-# amd-smi list for GPU data rows (excludes header-only output).
+# Checks rocminfo for gfx[1-9][0-9]+ (excludes gfx000 CPU agent),
+# amd-smi list for GPU data rows, and falls back to sysfs KFD topology
+# which is env-var-independent (works even when HIP_VISIBLE_DEVICES or
+# ROCR_VISIBLE_DEVICES hides devices from rocminfo/amd-smi).
 _has_amd_rocm_gpu() {
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/ && !/Name:[[:space:]]*gfx000/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
     elif command -v amd-smi >/dev/null 2>&1 && \
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        return 0
+    elif [ -e /dev/kfd ] && \
+         awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/gpu_id 2>/dev/null; then
         return 0
     fi
     return 1
