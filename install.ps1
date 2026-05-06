@@ -1317,15 +1317,25 @@ shell.Run cmd, 0, False
             $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
             if ($ROCmVersion -and $ROCmVersion -match '^7\.2') {
                 $amdRelBase = "$amdWheelBase/rocm-rel-7.2.1"
-                $ROCmTorchWheelUrl = "$amdRelBase/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
-                $ROCmTorchVisionUrl = "$amdRelBase/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
-                $ROCmTorchAudioUrl = "$amdRelBase/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+                $ROCmAllWheelUrls = @(
+                    "$amdRelBase/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+                    "$amdRelBase/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+                    "$amdRelBase/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+                    "$amdRelBase/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+                    "$amdRelBase/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+                )
+                $ROCmTorchWheelUrl = $ROCmAllWheelUrls[2]
                 $TorchIndexUrl = $null
             } elseif ($ROCmVersion -and $ROCmVersion -match '^7\.1') {
                 $amdRelBase = "$amdWheelBase/rocm-rel-7.1.1"
-                $ROCmTorchWheelUrl = "$amdRelBase/torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
-                $ROCmTorchVisionUrl = "$amdRelBase/torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
-                $ROCmTorchAudioUrl = "$amdRelBase/torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+                $ROCmAllWheelUrls = @(
+                    "$amdRelBase/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
+                    "$amdRelBase/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
+                    "$amdRelBase/torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+                    "$amdRelBase/torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+                    "$amdRelBase/torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+                )
+                $ROCmTorchWheelUrl = $ROCmAllWheelUrls[2]
                 $TorchIndexUrl = $null
             }
             if ($ROCmTorchWheelUrl) {
@@ -1430,7 +1440,7 @@ shell.Run cmd, 0, False
         } elseif ($ROCmTorchWheelUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-cache-dir $ROCmTorchWheelUrl $ROCmTorchVisionUrl $ROCmTorchAudioUrl }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-cache-dir @ROCmAllWheelUrls }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)

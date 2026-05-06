@@ -63,19 +63,29 @@ _ROCM_WINDOWS_WHEEL_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR")
     or "https://repo.radeon.com/rocm/windows"
 ).rstrip("/")
-# Maps (major, minor) → (release_folder, torch_ver, torchvision_ver, torchaudio_ver)
-_ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, str, str, str]] = {
+# Maps (major, minor) → (release_folder, [wheel_filename, ...])
+# Includes rocm_sdk_core and rocm_sdk_libraries_custom because the torch
+# wheels declare them as hard dependencies (rocm[libraries]==<ver>).
+_ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, list[str]]] = {
     (7, 2): (
         "rocm-rel-7.2.1",
-        "2.9.1+rocm7.2.1",
-        "0.24.1+rocm7.2.1",
-        "2.9.1+rocm7.2.1",
+        [
+            "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+            "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+            "torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+            "torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+            "torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+        ],
     ),
     (7, 1): (
         "rocm-rel-7.1.1",
-        "2.9.0+rocmsdk20251116",
-        "0.24.0+rocmsdk20251116",
-        "2.9.0+rocmsdk20251116",
+        [
+            "rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
+            "rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
+            "torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+            "torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+            "torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+        ],
     ),
 }
 
@@ -316,19 +326,15 @@ def _ensure_rocm_torch() -> None:
                 f"   No AMD Windows torch wheel for ROCm {ver[0]}.{ver[1]} -- skipping"
             )
             return
-        rel_tag, torch_ver, tv_ver, ta_ver = entry
+        rel_tag, wheel_files = entry
         base = f"{_ROCM_WINDOWS_WHEEL_BASE}/{rel_tag}"
-        torch_url = f"{base}/torch-{torch_ver}-cp312-cp312-win_amd64.whl"
-        tv_url = f"{base}/torchvision-{tv_ver}-cp312-cp312-win_amd64.whl"
-        ta_url = f"{base}/torchaudio-{ta_ver}-cp312-cp312-win_amd64.whl"
+        wheel_urls = [f"{base}/{fn}" for fn in wheel_files]
         print(f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {base}/")
         pip_install(
             f"ROCm torch (Windows, {rel_tag})",
             "--force-reinstall",
             "--no-cache-dir",
-            torch_url,
-            tv_url,
-            ta_url,
+            *wheel_urls,
             constrain = False,
         )
         return
