@@ -1178,10 +1178,18 @@ def install_python_stack() -> int:
             # Only warn if torch doesn't already have ROCm (HIP) support
             try:
                 _hip_ver = subprocess.run(
-                    [sys.executable, "-c", "import torch; print(getattr(torch.version,'hip','') or '')"],
-                    stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, timeout = 20,
+                    [
+                        sys.executable,
+                        "-c",
+                        "import torch; print(getattr(torch.version,'hip','') or '')",
+                    ],
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.DEVNULL,
+                    timeout = 20,
                 )
-                _has_rocm_torch = _hip_ver.returncode == 0 and _hip_ver.stdout.decode().strip() != ""
+                _has_rocm_torch = (
+                    _hip_ver.returncode == 0 and _hip_ver.stdout.decode().strip() != ""
+                )
             except Exception:
                 _has_rocm_torch = False
             if not _has_rocm_torch:
