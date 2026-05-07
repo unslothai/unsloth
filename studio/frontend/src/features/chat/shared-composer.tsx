@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { loadModel, validateModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
+  type CompositionEvent,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
@@ -51,6 +52,10 @@ export interface CompareHandle {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+
+function isNativeComposing(event: Event) {
+  return "isComposing" in event && (event as InputEvent).isComposing === true;
+}
 
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -238,7 +243,9 @@ export function SharedComposer({
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -323,7 +330,13 @@ export function SharedComposer({
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  function setCompositionState(next: boolean) {
+    composingRef.current = next;
+    setIsComposing(next);
+  }
+
   async function send() {
+    if (composingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
 
@@ -482,6 +495,9 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
+    // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
+    // Don't hijack it. See issue #5318.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -490,7 +506,7 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy;
+  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
 
   return (
     <div
@@ -538,7 +554,23 @@ export function SharedComposer({
       <textarea
         ref={textareaRef}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          // ALWAYS mirror the DOM value into React state, even during IME
+          // composition. The controlled `value` prop must match the DOM at
+          // all times, otherwise any unrelated parent re-render reconciles
+          // the textarea back to the stored value mid-composition — wiping
+          // the IME preedit AND prior committed text (e.g. Tab cycling
+          // candidates erases earlier words). Issue #5318.
+          setCompositionState(isNativeComposing(e.nativeEvent));
+          setText(e.target.value);
+        }}
+        onCompositionStart={() => {
+          setCompositionState(true);
+        }}
+        onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
+          setCompositionState(false);
+          setText(e.currentTarget.value);
+        }}
         onKeyDown={onKeyDown}
         placeholder="Send to both models..."
         className="composer-input"
