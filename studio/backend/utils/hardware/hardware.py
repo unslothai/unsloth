@@ -143,6 +143,7 @@ def detect_hardware() -> DeviceType:
     # --- MLX: Apple Silicon ---
     if is_apple_silicon() and _has_mlx():
         DEVICE = DeviceType.MLX
+        CHAT_ONLY = False
         chip = platform.processor() or platform.machine()
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
         return DEVICE
@@ -270,19 +271,30 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import mlx.core as mx
             import psutil
 
-            # MLX uses unified memory — report system memory as the pool
+            # MLX uses unified memory. Total = system RAM. GPU memory used
+            # comes from IORegistry's AGXAccelerator (system-wide, no sudo).
             total = psutil.virtual_memory().total
-            # MLX doesn't expose per-process GPU allocation; report 0 as allocated
-            allocated = 0
+            agx = _read_apple_gpu_stats()
+            allocated = agx.get("vram_used_bytes", 0) if agx else 0
+
+            try:
+                info = mx.device_info()
+                gpu_name = (
+                    info.get("device_name")
+                    or platform.processor()
+                    or platform.machine()
+                )
+            except Exception:
+                gpu_name = platform.processor() or platform.machine()
 
             return {
                 "available": True,
                 "backend": _backend_label(device),
                 "device": 0,
-                "device_name": f"Apple Silicon ({platform.processor() or platform.machine()})",
+                "device_name": f"Apple Silicon ({gpu_name})",
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
-                "reserved_gb": 0,
+                "reserved_gb": allocated / (1024**3),
                 "free_gb": (total - allocated) / (1024**3),
                 "utilization_pct": (allocated / total) * 100 if total else 0,
             }
@@ -460,6 +472,39 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_apple_gpu_stats() -> Dict[str, Any]:
+    """Query macOS IORegistry for AGX (Apple GPU) live stats. No sudo needed.
+
+    Returns dict with utilization_pct, vram_used_bytes (system-wide GPU memory).
+    Returns empty dict on failure.
+    """
+    import subprocess
+    import re
+
+    try:
+        result = subprocess.run(
+            ["ioreg", "-r", "-c", "AGXAccelerator"],
+            capture_output = True,
+            timeout = 2,
+        )
+        text = result.stdout.decode("utf-8", errors = "replace")
+    except Exception:
+        return {}
+
+    # PerformanceStatistics block has GPU utilization and in-use memory
+    m = re.search(r'"PerformanceStatistics" = \{([^}]+)\}', text)
+    if not m:
+        return {}
+    stats_str = m.group(1)
+    pairs = re.findall(r'"([^"]+)"=(\d+)', stats_str)
+    stats = {k: int(v) for k, v in pairs}
+
+    return {
+        "utilization_pct": stats.get("Device Utilization %", 0),
+        "vram_used_bytes": stats.get("In use system memory", 0),
+    }
+
+
 def get_gpu_utilization() -> Dict[str, Any]:
     """Return a live snapshot of device utilization information."""
     device = get_device()
@@ -469,6 +514,50 @@ def get_gpu_utilization() -> Dict[str, Any]:
         if result is not None:
             result["backend"] = _backend_label(device)
             return result
+
+    # MLX path: single _read_apple_gpu_stats() call carries both VRAM-used
+    # bytes and GPU utilization %. psutil for unified-memory total is cheap.
+    if device == DeviceType.MLX:
+        try:
+            import psutil
+
+            agx = _read_apple_gpu_stats()
+            total_bytes = psutil.virtual_memory().total
+        except Exception as e:
+            logger.error(f"Error getting MLX GPU utilization: {e}")
+            return {"available": False, "backend": device.value, "error": str(e)}
+        if not agx:
+            return {"available": False, "backend": device.value}
+        allocated_bytes = agx.get("vram_used_bytes", 0) or 0
+        vram_used_gb = allocated_bytes / (1024**3)
+        total_gb = total_bytes / (1024**3)
+
+        try:
+            from core.training import get_training_backend
+
+            tb = get_training_backend()
+            tb_progress = getattr(tb, "_progress", None)
+            if tb_progress is not None and getattr(tb_progress, "is_training", False):
+                tb_peak = getattr(tb_progress, "peak_memory_gb", None)
+                if tb_peak is not None and tb_peak > 0:
+                    vram_used_gb = float(tb_peak)
+        except Exception:
+            pass
+
+        return {
+            "available": True,
+            "backend": device.value,
+            "gpu_utilization_pct": agx.get("utilization_pct") if agx else None,
+            "temperature_c": None,
+            "vram_used_gb": round(vram_used_gb, 2),
+            "vram_total_gb": round(total_gb, 2),
+            "vram_utilization_pct": (
+                round((vram_used_gb / total_gb) * 100, 1) if total_gb > 0 else None
+            ),
+            "power_draw_w": None,
+            "power_limit_w": None,
+            "power_utilization_pct": None,
+        }
 
     mem = get_gpu_memory_info()
     if device != DeviceType.CPU and mem.get("available"):
@@ -774,6 +863,34 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
         return None
 
 
+def _determine_attention_impl_for_gpu_estimate(config) -> str:
+    import copy as _copy
+
+    from unsloth.models._utils import resolve_attention_implementation
+    from transformers import AutoModel, AutoModelForCausalLM
+
+    # why: resolve_attention_implementation calls _set_attn_impl which writes
+    # _attn_implementation onto the config; PreTrainedConfig's setter walks
+    # `sub_configs` and propagates to nested text_config / sub-configs, so a
+    # shallow copy still mutates those shared inner objects on the cached
+    # config returned by _load_config_for_gpu_estimate. Deepcopy isolates them.
+    config_copy = _copy.deepcopy(config)
+
+    model_class = None
+    for auto_model in (AutoModelForCausalLM, AutoModel):
+        mapping = getattr(auto_model, "_model_mapping", None)
+        if mapping is None:
+            continue
+        try:
+            if config_copy.__class__ in mapping:
+                model_class = mapping[config_copy.__class__]
+                break
+        except Exception:
+            continue
+
+    return resolve_attention_implementation(model_class, config_copy)
+
+
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
     from .vram_estimation import extract_arch_config, compute_total_params
 
@@ -844,12 +961,21 @@ def estimate_fp16_model_size_bytes(
         return int(total_params * 2), "safetensors"
 
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    config_bytes: Optional[int] = None
     if config is not None:
         config_bytes = _estimate_fp16_model_size_bytes_from_config(config)
-        if config_bytes is not None:
-            return config_bytes, "config"
 
     local_bytes = _get_local_weight_size_bytes(estimate_model)
+
+    # why: config-derived bytes cover only the text tower; local safetensors
+    # include vision/audio towers. Take the larger so the multimodal
+    # extra_bytes correction can fire.
+    if config_bytes is not None and local_bytes is not None:
+        if local_bytes > config_bytes:
+            return local_bytes, "weight_bytes"
+        return config_bytes, "config"
+    if config_bytes is not None:
+        return config_bytes, "config"
     if local_bytes is not None:
         return local_bytes, "weight_bytes"
 
@@ -877,6 +1003,9 @@ def estimate_required_model_memory_gb(
         TrainingVramConfig,
         extract_arch_config,
         estimate_training_vram,
+        compute_total_params,
+        compute_optimizer_bytes,
+        compute_gradient_bytes,
         CUDA_OVERHEAD_BYTES,
         QUANT_4BIT_FACTOR,
         DEFAULT_TARGET_MODULES,
@@ -926,13 +1055,44 @@ def estimate_required_model_memory_gb(
         model_name, hf_token = hf_token
     )
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    if config is not None:
+        try:
+            vram_config.attention_implementation = (
+                _determine_attention_impl_for_gpu_estimate(config)
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not resolve attention implementation for '%s': %s",
+                estimate_model,
+                e,
+            )
+            # why: if we cannot prove flash attention is usable, charge the
+            # quadratic non-flash activation path so GPU selection stays
+            # conservative.
+            vram_config.attention_implementation = "eager"
     arch = extract_arch_config(config) if config is not None else None
 
     if arch is not None:
         breakdown = estimate_training_vram(arch, vram_config)
+        # why: extract_arch_config only sees text_config; safetensors include
+        # vision/audio tower bytes that the text-arch fp16 total misses.
+        arch_fp16_bytes = compute_total_params(arch) * 2
+        extra_bytes = max(0, int(model_size_bytes) - arch_fp16_bytes)
+        if extra_bytes > 0:
+            breakdown.model_weights += extra_bytes
+            if training_method == "full":
+                # why: full fine-tuning makes the extra (vision/audio) params
+                # trainable; optimizer + gradient bytes scale with them too.
+                extra_params = extra_bytes // 2
+                breakdown.optimizer_states += compute_optimizer_bytes(
+                    extra_params,
+                    vram_config.optimizer,
+                )
+                breakdown.gradients += compute_gradient_bytes(extra_params)
         required_gb = breakdown.total / (1024**3)
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"
+        metadata["attention_implementation"] = vram_config.attention_implementation
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
         max_gpus = max(1, get_visible_gpu_count())
         for n_gpus in range(1, max_gpus + 1):

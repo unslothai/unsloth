@@ -159,7 +159,27 @@ def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
     )
 
 
-_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+from utils.paths.storage_roots import studio_root as _studio_root
+
+_PID_FILE = _studio_root() / "studio.pid"
+
+# Direct backend launches bypass the CLI's env re-export; do it here for
+# real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
+# picks up the custom build. Skip for legacy-default to avoid flipping
+# default-mode installs into env-override.
+try:
+    _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
+try:
+    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+except (OSError, ValueError):
+    _STUDIO_ROOT_RESOLVED = _studio_root()
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
 
 def _write_pid_file():
@@ -244,7 +264,7 @@ _shutdown_event = None
 
 
 def run_server(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
@@ -392,7 +412,11 @@ if __name__ == "__main__":
             pass
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
-    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
+    parser.add_argument(
+        "--host",
+        default = "127.0.0.1",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+    )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",

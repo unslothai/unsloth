@@ -267,10 +267,23 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         total = conn.execute("SELECT COUNT(*) FROM training_runs").fetchone()[0]
         rows = conn.execute(
             """
-            SELECT id, status, model_name, dataset_name, started_at, ended_at,
-                   total_steps, final_step, final_loss, output_dir,
-                   duration_seconds, error_message, loss_sparkline
-            FROM training_runs
+            SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
+                   r.ended_at, r.total_steps, r.final_step, r.final_loss,
+                   r.output_dir, r.duration_seconds, r.error_message,
+                   r.loss_sparkline,
+                   CASE
+                       WHEN r.status = 'stopped'
+                            AND r.output_dir IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM training_runs newer
+                                WHERE newer.output_dir = r.output_dir
+                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.started_at > r.started_at
+                            )
+                       THEN 1 ELSE 0
+                   END AS resumed_later
+            FROM training_runs r
             ORDER BY started_at DESC
             LIMIT ? OFFSET ?
             """,
@@ -297,7 +310,26 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
 def get_run(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM training_runs WHERE id = ?", (id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT r.*,
+                   CASE
+                       WHEN r.status = 'stopped'
+                            AND r.output_dir IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM training_runs newer
+                                WHERE newer.output_dir = r.output_dir
+                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.started_at > r.started_at
+                            )
+                       THEN 1 ELSE 0
+                   END AS resumed_later
+            FROM training_runs r
+            WHERE r.id = ?
+            """,
+            (id,),
+        ).fetchone()
         if row is None:
             return None
         run = dict(row)
@@ -307,6 +339,45 @@ def get_run(id: str) -> Optional[dict]:
                 run["loss_sparkline"] = json.loads(sparkline)
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse loss_sparkline for run %s", id)
+                run["loss_sparkline"] = None
+        return run
+    finally:
+        conn.close()
+
+
+def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT r.*,
+                   0 AS resumed_later
+            FROM training_runs r
+            WHERE r.output_dir = ?
+              AND r.status = 'stopped'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM training_runs newer
+                  WHERE newer.output_dir = r.output_dir
+                    AND newer.status IN ('stopped', 'completed')
+                    AND newer.started_at > r.started_at
+              )
+            ORDER BY r.started_at DESC
+            LIMIT 1
+            """,
+            (output_dir,),
+        ).fetchone()
+        if row is None:
+            return None
+        run = dict(row)
+        sparkline = run.get("loss_sparkline")
+        if sparkline:
+            try:
+                run["loss_sparkline"] = json.loads(sparkline)
+            except (json.JSONDecodeError, TypeError):
+                logger.debug(
+                    "Failed to parse loss_sparkline for output_dir %s", output_dir
+                )
                 run["loss_sparkline"] = None
         return run
     finally:

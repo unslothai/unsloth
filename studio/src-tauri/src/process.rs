@@ -7,7 +7,7 @@ use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
@@ -298,6 +298,13 @@ pub fn start_backend(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
+        cmd.env(
+            crate::native_backend_lease::LEASE_SECRET_ENV,
+            native_state.lease_secret_env(),
+        );
+    }
+
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks the spawned
     // Python process (wrong libpython/libz → "No module named encodings").
     // Only clear when running inside an AppImage — native .deb/.rpm installs may
@@ -308,6 +315,12 @@ pub fn start_backend(
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
+
+    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
+    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
+    // is a pre-existing user-controlled llama.cpp dir override; keep it.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
 
     // On Windows, launch the backend directly with hidden-window flags.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
