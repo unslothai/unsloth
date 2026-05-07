@@ -981,6 +981,32 @@ export function ParamsSection(): ReactElement {
                       </label>
                     </div>
                   )}
+                  {!store.isAudioModel && (
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="enableActivationCapture"
+                        checked={store.enableActivationCapture}
+                        onCheckedChange={(v) => store.setEnableActivationCapture(!!v)}
+                      />
+                      <label
+                        htmlFor="enableActivationCapture"
+                        className="text-xs cursor-pointer text-muted-foreground"
+                      >
+                        Neuron activation capture
+                      </label>
+                      <Tooltip>
+                        <TooltipTrigger asChild={true}>
+                          <button type="button" className="text-foreground/70 hover:text-foreground">
+                            <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Captures per-layer neuron activation statistics during training for the
+                          Interpretability tab. Adds ~0.03% training overhead. Off by default.
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
+                  )}
                 </TabsContent>
               </Tabs>
             </CollapsibleContent>

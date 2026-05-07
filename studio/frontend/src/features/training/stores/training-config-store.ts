@@ -744,6 +744,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setFinetuneMLPModules: (finetuneMLPModules) =>
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
+        setEnableActivationCapture: (enableActivationCapture) => set({ enableActivationCapture }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;
