@@ -1247,6 +1247,15 @@ def direct_linux_release_plan(
         selection = linux_cuda_choice_from_release(host, bundle)
         if selection is not None:
             attempts.extend(selection.attempts)
+    if host.has_rocm and not host.has_usable_nvidia:
+        # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
+        # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
+        # Strix Halo) that the upstream combined-ROCm tarball doesn't cover.
+        lemonade_choice = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+        )
+        if lemonade_choice is not None:
+            attempts.append(lemonade_choice)
     cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
     if cpu_choice is not None:
         attempts.append(cpu_choice)
@@ -1295,6 +1304,12 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+        if host.has_rocm and not host.has_usable_nvidia:
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "windows", "windows-hip", llama_tag = requested_tag
+            )
+            if lemonade_choice is not None:
+                attempts.append(lemonade_choice)
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:
