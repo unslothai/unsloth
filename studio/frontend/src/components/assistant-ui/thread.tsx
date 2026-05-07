@@ -21,6 +21,7 @@ import {
   IntentAwareScrollProvider,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
+  useOnScrollThreadToBottom,
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
@@ -294,6 +295,7 @@ const StudioComposerInput: FC<TextareaAutosizeProps> = ({
   onChange,
   onCompositionEnd,
   onCompositionStart,
+  onInput,
   onKeyDown,
   onPaste,
   ...props
@@ -349,6 +351,8 @@ const StudioComposerInput: FC<TextareaAutosizeProps> = ({
     return aui.on("threadListItem.switchedTo", focusInput);
   }, [aui, autoFocus, focusInput]);
 
+  useOnScrollThreadToBottom(focusInput);
+
   const handleChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => {
       onChange?.(event);
@@ -369,7 +373,10 @@ const StudioComposerInput: FC<TextareaAutosizeProps> = ({
       if (hadStaleComposition) {
         clearStaleComposition(event.currentTarget.value);
       }
-      if (hadStaleComposition && event.key === "Enter") return;
+      if (hadStaleComposition && event.key === "Enter") {
+        event.preventDefault();
+        return;
+      }
       if (nativeComposing || isComposingRef.current) return;
 
       if (event.key === "Escape" && aui.composer().getState().canCancel) {
@@ -443,6 +450,7 @@ const StudioComposerInput: FC<TextareaAutosizeProps> = ({
         setComposerText(event.currentTarget.value);
       }}
       onInput={(event) => {
+        onInput?.(event);
         const nativeEvent = event.nativeEvent as { isComposing?: boolean };
         if (nativeEvent.isComposing === false) {
           clearStaleComposition(event.currentTarget.value);

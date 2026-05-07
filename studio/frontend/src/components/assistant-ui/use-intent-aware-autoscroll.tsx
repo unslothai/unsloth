@@ -10,6 +10,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useSyncExternalStore,
@@ -75,6 +76,7 @@ export type ScrollToBottom = (behavior?: ScrollBehavior) => void;
 
 type AutoScrollContextValue = {
   scrollToBottom: ScrollToBottom;
+  onScrollToBottom: (listener: () => void) => () => void;
   getIsAtBottom: () => boolean;
   subscribe: (listener: () => void) => () => void;
 };
@@ -82,6 +84,9 @@ type AutoScrollContextValue = {
 const noopContext: AutoScrollContextValue = {
   scrollToBottom: () => {
     /* no viewport mounted */
+  },
+  onScrollToBottom: () => () => {
+    /* no-op */
   },
   getIsAtBottom: () => true,
   subscribe: () => () => {
@@ -109,6 +114,11 @@ export function useScrollThreadToBottom(): ScrollToBottom {
   return useContext(AutoScrollContext).scrollToBottom;
 }
 
+export function useOnScrollThreadToBottom(listener: () => void): void {
+  const { onScrollToBottom } = useContext(AutoScrollContext);
+  useEffect(() => onScrollToBottom(listener), [listener, onScrollToBottom]);
+}
+
 export function useIsThreadAtBottom(): boolean {
   const ctx = useContext(AutoScrollContext);
   return useSyncExternalStore(ctx.subscribe, ctx.getIsAtBottom, () => true);
@@ -125,6 +135,7 @@ export function useIntentAwareAutoScroll(): {
 
   const isAtBottomRef = useRef(true);
   const listenersRef = useRef<Set<() => void>>(new Set());
+  const scrollToBottomListenersRef = useRef<Set<() => void>>(new Set());
 
   const scrollImplRef = useRef<ScrollToBottom>(() => {
     /* no viewport mounted */
@@ -149,8 +160,18 @@ export function useIntentAwareAutoScroll(): {
     }
   }, []);
 
+  const onScrollToBottom = useCallback((listener: () => void) => {
+    scrollToBottomListenersRef.current.add(listener);
+    return () => {
+      scrollToBottomListenersRef.current.delete(listener);
+    };
+  }, []);
+
   const scrollToBottom = useCallback<ScrollToBottom>((behavior) => {
     scrollImplRef.current(behavior);
+    for (const listener of scrollToBottomListenersRef.current) {
+      listener();
+    }
   }, []);
 
   const attach = useCallback(
@@ -576,8 +597,8 @@ export function useIntentAwareAutoScroll(): {
   );
 
   const context = useMemo<AutoScrollContextValue>(
-    () => ({ scrollToBottom, getIsAtBottom, subscribe }),
-    [scrollToBottom, getIsAtBottom, subscribe],
+    () => ({ scrollToBottom, onScrollToBottom, getIsAtBottom, subscribe }),
+    [scrollToBottom, onScrollToBottom, getIsAtBottom, subscribe],
   );
 
   return { ref, context };
