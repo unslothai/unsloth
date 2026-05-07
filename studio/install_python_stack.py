@@ -834,7 +834,12 @@ def _ensure_flash_attn() -> None:
         _step("warning", "Continuing without flash-attn", _cyan)
         return
 
-    if wheel_url is None and env and env.get("hip_version") and not env.get("cuda_major"):
+    if (
+        wheel_url is None
+        and env
+        and env.get("hip_version")
+        and not env.get("cuda_major")
+    ):
         _step(
             "warning",
             "Skipping flash-attn prebuilt wheel on ROCm; source build required",
