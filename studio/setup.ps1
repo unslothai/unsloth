@@ -704,6 +704,26 @@ if (-not $HasNvidiaSmi) {
             if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
         } catch {}
     }
+    # Capture ROCm version early for display and wheel selection
+    if ($HasROCm) {
+        $script:ROCmVersion = $null
+        $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+        if ($hipConfigExe) {
+            try {
+                $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $hipVerOut -match '(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
+            } catch {}
+        }
+        if (-not $script:ROCmVersion) {
+            $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiVer) {
+                try {
+                    $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
+                } catch {}
+            }
+        }
+    }
 }
 
 if ($HasNvidiaSmi) {
@@ -1128,6 +1148,13 @@ if (-not $CudaArch) {
 }
 } else {
     step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+}
+
+if ($HasROCm) {
+    $rocmVerLabel = if ($ROCmVersion) { "ROCm $ROCmVersion" } else { "ROCm (version unknown)" }
+    step "rocm" $rocmVerLabel
+} elseif ($ROCmGpuLabel) {
+    step "rocm" "HIP SDK not found -- GPU-accelerated training unavailable" "Yellow"
 }
 
 # ============================================
@@ -1826,26 +1853,9 @@ if ($HasNvidiaSmi) {
 # ── AMD Windows ROCm torch override ──────────────────────────────────────────
 # When ROCm HIP SDK is present and Python 3.12 is in use, install AMD's direct
 # torch wheels instead of CPU-only PyTorch.
-$ROCmVersion = $null
+$ROCmVersion = $script:ROCmVersion
 $ROCmTorchWheelUrls = $null
 if ($HasROCm -and $CuTag -eq "cpu") {
-    # Detect ROCm version via hipconfig, then amd-smi
-    $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
-    if ($hipConfigExe) {
-        try {
-            $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and $hipVerOut -match '(\d+\.\d+)') { $ROCmVersion = $Matches[1] }
-        } catch {}
-    }
-    if (-not $ROCmVersion) {
-        $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-        if ($amdSmiVer) {
-            try {
-                $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
-                if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $ROCmVersion = $Matches[1] }
-            } catch {}
-        }
-    }
     $pyVer = (& python --version 2>&1 | Out-String) -replace '[^0-9.]',''
     $pyMajMin = ($pyVer.Trim() -split '\.')[0..1] -join '.'
     $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
