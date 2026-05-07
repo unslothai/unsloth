@@ -181,10 +181,21 @@ _install_bnb_rocm() {
     fi
     if [ -n "$_bnb_whl_url" ]; then
         substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        if run_install_cmd "$_label (pre-release)" "$_venv_py" -m pip install \
-            --force-reinstall --no-cache-dir --no-deps "$_bnb_whl_url"; then
+        _bnb_log=$(mktemp)
+        if "$_venv_py" -m pip install \
+            --disable-pip-version-check \
+            --force-reinstall --no-cache-dir --no-deps \
+            --retries 8 --timeout 90 \
+            "$_bnb_whl_url" >"$_bnb_log" 2>&1; then
+            rm -f "$_bnb_log"
             return 0
         fi
+        _bnb_rc=$?
+        if _is_verbose; then
+            cat "$_bnb_log" >&2
+        fi
+        rm -f "$_bnb_log"
+        step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
         substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
@@ -1478,14 +1489,20 @@ _find_no_torch_runtime() {
 
 # ── AMD ROCm GPU detection helper ──
 # Returns 0 (true) if an actual AMD GPU is present, 1 (false) otherwise.
-# Checks rocminfo for gfx[1-9]* (excludes gfx000 CPU agent) and
-# amd-smi list for GPU data rows (excludes header-only output).
+# Checks rocminfo for gfx[1-9][0-9]+ (excludes gfx000 CPU agent),
+# amd-smi list for GPU data rows, and falls back to sysfs KFD topology
+# which is env-var-independent (works even when HIP_VISIBLE_DEVICES or
+# ROCR_VISIBLE_DEVICES hides devices from rocminfo/amd-smi).
 _has_amd_rocm_gpu() {
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/ && !/Name:[[:space:]]*gfx000/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
     elif command -v amd-smi >/dev/null 2>&1 && \
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        return 0
+    elif [ -e /dev/kfd ] && \
+         awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         return 0
     fi
     return 1
@@ -1567,26 +1584,20 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*) echo "$_base/cpu"; return ;;
             esac
-            # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds
-            # (<2.11.0).  Fall back to rocm7.1 index which has torch 2.10.0.
-            # Enumerate explicit versions rather than matching rocm6.* so
-            # a host on ROCm 6.5 or 6.6 (no PyTorch wheels published) is
-            # clipped down to the last supported 6.x (rocm6.4) instead of
-            # constructing https://download.pytorch.org/whl/rocm6.5 which
-            # returns HTTP 403. PyTorch only ships: rocm5.7, 6.0, 6.1, 6.2,
-            # 6.3, 6.4, 7.0, 7.1, 7.2 (and 5.7 is below our minimum).
-            # TODO: uncomment rocm7.2 when the torch upper bound is bumped
-            # to >=2.11.0.
+            # Enumerate explicit supported ROCm wheel tags.  A host on ROCm
+            # 6.5+ (no published PyTorch wheels) is clipped to rocm6.4.
+            # PyTorch publishes: rocm5.7, 6.0, 6.1, 6.2, 6.3, 6.4, 7.0, 7.1,
+            # 7.2 (5.7 is below our minimum; rocm7.2 ships torch 2.11.0).
             case "$_rocm_tag" in
-                rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*)
+                rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*|rocm7.2|rocm7.2.*)
                     echo "$_base/$_rocm_tag" ;;
                 rocm6.*)
                     # ROCm 6.5+ (no published PyTorch wheels): clip down
                     # to the last supported 6.x wheel set.
                     echo "$_base/rocm6.4" ;;
                 *)
-                    # ROCm 7.2+ (including future 10.x+): cap to rocm7.1
-                    echo "$_base/rocm7.1" ;;
+                    # ROCm 7.3+ (future): cap to rocm7.2 (latest known)
+                    echo "$_base/rocm7.2" ;;
             esac
             return
         fi
@@ -1724,6 +1735,12 @@ _pick_radeon_wheel() {
 }
 
 TORCH_INDEX_URL=$(get_torch_index_url)
+
+# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
+# All other ROCm tags and CUDA stay within <2.11.0.
+case "$TORCH_INDEX_URL" in
+    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+esac
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
