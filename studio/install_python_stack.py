@@ -285,6 +285,7 @@ def _ensure_rocm_torch() -> None:
     already links against HIP.
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
+    global _rocm_windows_torch_installed
     if IS_MACOS:
         return
 
@@ -317,7 +318,6 @@ def _ensure_rocm_torch() -> None:
                 timeout = 30,
             )
             if probe.returncode == 0 and probe.stdout.decode().strip() == "yes":
-                global _rocm_windows_torch_installed
                 _rocm_windows_torch_installed = True
                 return  # already ROCm torch
         except (OSError, subprocess.TimeoutExpired):
@@ -351,7 +351,6 @@ def _ensure_rocm_torch() -> None:
             *wheel_urls,
             constrain = False,
         )
-        global _rocm_windows_torch_installed
         _rocm_windows_torch_installed = True
         return
 
