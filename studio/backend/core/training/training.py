@@ -29,6 +29,10 @@ from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
+from utils.native_path_leases import (
+    native_path_secret_removed_for_child_start,
+    run_without_native_path_secret,
+)
 
 logger = get_logger(__name__)
 
@@ -58,6 +62,7 @@ class TrainingProgress:
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
 
 
 class TrainingBackend:
@@ -154,6 +159,7 @@ class TrainingBackend:
             "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
+            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
             "batch_size": kwargs.get("batch_size", 2),
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
@@ -185,47 +191,57 @@ class TrainingBackend:
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "gpu_ids": kwargs.get("gpu_ids"),
         }
 
-        # Derive load_in_4bit from training_type
-        if config["training_type"] != "LoRA/QLoRA":
+        # Full finetuning always runs in 16-bit. LoRA/QLoRA and CPT preserve the
+        # explicit request so 4-bit adapter/raw-text runs remain possible.
+        if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
         # Spawn subprocess — use locals so state is untouched on failure
-        resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-            kwargs.get("gpu_ids"),
-            model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
-            training_type = config["training_type"],
-            load_in_4bit = config["load_in_4bit"],
-            batch_size = config.get("batch_size", 4),
-            max_seq_length = config.get("max_seq_length", 2048),
-            lora_rank = config.get("lora_r", 16),
-            target_modules = config.get("target_modules"),
-            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
-        )
-        config["resolved_gpu_ids"] = resolved_gpu_ids
-        config["gpu_selection"] = gpu_selection
+        from utils.hardware import hardware as _hw
+
+        if _hw.DEVICE == _hw.DeviceType.MLX:
+            config["resolved_gpu_ids"] = None
+            config["gpu_selection"] = None
+        else:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                kwargs.get("gpu_ids"),
+                model_name = config["model_name"],
+                hf_token = config["hf_token"] or None,
+                training_type = config["training_type"],
+                load_in_4bit = config["load_in_4bit"],
+                batch_size = config.get("batch_size", 4),
+                max_seq_length = config.get("max_seq_length", 2048),
+                lora_rank = config.get("lora_r", 16),
+                target_modules = config.get("target_modules"),
+                gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                optimizer = config.get("optim", "adamw_8bit"),
+            )
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
 
         from .worker import run_training_process
 
-        event_queue = _CTX.Queue()
-        stop_queue = _CTX.Queue()
-
-        proc = _CTX.Process(
-            target = run_training_process,
-            kwargs = {
-                "event_queue": event_queue,
-                "stop_queue": stop_queue,
-                "config": config,
-            },
-            daemon = True,
-        )
         try:
-            proc.start()
+            with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
+
+                proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                proc.start()
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
             return False
@@ -505,6 +521,12 @@ class TrainingBackend:
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
+                _peak = event.get("peak_memory_gb")
+                if _peak is not None:
+                    try:
+                        self._progress.peak_memory_gb = float(_peak)
+                    except (TypeError, ValueError):
+                        pass
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:

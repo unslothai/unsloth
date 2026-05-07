@@ -22,6 +22,39 @@ __all__ = [
 
 __INT_TO_FLOAT_MAPPER = \
 {
+    "unsloth/gemma-4-E2B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-E2B-it",
+        "google/gemma-4-E2B-it",
+    ),
+    "unsloth/gemma-4-E4B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-E4B-it",
+        "google/gemma-4-E4B-it",
+    ),
+    "unsloth/gemma-4-31B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ),
+    "unsloth/gemma-4-26B-A4B-it" : (
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+    ),
+    "unsloth/gemma-4-E2B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-E2B",
+        "google/gemma-4-E2B",
+    ),
+    "unsloth/gemma-4-E4B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-E4B",
+        "google/gemma-4-E4B",
+    ),
+    "unsloth/gemma-4-31B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-31B",
+        "google/gemma-4-31B",
+    ),
+    "unsloth/LFM2-1.2B-unsloth-bnb-4bit" : (
+        "unsloth/LFM2-1.2B",
+        "LiquidAI/LFM2-1.2B",
+    ),
+
     "unsloth/mistral-7b-bnb-4bit" : (
         "unsloth/mistral-7b",
         "mistralai/Mistral-7B-v0.1",
@@ -762,6 +795,18 @@ __INT_TO_FLOAT_MAPPER = \
         "allenai/OLMo-2-0325-32B-Instruct",
         "unsloth/OLMo-2-0325-32B-Instruct-bnb-4bit",
     ),
+    "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-7B-Instruct",
+        "allenai/Olmo-3-7B-Instruct",
+    ),
+    "unsloth/Olmo-3-7B-Think-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-7B-Think",
+        "allenai/Olmo-3-7B-Think",
+    ),
+    "unsloth/Olmo-3-32B-Think-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-32B-Think",
+        "allenai/Olmo-3-32B-Think",
+    ),
     "unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit" : (
         "unsloth/Mistral-Small-3.1-24B-Instruct-2503",
         "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
@@ -1416,3 +1461,6 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
 
     for value in values:
         FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
+
+_add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-26B-A4B", "unsloth/gemma-4-26B-A4B")
+_add_with_lower(MAP_TO_UNSLOTH_16bit, "LiquidAI/LFM2.5-1.2B-Instruct", "unsloth/LFM2.5-1.2B-Instruct")

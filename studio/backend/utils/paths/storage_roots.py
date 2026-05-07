@@ -5,17 +5,59 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 
 
+def _infer_studio_home_from_venv() -> Path | None:
+    """Return parent dir of sys.prefix as STUDIO_HOME if running from an
+    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
+    or bin shim) so a developer venv named unsloth_studio is not misidentified.
+    """
+    try:
+        prefix = Path(sys.prefix).resolve()
+    except (OSError, ValueError):
+        return None
+    if prefix.name != "unsloth_studio":
+        return None
+    candidate = prefix.parent
+    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
+    try:
+        has_sentinel = (candidate / "share" / "studio.conf").is_file() or (
+            candidate / "bin" / shim_name
+        ).is_file()
+    except OSError:
+        return None
+    if has_sentinel:
+        return candidate
+    return None
+
+
 def studio_root() -> Path:
+    """Studio install root.
+
+    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
+    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins when
+    both are set (the more specific signal beats the generic alias).
+    """
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve()
+        except (OSError, ValueError):
+            return Path(override).expanduser()
+    inferred = _infer_studio_home_from_venv()
+    if inferred is not None:
+        return inferred
     return Path.home() / ".unsloth" / "studio"
 
 
 def cache_root() -> Path:
     """Central cache directory for all studio downloads (models, datasets, etc.)."""
-    return Path.home() / ".unsloth" / "studio" / "cache"
+    return studio_root() / "cache"
 
 
 def assets_root() -> Path:
@@ -128,6 +170,51 @@ def lmstudio_model_dirs() -> list[Path]:
     _add(Path.home() / ".cache" / "lm-studio" / "models")
 
     return dirs
+
+
+def well_known_model_dirs() -> list[Path]:
+    """Return directories commonly used by other local LLM tools.
+
+    Used by the folder browser to offer quick-pick chips. Returns only
+    paths that exist on disk, so the UI never shows dead chips. Order
+    reflects a rough "likelihood the user has models here" -- LM Studio
+    and Ollama first, then the generic fallbacks.
+    """
+    candidates: list[Path] = []
+
+    # LM Studio (reuses the logic above, including settings.json override)
+    candidates.extend(lmstudio_model_dirs())
+
+    # Ollama -- both the user-level and common system-wide install paths
+    # (https://github.com/ollama/ollama/issues/733).
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        candidates.append(Path(ollama_env).expanduser())
+    candidates.append(Path.home() / ".ollama" / "models")
+    candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+
+    # HF hub cache root (separate from the explicit HF cache chip)
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    # Generic "my models" spots users tend to drop things into
+    for name in ("models", "Models"):
+        candidates.append(Path.home() / name)
+
+    # Deduplicate while preserving order; keep only extant dirs
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        try:
+            resolved = str(p.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        if Path(resolved).is_dir():
+            seen.add(resolved)
+            out.append(Path(resolved))
+    return out
 
 
 def _setup_cache_env() -> None:

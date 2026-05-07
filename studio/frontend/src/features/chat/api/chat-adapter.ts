@@ -4,6 +4,8 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
+import { getAuthToken } from "@/features/auth/session";
+import { apiUrl } from "@/lib/api-base";
 import {
   generateAudio,
   listCachedGguf,
@@ -11,6 +13,7 @@ import {
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  validateModel,
 } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -45,6 +48,41 @@ type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+/**
+ * Match error messages that indicate the request filled or would fill
+ * the KV cache, so the UI can show a dedicated toast pointing at the
+ * ``Context Length`` setting.
+ *
+ * Two wordings reach the client and both must hit:
+ *
+ *   1. The raw llama-server text when ``--no-context-shift`` trips --
+ *      "the request exceeds the available context size (N tokens)".
+ *   2. The rewritten friendly text emitted by
+ *      ``backend/routes/inference.py::_friendly_error`` -- "Message too
+ *      long: X tokens exceeds the Y-token context window. Try
+ *      increasing the Context Length ..." This is the one most users
+ *      see on the streaming GGUF path.
+ *
+ * We match on substrings rather than full regexes because both layers
+ * have drifted across versions (llama.cpp master has tweaked the
+ * phrasing; ``_friendly_error`` has gone through several copy edits).
+ */
+export function isContextLimitError(message: string): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    // Raw llama-server wording.
+    m.includes("context size") ||
+    m.includes("context shift") ||
+    m.includes("exceeds the available context") ||
+    // Backend _friendly_error rewrite.
+    m.includes("message too long") ||
+    m.includes("context window") ||
+    // n_ctx mentions that carry an "exceed"/"full" signal.
+    (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
+  );
+}
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
 function parseSourcesFromResult(raw: string): { type: "source"; sourceType: "url"; id: string; url: string; title: string; metadata?: { description: string } }[] {
@@ -252,13 +290,39 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * without selecting one. Prefers GGUF (picks smallest cached variant),
  * falls back to smallest cached safetensors model.
  */
-async function autoLoadSmallestModel(): Promise<boolean> {
-  const hfToken = useChatRuntimeStore.getState().hfToken || null;
+async function autoLoadSmallestModel(): Promise<{
+  loaded: boolean;
+  blockedByTrustRemoteCode: boolean;
+}> {
+  const store = useChatRuntimeStore.getState();
+  const hfToken = store.hfToken || null;
+  const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
     closeButton: true,
   });
+  let blockedByTrustRemoteCode = false;
+  let hadNonTrustFailure = false;
+
+  async function canAutoLoad(payload: {
+    model_path: string;
+    max_seq_length: number;
+    is_lora: boolean;
+    gguf_variant?: string | null;
+  }): Promise<boolean> {
+    const validation = await validateModel({
+      ...payload,
+      hf_token: hfToken,
+      load_in_4bit: true,
+      trust_remote_code: trustRemoteCode,
+    });
+    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+      blockedByTrustRemoteCode = true;
+      return false;
+    }
+    return true;
+  }
   try {
     const [ggufRepos, modelRepos] = await Promise.all([
       listCachedGguf().catch(() => []),
@@ -277,6 +341,16 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
+            if (
+              !(await canAutoLoad({
+                model_path: repo.repo_id,
+                max_seq_length: 0,
+                is_lora: false,
+                gguf_variant: variant.quant,
+              }))
+            ) {
+              continue;
+            }
             const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: hfToken,
@@ -284,10 +358,13 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
-              trust_remote_code: false,
+              trust_remote_code: trustRemoteCode,
             });
             useChatRuntimeStore.getState().setCheckpoint(repo.repo_id, variant.quant);
             const store = useChatRuntimeStore.getState();
+            store.setModelRequiresTrustRemoteCode(
+              loadResp.requires_trust_remote_code ?? false,
+            );
             store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
             // Add model to store so the selector shows the name
             const autoModel: ChatModelSummary = {
@@ -310,6 +387,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
+              reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+              supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
               toolsEnabled: loadResp.supports_tools ?? false,
               codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -319,9 +398,10 @@ async function autoLoadSmallestModel(): Promise<boolean> {
               chatTemplateOverride: null,
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
-            return true;
+            return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
+          hadNonTrustFailure = true;
           continue;
         }
       }
@@ -332,6 +412,16 @@ async function autoLoadSmallestModel(): Promise<boolean> {
       const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
         try {
+          if (
+            !(await canAutoLoad({
+              model_path: repo.repo_id,
+              max_seq_length: 4096,
+              is_lora: false,
+              gguf_variant: null,
+            }))
+          ) {
+            continue;
+          }
           const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
             hf_token: hfToken,
@@ -339,11 +429,22 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             load_in_4bit: true,
             is_lora: false,
             gguf_variant: null,
-            trust_remote_code: false,
+            trust_remote_code: trustRemoteCode,
           });
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
+          store.setModelRequiresTrustRemoteCode(
+            sfLoadResp.requires_trust_remote_code ?? false,
+          );
           store.setParams({ ...store.params, maxTokens: 4096 });
+          useChatRuntimeStore.setState({
+            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
+            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
+            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
+            reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
+            supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
+            supportsTools: sfLoadResp.supports_tools ?? false,
+          });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
             name: sfLoadResp.display_name ?? repo.repo_id,
@@ -355,8 +456,9 @@ async function autoLoadSmallestModel(): Promise<boolean> {
             store.setModels([...store.models, sfModel]);
           }
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
-          return true;
+          return { loaded: true, blockedByTrustRemoteCode: false };
         } catch {
+          hadNonTrustFailure = true;
           continue;
         }
       }
@@ -365,30 +467,44 @@ async function autoLoadSmallestModel(): Promise<boolean> {
     // No cached models found — try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
-      description: "No downloaded models found. Fetching Qwen3.5-4B (UD-Q4_K_XL).",
+      description: "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
+      if (
+        !(await canAutoLoad({
+          model_path: "unsloth/gemma-4-E2B-it-GGUF",
+          max_seq_length: 0,
+          is_lora: false,
+          gguf_variant: "UD-Q4_K_XL",
+        }))
+      ) {
+        toast.dismiss(toastId);
+        return { loaded: false, blockedByTrustRemoteCode };
+      }
       const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-GGUF",
+        model_path: "unsloth/gemma-4-E2B-it-GGUF",
         hf_token: hfToken,
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
-        trust_remote_code: false,
+        trust_remote_code: trustRemoteCode,
       });
-      useChatRuntimeStore.getState().setCheckpoint("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL");
+      useChatRuntimeStore.getState().setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
+      store.setModelRequiresTrustRemoteCode(
+        loadResp.requires_trust_remote_code ?? false,
+      );
       store.setParams({ ...store.params, maxTokens: loadResp.context_length ?? 131072 });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-GGUF",
+        id: "unsloth/gemma-4-E2B-it-GGUF",
+        name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-GGUF")) {
+      if (!store.models.some((m) => m.id === "unsloth/gemma-4-E2B-it-GGUF")) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -397,6 +513,8 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
+        reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
         toolsEnabled: loadResp.supports_tools ?? false,
         codeToolsEnabled: loadResp.supports_tools ?? false,
@@ -405,15 +523,25 @@ async function autoLoadSmallestModel(): Promise<boolean> {
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
       });
-      toast.success("Loaded Qwen3.5-4B (UD-Q4_K_XL)", { id: toastId });
-      return true;
+      toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
+      return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
-      return false;
+      hadNonTrustFailure = true;
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+      };
     }
   } catch {
     toast.dismiss(toastId);
-    return false;
+    hadNonTrustFailure = true;
+    return {
+      loaded: false,
+      blockedByTrustRemoteCode:
+        blockedByTrustRemoteCode && !hadNonTrustFailure,
+    };
   }
 }
 
@@ -434,11 +562,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
         // Auto-load the smallest downloaded model
-        const loaded = await autoLoadSmallestModel();
+        const { loaded, blockedByTrustRemoteCode } =
+          await autoLoadSmallestModel();
         if (!loaded) {
-          toast.error("No model loaded", {
-            description: "Pick a model in the top bar, then retry.",
-          });
+          toast.error(
+            blockedByTrustRemoteCode
+              ? "Enable custom code to auto-load this model"
+              : "No model loaded",
+            {
+              description: blockedByTrustRemoteCode
+                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                : "Pick a model in the top bar, then retry.",
+            },
+          );
           throw new Error("Load a model first.");
         }
       }
@@ -573,8 +709,50 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const toolCallParts: ToolCallMessagePart[] = [];
       let serverMetadata: { usage?: ServerUsage; timings?: ServerTimings } | null = null;
 
+      // Per-run cancellation token so a delayed stop POST cannot match
+      // the next run on the same thread.
+      const cancelId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Colab-style proxies can swallow fetch aborts, so also POST
+      // /inference/cancel explicitly on abort.
+      const onAbortCancel = () => {
+        const body: Record<string, string> = { cancel_id: cancelId };
+        if (resolvedThreadId) body.session_id = resolvedThreadId;
+        // Plain fetch, not authFetch: authFetch redirects to login on
+        // 401, which would kick the user out mid-stop.
+        const token = getAuthToken();
+        // Use apiUrl so the cancel POST reaches the right origin in
+        // Tauri production builds (where the webview origin is not the
+        // backend at 127.0.0.1:<port>). Browser/dev builds get the empty
+        // base, so the path is unchanged there.
+        void fetch(apiUrl("/api/inference/cancel"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(body),
+          keepalive: true,
+        }).catch(() => {});
+      };
       try {
-        const { supportsReasoning, reasoningEnabled } = runtime;
+        if (abortSignal.aborted) {
+          onAbortCancel();
+        } else {
+          abortSignal.addEventListener("abort", onAbortCancel, { once: true });
+        }
+
+        const {
+          supportsReasoning,
+          reasoningEnabled,
+          reasoningStyle,
+          reasoningEffort,
+          supportsPreserveThinking,
+          preserveThinking,
+        } = runtime;
         const stream = streamChatCompletions(
           {
             model: params.checkpoint,
@@ -589,8 +767,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            cancel_id: cancelId,
+            ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
-            ...(supportsReasoning ? { enable_thinking: reasoningEnabled } : {}),
+            ...(supportsReasoning
+              ? reasoningStyle === "reasoning_effort"
+                ? { reasoning_effort: reasoningEffort }
+                : { enable_thinking: reasoningEnabled }
+              : {}),
+            ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
             ...(supportsTools && (toolsEnabled || codeToolsEnabled)
               ? {
                   enable_tools: true,
@@ -604,7 +789,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const mins = useChatRuntimeStore.getState().toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
-                  session_id: resolvedThreadId,
                 }
               : {}),
           },
@@ -781,12 +965,28 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       } catch (err) {
         settleFirstTokenErr(err instanceof Error ? err : new Error("Generation failed"));
         if (!abortSignal.aborted) {
-          toast.error("Generation failed", {
-            description: err instanceof Error ? err.message : "Unknown error",
-          });
+          const msg = err instanceof Error ? err.message : String(err);
+          if (isContextLimitError(msg)) {
+            // llama-server was launched with --no-context-shift, so it
+            // returns a hard error instead of silently dropping old
+            // turns from the KV cache. Point the user at the exact
+            // control that raises the ceiling.
+            toast.error("Context limit reached", {
+              description:
+                "The conversation has filled the model's context window. " +
+                "Increase \"Context Length\" in the chat Settings panel (⚙ in the top-right), " +
+                "or start a new chat.",
+              duration: 8000,
+            });
+          } else {
+            toast.error("Generation failed", {
+              description: msg || "Unknown error",
+            });
+          }
         }
         throw err;
       } finally {
+        abortSignal.removeEventListener("abort", onAbortCancel);
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
         clearTimeout(warmupTimer);

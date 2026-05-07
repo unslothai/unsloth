@@ -57,7 +57,7 @@ export type RecipePayload = {
     // ui-only: graph orientation
     layout_direction?: "LR" | "TB";
     // ui-only, used to preserve seed block mode across imports/refresh
-    seed_source_type?: "hf" | "local" | "unstructured";
+    seed_source_type?: "hf" | "local" | "unstructured" | "github_repo";
     // ui-only, persisted aux node positions by llm name + aux key
     aux_nodes?: Array<{
       llm: string;

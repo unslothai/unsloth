@@ -24,8 +24,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -204,6 +204,18 @@ tmp/
 **/node_modules/
 auth.db
 
+# Tauri local build/generated output
+studio/src-tauri/target/
+studio/src-tauri/gen/
+studio/src-tauri/artifacts/
+studio/src-tauri/icons/android/
+studio/src-tauri/icons/ios/
+studio/src-tauri/icons/128x128@2x.png
+studio/src-tauri/icons/64x64.png
+studio/src-tauri/icons/Square*Logo.png
+studio/src-tauri/icons/StoreLogo.png
+studio/src-tauri/icons/squarehq.png
+
 # Local working docs
 **/CLAUDE.md
 **/claude.md
@@ -216,3 +228,4 @@ setup_leo.sh
 server.pid
 *.log
 package-lock.json
+llama.cpp/

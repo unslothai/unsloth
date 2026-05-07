@@ -253,6 +253,10 @@ class InferenceBackend:
         """
         Load any model: base, LoRA adapter, text, or vision.
         """
+        # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
+        if max_seq_length <= 0:
+            max_seq_length = 2048
+
         try:
             model_name = config.identifier
 

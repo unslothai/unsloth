@@ -419,6 +419,9 @@ class TestInstallPythonStackSubprocessMock:
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
             mock.patch.object(ips, "VERBOSE", False),
+            mock.patch.object(ips, "_ensure_flash_attn", return_value = None),
+            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
+            mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
             mock.patch("subprocess.run", side_effect = mock_run),
             mock.patch.object(ips, "_bootstrap_uv", return_value = True),
             mock.patch.object(
@@ -637,7 +640,7 @@ class TestInstallShNoTorchFlag:
     def test_cpu_hint_message_exists(self):
         """CPU hint message must exist in install.sh."""
         assert (
-            "No NVIDIA GPU detected" in self.source
+            "No GPU detected" in self.source
         ), "CPU hint message not found in install.sh"
         assert (
             "--no-torch" in self.source

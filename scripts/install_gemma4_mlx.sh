@@ -9,9 +9,7 @@ set -e
 #
 # This script:
 #   1. Creates a Python virtual environment
-#   2. Installs uv, mlx, mlx-lm, transformers
-#   3. Downloads gemma4.py and gemma4_text.py from unsloth repo
-#   4. Installs them into mlx-lm's models directory
+#   2. Installs uv, mlx-vlm, transformers
 # ============================================================
 
 # ── Output style (inspired by unsloth/install.sh) ─────────────
@@ -123,13 +121,9 @@ fi
 
 _VENV_PY="$VENV_DIR/bin/python"
 
-# ── Repo config ──────────────────────────────────────────────
-BRANCH="fix/ui-fix"
-REPO_URL="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/${BRANCH}"
-
 # ── Install dependencies ──────────────────────────────────────
-step "install" "installing mlx, mlx-lm..."
-uv pip install --python "$_VENV_PY" -q mlx mlx-lm 2>/dev/null
+step "install" "installing mlx-vlm..."
+uv pip install --python "$_VENV_PY" -q mlx-vlm
 substep "done"
 
 step "install" "installing transformers>=5.5.0..."
@@ -145,40 +139,11 @@ else
     fi
 fi
 
-# ── Find mlx-lm models directory ─────────────────────────────
-MLX_MODELS=$("$_VENV_PY" -c "import mlx_lm; print(mlx_lm.__path__[0])")/models
-step "models dir" "$MLX_MODELS"
-
-# ── Download and install Gemma 4 model files ──────────────────
-
-step "download" "installing Gemma 4 model files..."
-
-_install_model_file() {
-    _fname="$1"
-    if curl -fsSL "${REPO_URL}/unsloth/models/${_fname}" -o "${MLX_MODELS}/${_fname}" 2>/dev/null; then
-        substep "downloaded ${_fname} from branch ${BRANCH}"
-    elif [ -f "./${_fname}" ]; then
-        substep "using local ./${_fname}"
-        cp "./${_fname}" "${MLX_MODELS}/${_fname}"
-    else
-        fail "Could not install ${_fname}. Tried:
-                    1) ${REPO_URL}/unsloth/models/${_fname}
-                    2) Local file ./${_fname}
-
-                    To fix, download the file manually and place it in the current directory,
-                    then re-run this script."
-    fi
-}
-
-_install_model_file "gemma4.py"
-_install_model_file "gemma4_text.py"
-
-# Verify files were installed correctly
-if "$_VENV_PY" -c "from mlx_lm.models.gemma4_text import ProportionalRoPE" 2>/dev/null; then
-    substep "model files verified"
+# ── Verify installation ──────────────────────────────────────
+if "$_VENV_PY" -c "import mlx_vlm"; then
+    substep "mlx-vlm verified"
 else
-    fail "Model files installed but verification failed (ProportionalRoPE import error).
-                    Try manually from: https://github.com/unslothai/unsloth/tree/feature/${BRANCH}"
+    fail "Installation verification failed."
 fi
 
 # ── Done ──────────────────────────────────────────────────────
@@ -186,18 +151,19 @@ echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Gemma 4 MLX installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
-step "available models" "unsloth/gemma-4-E2B-it-UD-MLX-4bit (/BF16)"
-substep "unsloth/gemma-4-E4B-it-UD-MLX-4bit (/BF16)"
+step "available models" "unsloth/gemma-4-E2B-it-UD-MLX-4bit"
+substep "unsloth/gemma-4-E4B-it-UD-MLX-4bit"
+substep "unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit"
+substep "unsloth/gemma-4-31b-it-UD-MLX-4bit"
 echo ""
 step "venv activate" "source ${VENV_DIR}/bin/activate"
 echo ""
-step "quick start" "python -m mlx_lm chat --model unsloth/gemma-4-E2B-it-UD-MLX-4bit --max-tokens 200"
+step "text chat" "python -m mlx_vlm.chat --model unsloth/gemma-4-E2B-it-UD-MLX-4bit"
 echo ""
-step "python API" "from mlx_lm import load, generate"
-substep "model, tokenizer = load('unsloth/gemma-4-E2B-it-UD-MLX-4bit')"
-substep "messages = [{'role': 'user', 'content': 'Hello!'}]"
-substep "prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)"
-substep "print(generate(model, tokenizer, prompt=prompt, max_tokens=200))"
+step "vision chat" "python -m mlx_vlm.chat --model unsloth/gemma-4-31b-it-UD-MLX-4bit"
+substep "Use /image path/to/image.jpg to load an image"
+echo ""
+step "gradio UI" "python -m mlx_vlm.chat_ui --model unsloth/gemma-4-31b-it-UD-MLX-4bit"
 echo ""
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""

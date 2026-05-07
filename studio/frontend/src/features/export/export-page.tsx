@@ -121,6 +121,10 @@ export function ExportPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
+  // Resolved on-disk path of the most recent successful export, surfaced
+  // on the Export Complete screen so the user can find their model
+  // without digging through the server log. Null for Hub-only pushes.
+  const [exportOutputPath, setExportOutputPath] = useState<string | null>(null);
 
   const hfComboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -405,6 +409,7 @@ export function ExportPage() {
     setExporting(true);
     setExportError(null);
     setExportSuccess(false);
+    setExportOutputPath(null);
 
     // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
     // For other formats, nest under training-run/checkpoint
@@ -433,18 +438,24 @@ export function ExportPage() {
         });
       }
 
-      // 2. Run export based on method
+      // 2. Run export based on method. Capture the resolved output_path
+      // (when the backend wrote a local copy) so the success screen can
+      // show the user the realpath of their saved model. For multi-quant
+      // GGUF runs, the directory is the same for every quant so we just
+      // keep the last response.
+      let lastOutputPath: string | null = null;
       if (exportMethod === "merged") {
         if (isAdapter) {
-          await exportMerged({
+          const resp = await exportMerged({
             save_directory: saveDir,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
             private: privateRepo,
           });
+          lastOutputPath = resp.details?.output_path ?? null;
         } else {
-          await exportBase({
+          const resp = await exportBase({
             save_directory: saveDir,
             push_to_hub: pushToHub,
             repo_id: repoId,
@@ -452,27 +463,31 @@ export function ExportPage() {
             private: privateRepo,
             base_model_id: selectedModelData?.base_model,
           });
+          lastOutputPath = resp.details?.output_path ?? null;
         }
       } else if (exportMethod === "gguf") {
         for (const quant of quantLevels) {
-          await exportGGUF({
+          const resp = await exportGGUF({
             save_directory: saveDir,
             quantization_method: quant,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
           });
+          lastOutputPath = resp.details?.output_path ?? lastOutputPath;
         }
       } else if (exportMethod === "lora") {
-        await exportLoRA({
+        const resp = await exportLoRA({
           save_directory: saveDir,
           push_to_hub: pushToHub,
           repo_id: repoId,
           hf_token: token,
           private: privateRepo,
         });
+        lastOutputPath = resp.details?.output_path ?? null;
       }
 
+      setExportOutputPath(lastOutputPath);
       setExportSuccess(true);
     } catch (err) {
       setExportError(
@@ -508,8 +523,8 @@ export function ExportPage() {
 
   // ---- Render ----
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
@@ -1080,6 +1095,7 @@ export function ExportPage() {
         exporting={exporting}
         exportError={exportError}
         exportSuccess={exportSuccess}
+        exportOutputPath={exportOutputPath}
       />
     </div>
   );

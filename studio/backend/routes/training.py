@@ -25,6 +25,12 @@ if str(backend_path) not in sys.path:
 # Import backend functions
 try:
     from core.training import get_training_backend
+    from core.training.resume import (
+        can_resume_run,
+        get_resume_checkpoint_path,
+        normalize_resume_output_dir,
+    )
+    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -33,6 +39,12 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
+    from core.training.resume import (
+        can_resume_run,
+        get_resume_checkpoint_path,
+        normalize_resume_output_dir,
+    )
+    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -152,6 +164,28 @@ async def start_training(
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
+        resume_output_dir: Optional[str] = None
+        if request.resume_from_checkpoint:
+            try:
+                resume_output_dir = normalize_resume_output_dir(
+                    request.resume_from_checkpoint
+                )
+            except ValueError as e:
+                raise HTTPException(status_code = 400, detail = str(e))
+
+            resume_run = get_resumable_run_by_output_dir(resume_output_dir)
+            if not resume_run or not can_resume_run(resume_run):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Resume checkpoint must belong to a stopped run with saved trainer state.",
+                )
+            resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
+            if not resume_checkpoint:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Resume checkpoint must include saved trainer state.",
+                )
+            request.resume_from_checkpoint = resume_checkpoint
 
         # Convert request to kwargs for backend
         training_kwargs = {
@@ -173,6 +207,7 @@ async def start_training(
             "custom_format_mapping": request.custom_format_mapping,
             "num_epochs": request.num_epochs,
             "learning_rate": request.learning_rate,
+            "embedding_learning_rate": request.embedding_learning_rate,
             "batch_size": request.batch_size,
             "gradient_accumulation_steps": request.gradient_accumulation_steps,
             "warmup_steps": request.warmup_steps,
@@ -209,6 +244,8 @@ async def start_training(
             "wandb_project": request.wandb_project or "",
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
+            "output_dir": resume_output_dir,
+            "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "gpu_ids": request.gpu_ids,
         }
@@ -437,6 +474,9 @@ async def get_training_status(
                 "loss": getattr(progress, "loss", None),
                 "learning_rate": getattr(progress, "learning_rate", None),
             }
+            output_dir = getattr(backend, "_output_dir", None)
+            if output_dir:
+                details["output_dir"] = output_dir
 
         # Build metric history for chart recovery after SSE reconnection
         metric_history = None

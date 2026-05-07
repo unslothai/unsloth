@@ -124,23 +124,50 @@ class TestVisionCacheSubprocessPath:
 
 
 class TestVisionCacheOnException:
-    """When detection raises an exception, _is_vision_model_uncached catches
-    it and returns False.  That False must be cached so subsequent calls don't
-    retry and fail again."""
+    """When detection raises an exception, _is_vision_model_uncached
+    distinguishes permanent failures (cached as False) from transient
+    failures (returned as None, not cached so the next call can retry).
+    Verify both contracts."""
+
+    @patch(
+        "utils.models.model_config.load_model_config",
+        side_effect = ValueError("bad config"),
+    )
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    def test_permanent_exception_result_cached(self, mock_needs_t5, mock_load_config):
+        """A permanent failure (ValueError / RepositoryNotFoundError /
+        GatedRepoError / JSONDecodeError) should be caught, return False,
+        and that False should be cached so subsequent calls don't retry.
+
+        ValueError is used here because it's the simplest of the
+        code-path's cacheable exception types and does not require an
+        import of huggingface_hub errors (whose module path varies
+        across versions)."""
+        # First call: load_model_config raises -> except branch -> False.
+        assert is_vision_model("broken/model") is False
+        # Second call: cache hit, load_model_config not called again.
+        assert is_vision_model("broken/model") is False
+        mock_load_config.assert_called_once()
 
     @patch(
         "utils.models.model_config.load_model_config",
         side_effect = OSError("network down"),
     )
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
-    def test_exception_result_cached(self, mock_needs_t5, mock_load_config):
-        """A real exception inside _is_vision_model_uncached should be caught,
-        return False, and that False should be cached for subsequent calls."""
-        # First call: load_model_config raises → except branch → False
+    def test_transient_exception_not_cached(self, mock_needs_t5, mock_load_config):
+        """A transient failure (OSError, timeouts) should return None from
+        _is_vision_model_uncached, surface as False to the caller, and
+        NOT be cached, so the next call retries detection.  This matches
+        the documented behaviour on _vision_detection_cache:
+        'transient failures (network errors, timeouts) are NOT cached so
+        they can be retried.'"""
+        # First call: load_model_config raises OSError -> uncached None
+        # -> caller returns False without caching.
         assert is_vision_model("broken/model") is False
-        # Second call: cache hit, load_model_config not called again
+        # Second call: cache miss again, load_model_config called a
+        # second time.
         assert is_vision_model("broken/model") is False
-        mock_load_config.assert_called_once()
+        assert mock_load_config.call_count == 2
 
 
 # ---------------------------------------------------------------------------
