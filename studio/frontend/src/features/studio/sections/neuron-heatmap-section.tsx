@@ -26,22 +26,26 @@ import { useActivationData } from "@/features/training/hooks/use-activation-data
 import type { ActivationMetadata, ActivationRecord } from "@/features/training/api/train-api";
 
 // ── Color palette ────────────────────────────────────────────────────────────
-// Grey (low activity) → Unsloth green (high activity); red-500 for outliers.
-// The grey anchor is theme-aware: light grey on dark backgrounds, dark grey on
-// light backgrounds. Values chosen for ~7–9:1 contrast against each bg.
+// Dark mode:  slate-700 → Unsloth green  |  outliers: red-500
+// Light mode: lime-400  → Unsloth green (mid) → green-900  |  outliers: red-500
+// Lime anchors the low end for contrast on white; Unsloth green sits at the
+// midpoint so it stays recognisable; dark green caps the high end.
 
 const PALETTE_SIZE = 256;
-// Dark mode:  slate-700 → Unsloth green  |  outliers: red
-// Light mode: white    → red-500         |  outliers: Unsloth green
-const GREY_DARK:        [number, number, number] = [51,  65,  85];  // slate-700
-const GREY_LIGHT:       [number, number, number] = [255, 255, 255]; // white
-const COLOR_HIGH_DARK:  [number, number, number] = [22, 197, 139];  // Unsloth green
-const COLOR_HIGH_LIGHT: [number, number, number] = [239,  68,  68]; // red-500
-const OUTLIER_COLOR_DARK  = "rgb(239,68,68)";   // red-500
-const OUTLIER_COLOR_LIGHT = "rgb(22,197,139)";  // Unsloth green
-// Blend mode: outliers rendered at the same colour as the palette high-end
-const OUTLIER_BLEND_DARK  = `rgb(${COLOR_HIGH_DARK.join(",")})`;   // green — matches high end
-const OUTLIER_BLEND_LIGHT = `rgb(${COLOR_HIGH_LIGHT.join(",")})`;  // red   — matches high end
+
+const GREY_DARK:         [number, number, number] = [51,  65,  85];  // slate-700
+const COLOR_HIGH_DARK:   [number, number, number] = [22, 197, 139];  // Unsloth green
+
+// Light mode 3-stop: lime-400 → Unsloth green → green-900
+const LIME_LIGHT:        [number, number, number] = [163, 230,  53]; // lime-400
+const COLOR_MID_LIGHT:   [number, number, number] = [22,  197, 139]; // Unsloth green (mid)
+const COLOR_HIGH_LIGHT:  [number, number, number] = [20,   83,  45]; // green-900
+
+const OUTLIER_COLOR_DARK  = "rgb(239,68,68)";  // red-500
+const OUTLIER_COLOR_LIGHT = "rgb(239,68,68)";  // red-500 (same as dark mode)
+// Blend mode: outliers at the same colour as the palette high-end
+const OUTLIER_BLEND_DARK  = `rgb(${COLOR_HIGH_DARK.join(",")})`;
+const OUTLIER_BLEND_LIGHT = `rgb(${COLOR_HIGH_LIGHT.join(",")})`;
 
 // Reactively tracks the `dark` class on <html> so canvas + React both update
 function subscribe(cb: () => void): () => void {
@@ -79,12 +83,40 @@ function buildPalette(
   return palette;
 }
 
-const PALETTE_DARK  = buildPalette(GREY_DARK,  COLOR_HIGH_DARK);
-const PALETTE_LIGHT = buildPalette(GREY_LIGHT, COLOR_HIGH_LIGHT);
-// Tooltip text palettes — inverted low-end so text is readable on the popover bg:
-// dark mode:  white  → Unsloth green  |  light mode: dark-grey → red-500
+function buildPalette3(
+  low:  [number, number, number],
+  mid:  [number, number, number],
+  high: [number, number, number],
+): Uint8ClampedArray {
+  const palette = new Uint8ClampedArray(PALETTE_SIZE * 4);
+  for (let i = 0; i < PALETTE_SIZE; i++) {
+    const t = i / (PALETTE_SIZE - 1);
+    let r: number, g: number, b: number;
+    if (t <= 0.5) {
+      const u = t / 0.5;
+      r = Math.round(low[0] + u * (mid[0] - low[0]));
+      g = Math.round(low[1] + u * (mid[1] - low[1]));
+      b = Math.round(low[2] + u * (mid[2] - low[2]));
+    } else {
+      const u = (t - 0.5) / 0.5;
+      r = Math.round(mid[0] + u * (high[0] - mid[0]));
+      g = Math.round(mid[1] + u * (high[1] - mid[1]));
+      b = Math.round(mid[2] + u * (high[2] - mid[2]));
+    }
+    palette[i * 4 + 0] = r;
+    palette[i * 4 + 1] = g;
+    palette[i * 4 + 2] = b;
+    palette[i * 4 + 3] = 255;
+  }
+  return palette;
+}
+
+const PALETTE_DARK  = buildPalette(GREY_DARK, COLOR_HIGH_DARK);
+const PALETTE_LIGHT = buildPalette3(LIME_LIGHT, COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
+// Tooltip text palettes — text colour mapped to activity level, readable on popover bg:
+// dark mode: white → Unsloth green  |  light mode: dark-grey → green-900 (via mid)
 const TOOLTIP_PALETTE_DARK  = buildPalette([255, 255, 255], COLOR_HIGH_DARK);
-const TOOLTIP_PALETTE_LIGHT = buildPalette([55,  65,  81],  COLOR_HIGH_LIGHT);
+const TOOLTIP_PALETTE_LIGHT = buildPalette3([55, 65, 81], COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
 
 function paletteColor(t: number, palette: Uint8ClampedArray): string {
   const idx = Math.min(PALETTE_SIZE - 1, Math.max(0, Math.round(t * (PALETTE_SIZE - 1))));
