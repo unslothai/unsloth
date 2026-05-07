@@ -391,13 +391,17 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
+  options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({
+        messages,
+        pruneMissing: options.pruneMissing ?? false,
+      }),
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);

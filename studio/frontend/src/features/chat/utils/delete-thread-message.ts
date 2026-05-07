@@ -81,12 +81,12 @@ export function exportedItemToRecord(
 }
 
 /**
- * Persist the exact message list represented by `exp` for this thread, removing
- * backend rows that are no longer present (e.g. after a delete).
+ * Persist exported messages, pruning only for explicit delete flows.
  */
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
+  options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
   if (!(await getChatThread(remoteId))) {
     const legacyThread = await db.threads.get(remoteId);
@@ -99,6 +99,7 @@ export async function syncExportedRepositoryToBackend(
     exp.messages.map(({ message, parentId }) =>
       exportedItemToRecord(remoteId, parentId, message),
     ),
+    { pruneMissing: options.pruneMissing },
   );
 }
 
@@ -108,7 +109,7 @@ type ThreadImportExport = {
 };
 
 /**
- * Remove a message from the thread and mirror the result to IndexedDB.
+ * Remove a message from the thread and mirror the result to backend storage.
  */
 export async function deleteThreadMessage(args: {
   thread: ThreadImportExport;
@@ -122,7 +123,9 @@ export async function deleteThreadMessage(args: {
   repo.deleteMessage(messageId);
   const next = repo.export();
   if (remoteId) {
-    await syncExportedRepositoryToBackend(remoteId, next);
+    await syncExportedRepositoryToBackend(remoteId, next, {
+      pruneMissing: true,
+    });
   }
   thread.import(next);
 }

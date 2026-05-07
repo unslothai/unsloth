@@ -4,6 +4,7 @@
 import { buildBackendChatExport } from "../api/chat-api";
 import { db } from "../db";
 import type { MessageRecord, ThreadRecord } from "../types";
+import { isChatThreadDeleted } from "./chat-thread-tombstones";
 
 interface ExportedChat {
   exportedAt: string;
@@ -22,9 +23,11 @@ export async function buildChatExport(): Promise<ExportedChat> {
   const threadsById = new Map<string, unknown>();
   const messagesById = new Map<string, unknown>();
   for (const thread of legacyThreads as ThreadRecord[]) {
+    if (isChatThreadDeleted(thread.id)) continue;
     threadsById.set(thread.id, thread);
   }
   for (const message of legacyMessages as MessageRecord[]) {
+    if (isChatThreadDeleted(message.threadId)) continue;
     messagesById.set(message.id, message);
   }
   for (const thread of backend?.threads ?? []) {

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.4.8"
+__version__ = "2026.5.2"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -2483,6 +2483,7 @@ def patch_tokenizer(model, tokenizer):
 
 def patch_fast_lora():
     import peft.tuners.lora.bnb
+    from ..kernels.fast_lora import fast_lora_forward
 
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 

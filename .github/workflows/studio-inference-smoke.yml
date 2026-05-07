@@ -1,0 +1,185 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# End-to-end smoke: install Studio via install.sh --local --no-torch, download
+# a tiny GGUF, boot Studio, log in, change password, load the model, send a
+# chat completion, assert a non-empty response. Only workflow that tests "the
+# app actually works".
+#
+# Model: Qwen3.5-2B UD-IQ3_XXS (~890 MiB) -- small enough that the cache miss
+# is cheap and inference fits in the 25 min CPU-runner budget. GGUF is cached
+# across runs via actions/cache.
+
+name: Studio GGUF CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-inference-smoke.yml'
+  push:
+    branches: [main, pip]
+  # Manual trigger for pre-warming the GGUF cache on main, or re-running
+  # against an arbitrary branch without pushing a no-op commit.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
+  GGUF_FILE: Qwen3.5-2B-UD-IQ3_XXS.gguf
+  STUDIO_PORT: '18888'
+
+jobs:
+  inference:
+    name: Studio boots, loads a GGUF, answers a chat completion
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Cache GGUF model file
+        id: cache-gguf
+        uses: actions/cache@v4
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        if: steps.cache-gguf.outputs.cache-hit != 'true'
+        run: |
+          # huggingface-cli was deprecated in huggingface_hub 1.13; the new CLI is `hf`.
+          python -m pip install --upgrade huggingface_hub hf_transfer
+          mkdir -p gguf-cache
+          HF_HUB_ENABLE_HF_TRANSFER=1 \
+            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache
+
+      - name: Install Studio (--local, --no-torch keeps the install lean)
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Assert llama.cpp prebuilt was installed (no source-build fallback)
+        # ubuntu-latest is CPU-only x86_64, so studio/setup.sh should route
+        # to ggml-org/llama.cpp and grab bin-ubuntu-x64.tar.gz. A source
+        # build here means the routing regressed.
+        run: |
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::llama.cpp prebuilt path failed on ubuntu-latest. studio/setup.sh routing regressed; CPU-only Linux x86_64 should hit ggml-org/llama.cpp's bin-ubuntu-x64.tar.gz."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt installed and validated|prebuilt up to date and validated" logs/install.log; then
+            echo "::error::install.log does not contain the success marker for the llama.cpp prebuilt path. Did setup.sh skip the prebuilt install?"
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          echo "llama.cpp prebuilt path used successfully"
+
+      - name: Reset auth + start Studio in the background
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              echo "ready after ${i}s"
+              cat /tmp/health.json
+              jq -e '.status == "healthy"' /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Studio did not become healthy in 60s"
+          tail -200 logs/studio.log
+          exit 1
+
+      - name: Login + change bootstrap password
+        run: |
+          PW=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIPasswordSmoke12345!"
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$PW\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$PW\",\"new_password\":\"$NEW\"}" > /dev/null
+          # Re-login to clear must_change_password flag.
+          NEW_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "TOKEN=$NEW_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Load the GGUF into Studio
+        run: |
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}"
+          ls -lh "$GGUF_PATH"
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_gguf, context_length}'
+
+      - name: Send a chat completion + assert non-empty response
+        run: |
+          RESP=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/chat/completions" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 900 \
+            -d '{
+              "messages":[{"role":"user","content":"Say hello in one short sentence."}],
+              "max_tokens":40,
+              "stream":false
+            }')
+          echo "raw response: $RESP"
+          CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+          echo "model response: $CONTENT"
+          if [ -z "$CONTENT" ]; then
+            echo "::error::Empty assistant response from Studio"
+            exit 1
+          fi
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" || true
+          sleep 2
+          ss -tln | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload Studio + install logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-inference-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7

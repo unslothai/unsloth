@@ -20,7 +20,73 @@ import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
-STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+
+# Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
+# sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
+# the installer's env var has expired), then legacy ~/.unsloth/studio.
+# UNSLOTH_STUDIO_HOME wins when both env vars are set.
+def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
+    """Sentinel check (studio.conf or bin shim) so a dev venv named
+    unsloth_studio is not misidentified as a custom Studio root.
+    """
+    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
+    return (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "bin" / shim_name
+    ).is_file()
+
+
+def _resolve_studio_home() -> tuple[Path, bool]:
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve(), True
+        except (OSError, ValueError):
+            return Path(override).expanduser(), True
+    try:
+        prefix = Path(sys.prefix).resolve()
+        if prefix.name == "unsloth_studio":
+            inferred = prefix.parent
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+            if inferred != legacy and _looks_like_installer_managed_studio_home(
+                inferred
+            ):
+                return inferred, True
+    except (OSError, ValueError):
+        pass
+    return Path.home() / ".unsloth" / "studio", False
+
+
+STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
+
+
+def _ensure_studio_env_exported() -> None:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH only for real
+    custom roots so subprocesses inherit the right install. Called from each
+    studio subcommand entry rather than at import time, to avoid leaking env
+    state into unrelated importers (tests, --help, CLI introspection).
+    """
+    if not _STUDIO_HOME_IS_CUSTOM:
+        return
+    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
+    # suppress the inferred custom root.
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
+    # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
+    try:
+        _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
+        _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
+    except (OSError, ValueError):
+        _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
+    if _is_legacy:
+        _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
+    else:
+        _llama_dir = STUDIO_HOME / "llama.cpp"
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
+
+
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"
@@ -427,6 +493,8 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # Runs before any subcommand; covers run/setup/update/etc in one place.
+    _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
         return
 
@@ -582,6 +650,20 @@ def run(
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = (
+            "Force server-side tools on/off for all requests. "
+            "Default: on for 127.0.0.1, off for 0.0.0.0."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+    ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
@@ -613,6 +695,17 @@ def run(
             raise typer.Exit(1)
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
+
+    # ── Resolve the server-side tool policy. The y/N prompt (if any)
+    # runs in the outer process so the re-exec'd child never re-prompts.
+    from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
+
+    enable_tools = resolve_tool_policy(
+        host = host,
+        flag = enable_tools,
+        yes = yes,
+        silent = silent,
+    )
 
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
@@ -653,6 +746,18 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        # Forward the resolved tool policy (always concrete True/False
+        # at this point — the resolver above ran before the re-exec).
+        if enable_tools:
+            args.append("--enable-tools")
+        else:
+            args.append("--disable-tools")
+        # Forward --yes whenever the parent already cleared the prompt
+        # (either operator passed --yes, or the parent's resolver
+        # accepted the network-bind confirmation). Otherwise the child
+        # re-runs the resolver and prompts a second time.
+        if yes or (enable_tools and is_external_host(host)):
+            args.append("--yes")
         # Forward unknown args (llama-server pass-through) to the
         # re-exec'd command so the studio venv sees them in ctx.args
         # and the re-execed run() can include them in the load payload.
@@ -677,6 +782,17 @@ def run(
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
+
+    # ── Apply the resolved tool policy as a process-level override.
+    # Must use the same import path the route handlers use --
+    # `studio/backend/run.py` adds `studio/backend/` to sys.path so the
+    # routes import this module as top-level `state.tool_policy`. If we
+    # imported via `studio.backend.state.tool_policy` instead, Python
+    # would cache two different module objects with two different
+    # `_tool_policy` globals, and the gates would never see our value.
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
 
     # ── 3. Wait for server health ─────────────────────────────────────
     if not silent:
@@ -713,6 +829,32 @@ def run(
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
+    # Claude orange (Claude Code's brand color) for tool-policy notices
+    # so they stand out from the surrounding banner. Always printed --
+    # even under --silent / --yes -- so the operator never misses the
+    # current tool-execution status.
+    _tool_notice_fg = (217, 119, 87)
+    _is_external = is_external_host(host)
+    if _is_external and enable_tools:
+        _tool_notice = (
+            f"Server-side tools are ENABLED on {host} (network-reachable). "
+            f"Anyone with the API key can run code on this machine. "
+            f"Do not share the API key."
+        )
+    elif _is_external:
+        _tool_notice = (
+            f"Server-side tools are disabled by default on {host} "
+            f"(network-reachable). Pass --enable-tools to turn on "
+            f"(you will be warned about API-key risk)."
+        )
+    elif enable_tools:
+        _tool_notice = (
+            "Server-side tools are enabled by default for loopback. "
+            "Pass --disable-tools to turn off."
+        )
+    else:
+        _tool_notice = "Server-side tools are disabled."
+
     if not silent:
         typer.echo("")
         typer.echo("=" * 56)
@@ -723,6 +865,7 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
@@ -746,6 +889,13 @@ def run(
         typer.echo('    -H "Content-Type: application/json" \\')
         typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
+    else:
+        # Silent mode still prints the essentials (URL, API key) plus
+        # the orange tool-status notice so the operator never loses
+        # visibility into the security-relevant policy.
+        typer.echo(f"URL:     {base_url}")
+        typer.echo(f"API Key: {api_key}")
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server

@@ -7,6 +7,7 @@ import {
   deleteChatThreads,
   listChatMessages,
   listChatThreads,
+  updateChatThread,
 } from "../api/chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -109,6 +110,40 @@ function cancelIfRunning(threadId: string): void {
   cancelByThreadId[threadId]?.();
 }
 
+export async function renameChatItem(
+  item: SidebarItem,
+  nextTitle: string,
+): Promise<void> {
+  const trimmed = nextTitle.trim();
+  if (!trimmed || trimmed === item.title) return;
+
+  if (item.type === "single") {
+    await Promise.allSettled([
+      updateChatThread(item.id, { title: trimmed }),
+      db.threads.update(item.id, { title: trimmed }),
+    ]);
+    return;
+  }
+
+  const [backendThreads, legacyThreads] = await Promise.all([
+    listChatThreads({ pairId: item.id, includeArchived: true }).catch(
+      () => [],
+    ),
+    db.threads.where("pairId").equals(item.id).toArray(),
+  ]);
+  const threadIds = Array.from(
+    new Set([...backendThreads, ...legacyThreads].map((thread) => thread.id)),
+  );
+  await db.transaction("rw", db.threads, async () => {
+    for (const id of threadIds) {
+      await db.threads.update(id, { title: trimmed });
+    }
+  });
+  await Promise.allSettled(
+    threadIds.map((id) => updateChatThread(id, { title: trimmed })),
+  );
+}
+
 export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,
@@ -128,6 +163,10 @@ export async function deleteChatItem(
   for (const id of threadIds) markChatThreadDeleted(id);
 
   await deleteChatThreads(threadIds);
+  await db.transaction("rw", db.threads, db.messages, async () => {
+    await db.messages.where("threadId").anyOf(threadIds).delete();
+    await db.threads.bulkDelete(threadIds);
+  });
 
   if (activeId === item.id) {
     useChatRuntimeStore.getState().setActiveThreadId(null);

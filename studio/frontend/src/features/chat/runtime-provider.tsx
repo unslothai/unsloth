@@ -10,8 +10,8 @@ import {
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
-  RuntimeAdapterProvider,
   Suggestions,
+  type LocalRuntimeOptions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -486,11 +486,18 @@ async function ensureThreadInBackend(
 async function getMessagesWithLegacyFallback(
   threadId: string,
 ): Promise<MessageRecord[]> {
-  const backendMessages = await listChatMessages(threadId);
-  if (backendMessages.length > 0 || (await getChatThread(threadId))) {
-    return backendMessages;
+  const [backendMessages, backendThread, legacyMessages] = await Promise.all([
+    listChatMessages(threadId),
+    getChatThread(threadId),
+    db.messages.where("threadId").equals(threadId).toArray(),
+  ]);
+  if (backendMessages.length > 0 || backendThread) {
+    if (legacyMessages.length === 0) return backendMessages;
+    const byId = new Map(legacyMessages.map((message) => [message.id, message]));
+    for (const message of backendMessages) byId.set(message.id, message);
+    return Array.from(byId.values());
   }
-  return db.messages.where("threadId").equals(threadId).toArray();
+  return legacyMessages;
 }
 
 async function listThreadsWithLegacyFallback(args: {
@@ -657,9 +664,9 @@ function createStudioDbAdapter(
   };
 }
 
-function ThreadHistoryProvider({
-  children,
-}: { children?: ReactNode }): ReactElement {
+type StudioRuntimeAdapters = NonNullable<LocalRuntimeOptions["adapters"]>;
+
+function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
   const aui = useAui();
 
   const history = useMemo<ThreadHistoryAdapter>(
@@ -797,17 +804,14 @@ function ThreadHistoryProvider({
     [history, dictation, attachments],
   );
 
-  return (
-    <RuntimeAdapterProvider adapters={adapters}>
-      {children}
-    </RuntimeAdapterProvider>
-  );
+  return adapters;
 }
 
 const chatAdapter = createOpenAIStreamAdapter();
 
 function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-  return useLocalRuntime(chatAdapter);
+  const adapters = useStudioRuntimeAdapters();
+  return useLocalRuntime(chatAdapter, { adapters });
 }
 
 function ThreadAutoSwitch({
@@ -998,10 +1002,7 @@ export function ChatRuntimeProvider({
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: {
-      ...createStudioDbAdapter(modelType, pairId),
-      unstable_Provider: ThreadHistoryProvider,
-    },
+    adapter: createStudioDbAdapter(modelType, pairId),
   });
 
   const aui = useAui({

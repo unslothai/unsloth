@@ -36,5 +36,11 @@ export async function clearAllChats(): Promise<void> {
   for (const thread of [...backendThreads, ...legacyThreads]) {
     markChatThreadDeleted(thread.id);
   }
-  await clearBackendChats();
+  await Promise.all([
+    clearBackendChats(),
+    db.transaction("rw", db.threads, db.messages, async () => {
+      await db.messages.clear();
+      await db.threads.clear();
+    }),
+  ]);
 }

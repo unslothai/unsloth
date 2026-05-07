@@ -60,6 +60,11 @@ pub async fn check_install_status() -> bool {
         cmd.env_remove("PYTHONPATH");
     }
 
+    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
+    // probe subprocesses must follow the same isolation as process.rs.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {

@@ -75,10 +75,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             output_dir TEXT,
             error_message TEXT,
             duration_seconds REAL,
-            loss_sparkline TEXT
+            loss_sparkline TEXT,
+            display_name TEXT
         )
         """
     )
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()
+    }
+    if "display_name" not in existing_cols:
+        conn.execute("ALTER TABLE training_runs ADD COLUMN display_name TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_metrics (
@@ -297,6 +303,18 @@ def insert_metrics_batch(run_id: str, metrics: list[dict]) -> None:
         conn.close()
 
 
+def update_run_display_name(id: str, display_name: Optional[str]) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE training_runs SET display_name = ? WHERE id = ?",
+            (display_name, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def list_runs(limit: int = 50, offset: int = 0) -> dict:
     conn = get_connection()
     try:
@@ -306,7 +324,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
             SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
                    r.ended_at, r.total_steps, r.final_step, r.final_loss,
                    r.output_dir, r.duration_seconds, r.error_message,
-                   r.loss_sparkline,
+                   r.loss_sparkline, r.display_name,
                    CASE
                        WHEN r.status = 'stopped'
                             AND r.output_dir IS NOT NULL
@@ -801,19 +819,24 @@ def upsert_chat_message(message: dict) -> dict:
         conn.close()
 
 
-def sync_chat_messages(thread_id: str, messages: list[dict]) -> list[dict]:
+def sync_chat_messages(
+    thread_id: str,
+    messages: list[dict],
+    prune_missing: bool = False,
+) -> list[dict]:
     keep_ids = {m["id"] for m in messages}
     conn = get_connection()
     try:
         conn.execute("BEGIN")
-        if keep_ids:
-            placeholders = ",".join("?" for _ in keep_ids)
-            conn.execute(
-                f"DELETE FROM chat_messages WHERE thread_id = ? AND id NOT IN ({placeholders})",
-                (thread_id, *keep_ids),
-            )
-        else:
-            conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
+        if prune_missing:
+            if keep_ids:
+                placeholders = ",".join("?" for _ in keep_ids)
+                conn.execute(
+                    f"DELETE FROM chat_messages WHERE thread_id = ? AND id NOT IN ({placeholders})",
+                    (thread_id, *keep_ids),
+                )
+            else:
+                conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -844,7 +867,8 @@ def sync_chat_messages(thread_id: str, messages: list[dict]) -> list[dict]:
         )
         conn.commit()
         return list_chat_messages(thread_id)
-    except Exception:
+    except sqlite3.Error:
+        logger.exception("Failed to sync chat messages for thread %s", thread_id)
         conn.rollback()
         raise
     finally:
