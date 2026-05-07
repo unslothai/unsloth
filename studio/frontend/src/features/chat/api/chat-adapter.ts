@@ -183,6 +183,9 @@ function toOpenAIMessage(message: RunMessage): {
       "[audio]",
     );
   }
+  if (message.role === "assistant" && content.trim() === "") {
+    return null;
+  }
 
   return { role: message.role, content };
 }
@@ -198,32 +201,40 @@ function extractImageBase64(input: string): string | undefined {
   return input;
 }
 
-function findLatestUserImageBase64(messages: RunMessages): string | undefined {
+function findCurrentUserMessage(messages: RunMessages): RunMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (!message || message.role !== "user") {
-      continue;
+    if (message?.role === "user") {
+      return message;
     }
+  }
+  return undefined;
+}
 
-    // Image in message.content (e.g. compare view appends content with image parts)
-    for (const part of message.content ?? []) {
-      if (part.type === "image" && "image" in part) {
+function findCurrentUserImageBase64(messages: RunMessages): string | undefined {
+  const message = findCurrentUserMessage(messages);
+  if (!message) {
+    return undefined;
+  }
+
+  // Image in message.content (e.g. compare view appends content with image parts)
+  for (const part of message.content ?? []) {
+    if (part.type === "image" && "image" in part) {
+      const encoded = extractImageBase64(part.image);
+      if (encoded) return encoded;
+    }
+  }
+
+  // Image in message.attachments (e.g. chat composer)
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) {
+        if (part.type !== "image") {
+          continue;
+        }
         const encoded = extractImageBase64(part.image);
-        if (encoded) return encoded;
-      }
-    }
-
-    // Image in message.attachments (e.g. chat composer)
-    if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
-      for (const attachment of message.attachments ?? []) {
-        for (const part of attachment.content ?? []) {
-          if (part.type !== "image") {
-            continue;
-          }
-          const encoded = extractImageBase64(part.image);
-          if (encoded) {
-            return encoded;
-          }
+        if (encoded) {
+          return encoded;
         }
       }
     }
@@ -232,18 +243,16 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
-function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Check message content parts (from compare view's CompareMessagePart with type: "audio")
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (!message || message.role !== "user") continue;
-
-    for (const part of message.content ?? []) {
-      if (part.type === "audio" && "audio" in part) {
-        const audioPart = (part as unknown as { type: "audio"; audio: string | { data: string; format: string } }).audio;
-        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
-        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
-      }
+function findCurrentUserAudioBase64(messages: RunMessages): string | undefined {
+  // Check the current message's content parts (from compare view's
+  // CompareMessagePart with type: "audio"). Older audio turns must not
+  // be attached to later text-only requests.
+  const message = findCurrentUserMessage(messages);
+  for (const part of message?.content ?? []) {
+    if (part.type === "audio" && "audio" in part) {
+      const audioPart = (part as unknown as { type: "audio"; audio: string | { data: string; format: string } }).audio;
+      const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+      if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
     }
   }
 
@@ -609,8 +618,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           content: safeSystemPrompt.trim(),
         });
       }
-      const imageBase64 = findLatestUserImageBase64(messages);
-      const audioBase64 = findLatestUserAudioBase64(messages);
+      const imageBase64 = findCurrentUserImageBase64(messages);
+      const audioBase64 = findCurrentUserAudioBase64(messages);
       // Clear pending audio from store after extracting (consumed on send)
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
