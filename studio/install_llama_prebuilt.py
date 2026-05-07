@@ -1251,6 +1251,11 @@ def direct_linux_release_plan(
         # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
         # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
         # Strix Halo) that the upstream combined-ROCm tarball doesn't cover.
+        # The "ubuntu" label is lemonade's asset naming convention only --
+        # the binary is a manylinux-style glibc build that runs on Arch,
+        # Fedora, openSUSE, etc. as long as the host glibc is recent enough.
+        # If the host glibc is too old, validate_prebuilt_attempts will fail
+        # the lemonade attempt and we fall through to the source build.
         lemonade_choice = resolve_lemonade_rocm_choice(
             host, "ubuntu", "linux-rocm", llama_tag = requested_tag
         )
@@ -3191,7 +3196,12 @@ def resolve_lemonade_rocm_choice(
 ) -> "AssetChoice | None":
     """Return an AssetChoice from lemonade-sdk/llamacpp-rocm for the detected GPU, or None.
 
-    os_prefix: "ubuntu" or "windows"
+    os_prefix:   lemonade's asset filename label, NOT a host-distro filter.
+                 Pass "ubuntu" for any Linux host (Arch, Fedora, openSUSE,
+                 Debian, ...) -- lemonade only publishes one Linux variant
+                 and it is a manylinux-style glibc build that runs on any
+                 distro with a recent-enough glibc. Pass "windows" for
+                 Windows hosts.
     install_kind: "linux-rocm" or "windows-hip"
     llama_tag:   the requested upstream llama.cpp tag ("latest" or a pinned
                  release like "b1260"). When pinned, the resolver fetches
@@ -3241,9 +3251,13 @@ def resolve_lemonade_rocm_choice(
             "skipping lemonade prebuilt"
         )
         return None
+    # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
+    # generic glibc build that runs on any distro (Arch, Fedora, ...), so
+    # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
     log(
         f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
-        f"trying lemonade-sdk ROCm prebuilt {asset_name}"
+        f"trying lemonade-sdk ROCm prebuilt {asset_name} "
+        f"(works on any glibc Linux, not just Ubuntu)"
     )
     return AssetChoice(
         repo = LEMONADE_ROCM_REPO,
