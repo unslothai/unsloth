@@ -12,6 +12,40 @@ from pathlib import Path as _Path
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
+# On Windows, Python 3.8+ uses a secure DLL search that ignores PATH for
+# extension modules. torch's HIP backend (amdhip64.dll etc.) won't be found
+# even if F:\ROCm\...\bin is in PATH unless we explicitly register the
+# directory with os.add_dll_directory(). Do this before any torch import.
+if sys.platform == "win32":
+    import ctypes as _ctypes
+
+    def _add_rocm_dll_dirs() -> None:
+        hip_path = os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH")
+        candidates = []
+        if hip_path:
+            candidates.append(os.path.join(hip_path, "bin"))
+        # Also scan common install roots in case HIP_PATH is not set
+        for _root in (r"C:\Program Files\AMD\ROCm", r"F:\ROCm", r"C:\ROCm"):
+            try:
+                if os.path.isdir(_root):
+                    for _ver in sorted(os.listdir(_root), reverse=True):
+                        _bin = os.path.join(_root, _ver, "bin")
+                        if os.path.isdir(_bin):
+                            candidates.append(_bin)
+                            break
+            except OSError:
+                pass
+        for _d in candidates:
+            if os.path.isdir(_d):
+                try:
+                    os.add_dll_directory(_d)
+                except (OSError, AttributeError):
+                    pass
+
+    _add_rocm_dll_dirs()
+    del _add_rocm_dll_dirs, _ctypes
+
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).
 _backend_dir = str(_Path(__file__).parent)
