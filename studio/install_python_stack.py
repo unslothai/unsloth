@@ -286,6 +286,12 @@ def _ensure_rocm_torch() -> None:
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
     global _rocm_windows_torch_installed
+    # setup.ps1 sets this env var when it successfully installs AMD wheels
+    # before calling install_python_stack.py, so we can skip the subprocess
+    # probe and avoid reinstalling what was just installed.
+    if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
+        _rocm_windows_torch_installed = True
+        return
     if IS_MACOS:
         return
 
@@ -1191,11 +1197,11 @@ def install_python_stack() -> int:
         if _win_amd_gpu and not _rocm_windows_torch_installed:
             _safe_print(
                 _dim("  Note:"),
-                "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
+                "AMD GPU detected but ROCm PyTorch could not be auto-installed.",
             )
             _safe_print(
                 " " * 8,
-                "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
+                "Manual install may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
             )
 
     # 3. Extra dependencies

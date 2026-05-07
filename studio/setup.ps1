@@ -1894,6 +1894,10 @@ if ($ROCmTorchWheelUrls) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
         Write-Host $output -ForegroundColor Yellow
         $ROCmTorchWheelUrls = $null
+    } else {
+        # Signal to install_python_stack.py that AMD wheels are already installed
+        # so it skips the subprocess probe and suppresses the manual-install warning.
+        $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
     }
 }
 
