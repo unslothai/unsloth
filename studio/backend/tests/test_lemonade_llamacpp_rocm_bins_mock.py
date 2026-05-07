@@ -143,7 +143,7 @@ def _stub_unsloth_release(release_tag: str = "b9022") -> dict:
 
 @pytest.mark.skipif(
     direct_linux_release_plan is None,
-    reason="simple-policy dispatcher not present on this branch",
+    reason = "simple-policy dispatcher not present on this branch",
 )
 def test_simple_policy_plans_lemonade_for_rocm_host():
     host = _make_rocm_host("gfx1151")
@@ -155,9 +155,9 @@ def test_simple_policy_plans_lemonade_for_rocm_host():
     )
     assert plan is not None, "ROCm host should not be skipped by simple-policy planner"
     kinds = [a.install_kind for a in plan.attempts]
-    assert "linux-rocm" in kinds, (
-        f"simple-policy planner did not include a lemonade ROCm attempt; got {kinds}"
-    )
+    assert (
+        "linux-rocm" in kinds
+    ), f"simple-policy planner did not include a lemonade ROCm attempt; got {kinds}"
     rocm_attempt = next(a for a in plan.attempts if a.install_kind == "linux-rocm")
     assert rocm_attempt.source_label == "lemonade"
     assert "gfx1151" in rocm_attempt.name
@@ -165,20 +165,18 @@ def test_simple_policy_plans_lemonade_for_rocm_host():
 
 @pytest.mark.skipif(
     direct_upstream_release_plan is None,
-    reason="simple-policy dispatcher not present on this branch",
+    reason = "simple-policy dispatcher not present on this branch",
 )
 def test_simple_policy_plans_lemonade_for_windows_hip_host():
-    host = _make_rocm_host("gfx1151", windows=True)
+    host = _make_rocm_host("gfx1151", windows = True)
     release = {
         "tag_name": "b9022",
         "name": "b9022",
         "assets": [],
     }
-    plan = direct_upstream_release_plan(
-        release, host, "ggml-org/llama.cpp", "latest"
-    )
+    plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
-    assert "windows-hip" in kinds, (
-        f"simple-policy planner did not include a lemonade HIP attempt; got {kinds}"
-    )
+    assert (
+        "windows-hip" in kinds
+    ), f"simple-policy planner did not include a lemonade HIP attempt; got {kinds}"
