@@ -126,9 +126,7 @@ def detect_hardware() -> DeviceType:
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
                 _hip_label = _hip_ver or torch.__version__
-                print(
-                    f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}"
-                )
+                print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
                 print(f"Hardware detected: CUDA -- {device_name}")
             return DEVICE
