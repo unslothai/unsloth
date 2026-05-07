@@ -120,10 +120,14 @@ def detect_hardware() -> DeviceType:
 
             # Distinguish AMD ROCm (HIP) from NVIDIA CUDA for display purposes.
             # DeviceType stays CUDA since torch.cuda.* works on ROCm via HIP.
-            if getattr(torch.version, "hip", None) is not None:
+            # AMD's repo.radeon.com SDK wheels (e.g. 2.9.0+rocmsdk20251116) do
+            # not set torch.version.hip, so fall back to checking __version__.
+            _hip_ver = getattr(torch.version, "hip", None)
+            if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
+                _hip_label = _hip_ver or torch.__version__
                 print(
-                    f"Hardware detected: ROCm (HIP {torch.version.hip}) -- {device_name}"
+                    f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}"
                 )
             else:
                 print(f"Hardware detected: CUDA -- {device_name}")

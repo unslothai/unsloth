@@ -299,13 +299,18 @@ def _ensure_rocm_torch() -> None:
                 [
                     sys.executable,
                     "-c",
-                    "import torch; print(getattr(torch.version,'hip','') or '')",
+                    (
+                        "import torch; "
+                        "hip=getattr(torch.version,'hip','') or ''; "
+                        "ver=torch.__version__; "
+                        "print('yes' if hip or 'rocm' in ver.lower() else '')"
+                    ),
                 ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 timeout = 30,
             )
-            if probe.returncode == 0 and probe.stdout.decode().strip():
+            if probe.returncode == 0 and probe.stdout.decode().strip() == "yes":
                 return  # already ROCm torch
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -1175,20 +1180,28 @@ def install_python_stack() -> int:
                 _win_amd_gpu = True
                 break
         if _win_amd_gpu:
-            # Only warn if torch doesn't already have ROCm (HIP) support
+            # Only warn if torch doesn't already have ROCm (HIP) support.
+            # AMD SDK wheels (e.g. 2.9.0+rocmsdk20251116) don't set
+            # torch.version.hip, so also check for "rocm" in __version__.
             try:
-                _hip_ver = subprocess.run(
+                _rocm_probe = subprocess.run(
                     [
                         sys.executable,
                         "-c",
-                        "import torch; print(getattr(torch.version,'hip','') or '')",
+                        (
+                            "import torch; "
+                            "hip=getattr(torch.version,'hip','') or ''; "
+                            "ver=torch.__version__; "
+                            "print('yes' if hip or 'rocm' in ver.lower() else '')"
+                        ),
                     ],
                     stdout = subprocess.PIPE,
                     stderr = subprocess.DEVNULL,
                     timeout = 20,
                 )
                 _has_rocm_torch = (
-                    _hip_ver.returncode == 0 and _hip_ver.stdout.decode().strip() != ""
+                    _rocm_probe.returncode == 0
+                    and _rocm_probe.stdout.decode().strip() == "yes"
                 )
             except Exception:
                 _has_rocm_torch = False
