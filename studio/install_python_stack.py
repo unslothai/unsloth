@@ -40,18 +40,32 @@ IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
 # download.pytorch.org.  Entries are checked newest-first (>=).
-# ROCm 7.2 only has torch 2.11.0 on download.pytorch.org, which exceeds the
-# current torch upper bound (<2.11.0).  Fall back to rocm7.1 (torch 2.10.0).
-# TODO: uncomment rocm7.2 when torch upper bound is bumped to >=2.11.0
 _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
-    # (7, 2): "rocm7.2",  # torch 2.11.0 -- requires torch>=2.11
-    (7, 1): "rocm7.1",
+    (7, 2): "rocm7.2",   # torch 2.11.0
+    (7, 1): "rocm7.1",   # torch 2.10.0
     (7, 0): "rocm7.0",
     (6, 4): "rocm6.4",
     (6, 3): "rocm6.3",
     (6, 2): "rocm6.2",
     (6, 1): "rocm6.1",
     (6, 0): "rocm6.0",
+}
+
+# Per-tag torch/torchvision/torchaudio version specs for pip.
+# rocm7.2 ships torch 2.11.0 which is a major version bump; older tags top out
+# at 2.10.x.  These specs prevent uv from picking an incompatible minor.
+_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
+    "rocm7.2": (
+        "torch>=2.11.0,<2.12.0",
+        "torchvision>=0.26.0,<0.27.0",
+        "torchaudio>=2.11.0,<2.12.0",
+    ),
+    # Default for rocm7.1 and earlier: torch 2.x below 2.11
+    "_default": (
+        "torch>=2.4,<2.11.0",
+        "torchvision<0.26.0",
+        "torchaudio<2.11.0",
+    ),
 }
 _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
@@ -275,6 +289,35 @@ def _has_usable_nvidia_gpu() -> bool:
     return result.returncode == 0 and "GPU " in result.stdout
 
 
+def _detect_amd_gfx_codes() -> list[str]:
+    """Return the list of AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
+
+    Parses ``rocminfo`` output for ``ISA Info`` / ``gfx`` entries.  Returns an
+    empty list when rocminfo is not found or no GPU agents are present.
+    """
+    import re
+
+    exe = shutil.which("rocminfo")
+    if not exe:
+        return []
+    try:
+        result = subprocess.run(
+            [exe],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 15,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    # Match lines like "  Name:                    gfx1151" or ISA strings
+    # "amdgcn-amd-amdhsa--gfx1151".  Exclude the CPU agent (gfx000).
+    codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", result.stdout.lower())
+    return list(dict.fromkeys(f"gfx{c}" for c in codes))  # deduplicate, preserve order
+
+
 # Set to True by _ensure_rocm_torch() when AMD Windows wheels are installed
 # successfully. Used by the post-install warning block to skip the "must be
 # installed manually" note without spawning a subprocess.
@@ -411,6 +454,19 @@ def _ensure_rocm_torch() -> None:
 
     rocm_torch_ready = has_hip_torch
 
+    # Strix Halo (gfx1151) segfaults under ROCm 7.1 due to a ROCm driver bug
+    # fixed in ROCm 7.2.  Warn early so users know why training may crash.
+    if ver < (7, 2):
+        gfx_codes = _detect_amd_gfx_codes()
+        _strix_gfx = {"gfx1151", "gfx1150"}
+        if _strix_gfx.intersection(gfx_codes):
+            _gfx_str = ", ".join(sorted(_strix_gfx.intersection(gfx_codes)))
+            print(
+                f"\n   ⚠️  {_gfx_str} (AMD Strix Halo) detected with ROCm {ver[0]}.{ver[1]}.\n"
+                f"   ROCm 7.1 has a known segfault on this GPU when tensors are\n"
+                f"   moved to the GPU.  Upgrade to ROCm 7.2+ to enable training.\n"
+            )
+
     if not has_hip_torch:
         # Select best matching wheel tag (newest ROCm version <= installed)
         tag = next(
@@ -429,13 +485,16 @@ def _ensure_rocm_torch() -> None:
         else:
             index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
             print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+            _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
+                tag, _ROCM_TORCH_PKG_SPECS["_default"]
+            )
             pip_install(
                 f"ROCm torch ({tag})",
                 "--force-reinstall",
                 "--no-cache-dir",
-                "torch>=2.4,<2.11.0",
-                "torchvision<0.26.0",
-                "torchaudio<2.11.0",
+                _torch_pkg,
+                _vision_pkg,
+                _audio_pkg,
                 "--index-url",
                 index_url,
                 constrain = False,

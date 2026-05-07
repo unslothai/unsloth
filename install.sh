@@ -1573,26 +1573,20 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*) echo "$_base/cpu"; return ;;
             esac
-            # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds
-            # (<2.11.0).  Fall back to rocm7.1 index which has torch 2.10.0.
-            # Enumerate explicit versions rather than matching rocm6.* so
-            # a host on ROCm 6.5 or 6.6 (no PyTorch wheels published) is
-            # clipped down to the last supported 6.x (rocm6.4) instead of
-            # constructing https://download.pytorch.org/whl/rocm6.5 which
-            # returns HTTP 403. PyTorch only ships: rocm5.7, 6.0, 6.1, 6.2,
-            # 6.3, 6.4, 7.0, 7.1, 7.2 (and 5.7 is below our minimum).
-            # TODO: uncomment rocm7.2 when the torch upper bound is bumped
-            # to >=2.11.0.
+            # Enumerate explicit supported ROCm wheel tags.  A host on ROCm
+            # 6.5+ (no published PyTorch wheels) is clipped to rocm6.4.
+            # PyTorch publishes: rocm5.7, 6.0, 6.1, 6.2, 6.3, 6.4, 7.0, 7.1,
+            # 7.2 (5.7 is below our minimum; rocm7.2 ships torch 2.11.0).
             case "$_rocm_tag" in
-                rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*)
+                rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*|rocm7.2|rocm7.2.*)
                     echo "$_base/$_rocm_tag" ;;
                 rocm6.*)
                     # ROCm 6.5+ (no published PyTorch wheels): clip down
                     # to the last supported 6.x wheel set.
                     echo "$_base/rocm6.4" ;;
                 *)
-                    # ROCm 7.2+ (including future 10.x+): cap to rocm7.1
-                    echo "$_base/rocm7.1" ;;
+                    # ROCm 7.3+ (future): cap to rocm7.2 (latest known)
+                    echo "$_base/rocm7.2" ;;
             esac
             return
         fi
@@ -1730,6 +1724,12 @@ _pick_radeon_wheel() {
 }
 
 TORCH_INDEX_URL=$(get_torch_index_url)
+
+# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
+# All other ROCm tags and CUDA stay within <2.11.0.
+case "$TORCH_INDEX_URL" in
+    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+esac
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
