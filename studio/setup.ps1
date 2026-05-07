@@ -1855,6 +1855,7 @@ if ($HasNvidiaSmi) {
 # torch wheels instead of CPU-only PyTorch.
 $ROCmVersion = $script:ROCmVersion
 $ROCmTorchWheelUrls = $null
+$ROCmTarballUrl     = $null
 if ($HasROCm -and $CuTag -eq "cpu") {
     $pyVer = (& python --version 2>&1 | Out-String) -replace '[^0-9.]',''
     $pyMajMin = ($pyVer.Trim() -split '\.')[0..1] -join '.'
@@ -1862,8 +1863,12 @@ if ($HasROCm -and $CuTag -eq "cpu") {
     if ($pyMajMin -eq "3.12" -and $ROCmVersion) {
         if ($ROCmVersion -match '^7\.2') {
             $rb = "$amdWheelBase/rocm-rel-7.2.1"
+            # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
+            # torch/_rocm_init.py imports at startup.
+            $ROCmTarballUrl = "$rb/rocm-7.2.1.tar.gz"
             $ROCmTorchWheelUrls = @(
                 "$rb/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+                "$rb/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
                 "$rb/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
                 "$rb/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
                 "$rb/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
@@ -1871,6 +1876,9 @@ if ($HasROCm -and $CuTag -eq "cpu") {
             )
         } elseif ($ROCmVersion -match '^7\.1') {
             $rb = "$amdWheelBase/rocm-rel-7.1.1"
+            # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
+            # torch/_rocm_init.py imports at startup.
+            $ROCmTarballUrl = "$rb/rocm-0.1.dev0.tar.gz"
             $ROCmTorchWheelUrls = @(
                 "$rb/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
                 "$rb/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
@@ -1886,9 +1894,17 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 
 if ($ROCmTorchWheelUrls) {
     substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
-    $sw0 = $ROCmTorchWheelUrls[0]; $sw1 = $ROCmTorchWheelUrls[1]
-    $sw2 = $ROCmTorchWheelUrls[2]; $sw3 = $ROCmTorchWheelUrls[3]; $sw4 = $ROCmTorchWheelUrls[4]
-    $output = Fast-Install --force-reinstall --no-deps $sw0 $sw1 $sw2 $sw3 $sw4 | Out-String
+    # Install the rocm namespace tarball first (provides the 'rocm_sdk' Python
+    # package that torch/_rocm_init.py imports at startup).
+    if ($ROCmTarballUrl) {
+        $tarballOut = Fast-Install --force-reinstall --no-deps $ROCmTarballUrl | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[WARN] ROCm namespace tarball install failed -- continuing" -ForegroundColor Yellow
+            Write-Host $tarballOut -ForegroundColor Yellow
+        }
+    }
+    # Install remaining SDK + torch wheels using array splatting.
+    $output = Fast-Install --force-reinstall --no-deps @ROCmTorchWheelUrls | Out-String
     $torchInstallExit = $LASTEXITCODE
     if ($torchInstallExit -ne 0) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow

@@ -1311,23 +1311,31 @@ shell.Run cmd, 0, False
     # When the HIP SDK is present and Python 3.12 is in use, swap in the AMD wheel
     # URL and clear $TorchIndexUrl so the standard --index-url path is skipped.
     $ROCmTorchWheelUrl = $null
+    $ROCmTarballUrl    = $null
     if ($HasROCm -and -not $SkipTorch) {
         $pyMajMin = if ($DetectedPython) { ($DetectedPython.Version -split '\.')[0..1] -join '.' } else { "" }
         if ($pyMajMin -eq "3.12") {
             $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
             if ($ROCmVersion -and $ROCmVersion -match '^7\.2') {
                 $amdRelBase = "$amdWheelBase/rocm-rel-7.2.1"
+                # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
+                # torch/_rocm_init.py imports at startup.
+                $ROCmTarballUrl = "$amdRelBase/rocm-7.2.1.tar.gz"
                 $ROCmAllWheelUrls = @(
                     "$amdRelBase/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+                    "$amdRelBase/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
                     "$amdRelBase/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
                     "$amdRelBase/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
                     "$amdRelBase/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
                     "$amdRelBase/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
                 )
-                $ROCmTorchWheelUrl = $ROCmAllWheelUrls[2]
+                $ROCmTorchWheelUrl = $ROCmAllWheelUrls[3]
                 $TorchIndexUrl = $null
             } elseif ($ROCmVersion -and $ROCmVersion -match '^7\.1') {
                 $amdRelBase = "$amdWheelBase/rocm-rel-7.1.1"
+                # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
+                # torch/_rocm_init.py imports at startup.
+                $ROCmTarballUrl = "$amdRelBase/rocm-0.1.dev0.tar.gz"
                 $ROCmAllWheelUrls = @(
                     "$amdRelBase/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
                     "$amdRelBase/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
@@ -1440,12 +1448,17 @@ shell.Run cmd, 0, False
         } elseif ($ROCmTorchWheelUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
-            # Expand array to scalars — @array splatting requires & and doesn't
-            # work reliably inside scriptblocks passed to Invoke-InstallCommand.
-            $rw0 = $ROCmAllWheelUrls[0]; $rw1 = $ROCmAllWheelUrls[1]
-            $rw2 = $ROCmAllWheelUrls[2]; $rw3 = $ROCmAllWheelUrls[3]
-            $rw4 = $ROCmAllWheelUrls[4]
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps $rw0 $rw1 $rw2 $rw3 $rw4 }
+            # Install the rocm namespace tarball first (provides the 'rocm_sdk'
+            # Python package that torch/_rocm_init.py imports at startup).
+            if ($ROCmTarballUrl) {
+                $tarballExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps $ROCmTarballUrl }
+                if ($tarballExit -ne 0) {
+                    Write-Host "[WARN] ROCm namespace tarball install failed (exit $tarballExit) -- continuing" -ForegroundColor Yellow
+                }
+            }
+            # Install remaining SDK + torch wheels.  @array splatting inside a
+            # scriptblock works in PS 5.1 because & $Command runs in-scope.
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps @ROCmAllWheelUrls }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)

@@ -70,7 +70,10 @@ _ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, list[str]]] = {
     (7, 2): (
         "rocm-rel-7.2.1",
         [
+            # rocm tarball provides the 'rocm_sdk' Python namespace package
+            "rocm-7.2.1.tar.gz",
             "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+            "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
             "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
             "torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
             "torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
@@ -80,6 +83,8 @@ _ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, list[str]]] = {
     (7, 1): (
         "rocm-rel-7.1.1",
         [
+            # rocm tarball provides the 'rocm_sdk' Python namespace package
+            "rocm-0.1.dev0.tar.gz",
             "rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
             "rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
             "torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
@@ -352,7 +357,6 @@ def _ensure_rocm_torch() -> None:
         pip_install(
             f"ROCm torch (Windows, {rel_tag})",
             "--force-reinstall",
-            "--no-cache-dir",
             "--no-deps",
             *wheel_urls,
             constrain = False,
