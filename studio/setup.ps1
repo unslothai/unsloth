@@ -1823,9 +1823,71 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+# ── AMD Windows ROCm torch override ──────────────────────────────────────────
+# When ROCm HIP SDK is present and Python 3.12 is in use, install AMD's direct
+# torch wheels instead of CPU-only PyTorch.
+$ROCmVersion = $null
+$ROCmTorchWheelUrls = $null
+if ($HasROCm -and $CuTag -eq "cpu") {
+    # Detect ROCm version via hipconfig, then amd-smi
+    $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+    if ($hipConfigExe) {
+        try {
+            $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $hipVerOut -match '(\d+\.\d+)') { $ROCmVersion = $Matches[1] }
+        } catch {}
+    }
+    if (-not $ROCmVersion) {
+        $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+        if ($amdSmiVer) {
+            try {
+                $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $ROCmVersion = $Matches[1] }
+            } catch {}
+        }
+    }
+    $pyVer = (& python --version 2>&1 | Out-String) -replace '[^0-9.]',''
+    $pyMajMin = ($pyVer.Trim() -split '\.')[0..1] -join '.'
+    $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
+    if ($pyMajMin -eq "3.12" -and $ROCmVersion) {
+        if ($ROCmVersion -match '^7\.2') {
+            $rb = "$amdWheelBase/rocm-rel-7.2.1"
+            $ROCmTorchWheelUrls = @(
+                "$rb/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+                "$rb/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+                "$rb/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+                "$rb/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+                "$rb/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+            )
+        } elseif ($ROCmVersion -match '^7\.1') {
+            $rb = "$amdWheelBase/rocm-rel-7.1.1"
+            $ROCmTorchWheelUrls = @(
+                "$rb/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
+                "$rb/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
+                "$rb/torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+                "$rb/torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+                "$rb/torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+            )
+        }
+    }
+}
+
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-if ($CuTag -eq "cpu") {
+if ($ROCmTorchWheelUrls) {
+    substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
+    $sw0 = $ROCmTorchWheelUrls[0]; $sw1 = $ROCmTorchWheelUrls[1]
+    $sw2 = $ROCmTorchWheelUrls[2]; $sw3 = $ROCmTorchWheelUrls[3]; $sw4 = $ROCmTorchWheelUrls[4]
+    $output = Fast-Install --force-reinstall --no-cache-dir --no-deps $sw0 $sw1 $sw2 $sw3 $sw4 | Out-String
+    $torchInstallExit = $LASTEXITCODE
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor Yellow
+        $ROCmTorchWheelUrls = $null
+    }
+}
+
+if (-not $ROCmTorchWheelUrls -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
@@ -1840,7 +1902,7 @@ if ($CuTag -eq "cpu") {
         Write-Host $output -ForegroundColor Red
         exit 1
     }
-} else {
+} elseif (-not $ROCmTorchWheelUrls) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {

@@ -1140,12 +1140,12 @@ def install_python_stack() -> int:
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
     #     venv received CPU-only torch (common when pip resolves torch from PyPI).
     #     Must come immediately after base packages so torch is present for inspection.
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    if not IS_MACOS and not NO_TORCH:
         _progress("ROCm torch check")
         _ensure_rocm_torch()
 
-    # Windows + AMD GPU: PyTorch does not publish ROCm wheels for Windows.
-    # Detect and warn so users know manual steps are needed for GPU training.
+    # Windows + AMD GPU: if ROCm torch was not installed (wrong Python version
+    # or unknown ROCm version), warn the user.
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
         # Validate actual AMD GPU presence (not just tool existence)
         import re as _re_win
