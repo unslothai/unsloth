@@ -285,15 +285,15 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
-  const { inputProps, isComposing } = useImeComposerInputHandlers();
+  const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposing()) {
+      if (disabled || isComposingRef.current) {
         event.preventDefault();
       }
     },
-    [disabled, isComposing],
+    [disabled, isComposingRef],
   );
 
   const composerContent = (
@@ -311,7 +311,10 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         aria-label="Message input"
         {...inputProps}
       />
-      <ComposerAction disabled={disabled} blockSend={isComposing} />
+      <ComposerAction
+        disabled={disabled || isComposing}
+        blockSend={() => isComposingRef.current}
+      />
     </>
   );
 
@@ -343,6 +346,12 @@ function isNativeComposing(event: Event) {
 function useImeComposerInputHandlers() {
   const aui = useAui();
   const composingRef = useRef(false);
+  const [isComposing, setIsComposing] = useState(false);
+
+  const setCompositionState = useCallback((next: boolean) => {
+    composingRef.current = next;
+    setIsComposing(next);
+  }, []);
 
   const setComposerText = useCallback(
     (value: string) => {
@@ -358,28 +367,24 @@ function useImeComposerInputHandlers() {
   );
 
   const onCompositionStart = useCallback(() => {
-    composingRef.current = true;
-  }, []);
+    setCompositionState(true);
+  }, [setCompositionState]);
 
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
-      composingRef.current = false;
+      setCompositionState(false);
       setComposerText(e.currentTarget.value);
-      e.preventDefault();
     },
-    [setComposerText],
+    [setComposerText, setCompositionState],
   );
 
   const onChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
-      composingRef.current = isNativeComposing(e.nativeEvent);
+      setCompositionState(isNativeComposing(e.nativeEvent));
       setComposerText(e.target.value);
-      e.preventDefault();
     },
-    [setComposerText],
+    [setComposerText, setCompositionState],
   );
-
-  const isComposing = useCallback(() => composingRef.current, []);
 
   return {
     inputProps: {
@@ -388,6 +393,7 @@ function useImeComposerInputHandlers() {
       onChange,
     },
     isComposing,
+    isComposingRef: composingRef,
   };
 }
 
@@ -972,7 +978,7 @@ const UserActionBar: FC = () => {
 
 const EditComposer: FC = () => {
   const aui = useAui();
-  const { inputProps, isComposing } = useImeComposerInputHandlers();
+  const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
 
   useAuiEvent("thread.runEnd", () => {
@@ -993,14 +999,16 @@ const EditComposer: FC = () => {
         />
         <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
           <ComposerPrimitive.Cancel asChild={true}>
-            <Button variant="ghost" size="sm">
+            <Button type="button" variant="ghost" size="sm">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
           <Button
+            type="button"
             size="sm"
-            onClick={() => {
-              if (isComposing()) {
+            onClick={(event) => {
+              if (isComposingRef.current) {
+                event.preventDefault();
                 return;
               }
               const newText = aui.composer().getState().text;
