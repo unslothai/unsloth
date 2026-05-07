@@ -7,10 +7,12 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
 import { NeuronHeatmapSection } from "./sections/neuron-heatmap-section";
+import { DeadNeuronPanel } from "./sections/dead-neuron-panel";
 import { ProgressSection } from "./sections/progress-section";
 import { TrainingStartOverlay } from "./training-start-overlay";
 
@@ -47,6 +49,7 @@ export function LiveTrainingView(): ReactElement {
     useShallow((state) => ({
       selectedModel: state.selectedModel,
       trainingMethod: state.trainingMethod,
+      enableActivationCapture: state.enableActivationCapture,
     })),
   );
 
@@ -99,15 +102,13 @@ export function LiveTrainingView(): ReactElement {
         <div data-tour="studio-training-progress">
           <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
         </div>
-        {/* Activation heatmap (left) + training charts (right) side-by-side */}
-        <div className="flex items-stretch gap-4">
-          <div className="shrink-0">
-            <NeuronHeatmapSection
-              isTraining={viewData.isTrainingRunning}
-              jobId={runtime.jobId}
-            />
-          </div>
-          <div className="flex-1 min-w-0">
+        <Tabs defaultValue="training">
+          <TabsList className="mb-2">
+            <TabsTrigger value="training">Training</TabsTrigger>
+            <TabsTrigger value="interpretability">Interpretability</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="training">
             <ChartsSection
               currentStep={viewData.currentStep}
               totalSteps={viewData.totalSteps}
@@ -118,8 +119,35 @@ export function LiveTrainingView(): ReactElement {
               gradNormHistory={viewData.gradNormHistory}
               evalLossHistory={viewData.evalLossHistory}
             />
-          </div>
-        </div>
+          </TabsContent>
+
+          <TabsContent value="interpretability">
+            {config.enableActivationCapture ? (
+              <div className="flex gap-4 items-stretch min-h-[400px]">
+                <div className="w-[340px] shrink-0">
+                  <NeuronHeatmapSection
+                    isTraining={viewData.isTrainingRunning}
+                    jobId={runtime.jobId}
+                  />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <DeadNeuronPanel
+                    isTraining={viewData.isTrainingRunning}
+                    jobId={runtime.jobId}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center min-h-[300px] gap-3 text-center text-muted-foreground">
+                <p className="text-sm">Neuron activation capture is disabled.</p>
+                <p className="text-xs max-w-sm">
+                  Enable <span className="font-medium text-foreground">Neuron activation capture</span> in
+                  training parameters before starting training to see interpretability data here.
+                </p>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
       {showOverlay ? (
         <TrainingStartOverlay

@@ -82,6 +82,7 @@ export interface TrainingConfigState {
   finetuneMLPModules: boolean;
   targetModules: string[];
   maxPositionEmbeddings: number | null;
+  enableActivationCapture: boolean;
 }
 
 export interface TrainingConfigActions {
@@ -145,6 +146,7 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  setEnableActivationCapture: (value: boolean) => void;
   canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;

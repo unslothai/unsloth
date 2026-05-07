@@ -323,6 +323,11 @@ class TrainingStartRequest(BaseModel):
         None, description = "Saved training output directory to resume from"
     )
 
+    # Interpretability parameters
+    enable_activation_capture: bool = Field(
+        False, description = "Capture neuron activation statistics for interpretability visualizations"
+    )
+
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(
         None,
