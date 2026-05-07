@@ -29,6 +29,11 @@ class RateLimitError(Exception):
     pass
 
 
+class GitHubAuthError(RuntimeError):
+    """Raised when GitHub returns 401/403 due to invalid or insufficient credentials."""
+    pass
+
+
 class GitHubClient:
     def __init__(
         self,
@@ -36,8 +41,15 @@ class GitHubClient:
         min_remaining_rest: int = 100,
         token: str | None = None,
     ):
-        token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-        if not token:
+        if token:
+            self._token_source = "explicit token argument (recipe-level field)"
+        elif os.environ.get("GH_TOKEN"):
+            self._token_source = "GH_TOKEN environment variable"
+            token = os.environ["GH_TOKEN"]
+        elif os.environ.get("GITHUB_TOKEN"):
+            self._token_source = "GITHUB_TOKEN environment variable"
+            token = os.environ["GITHUB_TOKEN"]
+        else:
             raise RuntimeError("GH_TOKEN not set in environment")
         self.session = requests.Session()
         self.session.headers.update(
@@ -58,6 +70,33 @@ class GitHubClient:
         wait = max(0, reset_ts - now) + buffer_s
         log.warning("Rate limit hit. Sleeping %ds until reset.", wait)
         time.sleep(wait)
+
+    def _is_auth_failure(self, r: "requests.Response") -> bool:
+        """Distinguish auth failures from rate limiting on 401/403 responses.
+
+        - 401: always an auth failure (invalid / expired / wrong-scope token).
+        - 403: an auth failure UNLESS the response carries a clear rate-limit signal
+          (Retry-After header for secondary limits, or X-RateLimit-Remaining: 0
+          for primary limits).
+        """
+        if r.status_code == 401:
+            return True
+        if r.status_code == 403:
+            if r.headers.get("Retry-After"):
+                return False
+            if r.headers.get("X-RateLimit-Remaining") == "0":
+                return False
+            return True
+        return False
+
+    def _raise_auth_error(self, r: "requests.Response", endpoint: str) -> None:
+        snippet = (r.text or "").strip()[:200]
+        raise GitHubAuthError(
+            f"GitHub {endpoint} returned {r.status_code} {r.reason}. "
+            f"Token source: {self._token_source}. "
+            f"The token is invalid, expired, or missing required scopes — "
+            f"retrying will not recover. Response: {snippet}"
+        )
 
     def _check_rate_and_wait(self, kind: str) -> None:
         if kind == "graphql":
@@ -112,6 +151,8 @@ class GitHubClient:
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 60)
                     continue
+                if self._is_auth_failure(r):
+                    self._raise_auth_error(r, "GraphQL")
                 if r.status_code == 403 or r.status_code == 429:
                     # Check for secondary/abuse
                     retry_after = r.headers.get("Retry-After")
@@ -188,6 +229,8 @@ class GitHubClient:
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 60)
                     continue
+                if self._is_auth_failure(r):
+                    self._raise_auth_error(r, "REST")
                 if r.status_code in (403, 429):
                     retry_after = r.headers.get("Retry-After")
                     if retry_after:
