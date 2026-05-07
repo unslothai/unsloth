@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type {
-  CompleteAttachment,
-  ExportedMessageRepository,
-  ThreadMessage,
-} from "@assistant-ui/react";
 /**
  * assistant-ui does not expose a public `deleteMessage` on `ThreadRuntime` / `MessageRuntime`
  * in our version, but it already implements branch-safe deletion inside `MessageRepository`.
@@ -19,10 +14,17 @@ import type {
  * surface area.
  */
 import { MessageRepository } from "@assistant-ui/core/internal";
+import type {
+  CompleteAttachment,
+  ExportedMessageRepository,
+  ThreadMessage,
+} from "@assistant-ui/react";
 import { db } from "../db";
 import type { MessageRecord } from "../types";
 
-function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+function cloneContent(
+  content: ThreadMessage["content"],
+): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
@@ -42,7 +44,22 @@ function hasContentParts(content: unknown): boolean {
   if (typeof content === "string") {
     return content.trim().length > 0;
   }
-  return Array.isArray(content) && content.length > 0;
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.some((part) => {
+    if (
+      part &&
+      typeof part === "object" &&
+      "type" in part &&
+      part.type === "text"
+    ) {
+      return "text" in part && typeof part.text === "string"
+        ? part.text.trim().length > 0
+        : false;
+    }
+    return true;
+  });
 }
 
 export function isEmptyAssistantThreadMessage(message: ThreadMessage): boolean {
@@ -61,7 +78,10 @@ export function compactEmptyAssistantRecords(
 
   for (const message of messages) {
     const parentId = message.parentId ?? null;
-    const resolvedParentId = skippedParents.get(parentId ?? "") ?? parentId;
+    const resolvedParentId =
+      parentId !== null && skippedParents.has(parentId)
+        ? (skippedParents.get(parentId) ?? null)
+        : parentId;
 
     if (isEmptyAssistantMessageRecord(message)) {
       skippedParents.set(message.id, resolvedParentId);
@@ -103,7 +123,10 @@ function exportedItemToRecord(
     threadId,
     parentId: parentId ?? null,
     role: "assistant",
-    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: content as Extract<
+      ThreadMessage,
+      { role: "assistant" }
+    >["content"],
     ...(Object.keys(custom).length > 0 && { metadata: custom }),
     createdAt: message.createdAt?.getTime?.() ?? Date.now(),
   };
