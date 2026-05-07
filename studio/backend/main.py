@@ -21,21 +21,25 @@ if sys.platform == "win32":
     import ctypes as _ctypes
 
     def _add_rocm_dll_dirs() -> None:
-        hip_path = os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH")
         candidates = []
-        if hip_path:
-            candidates.append(os.path.join(hip_path, "bin"))
-        # Also scan common install roots in case HIP_PATH is not set
-        for _root in (r"C:\Program Files\AMD\ROCm", r"F:\ROCm", r"C:\ROCm"):
-            try:
-                if os.path.isdir(_root):
-                    for _ver in sorted(os.listdir(_root), reverse = True):
-                        _bin = os.path.join(_root, _ver, "bin")
-                        if os.path.isdir(_bin):
-                            candidates.append(_bin)
-                            break
-            except OSError:
-                pass
+        # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer
+        for _var in ("HIP_PATH", "ROCM_PATH"):
+            _val = os.environ.get(_var)
+            if _val:
+                candidates.append(os.path.join(_val, "bin"))
+        # 2. Standard AMD installer location: C:\Program Files\AMD\ROCm\<ver>\bin
+        #    Scan all installed versions, newest first.
+        _default_root = os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+        )
+        try:
+            if os.path.isdir(_default_root):
+                for _ver in sorted(os.listdir(_default_root), reverse=True):
+                    _bin = os.path.join(_default_root, _ver, "bin")
+                    if os.path.isdir(_bin):
+                        candidates.append(_bin)
+        except OSError:
+            pass
         for _d in candidates:
             if os.path.isdir(_d):
                 try:
