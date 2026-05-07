@@ -1780,7 +1780,20 @@ def openenv_vllm_reload_weights():
         patch_target_name = "generate_rollout_completions"
         patch_target = getattr(openenv_utils, patch_target_name)
 
-    src = inspect.getsource(patch_target)
+    # TRL 0.29.1+ ships some openenv helpers as compiled bytecode without
+    # accessible source on disk; inspect.getsource raises OSError("could
+    # not get source code") in that case. Skip the source-rewrite patch
+    # rather than crashing -- the core unsloth weight-reload path stays
+    # functional, only the wake_up tag rewrite is skipped.
+    try:
+        src = inspect.getsource(patch_target)
+    except OSError as e:
+        logger.warning(
+            f"Unsloth: Could not retrieve source for trl openenv "
+            f"{patch_target_name} ({e}); skipping rewrite. "
+            f"Weight reload still functional."
+        )
+        return
     src = textwrap.dedent(src)
     original_src = src
 

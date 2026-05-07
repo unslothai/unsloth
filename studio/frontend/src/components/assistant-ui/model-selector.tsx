@@ -78,9 +78,9 @@ function ModelSelectorTrigger({
         className={cn(
           "flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-[8px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
-          variant === "ghost" && "rounded-[8px] hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
-          variant === "muted" && "rounded-[8px] bg-muted hover:bg-muted/80",
+          "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "ghost" && "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "muted" && "rounded-[10px] bg-muted hover:bg-muted/80",
           size === "sm" && "h-8 px-3 text-xs",
           size === "default" && "h-9 px-3.5 text-sm",
           size === "lg" && "h-10 px-4 text-sm",
@@ -145,7 +145,7 @@ function ModelSelectorContent({
       align="start"
       data-tour={dataTour}
       className={cn(
-        "w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
+        "menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
         className,
       )}
     >

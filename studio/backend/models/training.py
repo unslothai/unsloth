@@ -5,7 +5,7 @@
 Pydantic schemas for Training API
 """
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
 
@@ -16,8 +16,11 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
-    training_type: str = Field(
-        ..., description = "Training type: 'LoRA/QLoRA' or 'Full Finetuning'"
+    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = (
+        Field(
+            ...,
+            description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
+        )
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
@@ -86,6 +89,13 @@ class TrainingStartRequest(BaseModel):
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
+    embedding_learning_rate: Optional[float] = Field(
+        None,
+        gt = 0,
+        lt = 1.0,
+        description = "Separate learning rate for embedding matrices (CPT). "
+        "Must be in (0, 1). Should be 2-10x smaller than the main learning rate.",
+    )
 
     # LoRA parameters
     use_lora: bool = Field(True, description = "Use LoRA (derived from training_type)")
@@ -214,6 +224,7 @@ class TrainingRunSummary(BaseModel):
     status: Literal["running", "completed", "stopped", "error"]
     model_name: str
     dataset_name: str
+    display_name: Optional[str] = None
     started_at: str
     ended_at: Optional[str] = None
     total_steps: Optional[int] = None
@@ -225,6 +236,14 @@ class TrainingRunSummary(BaseModel):
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
     resumed_later: bool = False
+
+
+class TrainingRunUpdateRequest(BaseModel):
+    """Mutable fields on a training run."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    display_name: Optional[str] = Field(None, max_length = 120)
 
 
 class TrainingRunListResponse(BaseModel):

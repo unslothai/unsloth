@@ -114,17 +114,17 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-[30px] items-center gap-2.5 rounded-[8px] px-2.5 text-sm font-medium transition-colors",
+                      "relative flex h-[32px] items-center gap-2.5 rounded-[8px] px-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"
-                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white",
+                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white",
                     )}
                   >
                     {active && (
                       <motion.span
                         layoutId="settings-active-pill"
-                        className="absolute inset-0 rounded-[8px] bg-[#ececec] dark:bg-[#2e3035]"
+                        className="absolute inset-0 rounded-[8px] bg-[#ececec] dark:bg-[#2d2f33]"
                         transition={
                           reduced
                             ? { duration: 0 }
@@ -139,8 +139,8 @@ export function SettingsDialog() {
                     )}
                     <HugeiconsIcon
                       icon={tab.icon}
-                      strokeWidth={1.5}
-                      className="relative z-10 size-[18px]"
+                      strokeWidth={1.75}
+                      className="relative z-10 size-icon"
                     />
                     <span className="relative z-10 min-w-0 truncate">{tab.label}</span>
                     {tab.badge ? (
@@ -158,12 +158,12 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Close settings"
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6">
               {renderTab(activeTab)}
             </div>
           </main>
