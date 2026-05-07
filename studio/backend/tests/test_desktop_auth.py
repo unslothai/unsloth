@@ -377,6 +377,7 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
 def test_health_response_reports_desktop_capability_fields(monkeypatch):
     router_stub = SimpleNamespace(
         auth_router = APIRouter(),
+        chat_history_router = APIRouter(),
         data_recipe_router = APIRouter(),
         datasets_router = APIRouter(),
         export_router = APIRouter(),
