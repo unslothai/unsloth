@@ -41,8 +41,8 @@ IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 # Mapping from detected ROCm (major, minor) to the best PyTorch wheel tag on
 # download.pytorch.org.  Entries are checked newest-first (>=).
 _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
-    (7, 2): "rocm7.2",   # torch 2.11.0
-    (7, 1): "rocm7.1",   # torch 2.10.0
+    (7, 2): "rocm7.2",  # torch 2.11.0
+    (7, 1): "rocm7.1",  # torch 2.10.0
     (7, 0): "rocm7.0",
     (6, 4): "rocm6.4",
     (6, 3): "rocm6.3",
