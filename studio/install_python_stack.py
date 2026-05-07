@@ -270,6 +270,12 @@ def _has_usable_nvidia_gpu() -> bool:
     return result.returncode == 0 and "GPU " in result.stdout
 
 
+# Set to True by _ensure_rocm_torch() when AMD Windows wheels are installed
+# successfully. Used by the post-install warning block to skip the "must be
+# installed manually" note without spawning a subprocess.
+_rocm_windows_torch_installed: bool = False
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -311,6 +317,8 @@ def _ensure_rocm_torch() -> None:
                 timeout = 30,
             )
             if probe.returncode == 0 and probe.stdout.decode().strip() == "yes":
+                global _rocm_windows_torch_installed
+                _rocm_windows_torch_installed = True
                 return  # already ROCm torch
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -343,6 +351,8 @@ def _ensure_rocm_torch() -> None:
             *wheel_urls,
             constrain = False,
         )
+        global _rocm_windows_torch_installed
+        _rocm_windows_torch_installed = True
         return
 
     # ── Linux x86_64 path ──────────────────────────────────────────────────────
@@ -1179,41 +1189,15 @@ def install_python_stack() -> int:
             if _wr.returncode == 0 and _check_fn(_wr.stdout):
                 _win_amd_gpu = True
                 break
-        if _win_amd_gpu:
-            # Only warn if torch doesn't already have ROCm (HIP) support.
-            # AMD SDK wheels (e.g. 2.9.0+rocmsdk20251116) don't set
-            # torch.version.hip, so also check for "rocm" in __version__.
-            try:
-                _rocm_probe = subprocess.run(
-                    [
-                        sys.executable,
-                        "-c",
-                        (
-                            "import torch; "
-                            "hip=getattr(torch.version,'hip','') or ''; "
-                            "ver=torch.__version__; "
-                            "print('yes' if hip or 'rocm' in ver.lower() else '')"
-                        ),
-                    ],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    timeout = 20,
-                )
-                _has_rocm_torch = (
-                    _rocm_probe.returncode == 0
-                    and _rocm_probe.stdout.decode().strip() == "yes"
-                )
-            except Exception:
-                _has_rocm_torch = False
-            if not _has_rocm_torch:
-                _safe_print(
-                    _dim("  Note:"),
-                    "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
-                )
-                _safe_print(
-                    " " * 8,
-                    "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
-                )
+        if _win_amd_gpu and not _rocm_windows_torch_installed:
+            _safe_print(
+                _dim("  Note:"),
+                "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
+            )
+            _safe_print(
+                " " * 8,
+                "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
+            )
 
     # 3. Extra dependencies
     _progress("unsloth extras")
