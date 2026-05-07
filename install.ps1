@@ -1445,7 +1445,7 @@ shell.Run cmd, 0, False
             $rw0 = $ROCmAllWheelUrls[0]; $rw1 = $ROCmAllWheelUrls[1]
             $rw2 = $ROCmAllWheelUrls[2]; $rw3 = $ROCmAllWheelUrls[3]
             $rw4 = $ROCmAllWheelUrls[4]
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-cache-dir --no-deps $rw0 $rw1 $rw2 $rw3 $rw4 }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps $rw0 $rw1 $rw2 $rw3 $rw4 }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)

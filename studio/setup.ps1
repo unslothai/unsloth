@@ -1888,7 +1888,7 @@ if ($ROCmTorchWheelUrls) {
     substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
     $sw0 = $ROCmTorchWheelUrls[0]; $sw1 = $ROCmTorchWheelUrls[1]
     $sw2 = $ROCmTorchWheelUrls[2]; $sw3 = $ROCmTorchWheelUrls[3]; $sw4 = $ROCmTorchWheelUrls[4]
-    $output = Fast-Install --force-reinstall --no-cache-dir --no-deps $sw0 $sw1 $sw2 $sw3 $sw4 | Out-String
+    $output = Fast-Install --force-reinstall --no-deps $sw0 $sw1 $sw2 $sw3 $sw4 | Out-String
     $torchInstallExit = $LASTEXITCODE
     if ($torchInstallExit -ne 0) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
