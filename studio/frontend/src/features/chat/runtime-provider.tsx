@@ -41,7 +41,11 @@ import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
-import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
+import {
+  compactEmptyAssistantRecords,
+  isEmptyAssistantThreadMessage,
+  syncExportedRepositoryToDexie,
+} from "./utils/delete-thread-message";
 
 const DEFAULT_SUGGESTIONS = [
   {
@@ -600,7 +604,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           user: 1,
           assistant: 2,
         };
-        const msgs = await db.messages.where("threadId").equals(remoteId).toArray();
+        let msgs = await db.messages.where("threadId").equals(remoteId).toArray();
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;
@@ -608,6 +612,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           if (aOrder !== bOrder) return aOrder - bOrder;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
+        msgs = compactEmptyAssistantRecords(msgs);
 
         // Restore context usage from last assistant message if model matches
         const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
@@ -633,11 +638,16 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const hasParentIds = msgs.some((m) => "parentId" in m);
         if (hasParentIds) {
           let previousId: string | null = null;
+          const messageIds = new Set(msgs.map((m) => m.id));
           return {
             messages: msgs.map((m) => {
-              const parentId = "parentId" in m
+              const storedParentId = "parentId" in m
                 ? (m.parentId ?? null)
                 : previousId;
+              const parentId =
+                storedParentId && messageIds.has(storedParentId)
+                  ? storedParentId
+                  : previousId;
               previousId = m.id;
               return {
                 parentId,
@@ -650,6 +660,9 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
       },
 
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
+        if (isEmptyAssistantThreadMessage(message)) {
+          return;
+        }
         const { remoteId } = await aui.threadListItem().initialize();
         if (isChatThreadDeleted(remoteId)) {
           await deleteThreadRows(remoteId);

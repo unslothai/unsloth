@@ -244,9 +244,7 @@ function findCurrentUserImageBase64(messages: RunMessages): string | undefined {
 }
 
 function findCurrentUserAudioBase64(messages: RunMessages): string | undefined {
-  // Check the current message's content parts (from compare view's
-  // CompareMessagePart with type: "audio"). Older audio turns must not
-  // be attached to later text-only requests.
+  // Only attach audio from the message being sent.
   const message = findCurrentUserMessage(messages);
   for (const part of message?.content ?? []) {
     if (part.type === "audio" && "audio" in part) {

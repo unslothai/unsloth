@@ -38,6 +38,45 @@ function cloneAttachments(
   return JSON.parse(JSON.stringify(attachments));
 }
 
+function hasContentParts(content: unknown): boolean {
+  if (typeof content === "string") {
+    return content.trim().length > 0;
+  }
+  return Array.isArray(content) && content.length > 0;
+}
+
+export function isEmptyAssistantThreadMessage(message: ThreadMessage): boolean {
+  return message.role === "assistant" && !hasContentParts(message.content);
+}
+
+function isEmptyAssistantMessageRecord(message: MessageRecord): boolean {
+  return message.role === "assistant" && !hasContentParts(message.content);
+}
+
+export function compactEmptyAssistantRecords(
+  messages: MessageRecord[],
+): MessageRecord[] {
+  const skippedParents = new Map<string, string | null>();
+  const compacted: MessageRecord[] = [];
+
+  for (const message of messages) {
+    const parentId = message.parentId ?? null;
+    const resolvedParentId = skippedParents.get(parentId ?? "") ?? parentId;
+
+    if (isEmptyAssistantMessageRecord(message)) {
+      skippedParents.set(message.id, resolvedParentId);
+      continue;
+    }
+
+    compacted.push({
+      ...message,
+      parentId: resolvedParentId,
+    });
+  }
+
+  return compacted;
+}
+
 function exportedItemToRecord(
   threadId: string,
   parentId: string | null,
@@ -78,9 +117,12 @@ export async function syncExportedRepositoryToDexie(
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
+  const messages = exp.messages.filter(
+    ({ message }) => !isEmptyAssistantThreadMessage(message),
+  );
   await db.transaction("rw", db.messages, async () => {
     if (options.pruneMissing) {
-      const keepIds = new Set(exp.messages.map((x) => x.message.id));
+      const keepIds = new Set(messages.map((x) => x.message.id));
       const existingIds = await db.messages
         .where("threadId")
         .equals(remoteId)
@@ -91,7 +133,7 @@ export async function syncExportedRepositoryToDexie(
       }
     }
     await db.messages.bulkPut(
-      exp.messages.map(({ message, parentId }) =>
+      messages.map(({ message, parentId }) =>
         exportedItemToRecord(remoteId, parentId, message),
       ),
     );
