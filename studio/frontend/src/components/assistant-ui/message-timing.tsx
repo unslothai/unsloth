@@ -51,7 +51,7 @@ export const MessageTiming: FC<{
           data-slot="message-timing-trigger"
           aria-label="Message timing"
           className={cn(
-            "flex items-center rounded-md p-1 font-mono text-muted-foreground text-xs tabular-nums transition-colors hover:bg-accent hover:text-accent-foreground",
+            "flex items-center rounded-[10px] p-1 font-mono text-chat-icon-fg text-[13px] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >
@@ -62,7 +62,8 @@ export const MessageTiming: FC<{
         side={side}
         sideOffset={8}
         data-slot="message-timing-popover"
-        className="[&_span>svg]:hidden! rounded-lg border bg-popover px-3 py-2 text-popover-foreground shadow-md"
+        variant="rich"
+        className="[&_span>svg]:hidden!"
       >
         <div className="grid min-w-40 gap-1.5 text-xs">
           {st ? (
