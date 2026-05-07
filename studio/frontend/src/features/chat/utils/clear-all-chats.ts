@@ -9,7 +9,7 @@ import {
 import { db } from "../db";
 import {
   isChatThreadDeleted,
-  markChatThreadDeleted,
+  markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 
 export async function countAllChats(): Promise<number> {
@@ -33,9 +33,9 @@ export async function clearAllChats(): Promise<void> {
     listChatThreads().catch(() => []),
     db.threads.toArray(),
   ]);
-  for (const thread of [...backendThreads, ...legacyThreads]) {
-    markChatThreadDeleted(thread.id);
-  }
+  markChatThreadsDeleted(
+    [...backendThreads, ...legacyThreads].map((thread) => thread.id),
+  );
   await Promise.all([
     clearBackendChats(),
     db.transaction("rw", db.threads, db.messages, async () => {

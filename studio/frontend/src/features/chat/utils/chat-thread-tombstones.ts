@@ -7,6 +7,12 @@ export function markChatThreadDeleted(threadId: string): void {
   deletedThreadIds.add(threadId);
 }
 
+export function markChatThreadsDeleted(threadIds: Iterable<string>): void {
+  for (const threadId of threadIds) {
+    deletedThreadIds.add(threadId);
+  }
+}
+
 export function isChatThreadDeleted(threadId: string): boolean {
   return deletedThreadIds.has(threadId);
 }
