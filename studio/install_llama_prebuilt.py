@@ -3838,7 +3838,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "libggml.so*",
             "libggml-base.so*",
             "libmtmd.so*",
-            "libggml-cpu-*.so*",
+            "libggml-cpu*.so*",
             "libggml-cuda.so*",
             "libggml-hip.so*",
             "libggml-rpc.so*",
@@ -5129,7 +5129,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
         ]
     if choice.install_kind == "linux-cuda":
@@ -5138,7 +5138,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-cuda.so*"],
         ]
@@ -5154,7 +5154,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
