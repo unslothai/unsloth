@@ -72,13 +72,19 @@ import {
 import { Copy01Icon, Delete02Icon, Edit03Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ChangeEvent,
+  type ClipboardEvent,
   type FC,
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+import TextareaAutosize, {
+  type TextareaAutosizeProps,
+} from "react-textarea-autosize";
 import { toast } from "sonner";
 
 export const Thread: FC<{
@@ -281,6 +287,173 @@ const PendingAudioChip: FC = () => {
   );
 };
 
+const StudioComposerInput: FC<TextareaAutosizeProps> = ({
+  autoFocus,
+  disabled,
+  onBlur,
+  onChange,
+  onCompositionEnd,
+  onCompositionStart,
+  onKeyDown,
+  onPaste,
+  ...props
+}) => {
+  const aui = useAui();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isComposingRef = useRef(false);
+  const value = useAuiState((s) => {
+    if (!s.composer.isEditing) return "";
+    return s.composer.text;
+  });
+  const inputDisabled =
+    useAuiState(
+      (s) => s.thread.isDisabled || s.composer.dictation?.inputDisabled,
+    ) || disabled;
+
+  const setComposerText = useCallback(
+    (text: string) => {
+      if (!aui.composer().getState().isEditing) return;
+      aui.composer().setText(text);
+    },
+    [aui],
+  );
+
+  const clearStaleComposition = useCallback(
+    (text: string) => {
+      if (!isComposingRef.current) return;
+      isComposingRef.current = false;
+      setComposerText(text);
+    },
+    [setComposerText],
+  );
+
+  const focusInput = useCallback(() => {
+    if (!autoFocus || inputDisabled) return;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, [autoFocus, inputDisabled]);
+
+  useEffect(() => {
+    focusInput();
+  }, [focusInput]);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    return aui.on("thread.runStart", focusInput);
+  }, [aui, autoFocus, focusInput]);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    return aui.on("threadListItem.switchedTo", focusInput);
+  }, [aui, autoFocus, focusInput]);
+
+  const handleChange = useCallback(
+    (event: ChangeEvent<HTMLTextAreaElement>) => {
+      onChange?.(event);
+      setComposerText(event.target.value);
+    },
+    [onChange, setComposerText],
+  );
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      onKeyDown?.(event);
+      if (event.defaultPrevented || inputDisabled) return;
+
+      const nativeEvent = event.nativeEvent as { isComposing?: boolean };
+      const nativeComposing = nativeEvent.isComposing === true;
+      const hadStaleComposition =
+        isComposingRef.current && !nativeComposing && event.key !== "Process";
+      if (hadStaleComposition) {
+        clearStaleComposition(event.currentTarget.value);
+      }
+      if (hadStaleComposition && event.key === "Enter") return;
+      if (nativeComposing || isComposingRef.current) return;
+
+      if (event.key === "Escape" && aui.composer().getState().canCancel) {
+        aui.composer().cancel();
+        event.preventDefault();
+        return;
+      }
+
+      if (event.key !== "Enter") return;
+      const threadState = aui.thread().getState();
+      const composerState = aui.composer().getState();
+      if (
+        event.shiftKey &&
+        (event.ctrlKey || event.metaKey) &&
+        threadState.capabilities.queue &&
+        !composerState.isEmpty
+      ) {
+        event.preventDefault();
+        aui.composer().send({ steer: true });
+        return;
+      }
+      if (event.shiftKey) return;
+      if (threadState.isRunning && !threadState.capabilities.queue) return;
+
+      event.preventDefault();
+      textareaRef.current?.closest("form")?.requestSubmit();
+    },
+    [aui, clearStaleComposition, inputDisabled, onKeyDown],
+  );
+
+  const handlePaste = useCallback(
+    async (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      onPaste?.(event);
+      clearStaleComposition(event.currentTarget.value);
+      if (event.defaultPrevented) return;
+
+      const files = Array.from(event.clipboardData?.files || []);
+      if (!aui.thread().getState().capabilities.attachments || files.length === 0) {
+        return;
+      }
+
+      try {
+        event.preventDefault();
+        await Promise.all(files.map((file) => aui.composer().addAttachment(file)));
+      } catch (error) {
+        console.error("Error adding attachment:", error);
+      }
+    },
+    [aui, clearStaleComposition, onPaste],
+  );
+
+  return (
+    <TextareaAutosize
+      name="input"
+      {...props}
+      ref={textareaRef}
+      value={value}
+      disabled={inputDisabled}
+      onBlur={(event) => {
+        onBlur?.(event);
+        clearStaleComposition(event.currentTarget.value);
+      }}
+      onChange={handleChange}
+      onCompositionStart={(event) => {
+        onCompositionStart?.(event);
+        isComposingRef.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        onCompositionEnd?.(event);
+        isComposingRef.current = false;
+        setComposerText(event.currentTarget.value);
+      }}
+      onInput={(event) => {
+        const nativeEvent = event.nativeEvent as { isComposing?: boolean };
+        if (nativeEvent.isComposing === false) {
+          clearStaleComposition(event.currentTarget.value);
+        }
+      }}
+      onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
+    />
+  );
+};
+
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -296,7 +469,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       <ComposerAttachments />
       <PendingAudioChip />
       <ToolStatusDisplay />
-      <ComposerPrimitive.Input
+      <StudioComposerInput
         placeholder="Send a message..."
         className="aui-composer-input composer-input"
         minRows={1}
@@ -916,7 +1089,7 @@ const EditComposer: FC = () => {
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
-        <ComposerPrimitive.Input
+        <StudioComposerInput
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
         />
