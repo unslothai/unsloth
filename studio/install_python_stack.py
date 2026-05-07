@@ -991,7 +991,7 @@ def install_python_stack() -> int:
     base_total = 10 if IS_WINDOWS else 11
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
+    if not IS_MACOS and not NO_TORCH:
         base_total += 3
     _TOTAL = (base_total - 1) if skip_base else base_total
 
@@ -1175,14 +1175,24 @@ def install_python_stack() -> int:
                 _win_amd_gpu = True
                 break
         if _win_amd_gpu:
-            _safe_print(
-                _dim("  Note:"),
-                "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
-            )
-            _safe_print(
-                " " * 8,
-                "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
-            )
+            # Only warn if torch doesn't already have ROCm (HIP) support
+            try:
+                _hip_ver = subprocess.run(
+                    [sys.executable, "-c", "import torch; print(getattr(torch.version,'hip','') or '')"],
+                    stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, timeout = 20,
+                )
+                _has_rocm_torch = _hip_ver.returncode == 0 and _hip_ver.stdout.decode().strip() != ""
+            except Exception:
+                _has_rocm_torch = False
+            if not _has_rocm_torch:
+                _safe_print(
+                    _dim("  Note:"),
+                    "AMD GPU detected on Windows. ROCm-enabled PyTorch must be",
+                )
+                _safe_print(
+                    " " * 8,
+                    "installed manually. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
+                )
 
     # 3. Extra dependencies
     _progress("unsloth extras")
