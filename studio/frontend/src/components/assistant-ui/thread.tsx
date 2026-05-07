@@ -337,21 +337,26 @@ const StudioComposerInput: FC<TextareaAutosizeProps> = ({
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   }, [autoFocus, inputDisabled]);
 
+  const focusThreadInput = useCallback(() => {
+    if (aui.composer().getState().type !== "thread") return;
+    focusInput();
+  }, [aui, focusInput]);
+
   useEffect(() => {
     focusInput();
   }, [focusInput]);
 
   useEffect(() => {
     if (!autoFocus) return;
-    return aui.on("thread.runStart", focusInput);
-  }, [aui, autoFocus, focusInput]);
+    return aui.on("thread.runStart", focusThreadInput);
+  }, [aui, autoFocus, focusThreadInput]);
 
   useEffect(() => {
     if (!autoFocus) return;
-    return aui.on("threadListItem.switchedTo", focusInput);
-  }, [aui, autoFocus, focusInput]);
+    return aui.on("threadListItem.switchedTo", focusThreadInput);
+  }, [aui, autoFocus, focusThreadInput]);
 
-  useOnScrollThreadToBottom(focusInput);
+  useOnScrollThreadToBottom(focusThreadInput);
 
   const handleChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => {
