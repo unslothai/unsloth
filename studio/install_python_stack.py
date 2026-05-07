@@ -1634,10 +1634,17 @@ def install_python_stack() -> int:
         # Local dev install: update deps from base.txt, then overlay the
         # local checkout as an editable install (--no-deps so torch is
         # never re-resolved).
+        # --no-deps on the base.txt install too: this branch is for Docker
+        # builds where torch + every CUDA-adjacent package is already pinned
+        # and installed; resolving base.txt's deps risks pulling PyPI's
+        # CPU-only torch over our local-version cu* build (the +cu130 etc.
+        # local segment is non-canonical PEP 440 and uv may treat it as
+        # not-satisfying an unconstrained `torch` requirement).
         _progress("base packages")
         pip_install(
             "Updating base packages",
             "--no-cache-dir",
+            "--no-deps",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
@@ -1674,10 +1681,17 @@ def install_python_stack() -> int:
         # Update path: upgrade only unsloth + unsloth-zoo while preserving
         # existing torch/CUDA installations.  Torch is pre-installed by
         # install.sh / setup.ps1; --upgrade-package targets only base pkgs.
+        # --no-deps: this branch is for Docker builds where torch + every
+        # CUDA-adjacent package is already pinned and installed by the
+        # Dockerfile; resolving base.txt's transitive deps risks pulling
+        # PyPI's CPU-only torch over our local-version cu* build (the
+        # +cu130 etc. local segment is non-canonical PEP 440 and uv may
+        # treat it as not-satisfying an unconstrained `torch` requirement).
         _progress("base packages")
         pip_install(
             "Updating base packages",
             "--no-cache-dir",
+            "--no-deps",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
