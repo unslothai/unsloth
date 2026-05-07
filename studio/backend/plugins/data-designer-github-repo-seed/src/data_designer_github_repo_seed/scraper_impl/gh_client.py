@@ -31,7 +31,7 @@ class RateLimitError(Exception):
 
 class GitHubAuthError(RuntimeError):
     """Raised when GitHub returns 401/403 due to invalid or insufficient credentials."""
-    pass
+
 
 
 class GitHubClient:
