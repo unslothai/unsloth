@@ -836,7 +836,9 @@ def sync_chat_messages(
                     (thread_id, *keep_ids),
                 )
             else:
-                conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
+                conn.execute(
+                    "DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,)
+                )
         conn.executemany(
             """
             INSERT INTO chat_messages
