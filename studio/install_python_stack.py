@@ -1228,10 +1228,17 @@ def install_python_stack() -> int:
         _progress("dependency overrides (skipped, no torch)")
     else:
         _progress("dependency overrides")
+        _override_extra_args: tuple[str, ...] = ()
+        if _rocm_windows_torch_installed:
+            # torchao in overrides.txt declares torch as a dependency; without
+            # --no-deps uv would resolve and install CPU torch from PyPI,
+            # overwriting the AMD ROCm wheels we just installed.
+            _override_extra_args = ("--no-deps",)
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",
             "--no-cache-dir",
+            *_override_extra_args,
             req = REQ_ROOT / "overrides.txt",
         )
 
