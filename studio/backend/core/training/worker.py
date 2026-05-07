@@ -2211,7 +2211,11 @@ def run_training_process(
         )
 
         # Wire ActivationCaptureCallback for text/VLM models (audio models skipped, off by default)
-        if config.get("enable_activation_capture", False) and not trainer.is_audio and not trainer.is_audio_vlm:
+        if (
+            config.get("enable_activation_capture", False)
+            and not trainer.is_audio
+            and not trainer.is_audio_vlm
+        ):
             try:
                 from unsloth.activation_capture import (
                     ActivationCaptureConfig,

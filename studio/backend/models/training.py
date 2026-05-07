@@ -325,7 +325,8 @@ class TrainingStartRequest(BaseModel):
 
     # Interpretability parameters
     enable_activation_capture: bool = Field(
-        False, description = "Capture neuron activation statistics for interpretability visualizations"
+        False,
+        description = "Capture neuron activation statistics for interpretability visualizations",
     )
 
     # GPU selection
