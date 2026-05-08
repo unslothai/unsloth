@@ -122,6 +122,21 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     return s
 
 
+def _is_hf_offline_env() -> bool:
+    """Return True if the user has opted into HF offline mode via env vars.
+
+    Without this, ``local_files_only`` defaults to ``False`` and is passed
+    explicitly to AutoConfig/PeftConfig, which overrides huggingface_hub's
+    own env-derived default and causes downloads despite ``HF_HUB_OFFLINE=1``
+    or ``TRANSFORMERS_OFFLINE=1``.
+    """
+    OFFLINE_TRUE = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in OFFLINE_TRUE
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in OFFLINE_TRUE
+    )
+
+
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
@@ -439,7 +454,7 @@ class FastLanguageModel(FastLlamaModel):
         peft_error = None
         model_config = None
         peft_config = None
-        local_files_only = kwargs.get("local_files_only", False)
+        local_files_only = kwargs.get("local_files_only", _is_hf_offline_env())
 
         try:
             model_config = AutoConfig.from_pretrained(
@@ -1054,7 +1069,7 @@ class FastModel(FastBaseModel):
         peft_error = None
         model_config = None
         peft_config = None
-        local_files_only = kwargs.get("local_files_only", False)
+        local_files_only = kwargs.get("local_files_only", _is_hf_offline_env())
 
         try:
             model_config = AutoConfig.from_pretrained(
