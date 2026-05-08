@@ -1084,6 +1084,17 @@ def run_training_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1d. Ensure torch.distributed.is_initialized exists before ML libs load ──
+    # The ROCm Windows wheel (2.9.0+rocmsdk*) does not expose is_initialized on
+    # the torch.distributed module object until it is explicitly imported.
+    # transformers and trl access it before that happens, causing AttributeError.
+    try:
+        import torch.distributed as _td  # noqa: F401 -- forces full module load
+        if not hasattr(_td, "is_initialized"):
+            _td.is_initialized = lambda: False
+    except Exception:
+        pass
+
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
         _send_status(event_queue, "Importing Unsloth...")
