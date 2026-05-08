@@ -111,11 +111,13 @@ fn backend_root_status(
     }
 }
 
-fn backend_has_verified_desktop_owner(health: &BackendHealth) -> bool {
+fn backend_desktop_owner_match(
+    health: &BackendHealth,
+) -> crate::desktop_backend_owner::HealthOwnerMatch {
     let Some(owner) = health.desktop_owner.as_ref() else {
-        return false;
+        return crate::desktop_backend_owner::HealthOwnerMatch::None;
     };
-    crate::desktop_backend_owner::health_matches_desktop_owner(
+    crate::desktop_backend_owner::classify_health_desktop_owner(
         health.studio_root_id.as_deref(),
         owner.kind.as_deref(),
         owner.token_sha256.as_deref(),
@@ -156,7 +158,8 @@ pub(super) async fn backend_desktop_auth_status(
     expected_studio_root_id: Option<&str>,
 ) -> BackendProbe {
     let root_status = backend_root_status(health, expected_studio_root_id);
-    let verified_owner = backend_has_verified_desktop_owner(health);
+    let owner_match = backend_desktop_owner_match(health);
+    let verified_owner = owner_match == crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp;
     let same_root_external = root_status == BackendRootStatus::SameRoot && !verified_owner;
 
     match root_status {
@@ -173,6 +176,19 @@ pub(super) async fn backend_desktop_auth_status(
             };
         }
         BackendRootStatus::SameRoot => {}
+    }
+
+    if same_root_external
+        && matches!(
+            owner_match,
+            crate::desktop_backend_owner::HealthOwnerMatch::PreviousApp
+                | crate::desktop_backend_owner::HealthOwnerMatch::OtherDesktopOwner
+        )
+    {
+        return BackendProbe::ExternalConflict {
+            port,
+            reason: "desktop_owned_backend_active".to_string(),
+        };
     }
 
     if let Some(reason) = backend_capability_stale_reason(health) {
@@ -235,7 +251,7 @@ pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendPro
 
     // Fan out health probes concurrently. The desktop-auth probe is still
     // sequential per candidate because it has auth-log side effects.
-    let ports: Vec<u16> = (8888u16..=8908).collect();
+    let ports: Vec<u16> = crate::desktop_backend_owner::desktop_candidate_ports().collect();
     let mut health_futs = Vec::with_capacity(ports.len());
     for port in ports {
         // why: reqwest::Client is internally Arc-wrapped; clone is a refcount bump

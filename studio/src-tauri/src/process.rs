@@ -7,30 +7,141 @@ use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
+#[allow(dead_code)]
+pub(crate) enum OwnedBackendHandle {
+    Spawned {
+        child: Box<dyn ChildWrapper + Send>,
+        owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
+        requested_port: u16,
+        reported_port: Option<u16>,
+        pid: u32,
+        generation: u64,
+    },
+    Adopted {
+        owner: crate::desktop_backend_owner::BackendOwnerState,
+        port: u16,
+        pid: u32,
+        generation: u64,
+    },
+}
+
+#[allow(dead_code)]
+impl OwnedBackendHandle {
+    pub(crate) fn spawned(
+        child: Box<dyn ChildWrapper + Send>,
+        owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
+        requested_port: u16,
+        pid: u32,
+        generation: u64,
+    ) -> Self {
+        Self::Spawned {
+            child,
+            owner,
+            requested_port,
+            reported_port: None,
+            pid,
+            generation,
+        }
+    }
+
+    pub(crate) fn adopted(
+        owner: crate::desktop_backend_owner::BackendOwnerState,
+        port: u16,
+        pid: u32,
+        generation: u64,
+    ) -> Self {
+        Self::Adopted {
+            owner,
+            port,
+            pid,
+            generation,
+        }
+    }
+
+    pub(crate) fn port(&self) -> Option<u16> {
+        match self {
+            Self::Spawned { reported_port, .. } => *reported_port,
+            Self::Adopted { port, .. } => Some(*port),
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        match self {
+            Self::Spawned { generation, .. } | Self::Adopted { generation, .. } => *generation,
+        }
+    }
+
+    pub(crate) fn is_spawned_child(&self) -> bool {
+        matches!(self, Self::Spawned { .. })
+    }
+
+    fn set_reported_port(&mut self, port: u16) {
+        if let Self::Spawned {
+            reported_port,
+            owner,
+            ..
+        } = self
+        {
+            *reported_port = Some(port);
+            if let Some(owner) = owner.as_mut() {
+                if let Err(error) = owner.update_port(port) {
+                    warn!("Could not update desktop backend owner metadata: {}", error);
+                }
+            }
+        }
+    }
+
+    fn spawned_child_mut(&mut self) -> Option<&mut Box<dyn ChildWrapper + Send>> {
+        match self {
+            Self::Spawned { child, .. } => Some(child),
+            Self::Adopted { .. } => None,
+        }
+    }
+
+    fn remove_owner_metadata(self) {
+        match self {
+            Self::Spawned {
+                owner: Some(owner), ..
+            }
+            | Self::Adopted { owner, .. } => owner.remove(),
+            Self::Spawned { owner: None, .. } => {}
+        }
+    }
+}
+
 pub struct BackendProcess {
-    pub child: Option<Box<dyn ChildWrapper + Send>>,
+    pub owned: Option<OwnedBackendHandle>,
     pub port: Option<u16>,
     pub logs: VecDeque<String>,
     pub intentional_stop: bool,
     pub generation: u64,
     pub diagnostics_session: Option<BackendLog>,
-    pub owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
+}
+
+impl BackendProcess {
+    pub(crate) fn has_owned_backend(&self) -> bool {
+        self.owned.is_some()
+    }
+
+    pub(crate) fn owned_backend_port(&self) -> Option<u16> {
+        self.owned.as_ref().and_then(OwnedBackendHandle::port)
+    }
 }
 
 impl Default for BackendProcess {
     fn default() -> Self {
         Self {
-            child: None,
+            owned: None,
             port: None,
             logs: VecDeque::with_capacity(MAX_LOG_LINES),
             intentional_stop: false,
             generation: 0,
             diagnostics_session: None,
-            owner: None,
         }
     }
 }
@@ -316,7 +427,7 @@ pub fn start_backend(
     // into the old window between generation reset and child storage.
     let (generation, backend_log, stdout, stderr) = {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
-        if proc.child.is_some() {
+        if proc.has_owned_backend() {
             return Err("Backend is already running.".to_string());
         }
 
@@ -326,7 +437,7 @@ pub fn start_backend(
         proc.logs.clear();
         proc.intentional_stop = false;
         proc.diagnostics_session = None;
-        proc.owner = None;
+        proc.owned = None;
         let generation = proc.generation;
 
         let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
@@ -379,9 +490,14 @@ pub fn start_backend(
             crate::desktop_backend_owner::activate_owner(pending, port, generation, backend_pid)
         });
 
-        proc.child = Some(child);
+        proc.owned = Some(OwnedBackendHandle::spawned(
+            child,
+            owner,
+            port,
+            backend_pid,
+            generation,
+        ));
         proc.diagnostics_session = Some(backend_log.clone());
-        proc.owner = owner;
         (generation, backend_log, stdout, stderr)
     };
 
@@ -483,13 +599,8 @@ fn read_output_stream<R: std::io::Read>(
                     } else {
                         if let Some(port) = detected_port {
                             proc.port = Some(port);
-                            if let Some(owner) = proc.owner.as_mut() {
-                                if let Err(error) = owner.update_port(port) {
-                                    warn!(
-                                        "Could not update desktop backend owner metadata: {}",
-                                        error
-                                    );
-                                }
+                            if let Some(owned) = proc.owned.as_mut() {
+                                owned.set_reported_port(port);
                             }
                             should_record_port = Some(port);
                         }
@@ -542,7 +653,11 @@ fn read_output_stream<R: std::io::Read>(
                 return;
             }
             let intentional = proc.intentional_stop;
-            let exited = if let Some(ref mut child) = proc.child {
+            let exited = if let Some(child) = proc
+                .owned
+                .as_mut()
+                .and_then(OwnedBackendHandle::spawned_child_mut)
+            {
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         info!("Backend stdout stream ended with status: {}", status);
@@ -563,11 +678,11 @@ fn read_output_stream<R: std::io::Read>(
             };
 
             if exited {
-                proc.child = None;
-                proc.diagnostics_session = None;
-                if let Some(owner) = proc.owner.take() {
-                    owner.remove();
+                if let Some(owned) = proc.owned.take() {
+                    owned.remove_owner_metadata();
                 }
+                proc.port = None;
+                proc.diagnostics_session = None;
                 emit_crash = !intentional;
             }
         }
@@ -587,61 +702,101 @@ fn read_output_stream<R: std::io::Read>(
     }
 }
 
-/// Graceful shutdown of the backend process and its entire subprocess tree.
-/// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL to group
-/// Windows: CTRL_BREAK_EVENT -> wait up to 5s -> hidden taskkill /T /F
-pub fn stop_backend(
-    state: &BackendState,
-    shutdown: &ShutdownFlag,
-    diagnostics_state: Option<&DiagnosticsState>,
+fn wait_for_child_exit(child: &mut Box<dyn ChildWrapper + Send>, label: &str) -> bool {
+    for _ in 0..50 {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                info!("{} exited with status: {}", label, status);
+                return true;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => {
+                warn!("Error polling {} process: {}", label, e);
+                return false;
+            }
+        }
+    }
+    false
+}
+
+fn wait_for_port_disconnect(port: u16, timeout: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if !crate::desktop_backend_owner::port_is_listening_blocking(
+            port,
+            Duration::from_millis(150),
+        ) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn try_exact_port_http_shutdown(port: u16, label: &str) -> bool {
+    match crate::desktop_backend_owner::exact_port_http_shutdown_blocking(port) {
+        Ok(()) => {
+            info!(
+                "{} exact-port HTTP shutdown requested on port {}",
+                label, port
+            );
+            true
+        }
+        Err(error) => {
+            warn!(
+                "{} exact-port HTTP shutdown failed on port {}: {}",
+                label, port, error
+            );
+            false
+        }
+    }
+}
+
+fn remove_optional_owner(owner: Option<crate::desktop_backend_owner::BackendOwnerState>) {
+    if let Some(owner) = owner {
+        owner.remove();
+    }
+}
+
+fn stop_spawned_backend(
+    mut child: Box<dyn ChildWrapper + Send>,
+    owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
+    reported_port: Option<u16>,
+    pid: u32,
 ) -> Result<(), String> {
-    shutdown.store(true, Ordering::SeqCst);
-    if let Some(diagnostics_state) = diagnostics_state {
-        diagnostics::record_backend_intentional_stop(diagnostics_state);
+    #[cfg(not(windows))]
+    let _ = reported_port;
+    info!("Stopping spawned backend process group (pid {})", pid);
+
+    #[cfg(windows)]
+    if let Some(port) = reported_port {
+        let verified = owner
+            .as_ref()
+            .map(|owner| owner.verifies_exact_port_blocking(port))
+            .unwrap_or(false);
+        if verified
+            && try_exact_port_http_shutdown(port, "Spawned backend")
+            && wait_for_child_exit(&mut child, "Backend")
+        {
+            remove_optional_owner(owner);
+            return Ok(());
+        }
     }
 
-    // Extract the child and mark intentional stop.
-    // We take the child OUT of the mutex so we don't hold the lock during the wait loop.
-    let (mut child, owner) = {
-        let mut proc = match state.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                warn!("Backend state mutex poisoned, recovering for cleanup");
-                poisoned.into_inner()
-            }
-        };
-        proc.intentional_stop = true;
-        (proc.child.take(), proc.owner.take())
-    };
-
-    let Some(ref mut child) = child else {
-        if let Some(owner) = owner {
-            owner.remove();
-        }
-        return Ok(()); // Nothing running
-    };
-
-    let pid = child.id();
-    info!("Stopping backend process group (pid {})", pid);
-
-    // Send SIGTERM to the entire process group (negative PID = group signal).
-    // This gives Python and any workers a chance to shut down gracefully.
     #[cfg(unix)]
     {
         if pid > i32::MAX as u32 {
-            // PID too large for i32 negation, fall back to direct kill
             warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
-            if let Some(owner) = owner {
-                owner.remove();
-            }
+            remove_optional_owner(owner);
             return Ok(());
         }
         unsafe {
             libc::kill(-(pid as i32), libc::SIGTERM);
         }
     }
+
     #[cfg(windows)]
     {
         unsafe {
@@ -652,24 +807,9 @@ pub fn stop_backend(
         }
     }
 
-    // Poll for up to 5 seconds (50 iterations * 100ms)
-    for _ in 0..50 {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                info!("Backend exited with status: {}", status);
-                if let Some(owner) = owner {
-                    owner.remove();
-                }
-                return Ok(());
-            }
-            Ok(None) => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(e) => {
-                warn!("Error polling backend process: {}", e);
-                break;
-            }
-        }
+    if wait_for_child_exit(&mut child, "Backend") {
+        remove_optional_owner(owner);
+        return Ok(());
     }
 
     #[cfg(windows)]
@@ -678,28 +818,141 @@ pub fn stop_backend(
             "Backend did not exit gracefully, force killing process tree (pid {})",
             pid
         );
-        force_kill_process_tree(pid, child, "Backend");
-        if let Some(owner) = owner {
-            owner.remove();
-        }
+        force_kill_process_tree(pid, &mut child, "Backend");
+        remove_optional_owner(owner);
         return Ok(());
     }
 
     #[cfg(unix)]
     {
-        // Force kill the process group on Unix
         warn!(
             "Backend did not exit gracefully, force killing group (pid {})",
             pid
         );
         let _ = child.kill();
-
-        // Reap the process
         let _ = child.wait();
-        if let Some(owner) = owner {
-            owner.remove();
-        }
+        remove_optional_owner(owner);
         info!("Backend process group forcefully stopped");
         Ok(())
+    }
+}
+
+fn stop_adopted_backend(
+    owner: crate::desktop_backend_owner::BackendOwnerState,
+    port: u16,
+    pid: u32,
+) -> Result<(), String> {
+    info!(
+        "Stopping adopted desktop-owned backend on exact port {} (pid {})",
+        port, pid
+    );
+
+    if !owner.verifies_exact_port_blocking(port) {
+        return Err(
+            "Refusing to stop adopted backend because ownership could not be verified".to_string(),
+        );
+    }
+
+    if try_exact_port_http_shutdown(port, "Adopted backend")
+        && wait_for_port_disconnect(port, Duration::from_secs(5))
+    {
+        owner.remove();
+        return Ok(());
+    }
+
+    Err(
+        "Adopted backend did not stop via exact-port HTTP shutdown; refusing PID fallback without verified port-to-PID binding"
+            .to_string(),
+    )
+}
+
+/// Graceful shutdown of owned backend handles.
+/// Unix spawned: SIGTERM to process group -> wait -> SIGKILL.
+/// Windows spawned: exact-port HTTP shutdown -> CTRL_BREAK_EVENT -> taskkill.
+/// Adopted handles: exact-port HTTP shutdown only; PID fallback is refused
+/// until the backend process identity can be bound to the verified port.
+pub fn stop_backend(
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: Option<&DiagnosticsState>,
+) -> Result<(), String> {
+    shutdown.store(true, Ordering::SeqCst);
+    if let Some(diagnostics_state) = diagnostics_state {
+        diagnostics::record_backend_intentional_stop(diagnostics_state);
+    }
+
+    enum StopTarget {
+        Spawned(OwnedBackendHandle),
+        Adopted {
+            owner: crate::desktop_backend_owner::BackendOwnerState,
+            port: u16,
+            pid: u32,
+            generation: u64,
+        },
+    }
+
+    let target = {
+        let mut proc = match state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Backend state mutex poisoned, recovering for cleanup");
+                poisoned.into_inner()
+            }
+        };
+        proc.intentional_stop = true;
+        match proc.owned.as_ref() {
+            Some(OwnedBackendHandle::Spawned { .. }) => {
+                proc.port = None;
+                proc.diagnostics_session = None;
+                proc.owned.take().map(StopTarget::Spawned)
+            }
+            Some(OwnedBackendHandle::Adopted {
+                owner,
+                port,
+                pid,
+                generation,
+            }) => Some(StopTarget::Adopted {
+                owner: owner.clone(),
+                port: *port,
+                pid: *pid,
+                generation: *generation,
+            }),
+            None => None,
+        }
+    };
+
+    match target {
+        Some(StopTarget::Spawned(OwnedBackendHandle::Spawned {
+            child,
+            owner,
+            reported_port,
+            pid,
+            ..
+        })) => stop_spawned_backend(child, owner, reported_port, pid),
+        Some(StopTarget::Adopted {
+            owner,
+            port,
+            pid,
+            generation,
+        }) => {
+            stop_adopted_backend(owner, port, pid)?;
+            let mut proc = state.lock().map_err(|error| error.to_string())?;
+            if matches!(
+                proc.owned.as_ref(),
+                Some(OwnedBackendHandle::Adopted {
+                    port: current_port,
+                    pid: current_pid,
+                    generation: current_generation,
+                    ..
+                }) if *current_port == port && *current_pid == pid && *current_generation == generation
+            ) {
+                proc.owned = None;
+                proc.port = None;
+                proc.diagnostics_session = None;
+            }
+            Ok(())
+        }
+        Some(StopTarget::Spawned(OwnedBackendHandle::Adopted { .. })) => unreachable!(),
+        None => Ok(()),
     }
 }

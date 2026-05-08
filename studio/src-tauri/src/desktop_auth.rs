@@ -91,11 +91,34 @@ fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
 async fn current_backend_port(
     state: &tauri::State<'_, BackendState>,
 ) -> Result<BackendPort, String> {
-    if let Some(port) = state.lock().map_err(|e| e.to_string())?.port {
+    let cached_port = {
+        let proc = state.lock().map_err(|e| e.to_string())?;
+        if let Some(port) = proc.owned_backend_port() {
+            return Ok(BackendPort {
+                port,
+                source: PortSource::Cached,
+            });
+        }
+        if proc.has_owned_backend() {
+            None
+        } else {
+            proc.port
+        }
+    };
+
+    if let Some(port) = cached_port {
         return Ok(BackendPort {
             port,
             source: PortSource::Cached,
         });
+    }
+
+    if state
+        .lock()
+        .map(|proc| proc.has_owned_backend())
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Backend is not ready".to_string());
     }
 
     let port = discover_compatible_backend_port()
@@ -150,6 +173,16 @@ fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> b
             AuthError::Connectivity(_) | AuthError::StaleResponder(_)
         )
     )
+}
+
+fn can_retry_on_discovered_port(state: &BackendState, source: PortSource) -> Result<bool, String> {
+    if source != PortSource::Cached {
+        return Ok(false);
+    }
+    state
+        .lock()
+        .map(|proc| !proc.has_owned_backend())
+        .map_err(|e| e.to_string())
 }
 
 async fn exchange_desktop_secret(
@@ -234,7 +267,7 @@ async fn retry_on_discovered_port(
     previous: BackendPort,
     secret: &str,
 ) -> Result<Option<(Option<DesktopAuthResponse>, BackendPort)>, String> {
-    if previous.source != PortSource::Cached {
+    if !can_retry_on_discovered_port(state.inner(), previous.source)? {
         return Ok(None);
     }
     let Some(port) = discover_compatible_backend_port().await else {
@@ -394,6 +427,23 @@ mod tests {
             PortSource::Cached,
             &AuthError::Failed("Desktop auth failed".to_string())
         ));
+    }
+
+    #[test]
+    fn owned_handle_disables_discovered_auth_retry() {
+        const ROOT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const TOKEN: &str = "desktop-owner-token";
+
+        let state = crate::process::new_backend_state();
+        assert!(can_retry_on_discovered_port(&state, PortSource::Cached).unwrap());
+        assert!(!can_retry_on_discovered_port(&state, PortSource::Discovered).unwrap());
+
+        let owner = crate::desktop_backend_owner::test_owner_state(ROOT_ID, TOKEN, 8890);
+        state.lock().unwrap().owned = Some(crate::process::OwnedBackendHandle::adopted(
+            owner, 8890, 2, 3,
+        ));
+
+        assert!(!can_retry_on_discovered_port(&state, PortSource::Cached).unwrap());
     }
 
     #[test]

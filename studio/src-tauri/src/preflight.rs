@@ -9,15 +9,16 @@ use managed::probe_managed_install;
 use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
 pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
+pub(crate) use version::{
+    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+};
 
 #[cfg(test)]
 use backend::{backend_desktop_auth_status, backend_health};
 #[cfg(test)]
 use managed::probe_managed_bin;
 #[cfg(test)]
-use version::{
-    backend_version_compatible, backend_version_stale_reason, MIN_DESKTOP_BACKEND_VERSION,
-};
+use version::{backend_version_compatible, MIN_DESKTOP_BACKEND_VERSION};
 
 fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
@@ -92,7 +93,6 @@ pub async fn mutation_blocking_backend_ignoring(
 }
 
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
-    let _ = crate::desktop_backend_owner::cleanup_verified_desktop_orphan().await;
     let (managed, backend) = tokio::join!(probe_managed_install(), probe_existing_backends(&[]));
     choose_preflight(managed, backend)
 }

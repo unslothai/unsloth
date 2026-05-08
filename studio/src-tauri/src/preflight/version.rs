@@ -1,5 +1,5 @@
-pub(super) const DESKTOP_PROTOCOL_VERSION: u16 = 1;
-pub(super) const DESKTOP_MANAGEABILITY_VERSION: u16 = 1;
+pub(crate) const DESKTOP_PROTOCOL_VERSION: u16 = 1;
+pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 1;
 // Explicit backend package minimum, not the desktop app Cargo version: backend
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
 pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.5.2";
@@ -52,7 +52,7 @@ pub(super) fn backend_version_compatible(version: Option<&str>) -> bool {
     actual >= minimum
 }
 
-pub(super) fn backend_version_stale_reason(version: Option<&str>) -> Option<String> {
+pub(crate) fn backend_version_stale_reason(version: Option<&str>) -> Option<String> {
     if backend_version_compatible(version) {
         return None;
     }

@@ -23,6 +23,12 @@ fn should_emit_repair_failed(msg: &str) -> bool {
 }
 
 fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflict) -> String {
+    if conflict.reason == "desktop_owned_backend_active" {
+        return format!(
+            "A desktop-owned Studio server for this install is already running on port {}. Quit the other desktop app instance, then try again.",
+            conflict.port
+        );
+    }
     format!(
         "A Studio server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
         conflict.port
@@ -30,33 +36,20 @@ fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflic
 }
 
 fn owned_backend_port(state: &tauri::State<'_, BackendState>) -> Result<Option<u16>, String> {
-    let proc = state.lock().map_err(|e| e.to_string())?;
-    Ok(if proc.child.is_some() {
-        proc.port
-    } else {
-        None
-    })
-}
-
-fn has_owned_backend_child(state: &tauri::State<'_, BackendState>) -> Result<bool, String> {
     state
         .lock()
-        .map(|proc| proc.child.is_some())
+        .map(|proc| proc.owned_backend_port())
         .map_err(|e| e.to_string())
 }
 
-async fn block_external_conflict(
-    ignored_ports: &[u16],
-    cleanup_orphans: bool,
-) -> Result<(), String> {
-    if cleanup_orphans {
-        if let Err(error) = crate::desktop_backend_owner::cleanup_verified_desktop_orphan().await {
-            warn!(
-                "Verified desktop orphan cleanup failed before mutation guard: {}",
-                error
-            );
-        }
-    }
+fn has_owned_backend(state: &tauri::State<'_, BackendState>) -> Result<bool, String> {
+    state
+        .lock()
+        .map(|proc| proc.has_owned_backend())
+        .map_err(|e| e.to_string())
+}
+
+async fn block_external_conflict(ignored_ports: &[u16]) -> Result<(), String> {
     if let Some(conflict) =
         crate::preflight::mutation_blocking_backend_ignoring(ignored_ports).await
     {
@@ -370,18 +363,18 @@ pub async fn start_backend_update(
     }
 
     let owned_port = owned_backend_port(&backend_state)?;
-    let has_owned_child = has_owned_backend_child(&backend_state)?;
-    if has_owned_child {
+    let has_owned = has_owned_backend(&backend_state)?;
+    if has_owned {
         let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
-        block_external_conflict(&ignored_ports, false).await?;
+        block_external_conflict(&ignored_ports).await?;
 
         // Signal the health watchdog to exit only after conflict guards pass.
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         info!("Stopping backend before update...");
         process::stop_backend(&backend_state, &shutdown, Some(diagnostics.inner()))?;
-        block_external_conflict(&[], true).await?;
+        block_external_conflict(&[]).await?;
     } else {
-        block_external_conflict(&[], true).await?;
+        block_external_conflict(&[]).await?;
     }
 
     // Run update in a blocking thread
@@ -423,17 +416,17 @@ pub async fn start_managed_repair(
     let diagnostics_state = diagnostics.inner().clone();
 
     let owned_port = owned_backend_port(&backend_state)?;
-    let has_owned_child = has_owned_backend_child(&backend_state)?;
-    if has_owned_child {
+    let has_owned = has_owned_backend(&backend_state)?;
+    if has_owned {
         let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
-        block_external_conflict(&ignored_ports, false).await?;
+        block_external_conflict(&ignored_ports).await?;
 
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         info!("Stopping backend before repair...");
         process::stop_backend(&backend_state, &shutdown, Some(&diagnostics_state))?;
-        block_external_conflict(&[], true).await?;
+        block_external_conflict(&[]).await?;
     } else {
-        block_external_conflict(&[], true).await?;
+        block_external_conflict(&[]).await?;
     }
 
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
@@ -493,7 +486,7 @@ pub async fn start_managed_repair(
         }
     }
 
-    if let Err(msg) = block_external_conflict(&[], true).await {
+    if let Err(msg) = block_external_conflict(&[]).await {
         diagnostics::finish_repair_group(
             &diagnostics_state,
             &repair_group_id,
@@ -643,7 +636,7 @@ mod tests {
         let owned_port = command_test_backend(ready_health(true)).await;
         let external_port = command_test_backend(ready_health(false)).await;
 
-        let err = super::block_external_conflict(&[owned_port], false)
+        let err = super::block_external_conflict(&[owned_port])
             .await
             .expect_err("external non-owned backend should block mutation");
 
@@ -702,12 +695,12 @@ async fn health_watchdog(
             break;
         }
 
-        let (port, has_child, current_generation) = {
+        let (port, has_owned, current_generation) = {
             let proc = match state.lock() {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            (proc.port, proc.child.is_some(), proc.generation)
+            (proc.port, proc.has_owned_backend(), proc.generation)
         };
 
         if current_generation != generation {
@@ -716,7 +709,7 @@ async fn health_watchdog(
         }
 
         // Stop watching if the backend is gone
-        if !has_child {
+        if !has_owned {
             info!("Health watchdog: backend stopped, exiting");
             break;
         }
