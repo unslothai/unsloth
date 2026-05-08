@@ -883,7 +883,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _send("status", status_message = f"Training {model_name}...")
 
     def _on_step(
-        step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens,
+        step,
+        total,
+        loss,
+        lr,
+        tok_s,
+        peak_gb,
+        elapsed,
+        num_tokens,
         grad_norm = None,
     ):
         eta = (elapsed / step * (total - step)) if step > 0 else 0
@@ -911,7 +918,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         "train/tokens_per_sec": tok_s,
                         "train/peak_gb": peak_gb,
                         "train/num_tokens": num_tokens,
-                        **({"train/grad_norm": grad_norm} if grad_norm is not None else {}),
+                        **(
+                            {"train/grad_norm": grad_norm}
+                            if grad_norm is not None
+                            else {}
+                        ),
                     },
                     step = step,
                 )

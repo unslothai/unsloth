@@ -161,6 +161,7 @@ else:
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
 elif DEVICE_TYPE == "mlx":
+
     def _gpu_getCurrentRawStream(_index = 0):
         return 0
 # NVIDIA GPU Default Logic
