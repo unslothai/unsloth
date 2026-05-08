@@ -1090,6 +1090,7 @@ def run_training_process(
     # transformers and trl access it before that happens, causing AttributeError.
     try:
         import torch.distributed as _td  # noqa: F401 -- forces full module load
+
         if not hasattr(_td, "is_initialized"):
             _td.is_initialized = lambda: False
     except Exception:
