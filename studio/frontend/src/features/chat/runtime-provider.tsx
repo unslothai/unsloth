@@ -44,6 +44,7 @@ import {
 import {
   compactEmptyAssistantRecords,
   isEmptyAssistantThreadMessage,
+  reconstructMessageHistoryItems,
   syncExportedRepositoryToDexie,
 } from "./utils/delete-thread-message";
 
@@ -629,34 +630,17 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           store.setContextUsage(savedUsage);
         }
 
-        // If any message has a stored parentId, reconstruct the tree
-        // so retries/regenerations load as branches instead of being
-        // unrolled into a flat list.  For mixed legacy/new threads
-        // (old messages without parentId + new messages with), infer
-        // sequential parents for old messages to preserve the chain.
-        // Fall back to fromArray for fully legacy threads.
-        const hasParentIds = msgs.some((m) => "parentId" in m);
-        if (hasParentIds) {
-          let previousId: string | null = null;
-          const messageIds = new Set(msgs.map((m) => m.id));
-          return {
-            messages: msgs.map((m) => {
-              const storedParentId = "parentId" in m
-                ? (m.parentId ?? null)
-                : previousId;
-              const parentId =
-                storedParentId && messageIds.has(storedParentId)
-                  ? storedParentId
-                  : previousId;
-              previousId = m.id;
-              return {
-                parentId,
-                message: toThreadMessage(m),
-              };
-            }),
-          };
+        if (!msgs.some((m) => "parentId" in m)) {
+          return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
         }
-        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
+        return {
+          messages: reconstructMessageHistoryItems(msgs).map(
+            ({ parentId, message }) => ({
+              parentId,
+              message: toThreadMessage(message),
+            }),
+          ),
+        };
       },
 
       async append({ parentId, message }: ExportedMessageRepositoryItem) {

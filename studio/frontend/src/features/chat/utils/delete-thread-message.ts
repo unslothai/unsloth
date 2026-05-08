@@ -22,6 +22,8 @@ import type {
 import { db } from "../db";
 import type { MessageRecord } from "../types";
 
+type StoredParentRecord = Pick<MessageRecord, "id" | "parentId">;
+
 function cloneContent(
   content: ThreadMessage["content"],
 ): ThreadMessage["content"] {
@@ -77,7 +79,8 @@ export function compactEmptyAssistantRecords(
   const compacted: MessageRecord[] = [];
 
   for (const message of messages) {
-    const parentId = message.parentId ?? null;
+    const hasParentId = "parentId" in message;
+    const parentId = hasParentId ? (message.parentId ?? null) : null;
     const resolvedParentId =
       parentId !== null && skippedParents.has(parentId)
         ? (skippedParents.get(parentId) ?? null)
@@ -88,13 +91,43 @@ export function compactEmptyAssistantRecords(
       continue;
     }
 
-    compacted.push({
-      ...message,
-      parentId: resolvedParentId,
-    });
+    const next = { ...message };
+    if (hasParentId || resolvedParentId !== parentId) {
+      next.parentId = resolvedParentId;
+    }
+    compacted.push(next);
   }
 
   return compacted;
+}
+
+function hasStoredParentId(message: StoredParentRecord): boolean {
+  return "parentId" in message;
+}
+
+export function reconstructMessageHistoryItems<T extends StoredParentRecord>(
+  messages: readonly T[],
+): Array<{ message: T; parentId: string | null }> {
+  const messageIds = new Set(messages.map((m) => m.id));
+  let previousId: string | null = null;
+
+  return messages.map((message) => {
+    let parentId: string | null;
+
+    // Missing = legacy chain, null = explicit root, bad ID = orphan repair.
+    if (!hasStoredParentId(message)) {
+      parentId = previousId;
+    } else if (message.parentId == null) {
+      parentId = null;
+    } else {
+      parentId = messageIds.has(message.parentId)
+        ? message.parentId
+        : previousId;
+    }
+
+    previousId = message.id;
+    return { parentId, message };
+  });
 }
 
 function exportedItemToRecord(
