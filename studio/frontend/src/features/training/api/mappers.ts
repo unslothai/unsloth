@@ -83,6 +83,8 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
+    max_grad_norm: 0.0,
+    max_grad_value: 3.0,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,
     optim: config.optimizerType,

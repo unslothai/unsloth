@@ -766,6 +766,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
+    max_grad_norm = float(config.get("max_grad_norm", 0.0) or 0.0)
+    max_grad_value = float(config.get("max_grad_value", 3.0) or 0.0)
+    if max_grad_norm > 0 and max_grad_value > 0:
+        _send(
+            "status",
+            status_message = (
+                "max_grad_norm and max_grad_value are both enabled; "
+                "ignoring max_grad_norm in favor of max_grad_value."
+            ),
+        )
+        max_grad_norm = 0.0
+
     trainer = MLXTrainer(
         model = model,
         tokenizer = tokenizer,
@@ -780,7 +792,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             lr_scheduler_type = lr_scheduler_type,
             optim = optim_name,
             weight_decay = float(config.get("weight_decay", 0.001) or 0.001),
-            max_grad_norm = float(config.get("max_grad_norm", 0.0) or 0.0),
+            max_grad_norm = max_grad_norm,
+            max_grad_value = max_grad_value,
             logging_steps = 1,
             max_seq_length = max_seq_length,
             seed = config.get("random_seed", 3407),

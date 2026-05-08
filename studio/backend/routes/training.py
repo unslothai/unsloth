@@ -215,6 +215,8 @@ async def start_training(
             "max_steps": request.max_steps,
             "save_steps": request.save_steps,
             "weight_decay": request.weight_decay,
+            "max_grad_norm": request.max_grad_norm,
+            "max_grad_value": request.max_grad_value,
             "random_seed": request.random_seed,
             "packing": request.packing,
             "optim": request.optim,
