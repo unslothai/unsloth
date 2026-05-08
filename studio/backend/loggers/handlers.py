@@ -78,7 +78,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 
 def filter_sensitive_data(logger, method_name, event_dict):
-    """Structlog processor to filter out base64 data from logs."""
+    """Structlog processor to redact native path leases from logs."""
 
     def filter_value(value):
         if isinstance(value, str):
@@ -87,13 +87,7 @@ def filter_sensitive_data(logger, method_name, event_dict):
             except Exception:
                 pass
             value = _NATIVE_PATH_LEASE_RE.sub(r"\1<redacted native path lease>", value)
-        if (
-            isinstance(value, str)
-            and len(value) > 100
-            and ("," in value or "/" in value)
-        ):
-            # Likely base64 data, truncate it
-            return value[:20] + "..."
+            return value
         elif isinstance(value, dict):
             return {
                 k: "<redacted native path lease>"
