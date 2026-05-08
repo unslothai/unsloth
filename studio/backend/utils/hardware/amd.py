@@ -13,10 +13,12 @@ import math
 import os
 import re
 import subprocess
+import sys
 from typing import Any, Optional
 
 from loggers import get_logger
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
@@ -30,6 +32,7 @@ def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
             text = True,
             timeout = timeout,
             env = child_env_without_native_path_secret(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("amd-smi query failed: %s", e)
