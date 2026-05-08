@@ -1284,6 +1284,53 @@ shell.Run cmd, 0, False
         substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
 
+    # ── AMD ROCm: prefer Python 3.12 (Windows wheels are cp312-only) ──
+    # Python detection runs before GPU detection, so if AMD ROCm is found and the
+    # selected Python is not 3.12, try to locate a 3.12 install now.  This lets
+    # users who have both 3.13 and 3.12 installed get ROCm support automatically
+    # without having to uninstall 3.13.  3.13 remains the default for NVIDIA.
+    if ($HasROCm -and $DetectedPython -and ($DetectedPython.Version -split '\.')[0..1] -join '.' -ne "3.12") {
+        $py312 = $null
+        # 1. Try py launcher (official CPython installs)
+        $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+        if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
+            try {
+                $out = & $pyLauncher.Source "-3.12" --version 2>&1 | Out-String
+                if ($out -match "Python 3\.12\.\d+") {
+                    $resolvedExe = (& $pyLauncher.Source "-3.12" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
+                        $py312 = @{ Version = "3.12"; Path = $resolvedExe }
+                    }
+                }
+            } catch {}
+        }
+        # 2. Try PATH (catches uv-managed or manually placed python3.12 / python)
+        if (-not $py312) {
+            foreach ($name in @("python3.12", "python3", "python")) {
+                foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
+                    if (-not $cmd.Source) { continue }
+                    if ($cmd.Source -like "*\WindowsApps\*") { continue }
+                    if (Test-IsCondaPython $cmd.Source) { continue }
+                    try {
+                        $out = & $cmd.Source --version 2>&1 | Out-String
+                        if ($out -match "Python 3\.12\.\d+") {
+                            $py312 = @{ Version = "3.12"; Path = $cmd.Source }
+                            break
+                        }
+                    } catch {}
+                }
+                if ($py312) { break }
+            }
+        }
+        if ($py312) {
+            $DetectedPython = $py312
+            substep "AMD ROCm detected -- switching to Python 3.12 (ROCm wheels are cp312-only)" "Cyan"
+        } else {
+            substep "AMD ROCm detected but Python 3.12 not found -- ROCm GPU training requires Python 3.12" "Yellow"
+            substep "Install Python 3.12 from python.org and re-run." "Yellow"
+        }
+    }
+
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
