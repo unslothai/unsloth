@@ -22,6 +22,49 @@ fn should_emit_repair_failed(msg: &str) -> bool {
     !msg.contains("NEEDS_ELEVATION")
 }
 
+fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflict) -> String {
+    format!(
+        "A Studio server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
+        conflict.port
+    )
+}
+
+fn owned_backend_port(state: &tauri::State<'_, BackendState>) -> Result<Option<u16>, String> {
+    let proc = state.lock().map_err(|e| e.to_string())?;
+    Ok(if proc.child.is_some() {
+        proc.port
+    } else {
+        None
+    })
+}
+
+fn has_owned_backend_child(state: &tauri::State<'_, BackendState>) -> Result<bool, String> {
+    state
+        .lock()
+        .map(|proc| proc.child.is_some())
+        .map_err(|e| e.to_string())
+}
+
+async fn block_external_conflict(
+    ignored_ports: &[u16],
+    cleanup_orphans: bool,
+) -> Result<(), String> {
+    if cleanup_orphans {
+        if let Err(error) = crate::desktop_backend_owner::cleanup_verified_desktop_orphan().await {
+            warn!(
+                "Verified desktop orphan cleanup failed before mutation guard: {}",
+                error
+            );
+        }
+    }
+    if let Some(conflict) =
+        crate::preflight::mutation_blocking_backend_ignoring(ignored_ports).await
+    {
+        return Err(external_conflict_message(&conflict));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn desktop_preflight(
     diagnostics: tauri::State<'_, DiagnosticsState>,
@@ -308,11 +351,6 @@ pub async fn start_backend_update(
 ) -> Result<(), String> {
     info!("start_backend_update command called");
 
-    // Signal the health watchdog to exit immediately, before any guards.
-    // This closes the race window where the watchdog could emit server-crashed
-    // between our command being called and stop_backend completing.
-    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
-
     // Guard: reject if install is running
     if install_state
         .lock()
@@ -331,14 +369,19 @@ pub async fn start_backend_update(
         return Err("Update is already running.".to_string());
     }
 
-    // Stop backend if running
-    if backend_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
+    let owned_port = owned_backend_port(&backend_state)?;
+    let has_owned_child = has_owned_backend_child(&backend_state)?;
+    if has_owned_child {
+        let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
+        block_external_conflict(&ignored_ports, false).await?;
+
+        // Signal the health watchdog to exit only after conflict guards pass.
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         info!("Stopping backend before update...");
         process::stop_backend(&backend_state, &shutdown, Some(diagnostics.inner()))?;
+        block_external_conflict(&[], true).await?;
+    } else {
+        block_external_conflict(&[], true).await?;
     }
 
     // Run update in a blocking thread
@@ -378,19 +421,23 @@ pub async fn start_managed_repair(
     }
 
     let diagnostics_state = diagnostics.inner().clone();
-    let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
-        .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    let owned_port = owned_backend_port(&backend_state)?;
+    let has_owned_child = has_owned_backend_child(&backend_state)?;
+    if has_owned_child {
+        let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
+        block_external_conflict(&ignored_ports, false).await?;
 
-    if backend_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         info!("Stopping backend before repair...");
         process::stop_backend(&backend_state, &shutdown, Some(&diagnostics_state))?;
+        block_external_conflict(&[], true).await?;
+    } else {
+        block_external_conflict(&[], true).await?;
     }
+
+    let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
+        .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
     let _ = app.emit("repair-progress", "Updating existing Studio install...");
     let update_app = app.clone();
@@ -444,6 +491,17 @@ pub async fn start_managed_repair(
                 "Update failed. Running bundled installer...",
             );
         }
+    }
+
+    if let Err(msg) = block_external_conflict(&[], true).await {
+        diagnostics::finish_repair_group(
+            &diagnostics_state,
+            &repair_group_id,
+            "failed",
+            Some(msg.clone()),
+        );
+        let _ = app.emit("repair-failed", &msg);
+        return Err(msg);
     }
 
     let install_app = app.clone();
@@ -501,6 +559,62 @@ pub async fn start_managed_repair(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const ROOT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OWNER_TOKEN: &str = "desktop-owner-token";
+
+    fn ready_health(include_owner: bool) -> String {
+        let owner = if include_owner {
+            format!(
+                r#", "desktop_owner":{{"kind":"tauri","token_sha256":"{}"}}"#,
+                crate::desktop_backend_owner::token_sha256(OWNER_TOKEN)
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.2","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
+        )
+    }
+
+    async fn command_test_backend(health_body: String) -> u16 {
+        let mut listener = None;
+        for port in 8888u16..=8908 {
+            if let Ok(bound) = TcpListener::bind(("127.0.0.1", port)).await {
+                listener = Some(bound);
+                break;
+            }
+        }
+        let listener = listener.expect("test needs a free desktop preflight port");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = [0; 2048];
+                let Ok(n) = stream.read(&mut buffer).await else {
+                    return;
+                };
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                let (status, body) = if request.starts_with("GET /api/health ") {
+                    ("200 OK", health_body.as_str())
+                } else if request.starts_with("POST /api/auth/desktop-login ") {
+                    ("401 Unauthorized", "")
+                } else {
+                    ("404 Not Found", "")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
 
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
@@ -508,6 +622,33 @@ mod tests {
         assert!(super::should_emit_repair_failed(
             "Installer exited with code 1"
         ));
+    }
+
+    #[test]
+    fn external_conflict_message_tells_user_to_stop_terminal_server() {
+        let message =
+            super::external_conflict_message(&crate::preflight::ExternalBackendConflict {
+                port: 8890,
+                reason: "same_root_external_backend_active".to_string(),
+            });
+
+        assert!(message.contains("port 8890"));
+        assert!(message.contains("Stop that server"));
+        assert!(message.contains("unsloth studio update"));
+    }
+
+    #[tokio::test]
+    async fn mutation_guard_blocks_second_external_backend_when_owned_child_is_ignored() {
+        crate::desktop_backend_owner::install_test_owner(ROOT_ID, OWNER_TOKEN);
+        let owned_port = command_test_backend(ready_health(true)).await;
+        let external_port = command_test_backend(ready_health(false)).await;
+
+        let err = super::block_external_conflict(&[owned_port], false)
+            .await
+            .expect_err("external non-owned backend should block mutation");
+
+        assert!(err.contains(&format!("port {external_port}")));
+        assert!(err.contains("Stop that server"));
     }
 
     #[test]

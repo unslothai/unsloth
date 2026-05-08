@@ -151,8 +151,10 @@ async fn collect_backend_health(port: u16) -> report::BackendHealthSection {
                     "device_type",
                     "chat_only",
                     "desktop_protocol_version",
+                    "desktop_manageability_version",
                     "supports_api_only",
                     "supports_desktop_auth",
+                    "supports_desktop_backend_ownership",
                 ] {
                     if let Some(value) = json.get(key) {
                         section

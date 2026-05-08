@@ -29,7 +29,8 @@ type DesktopPreflightDisposition =
   | "not_installed"
   | "managed_ready"
   | "managed_stale"
-  | "attached_ready";
+  | "attached_ready"
+  | "external_conflict";
 
 interface DesktopPreflightResult {
   disposition: DesktopPreflightDisposition;
@@ -221,6 +222,15 @@ export function useTauriBackend() {
               "Managed Studio install is too old. Run `unsloth studio update`.",
             );
           }
+          return;
+        case "external_conflict":
+          setIsExternalServer(false);
+          stopExternalServerPoll();
+          setBackendError(
+            preflight.port
+              ? `A Studio server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
+              : "A Studio server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.",
+          );
           return;
         case "not_installed":
           setBackendStatus("not-installed");

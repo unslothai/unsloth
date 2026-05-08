@@ -770,5 +770,6 @@ fn disposition_label(disposition: &DesktopPreflightDisposition) -> &'static str 
         DesktopPreflightDisposition::ManagedReady => "managed_ready",
         DesktopPreflightDisposition::ManagedStale => "managed_stale",
         DesktopPreflightDisposition::AttachedReady => "attached_ready",
+        DesktopPreflightDisposition::ExternalConflict => "external_conflict",
     }
 }

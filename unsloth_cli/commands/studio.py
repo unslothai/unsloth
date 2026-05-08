@@ -1068,8 +1068,10 @@ def desktop_capabilities(
 ):
     payload = {
         "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
+        "supports_desktop_backend_ownership": True,
         "version": "unknown",
     }
     try:

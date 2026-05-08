@@ -2,6 +2,7 @@
 
 mod commands;
 mod desktop_auth;
+mod desktop_backend_owner;
 mod diagnostics;
 mod install;
 mod native_backend_lease;

@@ -18,6 +18,7 @@ pub struct BackendProcess {
     pub intentional_stop: bool,
     pub generation: u64,
     pub diagnostics_session: Option<BackendLog>,
+    pub owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
 }
 
 impl Default for BackendProcess {
@@ -29,6 +30,7 @@ impl Default for BackendProcess {
             intentional_stop: false,
             generation: 0,
             diagnostics_session: None,
+            owner: None,
         }
     }
 }
@@ -268,6 +270,7 @@ pub fn start_backend(
 
     let args = backend_args(port);
     let start_line = format!("Starting backend: {:?} {}", bin, args.join(" "));
+    let pending_owner = crate::desktop_backend_owner::new_pending_owner();
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .stdout(Stdio::piped())
@@ -277,6 +280,17 @@ pub fn start_backend(
         cmd.env(
             crate::native_backend_lease::LEASE_SECRET_ENV,
             native_state.lease_secret_env(),
+        );
+    }
+
+    if let Some(owner) = pending_owner.as_ref() {
+        cmd.env(
+            crate::desktop_backend_owner::OWNER_TOKEN_ENV,
+            owner.token.as_str(),
+        );
+        cmd.env(
+            crate::desktop_backend_owner::OWNER_KIND_ENV,
+            crate::desktop_backend_owner::OWNER_KIND_TAURI,
         );
     }
 
@@ -312,6 +326,7 @@ pub fn start_backend(
         proc.logs.clear();
         proc.intentional_stop = false;
         proc.diagnostics_session = None;
+        proc.owner = None;
         let generation = proc.generation;
 
         let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
@@ -357,11 +372,16 @@ pub fn start_backend(
             })?
         };
 
+        let backend_pid = child.id();
         let stdout = child.stdout().take();
         let stderr = child.stderr().take();
+        let owner = pending_owner.clone().and_then(|pending| {
+            crate::desktop_backend_owner::activate_owner(pending, port, generation, backend_pid)
+        });
 
         proc.child = Some(child);
         proc.diagnostics_session = Some(backend_log.clone());
+        proc.owner = owner;
         (generation, backend_log, stdout, stderr)
     };
 
@@ -463,6 +483,14 @@ fn read_output_stream<R: std::io::Read>(
                     } else {
                         if let Some(port) = detected_port {
                             proc.port = Some(port);
+                            if let Some(owner) = proc.owner.as_mut() {
+                                if let Err(error) = owner.update_port(port) {
+                                    warn!(
+                                        "Could not update desktop backend owner metadata: {}",
+                                        error
+                                    );
+                                }
+                            }
                             should_record_port = Some(port);
                         }
                         if proc.logs.len() >= MAX_LOG_LINES {
@@ -537,6 +565,9 @@ fn read_output_stream<R: std::io::Read>(
             if exited {
                 proc.child = None;
                 proc.diagnostics_session = None;
+                if let Some(owner) = proc.owner.take() {
+                    owner.remove();
+                }
                 emit_crash = !intentional;
             }
         }
@@ -571,7 +602,7 @@ pub fn stop_backend(
 
     // Extract the child and mark intentional stop.
     // We take the child OUT of the mutex so we don't hold the lock during the wait loop.
-    let mut child = {
+    let (mut child, owner) = {
         let mut proc = match state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -580,10 +611,13 @@ pub fn stop_backend(
             }
         };
         proc.intentional_stop = true;
-        proc.child.take()
+        (proc.child.take(), proc.owner.take())
     };
 
     let Some(ref mut child) = child else {
+        if let Some(owner) = owner {
+            owner.remove();
+        }
         return Ok(()); // Nothing running
     };
 
@@ -599,6 +633,9 @@ pub fn stop_backend(
             warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
+            if let Some(owner) = owner {
+                owner.remove();
+            }
             return Ok(());
         }
         unsafe {
@@ -620,6 +657,9 @@ pub fn stop_backend(
         match child.try_wait() {
             Ok(Some(status)) => {
                 info!("Backend exited with status: {}", status);
+                if let Some(owner) = owner {
+                    owner.remove();
+                }
                 return Ok(());
             }
             Ok(None) => {
@@ -639,6 +679,9 @@ pub fn stop_backend(
             pid
         );
         force_kill_process_tree(pid, child, "Backend");
+        if let Some(owner) = owner {
+            owner.remove();
+        }
         return Ok(());
     }
 
@@ -653,6 +696,9 @@ pub fn stop_backend(
 
         // Reap the process
         let _ = child.wait();
+        if let Some(owner) = owner {
+            owner.remove();
+        }
         info!("Backend process group forcefully stopped");
         Ok(())
     }
