@@ -254,8 +254,6 @@ pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendPro
     let ports: Vec<u16> = crate::desktop_backend_owner::desktop_candidate_ports().collect();
     let mut health_futs = Vec::with_capacity(ports.len());
     for port in ports {
-        // why: reqwest::Client is internally Arc-wrapped; clone is a refcount bump
-        // (documented cheap). tokio::spawn needs 'static, so each task owns its own clone.
         let c = client.clone();
         health_futs.push(tokio::spawn(async move {
             backend_health(&c, port).await.map(|h| (port, h))

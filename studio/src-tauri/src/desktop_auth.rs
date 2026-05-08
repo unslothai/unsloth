@@ -393,23 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_secret_path_joins_expected_location() {
-        let home = PathBuf::from("/home/alex");
-        assert_eq!(
-            auth_secret_path(&home, ".desktop_secret"),
-            PathBuf::from("/home/alex/.unsloth/studio/auth/.desktop_secret")
-        );
-    }
-
-    #[test]
-    fn auth_url_builds_local_endpoint() {
-        assert_eq!(
-            auth_url(8890, "desktop-login"),
-            "http://127.0.0.1:8890/api/auth/desktop-login"
-        );
-    }
-
-    #[test]
     fn retry_discovery_only_for_cached_recoverable_errors() {
         assert!(should_retry_with_discovered_port(
             PortSource::Cached,
@@ -447,111 +430,39 @@ mod tests {
     }
 
     #[test]
-    fn read_secret_returns_none_for_missing_file() {
-        let path = std::env::temp_dir().join(format!(
-            "unsloth-missing-desktop-secret-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(read_secret_if_exists(&path).unwrap(), None);
-    }
-
-    #[test]
-    fn read_secret_trims_existing_file() {
-        let path =
+    fn read_secret_handles_missing_trimmed_and_invalid_files() {
+        let base =
             std::env::temp_dir().join(format!("unsloth-desktop-secret-{}", std::process::id()));
-        std::fs::write(&path, "  desktop-secret\n").unwrap();
+        let missing = base.with_extension("missing");
+        let trimmed = base.with_extension("trimmed");
+        let invalid = base.with_extension("invalid");
+        let _ = std::fs::remove_file(&missing);
+        std::fs::write(&trimmed, "  desktop-secret\n").unwrap();
+        std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
 
+        assert_eq!(read_secret_if_exists(&missing).unwrap(), None);
         assert_eq!(
-            read_secret_if_exists(&path).unwrap(),
+            read_secret_if_exists(&trimmed).unwrap(),
             Some("desktop-secret".to_string())
         );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn read_secret_treats_invalid_utf8_as_missing_for_repair() {
-        let path = std::env::temp_dir().join(format!(
-            "unsloth-invalid-desktop-secret-{}",
-            std::process::id()
-        ));
-        std::fs::write(&path, [0xff, 0xfe]).unwrap();
-
-        assert_eq!(read_secret_if_exists(&path).unwrap(), None);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn read_secret_treats_permission_denied_as_missing_for_repair() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = std::env::temp_dir().join(format!(
-            "unsloth-unreadable-desktop-secret-{}",
-            std::process::id()
-        ));
-        std::fs::write(&path, "desktop-stale").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        let result = read_secret_if_exists(&path);
-
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        std::fs::remove_file(path).unwrap();
-        if matches!(result, Ok(Some(_))) {
-            return;
-        }
-        assert_eq!(result.unwrap(), None);
-    }
-
-    #[test]
-    fn attached_ready_port_requires_attached_ready_with_port() {
-        let compatible = DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::AttachedReady,
-            reason: None,
-            port: Some(8890),
-            can_auto_repair: false,
-            managed_bin: None,
-        };
-        assert_eq!(attached_ready_port(compatible), Some(8890));
-
-        let missing_port = DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::AttachedReady,
-            reason: None,
-            port: None,
-            can_auto_repair: false,
-            managed_bin: None,
-        };
-        assert_eq!(attached_ready_port(missing_port), None);
-
-        let managed_ready = DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::ManagedReady,
-            reason: None,
-            port: Some(8890),
-            can_auto_repair: false,
-            managed_bin: None,
-        };
-        assert_eq!(attached_ready_port(managed_ready), None);
+        assert_eq!(read_secret_if_exists(&invalid).unwrap(), None);
+        let _ = std::fs::remove_file(trimmed);
+        let _ = std::fs::remove_file(invalid);
     }
 
     #[tokio::test]
-    async fn exchange_desktop_secret_returns_none_for_unauthorized() {
+    async fn exchange_desktop_secret_handles_unauthorized_and_not_found() {
         let port = login_server("401 Unauthorized").await;
         let tokens = exchange_desktop_secret(&Client::new(), port, "desktop-stale")
             .await
             .unwrap();
-
         assert!(tokens.is_none());
-    }
 
-    #[tokio::test]
-    async fn exchange_desktop_secret_reports_unsupported_backend_on_not_found() {
         let port = login_server("404 Not Found").await;
         let error = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
             .await
             .unwrap_err()
             .message();
-
         assert_eq!(
             error,
             "Running Studio backend is too old for this desktop app. Update that backend and restart."

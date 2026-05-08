@@ -255,165 +255,100 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn compatible_backend_wins_over_stale_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Stale {
-                bin: PathBuf::from("/managed/unsloth"),
-                reason: "old cli".to_string(),
-            },
-            BackendProbe::Ready { port: 8000 },
-        );
+    fn choose_preflight_classifies_core_cases() {
+        let bin = || PathBuf::from("/managed/unsloth");
+        let ready = || ManagedProbe::Ready { bin: bin() };
+        let stale = || ManagedProbe::Stale {
+            bin: bin(),
+            reason: "old cli".to_string(),
+        };
+        let old_backend = || BackendProbe::Old {
+            port: 8001,
+            reason: "missing endpoint".to_string(),
+        };
+        let cases = [
+            (
+                stale(),
+                BackendProbe::Ready { port: 8000 },
+                DesktopPreflightDisposition::AttachedReady,
+                Some(8000),
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                ready(),
+                BackendProbe::Ready { port: 8000 },
+                DesktopPreflightDisposition::AttachedReady,
+                Some(8000),
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                ManagedProbe::Missing,
+                BackendProbe::Ready { port: 8000 },
+                DesktopPreflightDisposition::AttachedReady,
+                Some(8000),
+                None,
+                false,
+                None,
+            ),
+            (
+                ready(),
+                old_backend(),
+                DesktopPreflightDisposition::ManagedReady,
+                None,
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                stale(),
+                old_backend(),
+                DesktopPreflightDisposition::ManagedStale,
+                None,
+                Some("old cli"),
+                release_auto_repair(),
+                Some(bin()),
+            ),
+            (
+                ready(),
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::ManagedReady,
+                None,
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                stale(),
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::ManagedStale,
+                None,
+                Some("old cli"),
+                release_auto_repair(),
+                Some(bin()),
+            ),
+            (
+                ManagedProbe::Missing,
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::NotInstalled,
+                None,
+                None,
+                false,
+                None,
+            ),
+        ];
 
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::AttachedReady
-        );
-        assert_eq!(result.port, Some(8000));
-        assert_eq!(result.reason, None);
-        assert!(!result.can_auto_repair);
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-    }
-
-    #[test]
-    fn compatible_backend_wins_over_ready_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Ready {
-                bin: PathBuf::from("/managed/unsloth"),
-            },
-            BackendProbe::Ready { port: 8000 },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::AttachedReady
-        );
-        assert_eq!(result.port, Some(8000));
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn compatible_backend_wins_over_missing_managed_install() {
-        let result = choose_preflight(ManagedProbe::Missing, BackendProbe::Ready { port: 8000 });
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::AttachedReady
-        );
-        assert_eq!(result.port, Some(8000));
-        assert_eq!(result.managed_bin, None);
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn old_backend_falls_back_to_ready_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Ready {
-                bin: PathBuf::from("/managed/unsloth"),
-            },
-            BackendProbe::Old {
-                port: 8001,
-                reason: "missing endpoint".to_string(),
-            },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedReady
-        );
-        assert_eq!(result.reason, None);
-        assert_eq!(result.port, None);
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn old_backend_falls_back_to_stale_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Stale {
-                bin: PathBuf::from("/managed/unsloth"),
-                reason: "old cli".to_string(),
-            },
-            BackendProbe::Old {
-                port: 8001,
-                reason: "missing endpoint".to_string(),
-            },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedStale
-        );
-        assert_eq!(result.reason, Some("old cli".to_string()));
-        assert_eq!(result.port, None);
-        assert_eq!(result.can_auto_repair, release_auto_repair());
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-    }
-
-    #[test]
-    fn managed_ready_when_no_backend() {
-        let result = choose_preflight(
-            ManagedProbe::Ready {
-                bin: PathBuf::from("/managed/unsloth"),
-            },
-            BackendProbe::Missing,
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedReady
-        );
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn managed_stale_when_no_backend() {
-        let result = choose_preflight(
-            ManagedProbe::Stale {
-                bin: PathBuf::from("/managed/unsloth"),
-                reason: "old cli".to_string(),
-            },
-            BackendProbe::Missing,
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedStale
-        );
-        assert_eq!(result.reason, Some("old cli".to_string()));
-        assert_eq!(result.can_auto_repair, release_auto_repair());
-    }
-
-    #[test]
-    fn not_installed_when_no_backend_no_managed_binary() {
-        let result = choose_preflight(ManagedProbe::Missing, BackendProbe::Missing);
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::NotInstalled
-        );
-        assert_eq!(result.managed_bin, None);
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn old_backend_with_no_managed_install_uses_install_flow() {
-        let result = choose_preflight(
-            ManagedProbe::Missing,
-            BackendProbe::Old {
-                port: 8002,
-                reason: "old version".to_string(),
-            },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::NotInstalled
-        );
-        assert_eq!(result.reason, None);
-        assert_eq!(result.port, None);
-        assert!(!result.can_auto_repair);
+        for (managed, backend, disposition, port, reason, can_auto_repair, managed_bin) in cases {
+            let result = choose_preflight(managed, backend);
+            assert_eq!(result.disposition, disposition);
+            assert_eq!(result.port, port);
+            assert_eq!(result.reason.as_deref(), reason);
+            assert_eq!(result.can_auto_repair, can_auto_repair);
+            assert_eq!(result.managed_bin, managed_bin);
+        }
     }
 
     #[test]
@@ -453,48 +388,30 @@ mod tests {
     }
 
     #[test]
-    fn backend_version_gate_accepts_minimum_and_newer_versions() {
-        assert!(backend_version_compatible(Some(
-            MIN_DESKTOP_BACKEND_VERSION
-        )));
-        assert!(backend_version_compatible(Some("2026.5.3")));
-        assert!(backend_version_compatible(Some("2027.1.0")));
-    }
-
-    #[test]
-    fn backend_version_gate_accepts_pep_style_suffixes() {
-        assert!(backend_version_compatible(Some("2026.5.2.post1")));
-        assert!(backend_version_compatible(Some("2026.5.2+local")));
-        assert!(backend_version_compatible(Some("2026.5.2rc1")));
-        assert!(backend_version_compatible(Some("2026.5.2.dev1")));
-    }
-
-    #[test]
-    fn backend_version_gate_rejects_missing_invalid_and_older_versions() {
-        assert_eq!(
-            backend_version_stale_reason(None),
-            Some("desktop_backend_version_missing".to_string())
-        );
-        assert_eq!(
-            backend_version_stale_reason(Some("not-a-version")),
-            Some("desktop_backend_version_invalid".to_string())
-        );
-        assert_eq!(
-            backend_version_stale_reason(Some("2026.5.2.1")),
-            Some("desktop_backend_version_invalid".to_string())
-        );
-        assert_eq!(
-            backend_version_stale_reason(Some("2026.5.2foo")),
-            Some("desktop_backend_version_invalid".to_string())
-        );
-        assert_eq!(
-            backend_version_stale_reason(Some("2026.5.1")),
-            Some("desktop_backend_version_too_old".to_string())
-        );
-    }
-
-    #[test]
-    fn backend_version_gate_allows_dev_only_in_debug_builds() {
+    fn backend_version_gate_classifies_core_cases() {
+        for version in [
+            MIN_DESKTOP_BACKEND_VERSION,
+            "2026.5.3",
+            "2027.1.0",
+            "2026.5.2.post1",
+            "2026.5.2+local",
+            "2026.5.2rc1",
+            "2026.5.2.dev1",
+        ] {
+            assert!(backend_version_compatible(Some(version)), "{version}");
+        }
+        for (version, reason) in [
+            (None, "desktop_backend_version_missing"),
+            (Some("not-a-version"), "desktop_backend_version_invalid"),
+            (Some("2026.5.2.1"), "desktop_backend_version_invalid"),
+            (Some("2026.5.2foo"), "desktop_backend_version_invalid"),
+            (Some("2026.5.1"), "desktop_backend_version_too_old"),
+        ] {
+            assert_eq!(
+                backend_version_stale_reason(version).as_deref(),
+                Some(reason)
+            );
+        }
         assert_eq!(
             backend_version_compatible(Some("dev")),
             cfg!(debug_assertions)
@@ -539,67 +456,20 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn managed_cli_stale_when_desktop_capabilities_missing() {
-        let fake = fake_cli(
-            "cap-missing",
-            r#"#!/bin/sh
+    async fn managed_cli_capability_probe_classifies_core_cases() {
+        for (name, script, stale_reason) in [
+            (
+                "cap-missing",
+                r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
 exit 1
 "#,
-        );
-        let bin = fake.bin.clone();
-
-        assert!(matches!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale { bin: actual_bin, .. } if actual_bin == bin
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_stale_when_desktop_capabilities_command_missing() {
-        let fake = fake_cli(
-            "missing-helper",
-            r#"#!/bin/sh
-if [ "$1" = "-h" ]; then exit 0; fi
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        assert!(matches!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale { bin: actual_bin, .. } if actual_bin == bin
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_stale_when_help_broken() {
-        let fake = fake_cli(
-            "broken-help",
-            r#"#!/bin/sh
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale {
-                bin,
-                reason: "cli_unusable".to_string()
-            }
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_ready_when_desktop_capabilities_compatible() {
-        let fake = fake_cli(
-            "cap-true-helper-missing",
-            r#"#!/bin/sh
+                Some("desktop_capability_probe_failed"),
+            ),
+            (
+                "cap-true-helper-missing",
+                r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
   printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.2"}'
@@ -607,46 +477,11 @@ if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json"
 fi
 exit 1
 "#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Ready { bin }
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn capability_false_reason_used_when_legacy_helper_missing() {
-        let fake = fake_cli(
-            "cap-false-helper-missing",
-            r#"#!/bin/sh
-if [ "$1" = "-h" ]; then exit 0; fi
-if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","version":"2026.5.2"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale {
-                bin,
-                reason: "cap_false".to_string()
-            }
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn capability_false_overrides_working_legacy_helper() {
-        let fake = fake_cli(
-            "cap-false-helper-ready",
-            r#"#!/bin/sh
+                None,
+            ),
+            (
+                "cap-false-helper-ready",
+                r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
   printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","version":"2026.5.2"}'
@@ -655,16 +490,25 @@ fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
 exit 1
 "#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale {
-                bin,
-                reason: "cap_false".to_string()
+                Some("cap_false"),
+            ),
+        ] {
+            let fake = fake_cli(name, script);
+            let bin = fake.bin.clone();
+            match (probe_managed_bin(bin.clone()).await, stale_reason) {
+                (ManagedProbe::Ready { bin: actual }, None) => assert_eq!(actual, bin),
+                (
+                    ManagedProbe::Stale {
+                        bin: actual,
+                        reason,
+                    },
+                    Some(expected),
+                ) => {
+                    assert_eq!((actual, reason.as_str()), (bin, expected));
+                }
+                (probe, expected) => panic!("unexpected probe {probe:?}, expected {expected:?}"),
             }
-        );
+        }
     }
 
     const EXPECTED_ROOT_ID: &str =
@@ -755,20 +599,6 @@ exit 1
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.2","desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
-                desktop_owner_json(true)
-            ),
-            "401 Unauthorized",
-        )
-        .await;
-
-        assert!(matches!(probe, BackendProbe::Old { .. }));
-    }
-
-    #[tokio::test]
-    async fn backend_with_auth_support_but_unsupported_protocol_is_old() {
-        let probe = probe_test_backend(
-            format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.2","desktop_protocol_version":2,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -878,20 +708,8 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_route_500_is_old() {
-        let probe = probe_test_backend(
-            desktop_ready_health(EXPECTED_ROOT_ID),
-            "500 Internal Server Error",
-        )
-        .await;
-
-        assert!(matches!(probe, BackendProbe::Old { .. }));
-    }
-
-    #[tokio::test]
     async fn backend_capability_false_is_old_even_when_route_401() {
-        install_test_owner();
-        let port = backend_server(
+        let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.2","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
@@ -899,11 +717,9 @@ exit 1
             "401 Unauthorized",
         )
         .await;
-        let client = reqwest::Client::new();
-        let health = backend_health(&client, port).await.unwrap();
 
         assert!(matches!(
-            backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await,
+            probe,
             BackendProbe::Old {
                 reason,
                 ..

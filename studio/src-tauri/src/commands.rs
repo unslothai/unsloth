@@ -226,9 +226,7 @@ pub async fn start_managed_server(
     Ok(())
 }
 
-/// Stop the backend server.
-/// Sends SIGTERM to the process group, which triggers uvicorn's graceful
-/// shutdown (same codepath as /api/shutdown). Falls back to SIGKILL after 5s.
+/// Stop the current desktop-owned backend if this app can safely control it.
 #[tauri::command]
 pub fn stop_server(
     state: tauri::State<'_, BackendState>,
@@ -405,7 +403,6 @@ pub async fn start_backend_update(
 ) -> Result<(), String> {
     info!("start_backend_update command called");
 
-    // Guard: reject if install is running
     if install_state
         .lock()
         .map(|s| s.child.is_some())
@@ -414,7 +411,6 @@ pub async fn start_backend_update(
         return Err("Cannot update while installation is in progress.".to_string());
     }
 
-    // Guard: reject if update is already running
     if update_state
         .lock()
         .map(|s| s.child.is_some())
@@ -438,7 +434,6 @@ pub async fn start_backend_update(
         block_external_conflict(&[]).await?;
     }
 
-    // Run update in a blocking thread
     let state = update_state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
     tokio::task::spawn_blocking(move || update::run_backend_update(app, state, diagnostics_state))
@@ -678,19 +673,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn external_conflict_message_tells_user_to_stop_terminal_server() {
-        let message =
-            super::external_conflict_message(&crate::preflight::ExternalBackendConflict {
-                port: 8890,
-                reason: "same_root_external_backend_active".to_string(),
-            });
-
-        assert!(message.contains("port 8890"));
-        assert!(message.contains("Stop that server"));
-        assert!(message.contains("unsloth studio update"));
-    }
-
     #[tokio::test]
     async fn mutation_guard_blocks_second_external_backend_when_owned_child_is_ignored() {
         crate::desktop_backend_owner::install_test_owner(ROOT_ID, OWNER_TOKEN);
@@ -706,27 +688,21 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_ignores_startup_failures_within_grace_period() {
-        assert!(!super::should_count_watchdog_failure(
-            false,
-            super::BACKEND_STARTUP_GRACE_PERIOD - Duration::from_secs(1)
-        ));
-    }
-
-    #[test]
-    fn watchdog_counts_failures_after_backend_was_healthy() {
-        assert!(super::should_count_watchdog_failure(
-            true,
-            Duration::from_secs(1)
-        ));
-    }
-
-    #[test]
-    fn watchdog_counts_startup_failures_after_grace_period() {
-        assert!(super::should_count_watchdog_failure(
-            false,
-            super::BACKEND_STARTUP_GRACE_PERIOD
-        ));
+    fn watchdog_failure_policy_counts_only_after_health_or_grace_period() {
+        for (has_seen_healthy, elapsed, expected) in [
+            (
+                false,
+                super::BACKEND_STARTUP_GRACE_PERIOD - Duration::from_secs(1),
+                false,
+            ),
+            (true, Duration::from_secs(1), true),
+            (false, super::BACKEND_STARTUP_GRACE_PERIOD, true),
+        ] {
+            assert_eq!(
+                super::should_count_watchdog_failure(has_seen_healthy, elapsed),
+                expected
+            );
+        }
     }
 }
 

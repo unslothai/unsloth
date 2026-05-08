@@ -22,10 +22,6 @@ interface AppProviderProps {
   children: ReactNode;
 }
 
-// ---------------------------------------------------------------------------
-// Tauri window helpers (only imported in Tauri mode)
-// ---------------------------------------------------------------------------
-
 type TauriWindowMode = "setup" | "app";
 type WindowLayoutGuard = () => boolean;
 
@@ -52,19 +48,15 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   let finalH = 600;
 
   if (monitor) {
-    // Convert physical pixels to logical using scale factor
     const scale = monitor.scaleFactor;
     const screenW = monitor.size.width / scale;
     const screenH = monitor.size.height / scale;
 
-    // Target: 75% of screen width, golden ratio height, capped at min 900x600
     finalW = Math.max(900, Math.round(screenW * 0.75));
     const targetH = Math.max(600, Math.round(finalW / 1.618));
-    // Don't exceed screen height
     finalH = Math.min(targetH, Math.round(screenH * 0.85));
   }
 
-  // Apply constraints and finalize without animating through intermediate sizes
   if (!isCurrent()) return;
   await win.setSize(new LogicalSize(finalW, finalH));
   if (!isCurrent()) return;
@@ -106,10 +98,6 @@ function getTauriWindowMode(
       return hasEnteredAppMode ? "app" : "setup";
   }
 }
-
-// ---------------------------------------------------------------------------
-// TauriWrapper
-// ---------------------------------------------------------------------------
 
 function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
   const update = useTauriUpdate(isExternalServer);
@@ -178,8 +166,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Keep the Tauri window hidden during preflight, then show it centered in setup
-  // mode or apply the final app layout in one instant step.
+  // Keep the Tauri window hidden until setup or app layout is ready.
   useEffect(() => {
     if (!isTauri) return;
 

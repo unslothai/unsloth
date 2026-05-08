@@ -242,7 +242,6 @@ export function useTauriUpdate(isExternalServer = false) {
       const update = updateRef.current;
       if (!update) return;
 
-      // ── Step 1: Backend update ──
       setUpdatePhase("backend");
       setStatus("updating-backend");
       replaceLogs([]);
@@ -254,7 +253,6 @@ export function useTauriUpdate(isExternalServer = false) {
       const { listen } = await import("@tauri-apps/api/event");
       const { invoke } = await import("@tauri-apps/api/core");
 
-      // Listen for backend update progress
       const unlistenProgress = await listen<string>(
         "update-progress",
         (e) => {
@@ -263,7 +261,6 @@ export function useTauriUpdate(isExternalServer = false) {
       );
       cleanups.push(unlistenProgress);
 
-      // Wait for complete or failed
       const backendResult = await new Promise<"complete" | string>(
         (resolve) => {
           listen<void>("update-complete", () => resolve("complete")).then(
@@ -281,11 +278,9 @@ export function useTauriUpdate(isExternalServer = false) {
         retainFailure(backendResult, "backend");
         setError(backendResult);
         setStatus("error");
-        cleanup(cleanups);
         return;
       }
 
-      // ── Step 2: Shell update ──
       setUpdatePhase("shell_download");
       setStatus("downloading");
       setUpdateProgress(0);
@@ -310,7 +305,6 @@ export function useTauriUpdate(isExternalServer = false) {
         }
       });
 
-      // ── Step 3: Relaunch ──
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (e) {

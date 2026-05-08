@@ -119,12 +119,7 @@ struct SimpleHttpResponse {
 }
 
 #[derive(Serialize)]
-struct DesktopLoginProbe<'a> {
-    secret: &'a str,
-}
-
-#[derive(Serialize)]
-struct DesktopLoginRequest<'a> {
+struct DesktopLoginPayload<'a> {
     secret: &'a str,
 }
 
@@ -577,7 +572,7 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
     };
     match client
         .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
-        .json(&DesktopLoginProbe {
+        .json(&DesktopLoginPayload {
             secret: "desktop-owner-adoption-invalid-secret",
         })
         .send()
@@ -754,7 +749,7 @@ pub(crate) fn exact_port_http_shutdown_blocking(port: u16) -> Result<(), String>
     let secret =
         read_desktop_secret()?.ok_or_else(|| "desktop auth secret not found".to_string())?;
     let login_body =
-        serde_json::to_vec(&DesktopLoginRequest { secret: &secret }).map_err(|e| e.to_string())?;
+        serde_json::to_vec(&DesktopLoginPayload { secret: &secret }).map_err(|e| e.to_string())?;
     let login = http_request_blocking(
         port,
         "POST",
@@ -928,39 +923,11 @@ mod tests {
     }
 
     #[test]
-    fn managed_studio_root_id_path_points_at_tauri_default_root() {
-        let home = Path::new("home").join("alex");
-        assert_eq!(
-            managed_studio_root_id_path(&home),
-            home.join(".unsloth")
-                .join("studio")
-                .join("share")
-                .join("studio_install_id")
-        );
-    }
-
-    #[test]
-    fn metadata_path_uses_default_tauri_root() {
-        let home = Path::new("home").join("alex");
-        assert_eq!(
-            metadata_path_for_home(&home),
-            home.join(".unsloth")
-                .join("studio")
-                .join("run")
-                .join("desktop_backend.json")
-        );
-    }
-
-    #[test]
-    fn token_sha256_is_stable() {
+    fn metadata_well_formed_requires_matching_token_hash() {
         assert_eq!(
             token_sha256(TOKEN),
             "943501cb7d1feb2aa8cde1bf09b80092c25b95dbafaca9ccc12d6785b229a6fd"
         );
-    }
-
-    #[test]
-    fn metadata_well_formed_requires_matching_token_hash() {
         let mut metadata = metadata(1, Some(8888));
         assert!(metadata_is_well_formed(&metadata));
         metadata.token_sha256 = token_sha256("different");

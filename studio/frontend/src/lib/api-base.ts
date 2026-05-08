@@ -1,4 +1,3 @@
-// Central API base URL for Tauri vs browser mode
 let apiBase = ''
 
 function detectTauri(): boolean {

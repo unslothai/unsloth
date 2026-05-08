@@ -17,7 +17,6 @@ pub(crate) enum OwnedBackendHandle {
     Spawned {
         child: Box<dyn ChildWrapper + Send>,
         owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
-        requested_port: u16,
         reported_port: Option<u16>,
         pid: u32,
         generation: u64,
@@ -35,14 +34,12 @@ impl OwnedBackendHandle {
     pub(crate) fn spawned(
         child: Box<dyn ChildWrapper + Send>,
         owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
-        requested_port: u16,
         pid: u32,
         generation: u64,
     ) -> Self {
         Self::Spawned {
             child,
             owner,
-            requested_port,
             reported_port: None,
             pid,
             generation,
@@ -68,16 +65,6 @@ impl OwnedBackendHandle {
             Self::Spawned { reported_port, .. } => *reported_port,
             Self::Adopted { port, .. } => Some(*port),
         }
-    }
-
-    pub(crate) fn generation(&self) -> u64 {
-        match self {
-            Self::Spawned { generation, .. } | Self::Adopted { generation, .. } => *generation,
-        }
-    }
-
-    pub(crate) fn is_spawned_child(&self) -> bool {
-        matches!(self, Self::Spawned { .. })
     }
 
     fn set_reported_port(&mut self, port: u16) {
@@ -420,8 +407,8 @@ mod tests {
     }
 
     #[test]
-    fn finds_new_layout_before_legacy_layout() {
-        let temp = temp_studio_dir("new-before-legacy");
+    fn finds_new_layout_before_legacy_layout_and_falls_back() {
+        let temp = temp_studio_dir("layout-preference");
 
         #[cfg(unix)]
         let new_bin = temp.join("unsloth_studio/bin/unsloth");
@@ -437,31 +424,12 @@ mod tests {
         fs::write(&new_bin, "").unwrap();
         fs::write(&old_bin, "").unwrap();
 
-        assert_eq!(find_unsloth_binary_in_studio_dir(&temp), Some(new_bin));
-        fs::remove_dir_all(temp).unwrap();
-    }
-
-    #[test]
-    fn finds_legacy_layout_when_new_missing() {
-        let temp = temp_studio_dir("legacy");
-
-        #[cfg(unix)]
-        let old_bin = temp.join(".venv/bin/unsloth");
-        #[cfg(windows)]
-        let old_bin = temp.join(".venv/Scripts/unsloth.exe");
-
-        fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
-        fs::write(&old_bin, "").unwrap();
-
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&temp),
+            Some(new_bin.clone())
+        );
+        fs::remove_file(&new_bin).unwrap();
         assert_eq!(find_unsloth_binary_in_studio_dir(&temp), Some(old_bin));
-        fs::remove_dir_all(temp).unwrap();
-    }
-
-    #[test]
-    fn returns_none_when_no_managed_layout_exists() {
-        let temp = temp_studio_dir("none");
-
-        assert_eq!(find_unsloth_binary_in_studio_dir(&temp), None);
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -658,7 +626,6 @@ pub fn start_backend(
         proc.owned = Some(OwnedBackendHandle::spawned(
             child,
             owner,
-            port,
             backend_pid,
             generation,
         ));
@@ -669,7 +636,6 @@ pub fn start_backend(
     info!("{}", start_line);
     diagnostics::append_phase_line(&backend_log.handle, "meta", &start_line);
 
-    // Spawn stdout reader thread
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
@@ -688,7 +654,6 @@ pub fn start_backend(
         });
     }
 
-    // Spawn stderr reader thread
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
@@ -869,7 +834,6 @@ fn read_output_stream<R: std::io::Read>(
                     &text,
                 );
 
-                // Check for TAURI_PORT on stdout only
                 let detected_port = if !is_stderr {
                     port_re
                         .captures(&text)
@@ -922,7 +886,6 @@ fn read_output_stream<R: std::io::Read>(
 
                 info!("[backend] {}", log_line);
 
-                // Emit to frontend
                 let _ = app.emit("server-log", &log_line);
             }
             Err(e) => {

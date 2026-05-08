@@ -80,7 +80,6 @@ export function UpdateBanner({
           className="fixed top-4 right-4 z-[9999] w-[380px]"
         >
           <div className="corner-squircle relative overflow-hidden border border-border/60 bg-background/95 px-5 py-4 shadow-lg backdrop-blur-md">
-            {/* Close button */}
             <button
               type="button"
               onClick={onDismiss}
@@ -91,7 +90,6 @@ export function UpdateBanner({
               </svg>
             </button>
 
-            {/* Header */}
             <div className="flex items-center gap-2">
               <span className="text-lg">🦥</span>
               <div>
@@ -110,14 +108,12 @@ export function UpdateBanner({
               </div>
             </div>
 
-            {/* Retained failure */}
             {showFailure && lastFailure && (
               <p className="mt-3 line-clamp-2 text-xs text-destructive">
                 {lastFailure.error}
               </p>
             )}
 
-            {/* Actions */}
             <div className="mt-3 flex items-center gap-2">
               {showFailure ? (
                 <>
