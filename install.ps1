@@ -1184,27 +1184,49 @@ shell.Run cmd, 0, False
     }
 
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
+    # Use a helper so $LASTEXITCODE is captured immediately after the call
+    # (avoids *> $null leaving $LASTEXITCODE unreliable in some PS versions).
+    function Test-NvidiaSmiExe {
+        param([string]$Path)
+        try { $null = & $Path 2>&1; return ($LASTEXITCODE -eq 0) } catch { return $false }
+    }
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
-    try {
-        $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        if ($nvSmiCmd) {
-            & $nvSmiCmd.Source *> $null
-            if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source }
-        }
-    } catch {}
+    $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($nvSmiCmd -and (Test-NvidiaSmiExe $nvSmiCmd.Source)) {
+        $HasNvidiaSmi = $true; $NvidiaSmiExe = $nvSmiCmd.Source
+    }
     if (-not $HasNvidiaSmi) {
-        foreach ($p in @(
+        $nvSmiPaths = [System.Collections.Generic.List[string]]@(
             "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
             "$env:SystemRoot\System32\nvidia-smi.exe"
-        )) {
-            if (Test-Path $p) {
-                try {
-                    & $p *> $null
-                    if ($LASTEXITCODE -eq 0) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
-                } catch {}
+        )
+        # DCH drivers install nvidia-smi under the DriverStore; expand the wildcard path.
+        # Use the machine's actual architecture so ARM64 Windows is handled correctly.
+        try {
+            $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+            $driverStoreSmi = Get-Item -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv_dispi.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName -First 1
+            if ($driverStoreSmi) { $nvSmiPaths.Add($driverStoreSmi) }
+        } catch {}
+        foreach ($p in $nvSmiPaths) {
+            if ((Test-Path $p) -and (Test-NvidiaSmiExe $p)) {
+                $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break
             }
         }
+    }
+    # Last-resort WMI check: detect NVIDIA GPU presence even when nvidia-smi is missing.
+    if (-not $HasNvidiaSmi) {
+        try {
+            $nvidiaGpu = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match 'NVIDIA' -or $_.Caption -match 'NVIDIA' } |
+                Select-Object -First 1
+            if ($nvidiaGpu) {
+                substep "NVIDIA GPU detected via WMI: $($nvidiaGpu.Name)" "Yellow"
+                substep "nvidia-smi not found -- reinstall NVIDIA drivers to enable GPU support." "Yellow"
+                substep "Continuing in CPU-only / GGUF mode until drivers are fixed." "Yellow"
+            }
+        } catch {}
     }
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"

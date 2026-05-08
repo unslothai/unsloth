@@ -372,7 +372,18 @@ function Get-PytorchCudaTag {
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
 function Find-VsBuildTools {
-    $map = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+    # Maps the value returned by vswhere's catalog_productLineVersion to (version_number, year).
+    # VS 2017-2022 returned the calendar year; VS 18+ returns the version number directly.
+    $map = @{
+        '2022' = @{ N = '17'; Y = '2022' }
+        '2019' = @{ N = '16'; Y = '2019' }
+        '2017' = @{ N = '15'; Y = '2017' }
+        '18'   = @{ N = '18'; Y = '2026' }  # Visual Studio 2026
+        # Defensive fallbacks in case vswhere ever returns the version number for older VS too
+        '17'   = @{ N = '17'; Y = '2022' }
+        '16'   = @{ N = '16'; Y = '2019' }
+        '15'   = @{ N = '15'; Y = '2017' }
+    }
 
     # --- Try vswhere first (works when VS is properly registered) ---
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -380,32 +391,37 @@ function Find-VsBuildTools {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
         if ($info -and $path) {
-            $y = $info.Trim()
-            $n = $map[$y]
-            if ($n) {
-                return @{ Generator = "Visual Studio $n $y"; InstallPath = $path.Trim(); Source = 'vswhere' }
+            # Use first line only -- vswhere can return multiple lines for multi-instance installs
+            $key = (@($info)[0]).Trim()
+            $entry = $map[$key]
+            if ($entry) {
+                return @{ Generator = "Visual Studio $($entry.N) $($entry.Y)"; InstallPath = (@($path)[0]).Trim(); Source = 'vswhere' }
             }
         }
     }
 
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
+    # VS 2017-2022 use the calendar year as the directory name.
+    # VS 18 (2026) and later use the version number as the directory name.
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
     $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
-    $years = @('2022', '2019', '2017')
+    $dirEntries = @(
+        @{ Dir = '18';   N = '18'; Y = '2026' }
+        @{ Dir = '2022'; N = '17'; Y = '2022' }
+        @{ Dir = '2019'; N = '16'; Y = '2019' }
+        @{ Dir = '2017'; N = '15'; Y = '2017' }
+    )
 
-    foreach ($y in $years) {
+    foreach ($entry in $dirEntries) {
         foreach ($r in $roots) {
             foreach ($ed in $editions) {
-                $candidate = Join-Path $r "Microsoft Visual Studio\$y\$ed"
+                $candidate = Join-Path $r "Microsoft Visual Studio\$($entry.Dir)\$ed"
                 if (Test-Path $candidate) {
                     $vcDir = Join-Path $candidate "VC\Tools\MSVC"
                     if (Test-Path $vcDir) {
                         $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
                         if ($cl) {
-                            $n = $map[$y]
-                            if ($n) {
-                                return @{ Generator = "Visual Studio $n $y"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
-                            }
+                            return @{ Generator = "Visual Studio $($entry.N) $($entry.Y)"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
                         }
                     }
                 }
@@ -414,6 +430,27 @@ function Find-VsBuildTools {
     }
 
     return $null
+}
+
+# Detect any VS installation regardless of C++ workload presence.
+# Used to give a better error than blindly trying to install Build Tools.
+function Test-AnyVsInstalled {
+    $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsw) {
+        $path = & $vsw -latest -property installationPath 2>$null
+        if ($path) { return $true }
+    }
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    $dirs = @('18', '2022', '2019', '2017')
+    foreach ($d in $dirs) {
+        foreach ($r in $roots) {
+            foreach ($ed in $editions) {
+                if (Test-Path (Join-Path $r "Microsoft Visual Studio\$d\$ed")) { return $true }
+            }
+        }
+    }
+    return $false
 }
 
 # ─────────────────────────────────────────────
@@ -628,38 +665,56 @@ try {
 # ============================================
 # 1a. GPU detection
 # ============================================
+# Helper: run nvidia-smi and capture exit code immediately
+# (avoids *> $null leaving $LASTEXITCODE unreliable in some PS versions).
+function Test-NvidiaSmiExe {
+    param([string]$Path)
+    try { $null = & $Path 2>&1; return ($LASTEXITCODE -eq 0) } catch { return $false }
+}
 $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null  # Absolute path -- survives Refresh-Environment
-try {
-    $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if ($nvSmiCmd) {
-        & $nvSmiCmd.Source *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $HasNvidiaSmi = $true
-            $NvidiaSmiExe = $nvSmiCmd.Source
-        }
-    }
-} catch {}
+$nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+if ($nvSmiCmd -and (Test-NvidiaSmiExe $nvSmiCmd.Source)) {
+    $HasNvidiaSmi = $true
+    $NvidiaSmiExe = $nvSmiCmd.Source
+}
 # Fallback: nvidia-smi may not be on PATH even though a GPU + driver exist.
 # Check the default install location and the Windows driver store.
 if (-not $HasNvidiaSmi) {
-    $nvSmiDefaults = @(
+    $nvSmiDefaults = [System.Collections.Generic.List[string]]@(
         "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
         "$env:SystemRoot\System32\nvidia-smi.exe"
     )
+    # DCH drivers install nvidia-smi under the DriverStore; expand the wildcard path.
+    # Use the machine's actual architecture so ARM64 Windows is handled correctly.
+    try {
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+        $driverStoreSmi = Get-Item -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv_dispi.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName -First 1
+        if ($driverStoreSmi) { $nvSmiDefaults.Add($driverStoreSmi) }
+    } catch {}
     foreach ($p in $nvSmiDefaults) {
-        if (Test-Path $p) {
-            try {
-                & $p *> $null
-                if ($LASTEXITCODE -eq 0) {
-                    $HasNvidiaSmi = $true
-                    $NvidiaSmiExe = $p
-                    Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
-                    break
-                }
-            } catch {}
+        if ((Test-Path $p) -and (Test-NvidiaSmiExe $p)) {
+            $HasNvidiaSmi = $true
+            $NvidiaSmiExe = $p
+            Write-Host "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
+            break
         }
     }
+}
+# Last-resort WMI check: detect NVIDIA GPU presence even when nvidia-smi is missing.
+# Reports a driver issue rather than silently falling back to CPU-only.
+if (-not $HasNvidiaSmi) {
+    try {
+        $nvidiaGpu = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'NVIDIA' -or $_.Caption -match 'NVIDIA' } |
+            Select-Object -First 1
+        if ($nvidiaGpu) {
+            Write-Host "   NVIDIA GPU detected via WMI: $($nvidiaGpu.Name)" -ForegroundColor Gray
+            Write-Host "   nvidia-smi not found -- drivers may be incomplete. Reinstall NVIDIA drivers." -ForegroundColor Yellow
+            Write-Host "   Continuing in CPU-only / GGUF mode until drivers are fixed." -ForegroundColor Yellow
+        }
+    } catch {}
 }
 if (-not $HasNvidiaSmi) {
     Write-Host ""
@@ -782,6 +837,16 @@ $VsInstallPath = $null
 $vsResult = Find-VsBuildTools
 
 if (-not $vsResult) {
+    # If any VS edition is already installed but lacks the C++ workload, guide the user
+    # to modify their existing installation rather than layering Build Tools on top.
+    if (Test-AnyVsInstalled -and -not $env:UNSLOTH_FORCE_BUILD_TOOLS) {
+        Write-Host "[WARN] Visual Studio is installed but the C++ Build Tools workload is missing." -ForegroundColor Yellow
+        Write-Host "       Open Visual Studio Installer, click 'Modify' on your installation," -ForegroundColor Yellow
+        Write-Host "       and enable 'Desktop development with C++' to compile llama.cpp." -ForegroundColor Yellow
+        Write-Host "       Re-run this script after adding that workload." -ForegroundColor Yellow
+        Write-Host "       (Set UNSLOTH_FORCE_BUILD_TOOLS=1 to skip this check and install Build Tools alongside.)" -ForegroundColor Gray
+        exit 1
+    }
     Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
     Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
