@@ -1091,6 +1091,7 @@ def run_training_process(
     # AttributeError. Force a full import and stub any missing callables.
     try:
         import torch.distributed as _td
+
         _td_stubs = {
             "is_initialized": lambda: False,
             "is_available": lambda: False,
