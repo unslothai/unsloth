@@ -1304,7 +1304,7 @@ shell.Run cmd, 0, False
                 }
             } catch {}
         }
-        # 2. Try PATH (catches uv-managed or manually placed python3.12 / python)
+        # 2. Try PATH (catches manually placed python3.12 / python)
         if (-not $py312) {
             foreach ($name in @("python3.12", "python3", "python")) {
                 foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
@@ -1320,6 +1320,21 @@ shell.Run cmd, 0, False
                     } catch {}
                 }
                 if ($py312) { break }
+            }
+        }
+        # 3. Ask uv for its managed Python 3.12 (uv installs don't appear in PATH or py.exe)
+        if (-not $py312) {
+            $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+            if ($uvCmd) {
+                try {
+                    $uvPy = (& $uvCmd.Source python find 3.12 2>$null | Out-String).Trim()
+                    if ($uvPy -and (Test-Path $uvPy) -and -not (Test-IsCondaPython $uvPy)) {
+                        $verOut = (& $uvPy --version 2>&1 | Out-String)
+                        if ($verOut -match "Python 3\.12\.\d+") {
+                            $py312 = @{ Version = "3.12"; Path = $uvPy }
+                        }
+                    }
+                } catch {}
             }
         }
         if ($py312) {
