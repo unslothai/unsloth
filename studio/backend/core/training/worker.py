@@ -1100,11 +1100,13 @@ def run_training_process(
     }
     try:
         import torch.distributed as _td
+
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
     except Exception:
         import types
+
         _td_mock = types.ModuleType("torch.distributed")
         for _name, _stub in _td_stubs.items():
             setattr(_td_mock, _name, _stub)
@@ -1115,6 +1117,7 @@ def run_training_process(
         )
         try:
             import torch as _torch
+
             _torch.distributed = _td_mock
         except Exception:
             pass
