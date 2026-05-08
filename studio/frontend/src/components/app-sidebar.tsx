@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import {
   ChefHatIcon,
   ColumnInsertIcon,
+  CubeIcon,
   CursorInfo02Icon,
   Delete02Icon,
   DownloadSquare01Icon,
@@ -473,6 +474,16 @@ export function AppSidebar() {
       <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[20px] shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
+            <NavItem
+              icon={CubeIcon}
+              label="Hub"
+              active={pathname === "/models" || pathname.startsWith("/models/")}
+              onClick={() => {
+                navigate({ to: "/models" });
+                closeMobileIfOpen();
+              }}
+            />
+
             <NavItem
               icon={TestTubeOutlineIcon}
               label="Train"

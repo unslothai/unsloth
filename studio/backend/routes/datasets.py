@@ -9,10 +9,12 @@ import base64
 import io
 import json
 import sys
+import threading
 from pathlib import Path
 from uuid import uuid4
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 import re as _re
 import structlog
 from loggers import get_logger
@@ -434,6 +436,96 @@ async def get_dataset_download_progress(
     except Exception as e:
         logger.warning(f"Error checking dataset download progress for {repo_id}: {e}")
         return _empty
+
+
+class DownloadDatasetRequest(BaseModel):
+    """Body for ``POST /api/datasets/download``."""
+
+    repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated/private repos"
+    )
+
+
+class DatasetDownloadJobStatus(BaseModel):
+    """Live state of a background dataset download job."""
+
+    state: str = Field(..., description = "'idle' | 'running' | 'complete' | 'error'")
+    error: Optional[str] = Field(None, description = "Error message if state == 'error'")
+
+
+_DATASET_DOWNLOAD_JOBS: dict[str, DatasetDownloadJobStatus] = {}
+_DATASET_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _set_dataset_job(repo_id: str, status: DatasetDownloadJobStatus) -> None:
+    with _DATASET_DOWNLOAD_LOCK:
+        _DATASET_DOWNLOAD_JOBS[repo_id] = status
+
+
+def _get_dataset_job(repo_id: str) -> DatasetDownloadJobStatus:
+    with _DATASET_DOWNLOAD_LOCK:
+        return _DATASET_DOWNLOAD_JOBS.get(
+            repo_id, DatasetDownloadJobStatus(state = "idle")
+        )
+
+
+@router.post("/download", status_code = 202)
+async def download_dataset(
+    body: DownloadDatasetRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Start a background download for a HuggingFace dataset."""
+    repo_id = body.repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Invalid repo_id: {repo_id!r}",
+        )
+
+    existing = _get_dataset_job(repo_id)
+    if existing.state == "running":
+        return {"repo_id": repo_id, "state": "running"}
+
+    _set_dataset_job(repo_id, DatasetDownloadJobStatus(state = "running"))
+
+    def _worker() -> None:
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id = repo_id,
+                repo_type = "dataset",
+                token = body.hf_token,
+            )
+            _set_dataset_job(repo_id, DatasetDownloadJobStatus(state = "complete"))
+            logger.info(f"Dataset download complete: {repo_id}")
+        except Exception as e:
+            logger.error(
+                f"Dataset download failed for {repo_id}: {e}",
+                exc_info = True,
+            )
+            _set_dataset_job(
+                repo_id,
+                DatasetDownloadJobStatus(state = "error", error = str(e)),
+            )
+
+    threading.Thread(
+        target = _worker,
+        name = f"hf-dataset-download-{repo_id}",
+        daemon = True,
+    ).start()
+
+    return {"repo_id": repo_id, "state": "running"}
+
+
+@router.get("/download-status", response_model = DatasetDownloadJobStatus)
+async def get_dataset_download_status(
+    repo_id: str = Query(..., description = "HuggingFace dataset repo ID"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the latest state of a background dataset download job."""
+    return _get_dataset_job(repo_id)
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)

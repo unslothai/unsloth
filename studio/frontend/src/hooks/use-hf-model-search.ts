@@ -3,10 +3,23 @@
 
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
-import { type CachedResult, cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
+import {
+  ALL_FIELDS,
+  type CachedResult,
+  cachedModelInfo,
+  primeCacheFromListing,
+} from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 import { usePlatformStore } from "@/config/env";
+
+export type HfSortKey =
+  | "trendingScore"
+  | "downloads"
+  | "likes"
+  | "lastModified";
+
+export type HfSortDirection = "desc" | "asc";
 
 export interface HfModelResult {
   id: string;
@@ -15,6 +28,10 @@ export interface HfModelResult {
   totalParams?: number;
   estimatedSizeBytes?: number;
   isGguf: boolean;
+  tags?: string[];
+  pipelineTag?: string;
+  updatedAt?: string;
+  libraryName?: string;
 }
 
 /** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
@@ -49,27 +66,37 @@ const EMBEDDING_TAGS = new Set([
   "feature-extraction",
 ]);
 
-function withPopularitySort(
-  input: Parameters<typeof fetch>[0],
-  init?: Parameters<typeof fetch>[1],
-): ReturnType<typeof fetch> {
-  const rawUrl =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url;
-  const url = new URL(rawUrl);
+// HF rejects direction=1 (asc) for trendingScore — only descending is supported.
+const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
 
-  if (!url.searchParams.has("sort")) {
-    url.searchParams.set("sort", "downloads");
-  }
-  if (!url.searchParams.has("direction")) {
-    url.searchParams.set("direction", "-1");
-  }
+function makeSortFetch(
+  sortBy: HfSortKey | undefined,
+  direction: HfSortDirection,
+): typeof fetch {
+  return (input, init) => {
+    const rawUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    const url = new URL(rawUrl);
 
-  return fetch(url, init);
+    if (sortBy && !url.searchParams.has("sort")) {
+      url.searchParams.set("sort", sortBy);
+    }
+    const effectiveSort = (url.searchParams.get("sort") ?? sortBy) as
+      | HfSortKey
+      | undefined;
+    const effectiveDir =
+      effectiveSort && DESC_ONLY_SORTS.has(effectiveSort) ? "desc" : direction;
+    url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
+
+    return fetch(url, init);
+  };
 }
+
+const withPopularitySort = makeSortFetch("downloads", "desc");
 
 /** Bytes per parameter for each dtype. */
 const DTYPE_BYTES: Record<string, number> = {
@@ -97,7 +124,12 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       name: string;
       downloads: number;
       likes: number;
+      task?: string;
+      pipeline_tag?: string;
+      library_name?: string;
+      updatedAt?: Date | string;
       safetensors?: { total: number; parameters?: Record<string, number> };
+      gguf?: { total?: number; architecture?: string };
       tags?: string[];
     };
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
@@ -110,19 +142,32 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
     if (excludeGguf && isGguf) {
       return null;
     }
+    const updatedAtIso =
+      m.updatedAt instanceof Date
+        ? m.updatedAt.toISOString()
+        : typeof m.updatedAt === "string"
+          ? m.updatedAt
+          : undefined;
     return {
       id: m.name,
       downloads: m.downloads,
       likes: m.likes,
-      totalParams: m.safetensors?.total,
+      totalParams: m.safetensors?.total ?? m.gguf?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
+      tags: m.tags,
+      pipelineTag: m.task ?? m.pipeline_tag,
+      updatedAt: updatedAtIso,
+      libraryName: m.library_name,
     };
   };
 }
 
 /** Number of unsloth results to pull up-front before yielding general results. */
 const UNSLOTH_PREFETCH = 20;
+/** When the user typed a query, only float a few unsloth results before
+ *  yielding the general (relevance-ranked) listing. */
+const UNSLOTH_QUERY_PREFETCH = 3;
 /** When the user searched for a specific publisher, show fewer unsloth results
  *  before the pinned (original publisher) model. */
 const UNSLOTH_PINNED_PREFETCH = 4;
@@ -156,10 +201,13 @@ async function* mergedModelIterator(
   task?: PipelineType,
   accessToken?: string,
   pinnedId?: string,
+  sortBy: HfSortKey = "downloads",
+  direction: HfSortDirection = "desc",
 ): AsyncGenerator<unknown> {
+  const sortFetch = makeSortFetch(sortBy, direction);
   const common = {
-    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
-    fetch: withPopularitySort,
+    additionalFields: ALL_FIELDS,
+    fetch: sortFetch,
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
@@ -178,12 +226,16 @@ async function* mergedModelIterator(
   const pinnedPromise = pinnedId
     ? cachedModelInfo({
         name: pinnedId,
-        additionalFields: ["safetensors", "tags"],
+        additionalFields: ALL_FIELDS,
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }).catch(() => null)
     : null;
 
-  const limit = pinnedId ? UNSLOTH_PINNED_PREFETCH : UNSLOTH_PREFETCH;
+  const limit = pinnedId
+    ? UNSLOTH_PINNED_PREFETCH
+    : query.trim()
+      ? UNSLOTH_QUERY_PREFETCH
+      : UNSLOTH_PREFETCH;
 
   // Phase 1: pull & yield unsloth models first
   const seen = new Set<string>();
@@ -234,10 +286,12 @@ async function* priorityThenListingIterator(
   priorityIds: readonly string[],
   task?: PipelineType,
   accessToken?: string,
+  sortBy: HfSortKey = "downloads",
+  direction: HfSortDirection = "desc",
 ): AsyncGenerator<unknown> {
   const common = {
-    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
-    fetch: withPopularitySort,
+    additionalFields: ALL_FIELDS,
+    fetch: makeSortFetch(sortBy, direction),
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
@@ -247,7 +301,7 @@ async function* priorityThenListingIterator(
     priorityIds.map((id) =>
       cachedModelInfo({
         name: id,
-        additionalFields: ["safetensors", "tags"],
+        additionalFields: ALL_FIELDS,
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }),
     ),
@@ -284,9 +338,20 @@ export function useHfModelSearch(
     accessToken?: string;
     excludeGguf?: boolean;
     priorityIds?: readonly string[];
+    sortBy?: HfSortKey;
+    sortDirection?: HfSortDirection;
+    pinUnslothFirst?: boolean;
   },
 ) {
-  const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
+  const {
+    task,
+    accessToken,
+    excludeGguf = false,
+    priorityIds,
+    sortBy = "downloads",
+    sortDirection = "desc",
+    pinUnslothFirst = true,
+  } = options ?? {};
 
   // Parse publisher detection once and share between the iterator factory
   // and the secondary sort gate (avoids duplicating the regex + logic).
@@ -307,12 +372,19 @@ export function useHfModelSearch(
       if (!trimmed) {
         // No query: show priority models first (with full metadata), then general unsloth listing
         if (priorityIds && priorityIds.length > 0) {
-          return priorityThenListingIterator(priorityIds, task, accessToken) as AsyncGenerator<unknown>;
+          return priorityThenListingIterator(
+            priorityIds,
+            task,
+            accessToken,
+            sortBy,
+            sortDirection,
+          ) as AsyncGenerator<unknown>;
         }
         return listModels({
-          search: { owner: "unsloth", ...(task ? { task } : {}) },
-          additionalFields: ["safetensors", "tags"],
-          fetch: withPopularitySort,
+          search: { ...(task ? { task } : {}) },
+          additionalFields: ALL_FIELDS,
+          fetch: makeSortFetch(sortBy, sortDirection),
+          sort: sortBy,
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
@@ -323,30 +395,49 @@ export function useHfModelSearch(
       // variants surface, then pin the original publisher model after a small
       // batch of unsloth results.  Queries for unsloth-owned models are left
       // as-is so they get the full 20-result prefetch and secondary sort.
-      return mergedModelIterator(searchQuery, undefined, accessToken, pinnedId) as AsyncGenerator<unknown>;
+      return mergedModelIterator(
+        searchQuery,
+        undefined,
+        accessToken,
+        pinnedId,
+        sortBy,
+        sortDirection,
+      ) as AsyncGenerator<unknown>;
     },
-    [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds],
+    [
+      trimmed,
+      searchQuery,
+      pinnedId,
+      task,
+      accessToken,
+      priorityIds,
+      sortBy,
+      sortDirection,
+    ],
   );
 
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const excludedTags = deviceType === "mac" ? EXCLUDED_TAGS_MLX : EXCLUDED_TAGS_GPU;
-  const mapModel = useMemo(() => makeMapModel(excludeGguf, excludedTags), [excludeGguf, excludedTags]);
+  const excludedTags =
+    deviceType === "mac" ? EXCLUDED_TAGS_MLX : EXCLUDED_TAGS_GPU;
+  const mapModel = useMemo(
+    () => makeMapModel(excludeGguf, excludedTags),
+    [excludeGguf, excludedTags],
+  );
   const search = useHfPaginatedSearch(createIter, mapModel);
 
-  // Secondary sort guarantee: unsloth models always float to the top.
-  // Skip when the user searched for a specific non-unsloth publisher
-  // (e.g. "openai/gpt-oss-20b") -- the iterator already handles the
-  // pinned ordering in that case.
+  // Secondary sort: only when there's no user query. With a query, the merged
+  // iterator already floats a small number of unsloth results to the top —
+  // re-sorting all loaded results would bury the user's actual search matches.
   const results = useMemo(
     () =>
-      isPublisherQuery
+      !pinUnslothFirst || isPublisherQuery || trimmed
         ? search.results
         : [...search.results].sort((a, b) => {
             const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
             const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
             return aFirst - bFirst;
           }),
-    [search.results, isPublisherQuery],
+    [search.results, isPublisherQuery, trimmed],
   );
 
   return { ...search, results };

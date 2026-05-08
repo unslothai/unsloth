@@ -10,10 +10,12 @@ import json
 import os
 import shutil
 import sys
+import threading
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Dict, List, Optional
 import structlog
 from loggers import get_logger
 
@@ -2218,6 +2220,145 @@ async def get_gguf_variants(
             status_code = 500,
             detail = f"Failed to list GGUF variants: {str(e)}",
         )
+
+
+class DownloadModelRequest(BaseModel):
+    """Body for POST /api/models/download (download-only, no load)."""
+
+    repo_id: str = Field(..., description = "HuggingFace repo ID, e.g. 'unsloth/Qwen3-4B-GGUF'")
+    gguf_variant: Optional[str] = Field(
+        None,
+        description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated/private repos")
+
+
+class DownloadJobStatus(BaseModel):
+    """Live state of a background download job."""
+
+    state: str = Field(..., description = "'idle' | 'running' | 'complete' | 'error'")
+    error: Optional[str] = Field(None, description = "Error message if state == 'error'")
+
+
+_DOWNLOAD_JOBS: Dict[str, DownloadJobStatus] = {}
+_DOWNLOAD_JOBS_LOCK = threading.Lock()
+
+
+def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
+    return f"{repo_id}::{variant or ''}"
+
+
+def _set_download_job(key: str, status: DownloadJobStatus) -> None:
+    with _DOWNLOAD_JOBS_LOCK:
+        _DOWNLOAD_JOBS[key] = status
+
+
+def _get_download_job(key: str) -> DownloadJobStatus:
+    with _DOWNLOAD_JOBS_LOCK:
+        return _DOWNLOAD_JOBS.get(key, DownloadJobStatus(state = "idle"))
+
+
+def _run_gguf_variant_download(repo_id: str, variant: str, hf_token: Optional[str]) -> None:
+    from huggingface_hub import hf_hub_download, model_info as hf_model_info
+    from utils.models.model_config import _extract_quant_label
+
+    info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    targets: List[str] = []
+    for sibling in info.siblings:
+        fname = sibling.rfilename
+        if not fname.lower().endswith(".gguf"):
+            continue
+        if "mmproj" in fname.lower():
+            continue
+        if _extract_quant_label(fname) != variant:
+            continue
+        targets.append(fname)
+
+    if not targets:
+        raise RuntimeError(
+            f"No GGUF shards matching variant '{variant}' in {repo_id}"
+        )
+
+    for filename in targets:
+        hf_hub_download(repo_id = repo_id, filename = filename, token = hf_token)
+
+
+def _run_snapshot_download(repo_id: str, hf_token: Optional[str]) -> None:
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id = repo_id,
+        token = hf_token,
+        ignore_patterns = [
+            "*.gguf",
+            "*.onnx",
+            "onnx/*",
+            "openvino/*",
+            "mlx/*",
+            "consolidated*",
+            "*.bin.index.json.bak",
+        ],
+    )
+
+
+@router.post("/download", status_code = 202)
+async def download_model(
+    body: DownloadModelRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Start a background download for a HuggingFace model."""
+    repo_id = body.repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Invalid repo_id: {repo_id!r}",
+        )
+
+    variant = (body.gguf_variant or "").strip() or None
+    key = _download_job_key(repo_id, variant)
+
+    existing = _get_download_job(key)
+    if existing.state == "running":
+        return {"job_key": key, "state": "running"}
+
+    _set_download_job(key, DownloadJobStatus(state = "running"))
+
+    def _worker() -> None:
+        try:
+            if variant:
+                _run_gguf_variant_download(repo_id, variant, body.hf_token)
+            else:
+                _run_snapshot_download(repo_id, body.hf_token)
+            _set_download_job(key, DownloadJobStatus(state = "complete"))
+            logger.info(f"Download complete: {repo_id}{f' [{variant}]' if variant else ''}")
+        except Exception as e:
+            logger.error(
+                f"Download failed for {repo_id}{f' [{variant}]' if variant else ''}: {e}",
+                exc_info = True,
+            )
+            _set_download_job(
+                key,
+                DownloadJobStatus(state = "error", error = str(e)),
+            )
+
+    threading.Thread(
+        target = _worker,
+        name = f"hf-download-{repo_id}",
+        daemon = True,
+    ).start()
+
+    return {"job_key": key, "state": "running"}
+
+
+@router.get("/download-status", response_model = DownloadJobStatus)
+async def get_download_status(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the latest state of a background download job."""
+    key = _download_job_key(repo_id, gguf_variant or None)
+    return _get_download_job(key)
 
 
 @router.get("/gguf-download-progress")

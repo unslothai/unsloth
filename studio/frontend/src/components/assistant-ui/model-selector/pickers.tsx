@@ -38,8 +38,16 @@ import {
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Add01Icon,
+  ArrowRight01Icon,
+  Cancel01Icon,
+  CubeIcon,
+  Folder02Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon } from "lucide-react";
@@ -499,6 +507,7 @@ export function HubModelPicker({
   onFoldersChange?: () => void;
 }) {
   const gpu = useGpuInfo();
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   const { results, isLoading, isLoadingMore, fetchMore } =
@@ -910,6 +919,26 @@ export function HubModelPicker({
           <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
         )}
       </div>
+
+      {!chatOnly && (
+        <button
+          type="button"
+          onClick={() => navigate({ to: "/models" })}
+          className="group flex w-full items-center gap-2 rounded-[8px] border border-dashed border-border/60 bg-muted/30 px-2.5 py-2 text-left text-[12.5px] font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/60 hover:text-foreground"
+        >
+          <HugeiconsIcon
+            icon={CubeIcon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0"
+          />
+          <span className="flex-1">Discover & download models</span>
+          <HugeiconsIcon
+            icon={ArrowRight01Icon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0 transition-transform group-hover:translate-x-0.5"
+          />
+        </button>
+      )}
 
       <div ref={scrollRef} className="max-h-64 overflow-y-auto">
         <div className="p-1">

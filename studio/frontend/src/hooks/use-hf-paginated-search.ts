@@ -43,11 +43,12 @@ export function useHfPaginatedSearch<T>(
   createIter: () => AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
   options?: { enabled?: boolean },
-): HfPaginatedState<T> & { fetchMore: () => void } {
+): HfPaginatedState<T> & { fetchMore: () => void; retry: () => void } {
   const enabled = options?.enabled ?? true;
   const [state, setState] = useState<HfPaginatedState<T>>(
     INITIAL as HfPaginatedState<T>,
   );
+  const [retryNonce, setRetryNonce] = useState(0);
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
@@ -98,7 +99,11 @@ export function useHfPaginatedSearch<T>(
           error: err instanceof Error ? err.message : "Search failed",
         });
       });
-  }, [createIter, mapItem, enabled]);
+  }, [createIter, mapItem, enabled, retryNonce]);
+
+  const retry = useCallback(() => {
+    setRetryNonce((n) => n + 1);
+  }, []);
 
   const fetchMore = useCallback(() => {
     const iter = iterRef.current;
@@ -130,5 +135,5 @@ export function useHfPaginatedSearch<T>(
       });
   }, [mapItem]);
 
-  return { ...state, fetchMore };
+  return { ...state, fetchMore, retry };
 }

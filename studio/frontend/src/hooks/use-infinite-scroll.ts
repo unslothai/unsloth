@@ -3,26 +3,54 @@
 
 import { useEffect, useRef } from "react";
 
-export function useInfiniteScroll(fetchMore: () => void, _itemCount: number) {
+export function useInfiniteScroll(
+  fetchMore: () => void,
+  itemCount: number,
+  enabled = true,
+) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const fetchMoreRef = useRef(fetchMore);
 
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) {
+    fetchMoreRef.current = fetchMore;
+  }, [fetchMore]);
+
+  useEffect(() => {
+    if (!enabled) {
       return;
     }
-    const obs = new IntersectionObserver(
-      ([e]) => {
-        if (e.isIntersecting) {
-          fetchMore();
+    const sentinel = sentinelRef.current;
+    const root = scrollRef.current;
+    if (!sentinel) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          fetchMoreRef.current();
         }
       },
-      { threshold: 0, root: scrollRef.current },
+      { threshold: 0, root, rootMargin: "200px 0px" },
     );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [fetchMore]);
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || itemCount === 0) {
+      return;
+    }
+    const root = scrollRef.current;
+    const sentinel = sentinelRef.current;
+    if (!root || !sentinel?.isConnected) {
+      return;
+    }
+    if (root.scrollHeight <= root.clientHeight + 4) {
+      fetchMoreRef.current();
+    }
+  }, [itemCount, enabled]);
 
   return { scrollRef, sentinelRef };
 }

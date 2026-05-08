@@ -23,8 +23,10 @@ const MAX_CONCURRENT = 3;
 // do not need unsafe casts to access safetensors/tags.
 export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
+  gguf?: { total?: number; architecture?: string };
   tags?: string[];
 };
+
 
 interface CacheEntry {
   data: CachedResult;
@@ -63,8 +65,14 @@ function release() {
 // ── Public API ──────────────────────────────────────────────────
 
 // Always request the superset of fields any consumer needs so a single
-// cache entry covers all callers (e.g. ["safetensors"] and ["safetensors","tags"]).
-const ALL_FIELDS: ("safetensors" | "tags")[] = ["safetensors", "tags"];
+// cache entry covers all callers. "gguf" isn't in the SDK's expand whitelist
+// but the HF API supports it; the SDK's pick() is dynamic, so passing it as
+// a runtime string yields the field. Cast hides it from the TS type only.
+export const ALL_FIELDS: ("safetensors" | "tags")[] = [
+  "safetensors",
+  "tags",
+  "gguf",
+] as ("safetensors" | "tags")[];
 
 function isStale(key: string): boolean {
   const hit = cache.get(key);

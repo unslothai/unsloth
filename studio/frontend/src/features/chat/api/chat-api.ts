@@ -108,6 +108,56 @@ export interface CachedGgufRepo {
   cache_path: string;
 }
 
+export type DownloadJobState = "idle" | "running" | "complete" | "error";
+
+export interface DownloadJobStatus {
+  state: DownloadJobState;
+  error?: string | null;
+}
+
+export async function startModelDownload(payload: {
+  repo_id: string;
+  gguf_variant?: string | null;
+  hf_token?: string | null;
+}): Promise<{ job_key: string; state: DownloadJobState }> {
+  const response = await authFetch("/api/models/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(response);
+}
+
+export async function getModelDownloadStatus(
+  repoId: string,
+  ggufVariant?: string | null,
+): Promise<DownloadJobStatus> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (ggufVariant) params.set("gguf_variant", ggufVariant);
+  const response = await authFetch(`/api/models/download-status?${params}`);
+  return parseJsonOrThrow<DownloadJobStatus>(response);
+}
+
+export async function startDatasetDownload(payload: {
+  repo_id: string;
+  hf_token?: string | null;
+}): Promise<{ repo_id: string; state: DownloadJobState }> {
+  const response = await authFetch("/api/datasets/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(response);
+}
+
+export async function getDatasetDownloadStatus(
+  repoId: string,
+): Promise<DownloadJobStatus> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/datasets/download-status?${params}`);
+  return parseJsonOrThrow<DownloadJobStatus>(response);
+}
+
 export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
