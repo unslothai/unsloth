@@ -574,7 +574,9 @@ async def load_model(
         # reload path below can start fresh with new params. Without this,
         # the reload falls through to the transformers path, which fails
         # because GGUF files don't have a HuggingFace config.json.
-        if not request.gguf_variant and llama_backend.is_loaded:
+        if not request.gguf_variant and llama_backend.is_loaded \
+           and llama_backend.model_identifier \
+           and llama_backend.model_identifier.lower() == model_identifier.lower():
             logger.info(
                 f"Local GGUF already loaded, reloading with updated settings: "
                 f"{model_log_label}"
