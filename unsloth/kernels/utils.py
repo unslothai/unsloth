@@ -88,26 +88,10 @@ def is_cdna():
 
 @functools.lru_cache(1)
 def is_rdna():
-    """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA2, RDNA3, RDNA3.5, RDNA4)."""
+    """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA3, RDNA4)."""
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
-        # RDNA2 (Navi 21-24)
-        "gfx1030",
-        "gfx1031",
-        "gfx1032",
-        "gfx1033",
-        "gfx1034",
-        "gfx1035",
-        "gfx1036",
-        # RDNA3 (Navi 31-33)
         "gfx1100",
         "gfx1101",
-        "gfx1102",
-        "gfx1103",
-        # RDNA3.5 (Strix Point / Strix Halo)
-        "gfx1150",
-        "gfx1151",
-        "gfx1152",
-        # RDNA4 (Navi 48-44)
         "gfx1200",
         "gfx1201",
     )
@@ -161,14 +145,8 @@ else:
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
 # NVIDIA GPU Default Logic
-elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
-    _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 else:
-    # CPU-only torch wheel (no compiled CUDA backend). _get_tensor_stream
-    # is only invoked during real GPU work, so a no-op binding is safe.
-    def _gpu_getCurrentRawStream(_index = 0):
-        return 0
-
+    _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 
 c_void_p = ctypes.c_void_p
 
@@ -183,49 +161,36 @@ global XPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
-# DEVICE_COUNT == 0 = no visible accelerator (e.g. CPU-only CI runner).
-# The consumer functions below only index these arrays during real GPU
-# work, so empty containers are safe -- they just need to be defined so
-# the module imports cleanly.
+# INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
-    if DEVICE_COUNT > 0:
-        _XPU_STREAMS = {
-            (index := torch.xpu.device(i).idx): ctypes.c_void_p(
-                torch._C._xpu_getCurrentRawStream(index)
-            )
-            for i in range(DEVICE_COUNT)
-        }
-        XPU_STREAMS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-        WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-        ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-        for k, v in _XPU_STREAMS.items():
-            XPU_STREAMS[k] = v
-        XPU_STREAMS = tuple(XPU_STREAMS)
-        del _XPU_STREAMS
-    else:
-        XPU_STREAMS = ()
-        WEIGHT_BUFFERS = []
-        ABSMAX_BUFFERS = []
+    _XPU_STREAMS = {
+        (index := torch.xpu.device(i).idx): ctypes.c_void_p(
+            torch._C._xpu_getCurrentRawStream(index)
+        )
+        for i in range(DEVICE_COUNT)
+    }
+    XPU_STREAMS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    for k, v in _XPU_STREAMS.items():
+        XPU_STREAMS[k] = v
+    XPU_STREAMS = tuple(XPU_STREAMS)
+    del _XPU_STREAMS
 else:
     # NVIDIA GPU Default Logic
-    if DEVICE_COUNT > 0:
-        _CUDA_STREAMS = {
-            (index := torch.cuda.device(i).idx): ctypes.c_void_p(
-                torch._C._cuda_getCurrentRawStream(index)
-            )
-            for i in range(DEVICE_COUNT)
-        }
-        CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        for k, v in _CUDA_STREAMS.items():
-            CUDA_STREAMS[k] = v
-        CUDA_STREAMS = tuple(CUDA_STREAMS)
-        del _CUDA_STREAMS
-    else:
-        CUDA_STREAMS = ()
-        WEIGHT_BUFFERS = []
-        ABSMAX_BUFFERS = []
+    _CUDA_STREAMS = {
+        (index := torch.cuda.device(i).idx): ctypes.c_void_p(
+            torch._C._cuda_getCurrentRawStream(index)
+        )
+        for i in range(DEVICE_COUNT)
+    }
+    CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    for k, v in _CUDA_STREAMS.items():
+        CUDA_STREAMS[k] = v
+    CUDA_STREAMS = tuple(CUDA_STREAMS)
+    del _CUDA_STREAMS
 
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
@@ -1066,19 +1031,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
-        # Align quant_state.dtype to activation dtype so fast_dequantize picks
-        # the correct kernel (bf16_nf4 vs fp16_nf4) and allocates the output
-        # buffer in the right dtype directly. The post-cast is kept as a
-        # safety net for any edge case the pre-assignment cannot cover.
-        if (
-            W_quant is not None
-            and not isinstance(W_quant, list)
-            and W_quant.dtype != dtype
-        ):
-            W_quant.dtype = dtype
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
-        if W.dtype != dtype:
-            W = W.to(dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
@@ -1086,11 +1039,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     if A is not None:
         # LoRA is enabled
         A, B = A.t(), B.t()
-        # Ensure out and XA share the activation dtype — out may be float16 if
-        # the base-weight matmul above ran in a different dtype.
-        if out.dtype != dtype:
-            out = out.to(dtype)
-        XA = torch_matmul(X.to(dtype), A.to(dtype))
+        XA = torch_matmul(X, A.to(dtype))
         out.addmm_(XA, B.to(dtype), alpha = s)
         # out += (X @ A.to(dtype)) @ (s * B.to(dtype))
 
