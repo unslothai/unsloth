@@ -2,7 +2,7 @@ pub(crate) const DESKTOP_PROTOCOL_VERSION: u16 = 1;
 pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 1;
 // Explicit backend package minimum, not the desktop app Cargo version: backend
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
-pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.5.2";
+pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.5.3";
 
 pub(super) fn parse_version(value: &str) -> Option<[u64; 3]> {
     let value = value.trim();
