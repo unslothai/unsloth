@@ -1084,27 +1084,40 @@ def run_training_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 1d. Ensure torch.distributed attributes exist before ML libs load ──
-    # The ROCm Windows wheel (2.9.0+rocmsdk*) does not expose several
-    # torch.distributed functions on the module object until it is explicitly
-    # imported. transformers and trl access them at import time, causing
-    # AttributeError. Force a full import and stub any missing callables.
+    # ── 1d. Ensure torch.distributed is importable before ML libs load ──
+    # The ROCm Windows wheel lacks torch._C._distributed_c10d (the C backend),
+    # so `import torch.distributed` raises ImportError. transformers/trl import
+    # it unconditionally, killing the subprocess. We try a real import first; if
+    # it fails we inject a stub module into sys.modules so all subsequent imports
+    # get a harmless no-op object instead of crashing.
+    _td_stubs = {
+        "is_initialized": lambda: False,
+        "is_available": lambda: False,
+        "is_torchelastic_launched": lambda: False,
+        "get_rank": lambda: 0,
+        "get_world_size": lambda: 1,
+        "barrier": lambda: None,
+    }
     try:
         import torch.distributed as _td
-
-        _td_stubs = {
-            "is_initialized": lambda: False,
-            "is_available": lambda: False,
-            "is_torchelastic_launched": lambda: False,
-            "get_rank": lambda: 0,
-            "get_world_size": lambda: 1,
-            "barrier": lambda: None,
-        }
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
     except Exception:
-        pass
+        import types
+        _td_mock = types.ModuleType("torch.distributed")
+        for _name, _stub in _td_stubs.items():
+            setattr(_td_mock, _name, _stub)
+        sys.modules["torch.distributed"] = _td_mock
+        # Stub the missing C extension so re-imports don't re-raise
+        sys.modules.setdefault(
+            "torch._C._distributed_c10d", types.ModuleType("torch._C._distributed_c10d")
+        )
+        try:
+            import torch as _torch
+            _torch.distributed = _td_mock
+        except Exception:
+            pass
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
