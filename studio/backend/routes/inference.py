@@ -568,6 +568,19 @@ async def load_model(
                     chat_template = _chat_template,
                 )
 
+        # ── Local GGUF already-loaded: kill before reload ──────────
+        # When settings change triggers a reload of a local GGUF model
+        # (no gguf_variant), kill the existing llama-server so the GGUF
+        # reload path below can start fresh with new params. Without this,
+        # the reload falls through to the transformers path, which fails
+        # because GGUF files don't have a HuggingFace config.json.
+        if not request.gguf_variant and llama_backend.is_loaded:
+            logger.info(
+                f"Local GGUF already loaded, reloading with updated settings: "
+                f"{model_log_label}"
+            )
+            llama_backend.unload_model()
+
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
