@@ -1084,15 +1084,24 @@ def run_training_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 1d. Ensure torch.distributed.is_initialized exists before ML libs load ──
-    # The ROCm Windows wheel (2.9.0+rocmsdk*) does not expose is_initialized on
-    # the torch.distributed module object until it is explicitly imported.
-    # transformers and trl access it before that happens, causing AttributeError.
+    # ── 1d. Ensure torch.distributed attributes exist before ML libs load ──
+    # The ROCm Windows wheel (2.9.0+rocmsdk*) does not expose several
+    # torch.distributed functions on the module object until it is explicitly
+    # imported. transformers and trl access them at import time, causing
+    # AttributeError. Force a full import and stub any missing callables.
     try:
-        import torch.distributed as _td  # noqa: F401 -- forces full module load
-
-        if not hasattr(_td, "is_initialized"):
-            _td.is_initialized = lambda: False
+        import torch.distributed as _td
+        _td_stubs = {
+            "is_initialized": lambda: False,
+            "is_available": lambda: False,
+            "is_torchelastic_launched": lambda: False,
+            "get_rank": lambda: 0,
+            "get_world_size": lambda: 1,
+            "barrier": lambda: None,
+        }
+        for _name, _stub in _td_stubs.items():
+            if not hasattr(_td, _name):
+                setattr(_td, _name, _stub)
     except Exception:
         pass
 
