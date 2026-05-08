@@ -710,8 +710,133 @@ pub fn start_backend(
     Ok(generation)
 }
 
+async fn generic_backend_health_ok(port: u16) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            warn!("Could not build backend validation client: {}", error);
+            return false;
+        }
+    };
+    let response = match client
+        .get(format!("http://127.0.0.1:{port}/api/health"))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(
+                "Backend port candidate {} failed health request: {}",
+                port, error
+            );
+            return false;
+        }
+    };
+    if !response.status().is_success() {
+        warn!(
+            "Backend port candidate {} returned HTTP {} from health",
+            port,
+            response.status()
+        );
+        return false;
+    }
+    let json = match response.json::<serde_json::Value>().await {
+        Ok(json) => json,
+        Err(error) => {
+            warn!(
+                "Backend port candidate {} returned invalid health JSON: {}",
+                port, error
+            );
+            return false;
+        }
+    };
+    let healthy = json
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "healthy")
+        .unwrap_or(false);
+    let service = json
+        .get("service")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "Unsloth UI Backend")
+        .unwrap_or(false);
+    healthy && service
+}
+
+async fn validate_candidate_port(
+    app: AppHandle,
+    state: BackendState,
+    diagnostics_state: DiagnosticsState,
+    session_id: String,
+    generation: u64,
+    port: u16,
+) {
+    let owner = {
+        let proc = match state.lock() {
+            Ok(proc) => proc,
+            Err(error) => {
+                warn!("Backend state unavailable for port validation: {}", error);
+                return;
+            }
+        };
+        if proc.generation != generation || proc.port.is_some() {
+            return;
+        }
+        match proc.owned.as_ref() {
+            Some(OwnedBackendHandle::Spawned { owner, .. }) => owner.clone(),
+            _ => return,
+        }
+    };
+
+    let valid = if let Some(owner) = owner {
+        matches!(
+            crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port)).await,
+            crate::desktop_backend_owner::OwnedBackendProbe::Verified(
+                crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
+            ) if verified_port == port
+        )
+    } else {
+        generic_backend_health_ok(port).await
+    };
+
+    if !valid {
+        warn!("Ignoring unverified TAURI_PORT candidate {}", port);
+        return;
+    }
+
+    let should_emit = {
+        let mut proc = match state.lock() {
+            Ok(proc) => proc,
+            Err(error) => {
+                warn!("Backend state unavailable after port validation: {}", error);
+                return;
+            }
+        };
+        if proc.generation != generation || proc.port.is_some() {
+            false
+        } else if matches!(proc.owned, Some(OwnedBackendHandle::Spawned { .. })) {
+            proc.port = Some(port);
+            if let Some(owned) = proc.owned.as_mut() {
+                owned.set_reported_port(port);
+            }
+            true
+        } else {
+            false
+        }
+    };
+
+    if should_emit {
+        diagnostics::record_backend_port(&diagnostics_state, &session_id, port);
+        info!("Validated backend port: {}", port);
+        let _ = app.emit("server-port", port);
+    }
+}
+
 /// Read lines from a child process stream (stdout or stderr).
-/// For stdout, parse TAURI_PORT=(\d+) to detect the actual port.
+/// For stdout, parse TAURI_PORT=(\d+) candidates for async validation.
 /// When stdout closes and the stop was not intentional, emit server-crashed.
 fn read_output_stream<R: std::io::Read>(
     stream: R,
@@ -757,18 +882,12 @@ fn read_output_stream<R: std::io::Read>(
                 // Buffer the log line only for the current backend generation.
                 // Old reader threads can briefly outlive a stop/start cycle;
                 // they must not overwrite the new backend's port or logs.
-                let mut should_record_port = None;
+                let mut candidate_port = None;
                 let current_generation = if let Ok(mut proc) = state.lock() {
                     if proc.generation != generation {
                         false
                     } else {
-                        if let Some(port) = detected_port {
-                            proc.port = Some(port);
-                            if let Some(owned) = proc.owned.as_mut() {
-                                owned.set_reported_port(port);
-                            }
-                            should_record_port = Some(port);
-                        }
+                        candidate_port = detected_port;
                         if proc.logs.len() >= MAX_LOG_LINES {
                             proc.logs.pop_front();
                         }
@@ -783,14 +902,22 @@ fn read_output_stream<R: std::io::Read>(
                     break;
                 }
 
-                if let Some(port) = should_record_port {
-                    diagnostics::record_backend_port(
-                        diagnostics_state,
-                        &backend_log.session_id,
-                        port,
-                    );
-                    info!("Detected backend port: {}", port);
-                    let _ = app.emit("server-port", port);
+                if let Some(port) = candidate_port {
+                    let app_handle = app.clone();
+                    let state_clone = Arc::clone(state);
+                    let diagnostics_clone = diagnostics_state.clone();
+                    let session_id = backend_log.session_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        validate_candidate_port(
+                            app_handle,
+                            state_clone,
+                            diagnostics_clone,
+                            session_id,
+                            generation,
+                            port,
+                        )
+                        .await;
+                    });
                 }
 
                 info!("[backend] {}", log_line);

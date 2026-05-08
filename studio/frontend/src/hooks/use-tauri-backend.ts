@@ -42,15 +42,12 @@ interface DesktopPreflightResult {
   managed_bin: string | null;
 }
 
-const MANAGED_STARTUP_TIMEOUT_MS = 5 * 60_000;
 const MANAGED_STARTUP_POLL_MS = 500;
 
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
   | { status: "ready"; port: number }
-  | { status: "aborted" }
-  | { status: "missing-port" }
-  | { status: "unhealthy" };
+  | { status: "aborted" };
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -83,9 +80,7 @@ async function waitForManagedServerReady(
   getPort: () => number | null,
   shouldContinue: () => boolean,
 ): Promise<ManagedStartupResult> {
-  const deadline = Date.now() + MANAGED_STARTUP_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
+  while (true) {
     if (!shouldContinue()) {
       return { status: "aborted" };
     }
@@ -106,10 +101,6 @@ async function waitForManagedServerReady(
 
     await wait(MANAGED_STARTUP_POLL_MS);
   }
-
-  return getPort() === null
-    ? { status: "missing-port" }
-    : { status: "unhealthy" };
 }
 
 export function useTauriBackend() {
@@ -134,6 +125,7 @@ export function useTauriBackend() {
   const externalPollAbortedRef = useRef(false);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
+  const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
@@ -308,11 +300,6 @@ export function useTauriBackend() {
         return;
       }
 
-      const message =
-        startupResult.status === "missing-port"
-          ? "Managed server started without reporting a port. Check the logs for details."
-          : "Server started but is not responding. Check the logs for details.";
-      setBackendError(message);
     } catch (e) {
       const msg = String(e);
       if (msg.includes("already running")) {
@@ -485,9 +472,9 @@ export function useTauriBackend() {
     });
   }, [currentStepIndex, elevationPackages, error, logs, progressDetail]);
 
-  // Initial check on mount (guarded against Strict Mode double-mount)
+  // Initial check on mount after Tauri event listeners are registered.
   useEffect(() => {
-    if (mountedRef.current) return;
+    if (!tauriEventsReady || mountedRef.current) return;
     mountedRef.current = true;
 
     if (!isTauri) {
@@ -495,7 +482,7 @@ export function useTauriBackend() {
       return;
     }
     checkInstallAndStart();
-  }, []);
+  }, [tauriEventsReady]);
 
   // Listen for Tauri events
   useEffect(() => {
@@ -504,17 +491,20 @@ export function useTauriBackend() {
     let disposed = false;
 
     import("@tauri-apps/api/event").then(({ listen }) => {
+      const registrations: Promise<void>[] = [];
       function register<T>(
         event: string,
         handler: Parameters<typeof listen<T>>[1],
       ) {
-        listen<T>(event, handler).then((unlisten) => {
-          if (disposed) {
-            unlisten();
-          } else {
-            cleanup.push(unlisten);
-          }
-        });
+        registrations.push(
+          listen<T>(event, handler).then((unlisten) => {
+            if (disposed) {
+              unlisten();
+            } else {
+              cleanup.push(unlisten);
+            }
+          }),
+        );
       }
 
       register<string>("install-progress", (e) => {
@@ -593,6 +583,16 @@ export function useTauriBackend() {
           retry();
         }
       });
+
+      Promise.all(registrations)
+        .then(() => {
+          if (!disposed) setTauriEventsReady(true);
+        })
+        .catch((error) => {
+          if (!disposed) setBackendError(String(error));
+        });
+    }).catch((error) => {
+      if (!disposed) setBackendError(String(error));
     });
 
     const onAuthFailed = (event: Event) => {

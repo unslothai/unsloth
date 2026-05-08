@@ -782,41 +782,26 @@ async fn health_watchdog(
         }
 
         let should_count_failure =
-            should_count_watchdog_failure(has_seen_healthy, started_at.elapsed());
+            port.is_some() || should_count_watchdog_failure(has_seen_healthy, started_at.elapsed());
 
         let Some(port) = port else {
-            if should_count_failure {
-                consecutive_failures += 1;
-                warn!(
-                    "Health watchdog: backend has not reported a port ({}/{})",
-                    consecutive_failures, HEALTH_WATCHDOG_MAX_FAILURES
-                );
-            }
-
-            if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
+            if has_adopted {
                 diagnostics::record_backend_watchdog(
                     &diagnostics,
                     generation,
-                    "no_port_after_grace",
+                    "adopted_port_missing",
                 );
-                if has_adopted {
-                    error!("Health watchdog: adopted backend lost its port, declaring dead");
-                    process::clear_adopted_backend_if_current(
-                        &state,
-                        generation,
-                        None,
-                        "watchdog no port after grace",
-                    );
-                } else {
-                    error!(
-                        "Health watchdog: backend never reported a port, killing and declaring dead"
-                    );
-                    let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
-                }
+                error!("Health watchdog: adopted backend lost its port, declaring dead");
+                process::clear_adopted_backend_if_current(
+                    &state,
+                    generation,
+                    None,
+                    "watchdog adopted port missing",
+                );
                 let _ = app.emit("server-crashed", ());
                 break;
             }
-
+            info!("Health watchdog: backend has not reported a validated port yet");
             continue;
         };
 
