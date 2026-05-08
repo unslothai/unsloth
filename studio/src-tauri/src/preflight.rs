@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -49,11 +49,39 @@ struct DesktopCapability {
 struct BackendHealth {
     desktop_protocol_version: Option<u16>,
     supports_desktop_auth: Option<bool>,
+    studio_root_id: Option<String>,
     stale_reason: Option<String>,
 }
 
+const STUDIO_INSTALL_ID_HEX_LEN: usize = 64;
+
 fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
+}
+
+fn is_valid_studio_root_id(value: &str) -> bool {
+    value.len() == STUDIO_INSTALL_ID_HEX_LEN
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn parse_studio_root_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    is_valid_studio_root_id(value).then(|| value.to_string())
+}
+
+fn managed_studio_root_id_path(home: &Path) -> PathBuf {
+    home.join(".unsloth")
+        .join("studio")
+        .join("share")
+        .join("studio_install_id")
+}
+
+fn read_expected_studio_root_id() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let raw = std::fs::read_to_string(managed_studio_root_id_path(&home)).ok()?;
+    parse_studio_root_id(&raw)
 }
 
 fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPreflightResult {
@@ -254,6 +282,10 @@ async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHe
     if desktop_protocol_version.is_none() && supports_desktop_auth.is_none() {
         return None;
     }
+    let studio_root_id = json
+        .get("studio_root_id")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
     let stale_reason = match supports_desktop_auth {
         Some(false) => json
             .get("desktop_auth_stale_reason")
@@ -264,8 +296,24 @@ async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHe
     Some(BackendHealth {
         desktop_protocol_version,
         supports_desktop_auth,
+        studio_root_id,
         stale_reason,
     })
+}
+
+fn backend_studio_root_stale_reason(
+    health: &BackendHealth,
+    expected_studio_root_id: Option<&str>,
+) -> Option<String> {
+    let Some(expected) = expected_studio_root_id else {
+        return Some("studio_root_id_unavailable".to_string());
+    };
+
+    match health.studio_root_id.as_deref() {
+        Some(actual) if actual == expected => None,
+        Some("") | None => Some("studio_root_id_missing".to_string()),
+        Some(_) => Some("studio_root_id_mismatch".to_string()),
+    }
 }
 
 fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
@@ -293,7 +341,12 @@ async fn backend_desktop_auth_status(
     client: &reqwest::Client,
     port: u16,
     health: &BackendHealth,
+    expected_studio_root_id: Option<&str>,
 ) -> BackendProbe {
+    if let Some(reason) = backend_studio_root_stale_reason(health, expected_studio_root_id) {
+        return BackendProbe::Old { port, reason };
+    }
+
     if let Some(reason) = backend_capability_stale_reason(health) {
         return BackendProbe::Old { port, reason };
     }
@@ -358,9 +411,17 @@ async fn probe_existing_backends() -> BackendProbe {
         }
     }
 
+    let expected_studio_root_id = read_expected_studio_root_id();
     let mut first_old = None;
     for (port, health) in candidates {
-        match backend_desktop_auth_status(&client, port, &health).await {
+        match backend_desktop_auth_status(
+            &client,
+            port,
+            &health,
+            expected_studio_root_id.as_deref(),
+        )
+        .await
+        {
             ready @ BackendProbe::Ready { .. } => return ready,
             old @ BackendProbe::Old { .. } if first_old.is_none() => first_old = Some(old),
             _ => {}
@@ -543,6 +604,36 @@ mod tests {
         assert!(!result.can_auto_repair);
     }
 
+    #[test]
+    fn parse_studio_root_id_requires_lowercase_64_hex_chars() {
+        let valid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert_eq!(parse_studio_root_id(valid), Some(valid.to_string()));
+        assert_eq!(
+            parse_studio_root_id(&format!("\n{valid}\n")),
+            Some(valid.to_string())
+        );
+        assert_eq!(parse_studio_root_id(""), None);
+        assert_eq!(
+            parse_studio_root_id(
+                "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            None
+        );
+        assert_eq!(parse_studio_root_id("not-a-root-id"), None);
+    }
+
+    #[test]
+    fn managed_studio_root_id_path_points_at_tauri_default_root() {
+        let home = Path::new("home").join("alex");
+        assert_eq!(
+            managed_studio_root_id_path(&home),
+            home.join(".unsloth")
+                .join("studio")
+                .join("share")
+                .join("studio_install_id")
+        );
+    }
+
     #[cfg(unix)]
     struct FakeCli {
         bin: PathBuf,
@@ -709,9 +800,20 @@ exit 1
         );
     }
 
-    async fn backend_server(health_body: &'static str, route_status: &'static str) -> u16 {
+    const EXPECTED_ROOT_ID: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER_ROOT_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn desktop_ready_health(root_id: &str) -> String {
+        format!(
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true,"studio_root_id":"{root_id}"}}"#
+        )
+    }
+
+    async fn backend_server(health_body: impl Into<String>, route_status: &'static str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let health_body = health_body.into();
 
         tokio::spawn(async move {
             for _ in 0..2 {
@@ -720,7 +822,7 @@ exit 1
                 let n = stream.read(&mut buffer).await.unwrap();
                 let request = String::from_utf8_lossy(&buffer[..n]);
                 let (status, body) = if request.starts_with("GET /api/health ") {
-                    ("200 OK", health_body)
+                    ("200 OK", health_body.as_str())
                 } else if request.starts_with("POST /api/auth/desktop-login ") {
                     (route_status, "")
                 } else {
@@ -738,13 +840,13 @@ exit 1
     }
 
     async fn probe_test_backend(
-        health_body: &'static str,
+        health_body: impl Into<String>,
         route_status: &'static str,
     ) -> BackendProbe {
         let port = backend_server(health_body, route_status).await;
         let client = reqwest::Client::new();
         let health = backend_health(&client, port).await.unwrap();
-        backend_desktop_auth_status(&client, port, &health).await
+        backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await
     }
 
     #[tokio::test]
@@ -762,7 +864,9 @@ exit 1
     #[tokio::test]
     async fn backend_with_auth_support_but_missing_protocol_is_old() {
         let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","supports_desktop_auth":true}"#,
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","supports_desktop_auth":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#
+            ),
             "401 Unauthorized",
         )
         .await;
@@ -773,7 +877,9 @@ exit 1
     #[tokio::test]
     async fn backend_with_auth_support_but_unsupported_protocol_is_old() {
         let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":2,"supports_desktop_auth":true}"#,
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":2,"supports_desktop_auth":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#
+            ),
             "401 Unauthorized",
         )
         .await;
@@ -783,22 +889,62 @@ exit 1
 
     #[tokio::test]
     async fn backend_health_with_desktop_capability_fields_and_401_is_ready() {
+        let probe =
+            probe_test_backend(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn backend_root_id_mismatch_is_old_before_auth_probe() {
+        let probe =
+            probe_test_backend(desktop_ready_health(OTHER_ROOT_ID), "401 Unauthorized").await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old {
+                reason,
+                ..
+            } if reason == "studio_root_id_mismatch"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_missing_root_id_is_old_before_auth_probe() {
         let probe = probe_test_backend(
             r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
             "401 Unauthorized",
         )
         .await;
 
-        assert!(matches!(probe, BackendProbe::Ready { .. }));
+        assert!(matches!(
+            probe,
+            BackendProbe::Old {
+                reason,
+                ..
+            } if reason == "studio_root_id_missing"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_expected_root_id_missing_is_old_before_auth_probe() {
+        let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
+        let client = reqwest::Client::new();
+        let health = backend_health(&client, port).await.unwrap();
+
+        assert!(matches!(
+            backend_desktop_auth_status(&client, port, &health, None).await,
+            BackendProbe::Old {
+                reason,
+                ..
+            } if reason == "studio_root_id_unavailable"
+        ));
     }
 
     #[tokio::test]
     async fn backend_route_404_is_old() {
-        let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
-            "404 Not Found",
-        )
-        .await;
+        let probe =
+            probe_test_backend(desktop_ready_health(EXPECTED_ROOT_ID), "404 Not Found").await;
 
         assert!(matches!(
             probe,
@@ -812,7 +958,7 @@ exit 1
     #[tokio::test]
     async fn backend_route_500_is_old() {
         let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
+            desktop_ready_health(EXPECTED_ROOT_ID),
             "500 Internal Server Error",
         )
         .await;
@@ -823,7 +969,9 @@ exit 1
     #[tokio::test]
     async fn backend_capability_false_is_old_even_when_route_401() {
         let port = backend_server(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":false,"desktop_auth_stale_reason":"cap_false"}"#,
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":false,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"}}"#
+            ),
             "401 Unauthorized",
         )
         .await;
@@ -831,7 +979,7 @@ exit 1
         let health = backend_health(&client, port).await.unwrap();
 
         assert!(matches!(
-            backend_desktop_auth_status(&client, port, &health).await,
+            backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await,
             BackendProbe::Old {
                 reason,
                 ..

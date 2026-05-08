@@ -266,33 +266,8 @@ pub fn start_backend(
         }
     };
 
-    shutdown.store(false, Ordering::SeqCst);
-
-    // Reset state and invalidate any readers from an older backend generation
-    // before we release the lock and spawn a new child.
-    let generation = {
-        let mut proc = state.lock().map_err(|e| e.to_string())?;
-        if proc.child.is_some() {
-            return Err("Backend is already running.".to_string());
-        }
-        proc.generation = proc.generation.wrapping_add(1);
-        proc.port = None;
-        proc.logs.clear();
-        proc.intentional_stop = false;
-        proc.diagnostics_session = None;
-        proc.generation
-    };
-
-    let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
-
     let args = backend_args(port);
-    info!("Starting backend: {:?} {}", bin, args.join(" "));
-    diagnostics::append_phase_line(
-        &backend_log.handle,
-        "meta",
-        &format!("Starting backend: {:?} {}", bin, args.join(" ")),
-    );
-
+    let start_line = format!("Starting backend: {:?} {}", bin, args.join(" "));
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .stdout(Stdio::piped())
@@ -322,56 +297,76 @@ pub fn start_backend(
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
 
-    // On Windows, launch the backend directly with hidden-window flags.
-    // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
-    // children inherit crash-safe cleanup without the buggy per-child JobObject wrapper.
-    #[cfg(windows)]
-    let mut child: Box<dyn ChildWrapper + Send> = {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        let child = cmd.spawn().map_err(|e| {
-            let msg = format!("Failed to spawn backend: {}", e);
-            diagnostics::record_backend_start_failure(
-                diagnostics_state,
-                Some(port),
-                Some(generation),
-                "spawn_backend",
-                &msg,
-            );
-            msg
-        })?;
-        Box::new(child)
-    };
-
-    #[cfg(unix)]
-    let mut child: Box<dyn ChildWrapper + Send> = {
-        // Keep the backend tree in a process group on Unix for cleanup.
-        let mut wrap = CommandWrap::from(cmd);
-        wrap.wrap(ProcessGroup::leader());
-        wrap.spawn().map_err(|e| {
-            let msg = format!("Failed to spawn backend: {}", e);
-            diagnostics::record_backend_start_failure(
-                diagnostics_state,
-                Some(port),
-                Some(generation),
-                "spawn_backend",
-                &msg,
-            );
-            msg
-        })?
-    };
-
-    let stdout = child.stdout().take();
-    let stderr = child.stderr().take();
-
-    // Store child in state for the already-selected generation.
-    {
+    // Reset state, spawn, and store the child while holding the backend mutex.
+    // This keeps the no-child check atomic: a concurrent start/stop cannot slip
+    // into the old window between generation reset and child storage.
+    let (generation, backend_log, stdout, stderr) = {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
+        if proc.child.is_some() {
+            return Err("Backend is already running.".to_string());
+        }
+
+        shutdown.store(false, Ordering::SeqCst);
+        proc.generation = proc.generation.wrapping_add(1);
+        proc.port = None;
+        proc.logs.clear();
+        proc.intentional_stop = false;
+        proc.diagnostics_session = None;
+        let generation = proc.generation;
+
+        let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
+
+        // On Windows, launch the backend directly with hidden-window flags.
+        // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
+        // children inherit crash-safe cleanup without the buggy per-child JobObject wrapper.
+        #[cfg(windows)]
+        let mut child: Box<dyn ChildWrapper + Send> = {
+            use std::os::windows::process::CommandExt;
+
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+            let child = cmd.spawn().map_err(|e| {
+                let msg = format!("Failed to spawn backend: {}", e);
+                diagnostics::record_backend_start_failure(
+                    diagnostics_state,
+                    Some(port),
+                    Some(generation),
+                    "spawn_backend",
+                    &msg,
+                );
+                msg
+            })?;
+            Box::new(child)
+        };
+
+        #[cfg(unix)]
+        let mut child: Box<dyn ChildWrapper + Send> = {
+            // Keep the backend tree in a process group on Unix for cleanup.
+            let mut wrap = CommandWrap::from(cmd);
+            wrap.wrap(ProcessGroup::leader());
+            wrap.spawn().map_err(|e| {
+                let msg = format!("Failed to spawn backend: {}", e);
+                diagnostics::record_backend_start_failure(
+                    diagnostics_state,
+                    Some(port),
+                    Some(generation),
+                    "spawn_backend",
+                    &msg,
+                );
+                msg
+            })?
+        };
+
+        let stdout = child.stdout().take();
+        let stderr = child.stderr().take();
+
         proc.child = Some(child);
         proc.diagnostics_session = Some(backend_log.clone());
-    }
+        (generation, backend_log, stdout, stderr)
+    };
+
+    info!("{}", start_line);
+    diagnostics::append_phase_line(&backend_log.handle, "meta", &start_line);
 
     // Spawn stdout reader thread
     if let Some(stdout) = stdout {
