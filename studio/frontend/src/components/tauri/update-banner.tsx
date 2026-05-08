@@ -2,7 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import type { RetainedUpdateFailure, UpdateInfo, UpdateStatus } from "@/hooks/use-tauri-update";
+import type {
+  DesktopUpdatePolicyMode,
+  RetainedUpdateFailure,
+  UpdateInfo,
+  UpdateStatus,
+} from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -13,6 +18,8 @@ interface UpdateBannerProps {
   dismissed: boolean;
   lastFailure: RetainedUpdateFailure | null;
   isExternalServer?: boolean;
+  updatePolicyMode: DesktopUpdatePolicyMode;
+  manualReleaseUrl: string | null;
   onInstall: () => void;
   onDismiss: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
@@ -26,6 +33,8 @@ export function UpdateBanner({
   dismissed,
   lastFailure,
   isExternalServer = false,
+  updatePolicyMode,
+  manualReleaseUrl,
   onInstall,
   onDismiss,
   onCopyDiagnostics,
@@ -36,6 +45,10 @@ export function UpdateBanner({
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
   const show = showFailure || (showAvailable && Boolean(info));
+  const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
+  const installDisabled = isManualLinuxPackage
+    ? manualReleaseUrl === null
+    : isExternalServer;
 
   async function handleCopyDiagnostics() {
     setCopying(true);
@@ -73,7 +86,7 @@ export function UpdateBanner({
               onClick={onDismiss}
               className="absolute top-3 right-3 flex size-6 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M11 3L3 11M3 3l8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
             </button>
@@ -88,9 +101,11 @@ export function UpdateBanner({
                 <p className="text-xs text-muted-foreground">
                   {showFailure
                     ? "Backend recovered. Diagnostics are still available."
-                    : isExternalServer
-                      ? "Run `unsloth studio update` from your terminal"
-                      : "A new app update is available"}
+                    : isManualLinuxPackage
+                      ? "Open the GitHub release page to install the Linux package"
+                      : isExternalServer
+                        ? "Run `unsloth studio update` from your terminal"
+                        : "A new app update is available"}
                 </p>
               </div>
             </div>
@@ -106,19 +121,21 @@ export function UpdateBanner({
             <div className="mt-3 flex items-center gap-2">
               {showFailure ? (
                 <>
-                  <Button size="sm" variant="outline" className="corner-squircle" onClick={() => void handleCopyDiagnostics()}>
+                  <Button size="sm" variant="outline" className="corner-squircle" onClick={() => {
+                    handleCopyDiagnostics().catch(console.error);
+                  }}>
                     {copying ? "Copying..." : "Copy Diagnostics"}
                   </Button>
-                  <Button size="sm" className="corner-squircle" onClick={onInstall} disabled={isExternalServer}>
-                    Retry Update
+                  <Button size="sm" className="corner-squircle" onClick={onInstall} disabled={installDisabled}>
+                    {isManualLinuxPackage ? "Open Release Page" : "Retry Update"}
                   </Button>
                 </>
               ) : (
                 <>
-                  <Button size="sm" className="corner-squircle" onClick={onInstall} disabled={isExternalServer}>
-                    Update Now
+                  <Button size="sm" className="corner-squircle" onClick={onInstall} disabled={installDisabled}>
+                    {isManualLinuxPackage ? "Open Release Page" : "Update Now"}
                   </Button>
-                  <Button size="sm" variant="outline" className="corner-squircle" disabled>
+                  <Button size="sm" variant="outline" className="corner-squircle" disabled={true}>
                     Release Notes
                   </Button>
                 </>
@@ -132,7 +149,7 @@ export function UpdateBanner({
             )}
             {manualReport && (
               <textarea
-                readOnly
+                readOnly={true}
                 value={manualReport}
                 onFocus={(event) => event.currentTarget.select()}
                 className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"

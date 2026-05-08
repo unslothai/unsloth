@@ -74,9 +74,6 @@
     "linux": {
       "deb": {
         "postRemoveScript": "./linux/postremove.sh"
-      },
-      "rpm": {
-        "postRemoveScript": "./linux/postremove.sh"
       }
     }
   }

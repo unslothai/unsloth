@@ -296,7 +296,7 @@ pub fn start_backend(
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks the spawned
     // Python process (wrong libpython/libz → "No module named encodings").
-    // Only clear when running inside an AppImage — native .deb/.rpm installs may
+    // Only clear when running inside an AppImage — native package installs may
     // need these env vars for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
     if std::env::var_os("APPIMAGE").is_some() {

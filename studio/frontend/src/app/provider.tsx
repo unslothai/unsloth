@@ -140,6 +140,8 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
       dismissed={update.dismissed}
       lastFailure={update.lastFailure}
       isExternalServer={isExternalServer}
+      updatePolicyMode={update.updatePolicyMode}
+      manualReleaseUrl={update.manualReleaseUrl}
       onInstall={update.installUpdate}
       onDismiss={update.dismiss}
       onCopyDiagnostics={update.copyDiagnostics}

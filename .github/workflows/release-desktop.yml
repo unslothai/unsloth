@@ -67,7 +67,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify desktop updater endpoint
+      - name: Verify desktop updater and Linux package config
         shell: bash
         run: |
           node <<'JS'
@@ -84,6 +84,47 @@ jobs:
           }
           if (endpoints.some((endpoint) => endpoint.includes('/releases/latest/'))) {
             throw new Error('Desktop updater endpoint must not use repo-wide /releases/latest/');
+          }
+
+          const targets = config.bundle?.targets;
+          if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'rpm')) {
+            throw new Error('Desktop release must not target RPM packages');
+          }
+          if (config.bundle?.linux?.rpm) {
+            throw new Error('bundle.linux.rpm must not be configured');
+          }
+
+          const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
+          const lines = workflow.split(/\r?\n/);
+          const releaseBodies = [];
+          for (let i = 0; i < lines.length; i += 1) {
+            const match = lines[i].match(/^(\s*)releaseBody:\s*\|\s*$/);
+            if (!match) continue;
+            const baseIndent = match[1].length;
+            const bodyLines = [];
+            i += 1;
+            for (; i < lines.length; i += 1) {
+              const line = lines[i];
+              if (line.trim() === '') {
+                bodyLines.push('');
+                continue;
+              }
+              const indent = line.match(/^\s*/)[0].length;
+              if (indent <= baseIndent) {
+                i -= 1;
+                break;
+              }
+              bodyLines.push(line.slice(baseIndent + 2));
+            }
+            releaseBodies.push(bodyLines.join('\n'));
+          }
+          if (releaseBodies.length === 0) {
+            throw new Error('Expected at least one desktop release body');
+          }
+          for (const body of releaseBodies) {
+            if (/\brpm\b|\.rpm/i.test(body)) {
+              throw new Error('Desktop release body must not advertise RPM packages');
+            }
           }
           JS
 
