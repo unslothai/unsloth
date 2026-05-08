@@ -7,6 +7,8 @@ pub enum DesktopPreflightDisposition {
     NotInstalled,
     ManagedReady,
     ManagedStale,
+    OwnedReady,
+    OwnedStale,
     AttachedReady,
     ExternalConflict,
 }

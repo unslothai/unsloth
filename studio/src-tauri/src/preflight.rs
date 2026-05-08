@@ -3,7 +3,11 @@ mod managed;
 mod types;
 mod version;
 
+use crate::desktop_backend_owner::{
+    OwnedBackendProbe, OwnedBackendReadiness, VerifiedOwnedBackend,
+};
 use backend::probe_existing_backends;
+use log::warn;
 pub use managed::managed_install_ready;
 use managed::probe_managed_install;
 use std::path::PathBuf;
@@ -73,6 +77,59 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
     }
 }
 
+fn owned_unmanageable_reason(reason: &str) -> String {
+    format!("desktop_owned_backend_unmanageable:{reason}")
+}
+
+fn choose_owned_preflight(
+    managed: &ManagedProbe,
+    owned: &VerifiedOwnedBackend,
+) -> DesktopPreflightResult {
+    match &owned.readiness {
+        OwnedBackendReadiness::Ready => DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::OwnedReady,
+            reason: None,
+            port: Some(owned.port),
+            can_auto_repair: false,
+            managed_bin: managed_bin_for_result(managed),
+        },
+        OwnedBackendReadiness::Stale { reason } => DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::OwnedStale,
+            reason: Some(reason.clone()),
+            port: Some(owned.port),
+            can_auto_repair: release_auto_repair(),
+            managed_bin: managed_bin_for_result(managed),
+        },
+    }
+}
+
+fn choose_unmanageable_owned_preflight(
+    managed: &ManagedProbe,
+    port: u16,
+    reason: String,
+) -> DesktopPreflightResult {
+    DesktopPreflightResult {
+        disposition: DesktopPreflightDisposition::ExternalConflict,
+        reason: Some(owned_unmanageable_reason(&reason)),
+        port: Some(port),
+        can_auto_repair: false,
+        managed_bin: managed_bin_for_result(managed),
+    }
+}
+
+fn choose_owned_transitional_preflight(
+    managed: &ManagedProbe,
+    port: Option<u16>,
+) -> DesktopPreflightResult {
+    DesktopPreflightResult {
+        disposition: DesktopPreflightDisposition::ExternalConflict,
+        reason: Some("desktop_owned_backend_starting".to_string()),
+        port,
+        can_auto_repair: false,
+        managed_bin: managed_bin_for_result(managed),
+    }
+}
+
 fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
     match probe {
         BackendProbe::ExternalConflict { port, reason } => {
@@ -95,6 +152,100 @@ pub async fn mutation_blocking_backend_ignoring(
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
     let (managed, backend) = tokio::join!(probe_managed_install(), probe_existing_backends(&[]));
     choose_preflight(managed, backend)
+}
+
+pub async fn desktop_preflight_result_with_state(
+    state: &crate::process::BackendState,
+) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
+    let (managed, backend, owned) = tokio::join!(
+        probe_managed_install(),
+        probe_existing_backends(&[]),
+        crate::desktop_backend_owner::probe_verified_owned_backend()
+    );
+
+    if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
+        let Some(owner) = snapshot.owner.clone() else {
+            return Ok((
+                choose_owned_transitional_preflight(&managed, snapshot.port),
+                None,
+            ));
+        };
+        match crate::desktop_backend_owner::probe_owned_backend_state(owner, snapshot.port).await {
+            OwnedBackendProbe::Verified(verified) => {
+                if snapshot.port.is_none() {
+                    crate::process::record_owned_backend_port_if_current(
+                        state,
+                        snapshot.generation,
+                        verified.port,
+                    );
+                }
+                let result = choose_owned_preflight(&managed, &verified);
+                let watchdog_generation = if snapshot.is_adopted
+                    && result.disposition == DesktopPreflightDisposition::OwnedReady
+                {
+                    Some((snapshot.generation, false))
+                } else {
+                    None
+                };
+                return Ok((result, watchdog_generation));
+            }
+            OwnedBackendProbe::Unmanageable { port, reason } => {
+                return Ok((
+                    choose_unmanageable_owned_preflight(&managed, port, reason),
+                    None,
+                ));
+            }
+            OwnedBackendProbe::NoMetadata
+            | OwnedBackendProbe::RemovedMalformed
+            | OwnedBackendProbe::NotVerified { .. } => {
+                if snapshot.is_adopted {
+                    crate::process::clear_adopted_backend_if_current(
+                        state,
+                        snapshot.generation,
+                        snapshot.port,
+                        "state owner probe no longer verifies",
+                    );
+                    return Ok((choose_preflight(managed, backend), None));
+                }
+                return Ok((
+                    choose_owned_transitional_preflight(&managed, snapshot.port),
+                    None,
+                ));
+            }
+        }
+    }
+
+    let owned = match owned {
+        Ok(owned) => owned,
+        Err(error) => {
+            warn!(
+                "Desktop-owned backend probe failed; continuing without adoption: {}",
+                error
+            );
+            return Ok((choose_preflight(managed, backend), None));
+        }
+    };
+
+    match owned {
+        OwnedBackendProbe::Verified(verified) => {
+            let result = choose_owned_preflight(&managed, &verified);
+            let adopted = crate::process::adopt_verified_backend(state, verified)?;
+            let watchdog_generation =
+                if result.disposition == DesktopPreflightDisposition::OwnedReady {
+                    Some((adopted.generation, adopted.newly_adopted))
+                } else {
+                    None
+                };
+            Ok((result, watchdog_generation))
+        }
+        OwnedBackendProbe::Unmanageable { port, reason } => Ok((
+            choose_unmanageable_owned_preflight(&managed, port, reason),
+            None,
+        )),
+        OwnedBackendProbe::NoMetadata
+        | OwnedBackendProbe::RemovedMalformed
+        | OwnedBackendProbe::NotVerified { .. } => Ok((choose_preflight(managed, backend), None)),
+    }
 }
 
 #[cfg(test)]

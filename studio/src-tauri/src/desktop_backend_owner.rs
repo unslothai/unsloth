@@ -588,6 +588,62 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
     }
 }
 
+pub(crate) async fn probe_owned_backend_state(
+    owner: BackendOwnerState,
+    port: Option<u16>,
+) -> OwnedBackendProbe {
+    let ports: Vec<u16> = match port {
+        Some(port) => vec![port],
+        None => desktop_candidate_ports().collect(),
+    };
+    let mut verified = Vec::new();
+    for port in ports {
+        let health = match fetch_health(port).await {
+            Ok(Some(health)) => health,
+            Ok(None) => continue,
+            Err(error) => {
+                warn!(
+                    "Desktop-owned backend probe skipped port {} after health error: {}",
+                    port, error
+                );
+                continue;
+            }
+        };
+        if !health_verifies_metadata(&health, &owner.metadata) {
+            continue;
+        }
+        if let Some(reason) = lifecycle_control_block_reason(&health) {
+            return OwnedBackendProbe::Unmanageable { port, reason };
+        }
+        if !desktop_login_route_compatible(port).await {
+            return OwnedBackendProbe::Unmanageable {
+                port,
+                reason: "desktop_login_probe_failed".to_string(),
+            };
+        }
+        verified.push((port, ready_for_use_status(&health)));
+    }
+
+    if verified.len() != 1 {
+        return OwnedBackendProbe::NotVerified {
+            reason: if verified.is_empty() {
+                "owned_backend_not_found".to_string()
+            } else {
+                "owned_backend_ambiguous".to_string()
+            },
+        };
+    }
+
+    let (port, readiness) = verified.remove(0);
+    OwnedBackendProbe::Verified(VerifiedOwnedBackend {
+        backend_pid: owner.backend_pid(),
+        generation: owner.generation(),
+        owner,
+        port,
+        readiness,
+    })
+}
+
 #[allow(dead_code)]
 pub(crate) async fn probe_verified_owned_backend() -> Result<OwnedBackendProbe, String> {
     let Some(path) = metadata_path() else {
@@ -635,57 +691,9 @@ async fn probe_verified_owned_backend_at_path_with_expected(
         });
     }
 
-    let ports: Vec<u16> = match metadata.port {
-        Some(port) => vec![port],
-        None => desktop_candidate_ports().collect(),
-    };
-    let mut verified = Vec::new();
-    for port in ports {
-        let health = match fetch_health(port).await {
-            Ok(Some(health)) => health,
-            Ok(None) => continue,
-            Err(error) => {
-                warn!(
-                    "Desktop-owned backend probe skipped port {} after health error: {}",
-                    port, error
-                );
-                continue;
-            }
-        };
-        if !health_verifies_metadata(&health, &metadata) {
-            continue;
-        }
-        if let Some(reason) = lifecycle_control_block_reason(&health) {
-            return Ok(OwnedBackendProbe::Unmanageable { port, reason });
-        }
-        if !desktop_login_route_compatible(port).await {
-            return Ok(OwnedBackendProbe::Unmanageable {
-                port,
-                reason: "desktop_login_probe_failed".to_string(),
-            });
-        }
-        verified.push((port, ready_for_use_status(&health)));
-    }
-
-    if verified.len() != 1 {
-        return Ok(OwnedBackendProbe::NotVerified {
-            reason: if verified.is_empty() {
-                "owned_backend_not_found".to_string()
-            } else {
-                "owned_backend_ambiguous".to_string()
-            },
-        });
-    }
-
-    let (port, readiness) = verified.remove(0);
     let owner = BackendOwnerState::from_metadata(path.to_path_buf(), metadata);
-    Ok(OwnedBackendProbe::Verified(VerifiedOwnedBackend {
-        backend_pid: owner.backend_pid(),
-        generation: owner.generation(),
-        owner,
-        port,
-        readiness,
-    }))
+    let port = owner.port();
+    Ok(probe_owned_backend_state(owner, port).await)
 }
 
 fn previous_app_pid_status(pid: u32) -> PreviousAppPidStatus {

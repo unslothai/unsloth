@@ -29,6 +29,8 @@ type DesktopPreflightDisposition =
   | "not_installed"
   | "managed_ready"
   | "managed_stale"
+  | "owned_ready"
+  | "owned_stale"
   | "attached_ready"
   | "external_conflict";
 
@@ -52,6 +54,28 @@ type ManagedStartupResult =
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function externalConflictMessage(preflight: DesktopPreflightResult) {
+  if (preflight.reason === "desktop_owned_backend_active") {
+    return preflight.port
+      ? `A desktop-owned Studio server for this install is already running on port ${preflight.port}. Quit the other desktop app instance, then try again.`
+      : "A desktop-owned Studio server for this install is already running. Quit the other desktop app instance, then try again.";
+  }
+
+  if (preflight.reason === "desktop_owned_backend_starting") {
+    return "The desktop-owned Studio backend is still starting. Wait a moment, then try again.";
+  }
+
+  if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
+    return preflight.port
+      ? `A desktop-owned Studio backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen Studio.`
+      : "A desktop-owned Studio backend cannot be safely controlled by this desktop app. Stop that backend, then reopen Studio.";
+  }
+
+  return preflight.port
+    ? `A Studio server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
+    : "A Studio server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.";
 }
 
 async function waitForManagedServerReady(
@@ -206,12 +230,24 @@ export function useTauriBackend() {
           startExternalServerPoll(preflight.port);
           return;
         }
+        case "owned_ready":
+          if (!preflight.port) {
+            setBackendError("Desktop preflight found an owned backend without a port.");
+            return;
+          }
+          setApiBase(preflight.port);
+          portRef.current = preflight.port;
+          setIsExternalServer(false);
+          stopExternalServerPoll();
+          setRunningStatus();
+          return;
         case "managed_ready":
           setIsExternalServer(false);
           stopExternalServerPoll();
           setBackendStatus("starting");
           await startManagedServer();
           return;
+        case "owned_stale":
         case "managed_stale":
           setIsExternalServer(false);
           stopExternalServerPoll();
@@ -219,18 +255,16 @@ export function useTauriBackend() {
             await startRepair();
           } else {
             setBackendError(
-              "Managed Studio install is too old. Run `unsloth studio update`.",
+              preflight.disposition === "owned_stale"
+                ? "Desktop-owned Studio backend is too old for this desktop app. Run `unsloth studio update`, then restart Studio."
+                : "Managed Studio install is too old. Run `unsloth studio update`.",
             );
           }
           return;
         case "external_conflict":
           setIsExternalServer(false);
           stopExternalServerPoll();
-          setBackendError(
-            preflight.port
-              ? `A Studio server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
-              : "A Studio server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.",
-          );
+          setBackendError(externalConflictMessage(preflight));
           return;
         case "not_installed":
           setBackendStatus("not-installed");

@@ -60,10 +60,40 @@ async fn block_external_conflict(ignored_ports: &[u16]) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn desktop_preflight(
+    app: AppHandle,
+    state: tauri::State<'_, BackendState>,
+    shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
-    let result = crate::preflight::desktop_preflight_result().await;
+    let (result, adopted_watchdog_generation) =
+        crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
     diagnostics::record_preflight(&diagnostics, &result);
+
+    if let Some((generation, newly_adopted)) = adopted_watchdog_generation {
+        if newly_adopted {
+            if let Some(port) = result.port {
+                diagnostics::begin_adopted_backend_session(&diagnostics, port, generation);
+            }
+        }
+        if process::claim_adopted_watchdog_if_current(state.inner(), generation) {
+            shutdown.store(false, std::sync::atomic::Ordering::SeqCst);
+            let watchdog_state = state.inner().clone();
+            let watchdog_shutdown = shutdown.inner().clone();
+            let watchdog_diagnostics = diagnostics.inner().clone();
+            tokio::spawn(async move {
+                health_watchdog(
+                    app,
+                    watchdog_state,
+                    watchdog_shutdown,
+                    watchdog_diagnostics,
+                    generation,
+                    true,
+                )
+                .await;
+            });
+        }
+    }
+
     Ok(result)
 }
 
@@ -157,6 +187,7 @@ pub async fn start_server(
             watchdog_shutdown,
             diagnostics_state,
             generation,
+            false,
         )
         .await;
     });
@@ -187,6 +218,7 @@ pub async fn start_managed_server(
             watchdog_shutdown,
             diagnostics_state,
             generation,
+            false,
         )
         .await;
     });
@@ -241,6 +273,35 @@ async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
         .unwrap_or(false);
 
     Ok(healthy && correct_service)
+}
+
+async fn check_watchdog_health(
+    state: &BackendState,
+    generation: u64,
+    port: u16,
+    has_adopted: bool,
+) -> bool {
+    if !has_adopted {
+        return check_health_inner(port).await.unwrap_or(false);
+    }
+
+    let snapshot = match process::owned_backend_snapshot(state) {
+        Ok(Some(snapshot))
+            if snapshot.is_adopted
+                && snapshot.generation == generation
+                && snapshot.port == Some(port) =>
+        {
+            snapshot
+        }
+        _ => return false,
+    };
+    let Some(owner) = snapshot.owner else {
+        return false;
+    };
+    matches!(
+        crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port)).await,
+        crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
+    )
 }
 
 /// Return buffered server logs.
@@ -680,12 +741,13 @@ async fn health_watchdog(
     shutdown: ShutdownFlag,
     diagnostics: DiagnosticsState,
     generation: u64,
+    count_failures_immediately: bool,
 ) {
     use std::sync::atomic::Ordering;
 
     let started_at = Instant::now();
     let mut consecutive_failures: u32 = 0;
-    let mut has_seen_healthy = false;
+    let mut has_seen_healthy = count_failures_immediately;
 
     loop {
         tokio::time::sleep(HEALTH_WATCHDOG_INTERVAL).await;
@@ -695,12 +757,17 @@ async fn health_watchdog(
             break;
         }
 
-        let (port, has_owned, current_generation) = {
+        let (port, has_owned, has_adopted, current_generation) = {
             let proc = match state.lock() {
                 Ok(p) => p,
                 Err(_) => break,
             };
-            (proc.port, proc.has_owned_backend(), proc.generation)
+            (
+                proc.port,
+                proc.has_owned_backend(),
+                proc.has_adopted_backend(),
+                proc.generation,
+            )
         };
 
         if current_generation != generation {
@@ -727,15 +794,25 @@ async fn health_watchdog(
             }
 
             if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
-                error!(
-                    "Health watchdog: backend never reported a port, killing and declaring dead"
-                );
                 diagnostics::record_backend_watchdog(
                     &diagnostics,
                     generation,
                     "no_port_after_grace",
                 );
-                let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                if has_adopted {
+                    error!("Health watchdog: adopted backend lost its port, declaring dead");
+                    process::clear_adopted_backend_if_current(
+                        &state,
+                        generation,
+                        None,
+                        "watchdog no port after grace",
+                    );
+                } else {
+                    error!(
+                        "Health watchdog: backend never reported a port, killing and declaring dead"
+                    );
+                    let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                }
                 let _ = app.emit("server-crashed", ());
                 break;
             }
@@ -743,36 +820,46 @@ async fn health_watchdog(
             continue;
         };
 
-        match check_health_inner(port).await {
-            Ok(true) => {
-                has_seen_healthy = true;
-                consecutive_failures = 0;
-            }
-            _ if !should_count_failure => {
-                info!(
-                    "Health watchdog: startup health check failed on port {} before grace period elapsed",
-                    port
+        if check_watchdog_health(&state, generation, port, has_adopted).await {
+            has_seen_healthy = true;
+            consecutive_failures = 0;
+        } else if !should_count_failure {
+            info!(
+                "Health watchdog: startup health check failed on port {} before grace period elapsed",
+                port
+            );
+        } else {
+            consecutive_failures += 1;
+            warn!(
+                "Health watchdog: failure {}/{} on port {}",
+                consecutive_failures, HEALTH_WATCHDOG_MAX_FAILURES, port
+            );
+            if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
+                diagnostics::record_backend_watchdog(
+                    &diagnostics,
+                    generation,
+                    "unresponsive_health_check",
                 );
-            }
-            _ => {
-                consecutive_failures += 1;
-                warn!(
-                    "Health watchdog: failure {}/{} on port {}",
-                    consecutive_failures, HEALTH_WATCHDOG_MAX_FAILURES, port
-                );
-                if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
-                    error!("Health watchdog: backend unresponsive, killing and declaring dead");
-                    diagnostics::record_backend_watchdog(
-                        &diagnostics,
-                        generation,
-                        "unresponsive_health_check",
+                if has_adopted {
+                    error!(
+                        "Health watchdog: adopted backend unresponsive, clearing state and declaring dead"
                     );
+                    process::clear_adopted_backend_if_current(
+                        &state,
+                        generation,
+                        Some(port),
+                        "watchdog health check failures",
+                    );
+                } else {
+                    error!("Health watchdog: backend unresponsive, killing and declaring dead");
                     // Kill the zombie process so retry can start fresh
                     let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
-                    let _ = app.emit("server-crashed", ());
-                    break;
                 }
+                let _ = app.emit("server-crashed", ());
+                break;
             }
         }
     }
+
+    process::clear_adopted_watchdog_if_current(&state, generation);
 }

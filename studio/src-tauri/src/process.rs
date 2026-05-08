@@ -121,6 +121,7 @@ pub struct BackendProcess {
     pub intentional_stop: bool,
     pub generation: u64,
     pub diagnostics_session: Option<BackendLog>,
+    pub adopted_watchdog_generation: Option<u64>,
 }
 
 impl BackendProcess {
@@ -128,8 +129,170 @@ impl BackendProcess {
         self.owned.is_some()
     }
 
+    pub(crate) fn has_adopted_backend(&self) -> bool {
+        matches!(self.owned, Some(OwnedBackendHandle::Adopted { .. }))
+    }
+
     pub(crate) fn owned_backend_port(&self) -> Option<u16> {
         self.owned.as_ref().and_then(OwnedBackendHandle::port)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OwnedBackendSnapshot {
+    pub(crate) owner: Option<crate::desktop_backend_owner::BackendOwnerState>,
+    pub(crate) port: Option<u16>,
+    pub(crate) generation: u64,
+    pub(crate) is_adopted: bool,
+}
+
+pub(crate) struct AdoptedBackendState {
+    pub(crate) generation: u64,
+    pub(crate) newly_adopted: bool,
+}
+
+pub(crate) fn adopt_verified_backend(
+    state: &BackendState,
+    verified: crate::desktop_backend_owner::VerifiedOwnedBackend,
+) -> Result<AdoptedBackendState, String> {
+    let mut proc = state.lock().map_err(|e| e.to_string())?;
+    if proc.has_owned_backend() {
+        if proc.owned_backend_port() == Some(verified.port) {
+            proc.port = Some(verified.port);
+            return Ok(AdoptedBackendState {
+                generation: proc.generation,
+                newly_adopted: false,
+            });
+        }
+        return Err("Backend is already running.".to_string());
+    }
+
+    proc.generation = proc.generation.wrapping_add(1);
+    proc.port = Some(verified.port);
+    proc.logs.clear();
+    proc.intentional_stop = false;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    proc.owned = Some(OwnedBackendHandle::adopted(
+        verified.owner,
+        verified.port,
+        verified.backend_pid,
+        verified.generation,
+    ));
+    Ok(AdoptedBackendState {
+        generation: proc.generation,
+        newly_adopted: true,
+    })
+}
+
+pub(crate) fn owned_backend_snapshot(
+    state: &BackendState,
+) -> Result<Option<OwnedBackendSnapshot>, String> {
+    let proc = state.lock().map_err(|e| e.to_string())?;
+    let snapshot = match proc.owned.as_ref() {
+        Some(OwnedBackendHandle::Spawned {
+            owner,
+            reported_port,
+            ..
+        }) => Some(OwnedBackendSnapshot {
+            owner: owner.clone(),
+            port: *reported_port,
+            generation: proc.generation,
+            is_adopted: false,
+        }),
+        Some(OwnedBackendHandle::Adopted { owner, port, .. }) => Some(OwnedBackendSnapshot {
+            owner: Some(owner.clone()),
+            port: Some(*port),
+            generation: proc.generation,
+            is_adopted: true,
+        }),
+        None => None,
+    };
+    Ok(snapshot)
+}
+
+pub(crate) fn record_owned_backend_port_if_current(
+    state: &BackendState,
+    generation: u64,
+    port: u16,
+) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return false;
+    }
+    match proc.owned.as_mut() {
+        Some(OwnedBackendHandle::Spawned { .. }) => {
+            proc.port = Some(port);
+            if let Some(owned) = proc.owned.as_mut() {
+                owned.set_reported_port(port);
+            }
+            true
+        }
+        Some(OwnedBackendHandle::Adopted {
+            port: current_port, ..
+        }) if *current_port == port => {
+            proc.port = Some(port);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn clear_adopted_backend_if_current(
+    state: &BackendState,
+    generation: u64,
+    port: Option<u16>,
+    reason: &str,
+) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return false;
+    }
+    let matches_adopted = matches!(
+        proc.owned.as_ref(),
+        Some(OwnedBackendHandle::Adopted { port: current_port, .. })
+            if port.map_or(true, |port| port == *current_port)
+    );
+    if !matches_adopted {
+        return false;
+    }
+
+    warn!("Clearing adopted backend state after {reason}");
+    proc.owned = None;
+    proc.port = None;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    true
+}
+
+pub(crate) fn claim_adopted_watchdog_if_current(state: &BackendState, generation: u64) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation || !proc.has_adopted_backend() {
+        return false;
+    }
+    if proc.adopted_watchdog_generation == Some(generation) {
+        return false;
+    }
+    proc.adopted_watchdog_generation = Some(generation);
+    true
+}
+
+pub(crate) fn clear_adopted_watchdog_if_current(state: &BackendState, generation: u64) {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation == generation && proc.adopted_watchdog_generation == Some(generation) {
+        proc.adopted_watchdog_generation = None;
     }
 }
 
@@ -142,6 +305,7 @@ impl Default for BackendProcess {
             intentional_stop: false,
             generation: 0,
             diagnostics_session: None,
+            adopted_watchdog_generation: None,
         }
     }
 }
@@ -437,6 +601,7 @@ pub fn start_backend(
         proc.logs.clear();
         proc.intentional_stop = false;
         proc.diagnostics_session = None;
+        proc.adopted_watchdog_generation = None;
         proc.owned = None;
         let generation = proc.generation;
 
@@ -888,6 +1053,7 @@ pub fn stop_backend(
             port: u16,
             pid: u32,
             generation: u64,
+            local_generation: u64,
         },
     }
 
@@ -904,6 +1070,7 @@ pub fn stop_backend(
             Some(OwnedBackendHandle::Spawned { .. }) => {
                 proc.port = None;
                 proc.diagnostics_session = None;
+                proc.adopted_watchdog_generation = None;
                 proc.owned.take().map(StopTarget::Spawned)
             }
             Some(OwnedBackendHandle::Adopted {
@@ -916,6 +1083,7 @@ pub fn stop_backend(
                 port: *port,
                 pid: *pid,
                 generation: *generation,
+                local_generation: proc.generation,
             }),
             None => None,
         }
@@ -934,8 +1102,23 @@ pub fn stop_backend(
             port,
             pid,
             generation,
+            local_generation,
         }) => {
-            stop_adopted_backend(owner, port, pid)?;
+            if let Err(error) = stop_adopted_backend(owner, port, pid) {
+                if !crate::desktop_backend_owner::port_is_listening_blocking(
+                    port,
+                    Duration::from_millis(150),
+                ) {
+                    clear_adopted_backend_if_current(
+                        state,
+                        local_generation,
+                        Some(port),
+                        "adopted port disappeared during stop",
+                    );
+                    return Ok(());
+                }
+                return Err(error);
+            }
             let mut proc = state.lock().map_err(|error| error.to_string())?;
             if matches!(
                 proc.owned.as_ref(),
@@ -949,6 +1132,7 @@ pub fn stop_backend(
                 proc.owned = None;
                 proc.port = None;
                 proc.diagnostics_session = None;
+                proc.adopted_watchdog_generation = None;
             }
             Ok(())
         }
