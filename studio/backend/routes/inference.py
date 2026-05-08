@@ -512,7 +512,7 @@ async def load_model(
         else:
             if (
                 backend.active_model_name
-                and not backend.active_model_name.lower().endswith('.gguf')
+                and not backend.active_model_name.lower().endswith(".gguf")
                 and backend.active_model_name.lower() == model_identifier.lower()
             ):
                 logger.info(
