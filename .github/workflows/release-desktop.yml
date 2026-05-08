@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       draft:
-        description: 'Create as draft release'
+        description: 'Create as draft release; draft runs do not advance desktop-latest updater channel'
         type: boolean
         default: true
 
@@ -66,6 +66,26 @@ jobs:
             echo "Expected tauri-cli 2.10.1, got $out" >&2
             exit 1
           fi
+
+      - name: Verify desktop updater endpoint
+        shell: bash
+        run: |
+          node <<'JS'
+          const { readFileSync } = require('node:fs');
+
+          const expected = 'https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json';
+          const config = JSON.parse(readFileSync('studio/src-tauri/tauri.conf.json', 'utf8'));
+          const endpoints = config.plugins?.updater?.endpoints;
+          if (!Array.isArray(endpoints) || endpoints.length !== 1) {
+            throw new Error('Expected exactly one desktop updater endpoint');
+          }
+          if (endpoints[0] !== expected) {
+            throw new Error('Desktop updater endpoint must be ' + expected + ', got ' + endpoints[0]);
+          }
+          if (endpoints.some((endpoint) => endpoint.includes('/releases/latest/'))) {
+            throw new Error('Desktop updater endpoint must not use repo-wide /releases/latest/');
+          }
+          JS
 
       - name: Install frontend dependencies
         working-directory: studio/frontend
@@ -224,3 +244,175 @@ jobs:
           releaseDraft: ${{ inputs.draft }}
           prerelease: false
           args: -v ${{ matrix.args }}
+
+  # Release process note: only non-draft workflow runs advance the public
+  # desktop-latest updater channel. Draft builds are for private review; if a
+  # draft is manually published later, this channel intentionally remains
+  # unchanged until a narrow manual channel-publish flow is added or a public
+  # desktop release is created by running this workflow with draft=false.
+  publish-updater-channel:
+    name: Publish desktop updater channel
+    needs: build
+    if: ${{ !inputs.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Read desktop app version
+        shell: bash
+        run: |
+          python3 <<'PY' >> "$GITHUB_ENV"
+          import pathlib
+          import re
+          import sys
+
+          cargo = pathlib.Path('studio/src-tauri/Cargo.toml').read_text()
+          match = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.MULTILINE)
+          if not match:
+              sys.exit('Could not read desktop app version')
+          app_version = match.group(1)
+          print(f'APP_VERSION={app_version}')
+          print(f'DESKTOP_RELEASE_TAG=desktop-v{app_version}')
+          PY
+
+      - name: Download versioned updater metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-updater"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          source = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'source-release.json').read_text())
+          expected_tag = os.environ['DESKTOP_RELEASE_TAG']
+          if source.get('tag_name') != expected_tag:
+              sys.exit(f'Expected source release {expected_tag}, got {source.get("tag_name")}')
+          if source.get('draft'):
+              sys.exit(f'Source desktop release {expected_tag} is draft; refusing to publish public updater channel')
+          PY
+          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater" --clobber
+          test -s "$RUNNER_TEMP/desktop-updater/latest.json"
+
+      - name: Validate versioned updater metadata
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          app_version = os.environ['APP_VERSION']
+          release_tag = os.environ['DESKTOP_RELEASE_TAG']
+          latest_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
+          data = json.loads(latest_path.read_text())
+          if not isinstance(data, dict):
+              sys.exit('latest.json must be a JSON object')
+
+          version = data.get('version')
+          if not isinstance(version, str) or not version:
+              sys.exit('latest.json missing version')
+          if not re.fullmatch(r'v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
+              sys.exit(f'latest.json version is not SemVer-like: {version}')
+          if version.removeprefix('v') != app_version:
+              sys.exit(f'latest.json version {version} does not match desktop app version {app_version}')
+
+          platforms = data.get('platforms')
+          if not isinstance(platforms, dict) or not platforms:
+              sys.exit('latest.json missing platforms')
+
+          required_families = {
+              'darwin-aarch64': False,
+              'linux-x86_64': False,
+              'windows-x86_64': False,
+          }
+          expected_prefix = f'https://github.com/unslothai/unsloth/releases/download/{release_tag}/'
+          forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
+
+          for platform, entry in platforms.items():
+              if not isinstance(entry, dict):
+                  sys.exit(f'Platform {platform} must be an object')
+              url = entry.get('url')
+              signature = entry.get('signature')
+              if not isinstance(url, str) or not url.strip():
+                  sys.exit(f'Platform {platform} missing url')
+              if not isinstance(signature, str) or not signature.strip():
+                  sys.exit(f'Platform {platform} missing signature')
+              if any(fragment in url for fragment in forbidden_fragments):
+                  sys.exit(f'Platform {platform} points at a moving updater channel: {url}')
+              if not url.startswith(expected_prefix):
+                  sys.exit(f'Platform {platform} URL must point at {release_tag}: {url}')
+              for family in required_families:
+                  if platform == family or platform.startswith(family + '-'):
+                      required_families[family] = True
+
+          missing = [family for family, found in required_families.items() if not found]
+          if missing:
+              sys.exit('latest.json missing required platform families: ' + ', '.join(missing))
+          PY
+
+      - name: Ensure desktop updater channel release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          channel_json="$RUNNER_TEMP/desktop-latest-release.json"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json" 2>/dev/null; then
+            gh release create desktop-latest \
+              --title "Unsloth Studio Desktop updater channel" \
+              --notes "Machine-managed desktop updater channel; latest.json is replaced by release-desktop.yml." \
+              --prerelease \
+              --latest=false \
+              --target "$GITHUB_SHA"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json"
+          fi
+
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
+          if channel.get('draft'):
+              sys.exit('desktop-latest release is draft; refusing to publish updater channel')
+          if channel.get('immutable'):
+              sys.exit('desktop-latest release is immutable; cannot replace latest.json')
+          if not channel.get('prerelease'):
+              sys.exit('desktop-latest release must be a prerelease so it cannot compete with repo-wide latest')
+          PY
+
+      - name: Publish desktop updater channel metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/desktop-latest-release.json"
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
+          assets = [asset for asset in channel.get('assets', []) if asset.get('name') == 'latest.json']
+          if len(assets) != 1:
+              sys.exit(f'Expected exactly one desktop-latest latest.json asset, found {len(assets)}')
+          expected_url = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/desktop-latest/latest.json'
+          actual_url = assets[0].get('browser_download_url')
+          if actual_url != expected_url:
+              sys.exit(f'desktop-latest latest.json URL mismatch: expected {expected_url}, got {actual_url}')
+          PY
