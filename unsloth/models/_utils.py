@@ -3209,6 +3209,11 @@ def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -
     return default_name
 
 
+_MOE_BROAD_MLP_TARGETS = frozenset(
+    ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+)
+
+
 def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
     """
     Get the target_parameters for MoE expert layers if applicable.
@@ -3248,22 +3253,26 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
     if num_experts is None:
         num_experts = 0
 
-    # Determine which MoE parameters to include based on target_modules
-    moe_params = []
-
-    # Normalize target_modules to a set for efficient lookup
     if target_modules is None:
-        # If no target_modules specified, include all MoE params
-        target_set = {"gate_proj", "up_proj", "down_proj", "gate_up_proj"}
+        return None
     elif isinstance(target_modules, str):
-        target_set = {target_modules}
-        # Heuristic for regex matching MLPs
-        if "proj" in target_modules and (
-            "mlp" in target_modules or "ffn" in target_modules
-        ):
-            target_set.update({"gate_proj", "up_proj", "down_proj", "gate_up_proj"})
+        target_set = (
+            {target_modules}
+            if "." not in target_modules and target_modules in _MOE_BROAD_MLP_TARGETS
+            else set()
+        )
     else:
-        target_set = set(target_modules) if target_modules else set()
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (
+                isinstance(target, str)
+                and "." not in target
+                and target in _MOE_BROAD_MLP_TARGETS
+            )
+        }
+
+    moe_params = []
 
     gate_up_name = _resolve_moe_parameter_name(
         model,

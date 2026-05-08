@@ -1379,6 +1379,8 @@ def patch_peft_weight_converter_compatibility():
     except (ImportError, AttributeError):
         return
 
+    _patch_peft_moe_target_conversion(twc)
+
     if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
         return
 
@@ -1452,6 +1454,51 @@ def patch_peft_weight_converter_compatibility():
 
     twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
     twc._unsloth_weight_converter_compat_patch = True
+
+
+def _patch_peft_moe_target_conversion(twc):
+    """Keep PEFT 0.19 MoE conversion from rewriting explicit Unsloth targets."""
+    if getattr(twc, "_unsloth_moe_target_conversion_patch", False):
+        return
+
+    original_convert_moe = getattr(twc, "_convert_peft_config_moe", None)
+    if original_convert_moe is None:
+        return
+
+    @functools.wraps(original_convert_moe)
+    def _convert_peft_config_moe_unsloth(peft_config, model_type: str) -> None:
+        if getattr(peft_config, "target_parameters", None):
+            return
+
+        target_modules = getattr(peft_config, "target_modules", None)
+        if isinstance(target_modules, str):
+            if "." in target_modules:
+                return
+            return original_convert_moe(peft_config, model_type)
+
+        if not target_modules:
+            return original_convert_moe(peft_config, model_type)
+
+        explicit_targets = {
+            target
+            for target in target_modules
+            if isinstance(target, str) and "." in target
+        }
+        if not explicit_targets:
+            return original_convert_moe(peft_config, model_type)
+
+        bare_targets = set(target_modules) - explicit_targets
+        if not bare_targets:
+            return
+
+        peft_config.target_modules = bare_targets
+        original_convert_moe(peft_config, model_type)
+        peft_config.target_modules = (
+            set(peft_config.target_modules or ()) | explicit_targets
+        )
+
+    twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    twc._unsloth_moe_target_conversion_patch = True
 
 
 CAUSAL_CONV1D_BROKEN = False
