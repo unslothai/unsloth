@@ -68,7 +68,10 @@ def _get_env_int(keys):
 
 
 def _infer_distributed_ranks():
-    if torch.distributed.is_available() and getattr(torch.distributed, "is_initialized", lambda: False)():
+    if (
+        torch.distributed.is_available()
+        and getattr(torch.distributed, "is_initialized", lambda: False)()
+    ):
         try:
             return torch.distributed.get_rank(), torch.distributed.get_world_size()
         except Exception:
