@@ -798,6 +798,21 @@ def _make_app(monkeypatch: pytest.MonkeyPatch, fake_extract=None):
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.studio_router, prefix = "/api/inference")
     monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
+    # In CI the optional pdf/docx parsers may be absent, which would make
+    # `_raise_if_document_parser_unavailable` fire 501 before any of the
+    # behavioural checks (415/413/422/...) can run. Stub support to
+    # report every format as available; tests that exercise the
+    # "parser missing" path patch this back to False.
+    monkeypatch.setattr(
+        route,
+        "_document_parser_support",
+        lambda: {"pdf": True, "docx": True, "html": True, "text": True},
+    )
+    monkeypatch.setattr(
+        route,
+        "_document_parser_unavailable_reasons",
+        lambda: {},
+    )
     monkeypatch.setattr(
         route,
         "_extract_self_base_url",
