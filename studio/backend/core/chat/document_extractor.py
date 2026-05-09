@@ -72,12 +72,48 @@ SUPPORTED_MIME_TYPES = frozenset(
 
 SUPPORTED_SUFFIXES = frozenset(
     {
-        ".pdf", ".docx", ".html", ".htm", ".md", ".txt",
-        ".csv", ".json", ".jsonl", ".yaml", ".yml",
-        ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java",
-        ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".swift",
-        ".kt", ".kts", ".scala", ".sh", ".bash", ".zsh", ".ps1",
-        ".sql", ".toml", ".ini", ".cfg", ".log", ".xml", ".css", ".scss",
+        ".pdf",
+        ".docx",
+        ".html",
+        ".htm",
+        ".md",
+        ".txt",
+        ".csv",
+        ".json",
+        ".jsonl",
+        ".yaml",
+        ".yml",
+        ".py",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".cs",
+        ".php",
+        ".rb",
+        ".swift",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        ".sql",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".log",
+        ".xml",
+        ".css",
+        ".scss",
     }
 )
 
@@ -270,7 +306,9 @@ def _estimate_tokens(text: str) -> int:
     return max(0, len(text) // 4)
 
 
-def _encode_pil_image_for_chat(image: Any) -> tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
+def _encode_pil_image_for_chat(
+    image: Any,
+) -> tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
     if image is None:
         return None, None, None, None
     try:
@@ -291,7 +329,7 @@ def _encode_pil_image_for_chat(image: Any) -> tuple[Optional[str], Optional[int]
         encoded = base64.b64encode(out.getvalue()).decode("ascii")
         return encoded, img.width, img.height, "image/jpeg"
     except (ImportError, AttributeError, ValueError, OSError) as exc:
-        logger.warning("Failed to encode extracted document image", exc_info=exc)
+        logger.warning("Failed to encode extracted document image", exc_info = exc)
         return None, None, None, None
 
 
@@ -339,8 +377,7 @@ async def _describe_image_via_vlm(
             )
         if response.status_code >= 400:
             return None, (
-                f"VLM caption request failed with HTTP "
-                f"{response.status_code}"
+                f"VLM caption request failed with HTTP " f"{response.status_code}"
             )
         body = response.json()
         choice = (body.get("choices") or [{}])[0]
@@ -368,8 +405,7 @@ async def _describe_image_via_vlm(
                 parts = [
                     part.get("text", "")
                     for part in raw
-                    if isinstance(part, dict)
-                    and isinstance(part.get("text"), str)
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
                 ]
                 joined = "".join(parts).strip()
                 if joined:
@@ -381,9 +417,7 @@ async def _describe_image_via_vlm(
                 finish_reason,
                 list(message.keys()),
             )
-            return None, (
-                f"VLM caption empty (finish_reason={finish_reason!r})"
-            )
+            return None, (f"VLM caption empty (finish_reason={finish_reason!r})")
         # Prefer the first non-empty candidate
         # (content > reasoning_content > text).
         return normalized[0], None
@@ -790,9 +824,7 @@ def _run_extract_process_sync(
         if acquired:
             break
         if cancel_event is not None and cancel_event.is_set():
-            raise DocumentExtractionCancelled(
-                "document extraction was cancelled"
-            )
+            raise DocumentExtractionCancelled("document extraction was cancelled")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
@@ -889,6 +921,7 @@ async def extract_document(
     Otherwise figures come back with ``caption=None`` and
     ``describe_skipped_reason`` carries the human-readable reason.
     """
+
     async def _emit(**event: Any) -> None:
         if cancel_event is not None and cancel_event.is_set():
             raise DocumentExtractionCancelled("document extraction was cancelled")
@@ -948,25 +981,33 @@ async def extract_document(
                 cancel_event,
             )
             extract_future.add_done_callback(_drain_future_exception)
-            markdown, figures_out, page_count, truncated_count, seen = (
-                await extract_future
-            )
+            (
+                markdown,
+                figures_out,
+                page_count,
+                truncated_count,
+                seen,
+            ) = await extract_future
         else:
             # Tests monkeypatch _run_extract_sync directly; preserve that seam
             # without forcing patched callables through multiprocessing spawn.
             loop = asyncio.get_running_loop()
-            markdown, figures_out, page_count, truncated_count, seen = (
-                await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        _run_extract_sync,
-                        file_bytes,
-                        filename,
-                        options,
-                        content_type,
-                    ),
-                    timeout = _EXTRACT_TIMEOUT_SECONDS,
-                )
+            (
+                markdown,
+                figures_out,
+                page_count,
+                truncated_count,
+                seen,
+            ) = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    _run_extract_sync,
+                    file_bytes,
+                    filename,
+                    options,
+                    content_type,
+                ),
+                timeout = _EXTRACT_TIMEOUT_SECONDS,
             )
     except asyncio.TimeoutError:
         raise DocumentExtractionTimeout(
@@ -1039,7 +1080,7 @@ async def extract_document(
                     )
                 except asyncio.TimeoutError as exc:
                     logger.warning(
-                        "VLM describe timed out for figure %s", figure.id, exc_info=exc
+                        "VLM describe timed out for figure %s", figure.id, exc_info = exc
                     )
                     figures_out[index] = replace(
                         figure,
@@ -1047,7 +1088,7 @@ async def extract_document(
                     )
                 except Exception as exc:
                     logger.warning(
-                        "VLM describe failed for figure %s", figure.id, exc_info=exc
+                        "VLM describe failed for figure %s", figure.id, exc_info = exc
                     )
                     figures_out[index] = replace(
                         figure,
@@ -1077,7 +1118,7 @@ async def extract_document(
                         len(tasks) * vlm_timeout_seconds + 15,
                     )
                 results = await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
+                    asyncio.gather(*tasks, return_exceptions = True),
                     timeout = caption_timeout_seconds,
                 )
                 for result in results:
@@ -1110,7 +1151,11 @@ async def extract_document(
             f"Only the first {max_visual_payloads} visual payloads "
             "were attached; remaining figure references are text-only."
         )
-    if effective_describe and figures_out and all(f.caption is None for f in figures_out):
+    if (
+        effective_describe
+        and figures_out
+        and all(f.caption is None for f in figures_out)
+    ):
         error_samples: list[str] = []
         seen_errors: set[str] = set()
         for figure in figures_out:
@@ -1121,9 +1166,7 @@ async def extract_document(
             if len(error_samples) >= 3:
                 break
         sample_suffix = (
-            " Examples: " + "; ".join(error_samples) + "."
-            if error_samples
-            else ""
+            " Examples: " + "; ".join(error_samples) + "." if error_samples else ""
         )
         warnings.append(
             "Figure descriptions were requested but none were produced — "

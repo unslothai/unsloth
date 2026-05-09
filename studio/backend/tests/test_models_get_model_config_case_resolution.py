@@ -102,7 +102,9 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
         raise AssertionError("YAML-known TRC VLM should not probe before opt-in")
 
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
-    monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda value: value)
+    monkeypatch.setattr(
+        models_route, "resolve_cached_repo_id_case", lambda value: value
+    )
     monkeypatch.setattr(
         models_route,
         "load_model_defaults",
@@ -113,7 +115,9 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
     )
     monkeypatch.setattr(models_route, "is_vision_model", fail_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", lambda *_args, **_kw: False)
-    monkeypatch.setattr(model_config_module, "detect_audio_type", lambda *_args, **_kw: None)
+    monkeypatch.setattr(
+        model_config_module, "detect_audio_type", lambda *_args, **_kw: None
+    )
     monkeypatch.setattr(
         models_route.ModelConfig,
         "from_identifier",
@@ -168,6 +172,7 @@ def test_check_vision_keeps_yaml_trc_vision_after_opt_in(monkeypatch):
             "inference": {"trust_remote_code": True},
         },
     )
+
     def fail_vision(*_args, **_kwargs):
         raise AssertionError("YAML-known TRC VLM should not depend on live probe")
 
