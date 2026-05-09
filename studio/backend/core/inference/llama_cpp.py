@@ -2958,9 +2958,7 @@ class LlamaCppBackend:
         If no image is provided, returns messages as-is.
         """
         images = (
-            image_b64s
-            if image_b64s is not None
-            else ([image_b64] if image_b64 else [])
+            image_b64s if image_b64s is not None else ([image_b64] if image_b64 else [])
         )
         images = [image for image in images if image]
         if not images:

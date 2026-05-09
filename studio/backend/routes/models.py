@@ -175,7 +175,9 @@ def _detect_vision_for_config_endpoint(
     trust_remote_code: bool = False,
     config_dict: Optional[dict] = None,
 ) -> bool:
-    defaults = config_dict if config_dict is not None else load_model_defaults(model_name)
+    defaults = (
+        config_dict if config_dict is not None else load_model_defaults(model_name)
+    )
     yaml_is_vision, yaml_requires_trust_remote_code = _defaults_vision_flags(defaults)
     if yaml_is_vision and yaml_requires_trust_remote_code:
         return True

@@ -77,11 +77,15 @@ async def test_read_upload_limited_rejects_streaming_overflow() -> None:
 async def test_read_multipart_form_limited_rejects_streaming_overflow() -> None:
     boundary = "studio-boundary"
     body = (
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="file"; filename="doc.md"\r\n'
-        "Content-Type: text/markdown\r\n"
-        "\r\n"
-    ).encode() + b"a" * 32 + f"\r\n--{boundary}--\r\n".encode()
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="doc.md"\r\n'
+            "Content-Type: text/markdown\r\n"
+            "\r\n"
+        ).encode()
+        + b"a" * 32
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
     request = _FakeStreamingRequest(
         [body[:16], body[16:]],
         Headers({"Content-Type": f"multipart/form-data; boundary={boundary}"}),
@@ -308,11 +312,14 @@ def test_preflight_pdf_page_count_uses_pypdf(monkeypatch: pytest.MonkeyPatch) ->
     fake_pypdf.PdfReader = FakePdfReader
     monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
 
-    assert route._preflight_pdf_page_count(
-        b"%PDF",
-        "paper.pdf",
-        "application/pdf",
-    ) == 3
+    assert (
+        route._preflight_pdf_page_count(
+            b"%PDF",
+            "paper.pdf",
+            "application/pdf",
+        )
+        == 3
+    )
 
 
 def test_preflight_pdf_page_count_falls_back_to_pymupdf(
@@ -339,11 +346,14 @@ def test_preflight_pdf_page_count_falls_back_to_pymupdf(
     fake_pymupdf.open = lambda *, stream, filetype: FakeDocument()
     monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
 
-    assert route._preflight_pdf_page_count(
-        b"%PDF",
-        "paper.pdf",
-        "application/pdf",
-    ) == 4
+    assert (
+        route._preflight_pdf_page_count(
+            b"%PDF",
+            "paper.pdf",
+            "application/pdf",
+        )
+        == 4
+    )
 
 
 def test_preflight_pdf_page_count_skips_non_pdf() -> None:
@@ -447,20 +457,24 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
         progress_cb = kwargs.get("progress_cb")
         if progress_cb is not None:
             await progress_cb({"stage": "parsing"})
-            await progress_cb({
-                "stage": "captioning",
-                "current": 1,
-                "total": 2,
-                "page": 1,
-                "total_pages": 3,
-            })
-            await progress_cb({
-                "stage": "captioning",
-                "current": 2,
-                "total": 2,
-                "page": 2,
-                "total_pages": 3,
-            })
+            await progress_cb(
+                {
+                    "stage": "captioning",
+                    "current": 1,
+                    "total": 2,
+                    "page": 1,
+                    "total_pages": 3,
+                }
+            )
+            await progress_cb(
+                {
+                    "stage": "captioning",
+                    "current": 2,
+                    "total": 2,
+                    "page": 2,
+                    "total_pages": 3,
+                }
+            )
         return SimpleNamespace(
             markdown = "# Stream\n",
             page_count = 3,
@@ -498,11 +512,7 @@ def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
-    events = [
-        _json.loads(line)
-        for line in response.text.splitlines()
-        if line.strip()
-    ]
+    events = [_json.loads(line) for line in response.text.splitlines() if line.strip()]
     stages = [e.get("stage") for e in events]
     assert "parsing" in stages
     captioning_events = [e for e in events if e.get("stage") == "captioning"]
@@ -587,7 +597,7 @@ def test_extract_document_endpoint_does_not_globally_gate_on_pdf_backend(
             warnings = [],
         )
 
-    client = _make_app(monkeypatch, fake_extract=fake_extract_document)
+    client = _make_app(monkeypatch, fake_extract = fake_extract_document)
     monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", False)
     response = client.post(
         "/api/inference/chat/extract-document",
@@ -722,7 +732,7 @@ def test_extract_document_endpoint_maps_parse_value_error_to_400(
     async def fake_extract_document(*_args, **_kwargs):
         raise ValueError("Could not parse document")
 
-    client = _make_app(monkeypatch, fake_extract=fake_extract_document)
+    client = _make_app(monkeypatch, fake_extract = fake_extract_document)
     response = client.post(
         "/api/inference/chat/extract-document",
         files = {"file": ("upload.md", b"# hello", "text/markdown")},
@@ -792,7 +802,7 @@ def test_extract_document_endpoint_sanitizes_extract_errors(
     assert response.json()["detail"] == "Extraction failed"
 
 
-def _make_app(monkeypatch: pytest.MonkeyPatch, fake_extract=None):
+def _make_app(monkeypatch: pytest.MonkeyPatch, fake_extract = None):
     """Helper: create a FastAPI test app with extraction stubs applied."""
     app = FastAPI()
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
@@ -879,7 +889,7 @@ def test_endpoint_rejects_unavailable_pdf_parser_before_extraction(
     async def fail_extract(*_args, **_kwargs):
         raise AssertionError("unavailable parser should be rejected before extraction")
 
-    client = _make_app(monkeypatch, fake_extract=fail_extract)
+    client = _make_app(monkeypatch, fake_extract = fail_extract)
     monkeypatch.setattr(route, "_document_parser_support", lambda: {"pdf": False})
     monkeypatch.setattr(
         route,
@@ -955,7 +965,7 @@ def test_figures_are_serialized_via_pydantic_model(
             warnings = [],
         )
 
-    client = _make_app(monkeypatch, fake_extract=fake_extract)
+    client = _make_app(monkeypatch, fake_extract = fake_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
         data = {"describe_images": "false"},
@@ -982,7 +992,7 @@ def test_extraction_timeout_returns_504(
         "_DocumentExtractionTimeout",
         DocumentExtractionTimeout,
     )
-    client = _make_app(monkeypatch, fake_extract=fake_extract)
+    client = _make_app(monkeypatch, fake_extract = fake_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
         data = {"describe_images": "false"},
@@ -999,7 +1009,7 @@ def test_encrypted_extraction_returns_422(
     async def fake_extract(*_args, **_kwargs):
         raise route._DocumentExtractionEncrypted("Encrypted PDF")
 
-    client = _make_app(monkeypatch, fake_extract=fake_extract)
+    client = _make_app(monkeypatch, fake_extract = fake_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
         data = {"describe_images": "false"},
@@ -1023,7 +1033,7 @@ def test_real_encrypted_pdf_preflight_returns_422(
     async def fail_extract(*_args, **_kwargs):
         raise AssertionError("encrypted PDFs should fail during preflight")
 
-    client = _make_app(monkeypatch, fake_extract=fail_extract)
+    client = _make_app(monkeypatch, fake_extract = fail_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
         data = {"describe_images": "false"},
@@ -1042,7 +1052,7 @@ def test_cancelled_extraction_returns_499(
     async def fake_extract(*_args, **_kwargs):
         raise route._DocumentExtractionCancelled("cancelled")
 
-    client = _make_app(monkeypatch, fake_extract=fake_extract)
+    client = _make_app(monkeypatch, fake_extract = fake_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
         data = {"describe_images": "false"},
@@ -1088,7 +1098,7 @@ def test_endpoint_returns_501_when_extraction_unavailable(
         "_DocumentExtractionUnavailable",
         DocumentExtractionUnavailable,
     )
-    client = _make_app(monkeypatch, fake_extract=fake_extract)
+    client = _make_app(monkeypatch, fake_extract = fake_extract)
     response = client.post(
         "/api/inference/chat/extract-document",
         data = {"describe_images": "false"},
@@ -1101,8 +1111,12 @@ def test_endpoint_returns_415_for_pptx(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_app(monkeypatch)
     response = client.post(
         "/api/inference/chat/extract-document",
-        files = {"file": ("deck.pptx",
-                           b"PK\x03\x04",
-                           "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        files = {
+            "file": (
+                "deck.pptx",
+                b"PK\x03\x04",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+        },
     )
     assert response.status_code == 415

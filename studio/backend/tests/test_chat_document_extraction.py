@@ -85,9 +85,7 @@ class _FakeInferenceBackend:
         info: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.active_model_name = active
-        self.models: Dict[str, Dict[str, Any]] = (
-            {active: info or {}} if active else {}
-        )
+        self.models: Dict[str, Dict[str, Any]] = {active: info or {}} if active else {}
 
 
 def _patch_probes(
@@ -101,6 +99,7 @@ def _patch_probes(
     if llama is None:
         monkeypatch.setattr(vc, "_probe_gguf", lambda _llama = None: None)
     else:
+
         def probe_gguf(llama_backend = None):
             backend = llama_backend or llama
             if not backend.is_loaded:
@@ -119,6 +118,7 @@ def _patch_probes(
     if inference is None:
         monkeypatch.setattr(vc, "_probe_transformers", lambda _u: None)
     else:
+
         def probe_tf(self_base_url):
             name = inference.active_model_name
             if not name:
@@ -218,7 +218,8 @@ def test_detect_transformers_vision_uses_self_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ib = _FakeInferenceBackend(
-        active = "Qwen2-VL-7B", info = {"is_vision": True, "is_lora": False},
+        active = "Qwen2-VL-7B",
+        info = {"is_vision": True, "is_lora": False},
     )
     _patch_probes(monkeypatch, llama = None, inference = ib)
     cap = detect_loaded_vlm("http://127.0.0.1:8000/")
@@ -232,7 +233,8 @@ def test_detect_unsloth_lora_vision_reports_unsloth_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ib = _FakeInferenceBackend(
-        active = "my-qwen-vl-lora", info = {"is_vision": True, "is_lora": True},
+        active = "my-qwen-vl-lora",
+        info = {"is_vision": True, "is_lora": True},
     )
     _patch_probes(monkeypatch, llama = None, inference = ib)
     cap = detect_loaded_vlm("http://studio.local:8000")
@@ -251,7 +253,9 @@ def test_detect_falls_through_when_gguf_is_loaded_but_endpoint_data_missing(
 
     fake_llama_cpp = ModuleType("core.inference.llama_cpp")
     fake_llama_cpp.get_llama_cpp_backend = lambda: _FakeLlama(
-        loaded = True, base_url = "", model_id = "",
+        loaded = True,
+        base_url = "",
+        model_id = "",
     )
     fake_inference = ModuleType("core.inference")
     fake_inference.__path__ = []  # type: ignore[attr-defined]
@@ -260,7 +264,8 @@ def test_detect_falls_through_when_gguf_is_loaded_but_endpoint_data_missing(
     monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
 
     ib = _FakeInferenceBackend(
-        active = "Qwen2-VL-7B", info = {"is_vision": True, "is_lora": False},
+        active = "Qwen2-VL-7B",
+        info = {"is_vision": True, "is_lora": False},
     )
     monkeypatch.setattr(
         vc,
@@ -283,7 +288,8 @@ def test_detect_transformers_without_self_url_reports_missing_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ib = _FakeInferenceBackend(
-        active = "Qwen2-VL-7B", info = {"is_vision": True, "is_lora": False},
+        active = "Qwen2-VL-7B",
+        info = {"is_vision": True, "is_lora": False},
     )
     _patch_probes(monkeypatch, llama = None, inference = ib)
     cap = detect_loaded_vlm(None)
@@ -559,14 +565,14 @@ async def test_multi_figure_extraction_encoded_visuals_capped_at_3(
     def fake_extract(_fb, _fn, _opts, _ct = ""):
         figs = [
             ExtractedFigure(
-                id=f"fig-{i}",
-                page=i + 1,
-                caption=None,
-                kind="figure",
-                image_mime="image/jpeg" if i < de._MAX_ENCODED_VISUALS else None,
-                image_base64="b64" if i < de._MAX_ENCODED_VISUALS else None,
-                image_width=10,
-                image_height=10,
+                id = f"fig-{i}",
+                page = i + 1,
+                caption = None,
+                kind = "figure",
+                image_mime = "image/jpeg" if i < de._MAX_ENCODED_VISUALS else None,
+                image_base64 = "b64" if i < de._MAX_ENCODED_VISUALS else None,
+                image_width = 10,
+                image_height = 10,
             )
             for i in range(5)
         ]
@@ -578,9 +584,9 @@ async def test_multi_figure_extraction_encoded_visuals_capped_at_3(
     result = await de.extract_document(
         b"dummy",
         "doc.pdf",
-        describe_images=False,
-        max_figures=10,
-        capability=VlmCapability.none(),
+        describe_images = False,
+        max_figures = 10,
+        capability = VlmCapability.none(),
     )
 
     encoded = [f for f in result.figures if f.image_base64 is not None]
@@ -601,14 +607,14 @@ async def test_multi_figure_extraction_respects_configured_visual_cap(
         max_visuals = opts["max_visual_payloads"]
         figs = [
             ExtractedFigure(
-                id=f"fig-{i}",
-                page=i + 1,
-                caption=None,
-                kind="figure",
-                image_mime="image/jpeg" if i < max_visuals else None,
-                image_base64="b64" if i < max_visuals else None,
-                image_width=10,
-                image_height=10,
+                id = f"fig-{i}",
+                page = i + 1,
+                caption = None,
+                kind = "figure",
+                image_mime = "image/jpeg" if i < max_visuals else None,
+                image_base64 = "b64" if i < max_visuals else None,
+                image_width = 10,
+                image_height = 10,
             )
             for i in range(6)
         ]
@@ -620,10 +626,10 @@ async def test_multi_figure_extraction_respects_configured_visual_cap(
     result = await de.extract_document(
         b"dummy",
         "doc.pdf",
-        describe_images=False,
-        max_figures=10,
-        max_visual_payloads=5,
-        capability=VlmCapability.none(),
+        describe_images = False,
+        max_figures = 10,
+        max_visual_payloads = 5,
+        capability = VlmCapability.none(),
     )
 
     encoded = [f for f in result.figures if f.image_base64 is not None]
@@ -643,14 +649,14 @@ async def test_partial_vlm_failure_records_per_figure_error(
     def fake_extract(_fb, _fn, _opts, _ct = ""):
         figs = [
             ExtractedFigure(
-                id=f"fig-{i}",
-                page=i + 1,
-                caption=None,
-                kind="figure",
-                image_mime="image/jpeg",
-                image_base64="b64",
-                image_width=10,
-                image_height=10,
+                id = f"fig-{i}",
+                page = i + 1,
+                caption = None,
+                kind = "figure",
+                image_mime = "image/jpeg",
+                image_base64 = "b64",
+                image_width = 10,
+                image_height = 10,
             )
             for i in range(3)
         ]
@@ -678,18 +684,18 @@ async def test_partial_vlm_failure_records_per_figure_error(
     monkeypatch.setattr(de, "_describe_image_via_vlm", fake_describe)
 
     cap = VlmCapability(
-        is_vlm=True,
-        endpoint_url="http://127.0.0.1:9999",
-        model_name="vlm",
-        source="gguf",
-        reason=None,
+        is_vlm = True,
+        endpoint_url = "http://127.0.0.1:9999",
+        model_name = "vlm",
+        source = "gguf",
+        reason = None,
     )
     result = await de.extract_document(
         b"dummy",
         "doc.pdf",
-        describe_images=True,
-        max_figures=10,
-        capability=cap,
+        describe_images = True,
+        max_figures = 10,
+        capability = cap,
     )
 
     figs = [f for f in result.figures if f.kind == "figure"]
@@ -715,14 +721,14 @@ async def test_local_vlm_captioning_serializes_requests(
     def fake_extract(_fb, _fn, _opts, _ct = ""):
         figs = [
             ExtractedFigure(
-                id=f"fig-{i}",
-                page=i + 1,
-                caption=None,
-                kind="figure",
-                image_mime="image/jpeg",
-                image_base64="b64",
-                image_width=10,
-                image_height=10,
+                id = f"fig-{i}",
+                page = i + 1,
+                caption = None,
+                kind = "figure",
+                image_mime = "image/jpeg",
+                image_base64 = "b64",
+                image_width = 10,
+                image_height = 10,
             )
             for i in range(3)
         ]
@@ -746,14 +752,14 @@ async def test_local_vlm_captioning_serializes_requests(
     result = await de.extract_document(
         b"dummy",
         "doc.pdf",
-        describe_images=True,
-        max_figures=10,
-        capability=VlmCapability(
-            is_vlm=True,
-            endpoint_url="http://127.0.0.1:8000",
-            model_name="vlm",
-            source="transformers",
-            reason=None,
+        describe_images = True,
+        max_figures = 10,
+        capability = VlmCapability(
+            is_vlm = True,
+            endpoint_url = "http://127.0.0.1:8000",
+            model_name = "vlm",
+            source = "transformers",
+            reason = None,
         ),
     )
 
@@ -775,14 +781,14 @@ async def test_local_vlm_captioning_respects_configured_visual_payloads(
             has_payload = i < max_visuals
             figs.append(
                 ExtractedFigure(
-                    id=f"fig-{i}",
-                    page=i + 1,
-                    caption=None,
-                    kind="figure",
-                    image_mime="image/jpeg" if has_payload else None,
-                    image_base64="b64" if has_payload else None,
-                    image_width=10 if has_payload else None,
-                    image_height=10 if has_payload else None,
+                    id = f"fig-{i}",
+                    page = i + 1,
+                    caption = None,
+                    kind = "figure",
+                    image_mime = "image/jpeg" if has_payload else None,
+                    image_base64 = "b64" if has_payload else None,
+                    image_width = 10 if has_payload else None,
+                    image_height = 10 if has_payload else None,
                 )
             )
         return "# Doc\n", figs, 5, 0, 5
@@ -797,15 +803,15 @@ async def test_local_vlm_captioning_respects_configured_visual_payloads(
     result = await de.extract_document(
         b"dummy",
         "doc.pdf",
-        describe_images=True,
-        max_figures=5,
-        max_visual_payloads=5,
-        capability=VlmCapability(
-            is_vlm=True,
-            endpoint_url="http://127.0.0.1:8000",
-            model_name="vlm",
-            source="transformers",
-            reason=None,
+        describe_images = True,
+        max_figures = 5,
+        max_visual_payloads = 5,
+        capability = VlmCapability(
+            is_vlm = True,
+            endpoint_url = "http://127.0.0.1:8000",
+            model_name = "vlm",
+            source = "transformers",
+            reason = None,
         ),
     )
 
@@ -842,8 +848,8 @@ async def test_extraction_timeout_raises_document_extraction_timeout(
         await de.extract_document(
             b"dummy",
             "doc.pdf",
-            describe_images=False,
-            capability=VlmCapability.none(),
+            describe_images = False,
+            capability = VlmCapability.none(),
         )
 
 
@@ -869,8 +875,8 @@ async def test_docx_path_uses_mammoth_output(
     result = await de.extract_document(
         b"PK\x03\x04",
         "notes.docx",
-        describe_images=False,
-        capability=VlmCapability.none(),
+        describe_images = False,
+        capability = VlmCapability.none(),
     )
     assert result.markdown == "**bold** text"
     assert result.figures == []
@@ -893,8 +899,8 @@ async def test_use_vlm_ocr_emits_warning_when_requested(
     result = await de.extract_document(
         b"dummy",
         "scan.pdf",
-        describe_images=False,
-        use_vlm_ocr=True,
-        capability=VlmCapability.none(),
+        describe_images = False,
+        use_vlm_ocr = True,
+        capability = VlmCapability.none(),
     )
     assert any("OCR" in w for w in result.warnings)

@@ -88,7 +88,9 @@ def _probe_gguf(llama: Any = None) -> Optional[VlmCapability]:
         endpoint_url = base_url,
         model_name = model_id,
         source = "gguf",
-        reason = None if is_vision else "gguf: model loaded, is_vision=False (no mmproj clip)",
+        reason = None
+        if is_vision
+        else "gguf: model loaded, is_vision=False (no mmproj clip)",
     )
 
 

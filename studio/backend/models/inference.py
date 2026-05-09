@@ -1142,7 +1142,9 @@ class ExtractDocumentResponse(BaseModel):
     small docs, or as the final SSE event for larger ones.
     """
 
-    schema_version: int = Field(1, description = "Document extraction payload schema version")
+    schema_version: int = Field(
+        1, description = "Document extraction payload schema version"
+    )
     filename: str = Field(..., description = "Original filename uploaded")
     markdown: str = Field(
         ..., description = "Layout-aware Markdown extracted from the document"
@@ -1194,7 +1196,9 @@ class ExtractDocumentResponse(BaseModel):
 class VlmCapabilityModel(BaseModel):
     """Runtime probe result for the currently-loaded model."""
 
-    is_vlm: bool = Field(..., description = "Whether the active model accepts image inputs")
+    is_vlm: bool = Field(
+        ..., description = "Whether the active model accepts image inputs"
+    )
     endpoint_url: Optional[str] = Field(
         None,
         description = "Root URL serving /v1/chat/completions for the active model",
@@ -1218,7 +1222,9 @@ class DocumentSupportResponse(BaseModel):
     for older clients as an informational hint, not a hard request cap.
     """
 
-    schema_version: int = Field(1, description = "Document support payload schema version")
+    schema_version: int = Field(
+        1, description = "Document support payload schema version"
+    )
     extraction_available: bool = Field(
         ...,
         description = (

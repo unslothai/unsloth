@@ -351,6 +351,7 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
     except asyncio.CancelledError:
         return
 
+
 # Appended to tool-use nudge to discourage plan-without-action
 _TOOL_ACTION_NUDGE = (
     " IMPORTANT: Always call tools directly -- never write code yourself."
@@ -975,7 +976,6 @@ async def validate_model(
                     requires_trust_remote_code = True,
                 )
 
-
         config = ModelConfig.from_identifier(
             model_id = model_identifier,
             hf_token = request.hf_token,
@@ -1499,7 +1499,9 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 _OPENAI_CHAT_MAX_IMAGES = 256
 _OPENAI_CHAT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _OPENAI_CHAT_MAX_IMAGE_PIXELS = 40_000_000
-_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS = ((_OPENAI_CHAT_MAX_IMAGE_BYTES + 2) // 3) * 4 + 1024
+_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS = (
+    (_OPENAI_CHAT_MAX_IMAGE_BYTES + 2) // 3
+) * 4 + 1024
 
 
 def _convert_openai_image_b64_to_png_b64(image_b64: str) -> str:
@@ -1594,9 +1596,7 @@ def _normalize_openai_message_images(
                 )
             url = image_url.get("url", "")
             if not isinstance(url, str):
-                raise HTTPException(
-                    status_code = 400, detail = "Invalid image_url URL."
-                )
+                raise HTTPException(status_code = 400, detail = "Invalid image_url URL.")
             if not url.startswith("data:"):
                 # Remote URLs are counted but cannot be byte/pixel checked here.
                 continue
@@ -2424,9 +2424,7 @@ async def _openai_chat_completions_impl(
 
     # Decode image (from content parts OR legacy field)
     image_b64 = (
-        extracted_image_b64s[0]
-        if extracted_image_b64s
-        else payload.image_base64
+        extracted_image_b64s[0] if extracted_image_b64s else payload.image_base64
     )
     image = None
 
@@ -4796,10 +4794,35 @@ _CODE_MIME_TYPES = {
 }
 _DATA_SUFFIXES = {".csv", ".json", ".jsonl", ".yaml", ".yml", ".xml"}
 _CODE_SUFFIXES = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java",
-    ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".swift",
-    ".kt", ".kts", ".scala", ".sh", ".bash", ".zsh", ".ps1",
-    ".sql", ".toml", ".ini", ".cfg", ".css", ".scss",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".php",
+    ".rb",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".sql",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".css",
+    ".scss",
 }
 
 
@@ -5008,9 +5031,7 @@ async def _read_json_body_limited(request: Request, *, max_bytes: int) -> Any:
     try:
         return json.loads(raw) if raw else {}
     except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code = 400, detail = f"Invalid JSON body: {exc.msg}"
-        )
+        raise HTTPException(status_code = 400, detail = f"Invalid JSON body: {exc.msg}")
 
 
 async def _read_upload_limited(upload: Any, *, max_bytes: int) -> bytes:
@@ -5103,8 +5124,7 @@ def _truncate_markdown_to_token_budget(
 
     clipped = markdown[:char_budget]
     clipped = (
-        _re.sub(r"\s+\S*$", "", clipped).rstrip()
-        or markdown[:char_budget].rstrip()
+        _re.sub(r"\s+\S*$", "", clipped).rstrip() or markdown[:char_budget].rstrip()
     )
     clipped += f"\n\n[... truncated; original was ~{original_tokens_est} tokens ...]"
     warning = (
@@ -5211,9 +5231,7 @@ async def extract_document_endpoint(
             raise
         except Exception as exc:
             logger.exception("Invalid multipart document extraction payload")
-            raise HTTPException(
-                status_code = 400, detail = "Invalid multipart payload"
-            )
+            raise HTTPException(status_code = 400, detail = "Invalid multipart payload")
 
         upload = form.get("file")
         if upload is None or not hasattr(upload, "read"):
@@ -5232,7 +5250,9 @@ async def extract_document_endpoint(
         if not file_bytes:
             raise HTTPException(status_code = 400, detail = "Uploaded file is empty")
 
-        preflight_page_count = _preflight_pdf_page_count(file_bytes, filename, content_type)
+        preflight_page_count = _preflight_pdf_page_count(
+            file_bytes, filename, content_type
+        )
         if (
             preflight_page_count is not None
             and preflight_page_count > _EXTRACT_MAX_PAGES_INLINE
@@ -5277,7 +5297,8 @@ async def extract_document_endpoint(
                 self_base_url,
                 llama_backend = llama_backend,
             )
-            if _detect_loaded_vlm else None
+            if _detect_loaded_vlm
+            else None
         )
         caption_authorization_header = _document_caption_authorization_header(
             capability,
@@ -5288,16 +5309,16 @@ async def extract_document_endpoint(
         if await fastapi_request.is_disconnected():
             raise HTTPException(status_code = 499, detail = "Client closed request")
 
-        accept_header = (
-            fastapi_request.headers.get("accept", "") or ""
-        ).lower()
+        accept_header = (fastapi_request.headers.get("accept", "") or "").lower()
         wants_stream = "application/x-ndjson" in accept_header
 
         def _build_response_payload(result: Any) -> ExtractDocumentResponse:
-            markdown_, tokens_est_, truncate_warning_ = _truncate_markdown_to_token_budget(
-                result.markdown,
-                token_budget = token_budget,
-                original_tokens_est = result.tokens_est,
+            markdown_, tokens_est_, truncate_warning_ = (
+                _truncate_markdown_to_token_budget(
+                    result.markdown,
+                    token_budget = token_budget,
+                    original_tokens_est = result.tokens_est,
+                )
             )
             warnings_ = list(result.warnings)
             if truncate_warning_:
@@ -5308,10 +5329,7 @@ async def extract_document_endpoint(
                 page_count = result.page_count,
                 tokens_est = tokens_est_,
                 truncated = truncate_warning_ is not None,
-                figures = [
-                    ExtractedFigureModel(**_asdict(f))
-                    for f in result.figures
-                ],
+                figures = [ExtractedFigureModel(**_asdict(f)) for f in result.figures],
                 describe_skipped_reason = result.describe_skipped_reason,
                 vlm_source = result.vlm_source,
                 vlm_model = result.vlm_model,
@@ -5354,7 +5372,9 @@ async def extract_document_endpoint(
                         asyncio.CancelledError,
                         asyncio.TimeoutError,
                     ):
-                        await asyncio.wait_for(asyncio.shield(extraction_task), timeout = 10)
+                        await asyncio.wait_for(
+                            asyncio.shield(extraction_task), timeout = 10
+                        )
                     if not extraction_task.done():
                         extraction_task.cancel()
                     raise _DocumentExtractionCancelled(
@@ -5370,14 +5390,18 @@ async def extract_document_endpoint(
                     detail = "Document parsing timed out after 120s before image captioning",
                 )
             except _DocumentExtractionBusy:
-                raise HTTPException(status_code = 503, detail = "Document extraction is busy")
+                raise HTTPException(
+                    status_code = 503, detail = "Document extraction is busy"
+                )
             except _DocumentExtractionCancelled:
                 raise HTTPException(status_code = 499, detail = "Client closed request")
             except _DocumentExtractionEncrypted as exc:
                 raise HTTPException(status_code = 422, detail = str(exc))
             except ValueError as exc:
                 detail = str(exc)
-                status_code = 415 if detail.lower().startswith("unsupported file type") else 400
+                status_code = (
+                    415 if detail.lower().startswith("unsupported file type") else 400
+                )
                 raise HTTPException(status_code = status_code, detail = detail)
             except Exception:
                 logger.exception("Document extraction failed for %s", filename)
@@ -5476,56 +5500,114 @@ async def extract_document_endpoint(
                         break
 
                 if result.page_count > _EXTRACT_MAX_PAGES_INLINE:
-                    yield json.dumps({
-                        "stage": "error",
-                        "status_code": 413,
-                        "detail": (
-                            f"Document has {result.page_count} pages; inline extraction "
-                            f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
-                            f"documents or reduce the page range."
-                        ),
-                    }) + "\n"
+                    yield (
+                        json.dumps(
+                            {
+                                "stage": "error",
+                                "status_code": 413,
+                                "detail": (
+                                    f"Document has {result.page_count} pages; inline extraction "
+                                    f"is capped at {_EXTRACT_MAX_PAGES_INLINE}. Split into smaller "
+                                    f"documents or reduce the page range."
+                                ),
+                            }
+                        )
+                        + "\n"
+                    )
                     return
 
                 response = _build_response_payload(result)
-                yield json.dumps({
-                    "stage": "result",
-                    "data": response.model_dump(mode = "json"),
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "result",
+                            "data": response.model_dump(mode = "json"),
+                        }
+                    )
+                    + "\n"
+                )
             except _DocumentExtractionUnavailable as exc:
-                yield json.dumps({
-                    "stage": "error", "status_code": 501, "detail": str(exc),
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": 501,
+                            "detail": str(exc),
+                        }
+                    )
+                    + "\n"
+                )
             except _DocumentExtractionTimeout:
-                yield json.dumps({
-                    "stage": "error", "status_code": 504,
-                    "detail": "Document parsing timed out after 120s before image captioning",
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": 504,
+                            "detail": "Document parsing timed out after 120s before image captioning",
+                        }
+                    )
+                    + "\n"
+                )
             except _DocumentExtractionBusy:
-                yield json.dumps({
-                    "stage": "error", "status_code": 503,
-                    "detail": "Document extraction is busy",
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": 503,
+                            "detail": "Document extraction is busy",
+                        }
+                    )
+                    + "\n"
+                )
             except _DocumentExtractionCancelled:
-                yield json.dumps({
-                    "stage": "error", "status_code": 499,
-                    "detail": "Client closed request",
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": 499,
+                            "detail": "Client closed request",
+                        }
+                    )
+                    + "\n"
+                )
             except _DocumentExtractionEncrypted as exc:
-                yield json.dumps({
-                    "stage": "error", "status_code": 422, "detail": str(exc),
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": 422,
+                            "detail": str(exc),
+                        }
+                    )
+                    + "\n"
+                )
             except ValueError as exc:
                 detail = str(exc)
-                status_code = 415 if detail.lower().startswith("unsupported file type") else 400
-                yield json.dumps({
-                    "stage": "error", "status_code": status_code, "detail": detail,
-                }) + "\n"
+                status_code = (
+                    415 if detail.lower().startswith("unsupported file type") else 400
+                )
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": status_code,
+                            "detail": detail,
+                        }
+                    )
+                    + "\n"
+                )
             except Exception:
                 logger.exception("Document extraction failed for %s", filename)
-                yield json.dumps({
-                    "stage": "error", "status_code": 500, "detail": "Extraction failed",
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "stage": "error",
+                            "status_code": 500,
+                            "detail": "Extraction failed",
+                        }
+                    )
+                    + "\n"
+                )
             finally:
                 cancel_event.set()
                 disconnect_task.cancel()
