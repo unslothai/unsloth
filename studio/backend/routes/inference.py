@@ -2501,32 +2501,57 @@ async def update_hf_model(
     fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    llama_backend = get_llama_cpp_backend()
-    model_identifier, _, _ = (
-        _resolve_model_identifier_for_request(request, operation = "load-model")
-    )
-    config = ModelConfig.from_identifier(
-        model_id = model_identifier,
-        hf_token = request.hf_token,
-        gguf_variant = request.gguf_variant,
-    )
-    if config.is_gguf:
-        model_path = llama_backend._download_gguf(
-            hf_repo=config.gguf_hf_repo,
-            hf_variant=config.gguf_variant,
-            hf_token=request.hf_token
+    try:
+        llama_backend = get_llama_cpp_backend()
+        config = ModelConfig.from_identifier(
+            model_id = request.model_path,
+            hf_token = request.hf_token,
+            gguf_variant = request.gguf_variant,
         )
-        if config.is_vision:
-            llama_backend._download_mmproj(
-                hf_repo=config.gguf_hf_repo,
-                hf_token=request.hf_token
+        if not config:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid model identifier: {request.model_path}",
             )
-    else:
-        from huggingface_hub import snapshot_download
-        hf_repo = config.base_model if config.is_lora and config.base_model else config.path
-        local_dir = hf_repo.split("/")[-1]
-        model_path = snapshot_download(repo_id=hf_repo, local_dir=local_dir)
-    return UpdateResponse(model_path=model_path)
+        if config.is_local:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Only Hugging Face models can be updated.",
+            )
+
+        if config.is_gguf:
+            if not config.gguf_hf_repo:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "GGUF update requires a Hugging Face repo.",
+                )
+            model_path = await asyncio.to_thread(
+                llama_backend._download_gguf,
+                hf_repo = config.gguf_hf_repo,
+                hf_variant = config.gguf_variant,
+                hf_token = request.hf_token,
+            )
+            if config.is_vision:
+                await asyncio.to_thread(
+                    llama_backend._download_mmproj,
+                    hf_repo = config.gguf_hf_repo,
+                    hf_token = request.hf_token,
+                )
+        else:
+            from huggingface_hub import snapshot_download
+
+            hf_repo = config.base_model if config.is_lora and config.base_model else config.path
+            model_path = await asyncio.to_thread(
+                snapshot_download,
+                repo_id = hf_repo,
+                token = request.hf_token,
+            )
+        return UpdateResponse(model_path = model_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating model '{request.model_path}': {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to update model: {str(e)}")
 
 
 @router.post("/load", response_model = LoadResponse)
