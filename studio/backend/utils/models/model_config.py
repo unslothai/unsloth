@@ -913,6 +913,48 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Family tokens used to detect mismatched mmproj/model pairings in flat
+# local GGUF directories (#5347). Order matters only for stability — the
+# first token found in a filename wins. Keep lowercase.
+_MODEL_FAMILY_TOKENS: tuple[str, ...] = (
+    "qwen",
+    "gemma",
+    "llama",
+    "mistral",
+    "phi",
+    "deepseek",
+    "internvl",
+    "minicpm",
+    "llava",
+    "glm",
+    "yi",
+    "command-r",
+    "molmo",
+    "pixtral",
+    "smolvlm",
+    "moondream",
+    "granite",
+    "ovis",
+)
+
+
+def _detect_family_token(filename: str) -> Optional[str]:
+    """Return the first known family token found in ``filename``, or None."""
+    name = filename.lower()
+    for token in _MODEL_FAMILY_TOKENS:
+        if token in name:
+            return token
+    return None
+
+
+def _shared_prefix_len(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
+
+
 def _is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
@@ -1002,11 +1044,64 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         except OSError:
             pass
 
+    candidates: list[Path] = []
+    seen_resolved: set[Path] = set()
     for d in scan_order:
         for f in _iter_gguf_files(d):
-            if _is_mmproj(f.name):
-                return str(f.resolve())
-    return None
+            if not _is_mmproj(f.name):
+                continue
+            try:
+                resolved = f.resolve()
+            except OSError:
+                continue
+            if resolved in seen_resolved:
+                continue
+            seen_resolved.add(resolved)
+            candidates.append(resolved)
+
+    if not candidates:
+        return None
+
+    # When ``path`` is a directory we have no model name to match against —
+    # preserve historical behaviour (return the first candidate).
+    if not p.is_file():
+        return str(candidates[0])
+
+    # Filter out candidates whose family token disagrees with the model's
+    # family — flat local GGUF directories often hold several unrelated
+    # models, and the historical first-match return attached the wrong
+    # projector to llama-server (#5347). Candidates with no recognised
+    # family token (e.g. the HF convention ``mmproj-F16.gguf``) are kept
+    # because they could legitimately belong to any model.
+    model_stem = p.stem.lower()
+    model_family = _detect_family_token(p.name)
+
+    if model_family is not None:
+        family_filtered = [
+            c for c in candidates
+            if (cf := _detect_family_token(c.name)) is None or cf == model_family
+        ]
+        if not family_filtered:
+            logger.info(
+                f"detect_mmproj_file: dropped {len(candidates)} mmproj "
+                f"candidate(s) — none match model family '{model_family}' "
+                f"(model={p.name})"
+            )
+            return None
+    else:
+        family_filtered = candidates
+
+    if len(family_filtered) == 1:
+        return str(family_filtered[0])
+
+    # Multiple same-family candidates — pick the one whose stem shares the
+    # longest prefix with the model (e.g. ``Qwen3.5-9B-...`` beats
+    # ``Qwen3.5-35B-A3B-...`` for ``Qwen3.5-9B-Q4_K_M.gguf``).
+    best = max(
+        family_filtered,
+        key=lambda c: (_shared_prefix_len(model_stem, c.stem.lower()), -len(c.stem)),
+    )
+    return str(best)
 
 
 def detect_gguf_model(path: str) -> Optional[str]:
