@@ -91,7 +91,7 @@ class TrainingStartRequest(BaseModel):
         description = "Global gradient norm clipping threshold. Set 0 to disable.",
     )
     max_grad_value: float = Field(
-        3.0,
+        1.0,
         ge = 0,
         description = "Elementwise gradient value clipping threshold. Set 0 to disable.",
     )
