@@ -139,6 +139,9 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description="Whether a newer version of this variant is available on HF"
+    )
 
 
 class GgufVariantsResponse(BaseModel):
