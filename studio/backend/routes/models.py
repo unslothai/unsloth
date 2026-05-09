@@ -2620,6 +2620,7 @@ async def get_gguf_variants(
                         quant = v.quant,
                         size_bytes = v.size_bytes,
                         downloaded = True,  # all local variants are downloaded
+                        update_available = False # only HF models can be updated for now
                     )
                     for v in variants
                 ],
@@ -2638,6 +2639,7 @@ async def get_gguf_variants(
         # Per-snapshot so a split GGUF's shards must all sit in one snapshot;
         # mmproj adapters are excluded so they can't inflate a quant's bytes.
         cached_bytes_by_quant_per_snapshot: list[dict[str, int]] = []
+        cached_blob_ids: list[str] = []
         try:
             from huggingface_hub import constants as hf_constants
 
@@ -2667,6 +2669,9 @@ async def get_gguf_variants(
                                 by_quant[q] = by_quant.get(q, 0) + size
                             if by_quant:
                                 cached_bytes_by_quant_per_snapshot.append(by_quant)
+                    blobs = entry / "blobs"
+                    if blobs.is_dir():
+                        cached_blob_ids = [str(blob.relative_to(blobs)) for blob in blobs.iterdir()]
                     break
         except Exception:
             pass
@@ -2681,6 +2686,20 @@ async def get_gguf_variants(
                 for by_quant in cached_bytes_by_quant_per_snapshot
             )
 
+        def _check_available_updates() -> dict[str, bool]:
+            from huggingface_hub import get_paths_info
+
+            updates_dict: dict[str, bool] = {}
+            downloaded_filenames = [v.filename for v in variants if _is_fully_downloaded(v)]
+            if downloaded_filenames:
+                remote_path_infos = get_paths_info(repo_id = repo_id, paths = downloaded_filenames)
+                for path_info in remote_path_infos:
+                    remote_blob_id = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
+                    updates_dict[path_info.path] = remote_blob_id not in cached_blob_ids
+            return updates_dict
+
+        updates_dict: dict[str, bool] = _check_available_updates()
+
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [
@@ -2689,6 +2708,7 @@ async def get_gguf_variants(
                     quant = v.quant,
                     size_bytes = v.size_bytes,
                     downloaded = _is_fully_downloaded(v),
+                    update_available = updates_dict.get(v.filename, False),
                 )
                 for v in variants
             ],
