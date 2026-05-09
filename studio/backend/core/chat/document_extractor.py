@@ -100,6 +100,14 @@ _EXTRACT_CONCURRENCY = max(
     1, int(os.environ.get("UNSLOTH_STUDIO_EXTRACT_CONCURRENCY", "2"))
 )
 _EXTRACT_SEMAPHORE = threading.BoundedSemaphore(_EXTRACT_CONCURRENCY)
+# Bounded queue wait: callers park here for a slot instead of failing fast
+# with 503 when the worker pool is saturated. Tuned so a fast burst (e.g.
+# multi-select 4 PDFs) drains naturally without surfacing busy errors,
+# while truly stuck workers still time out via _EXTRACT_TIMEOUT_SECONDS.
+_EXTRACT_QUEUE_WAIT_SECONDS = max(
+    0.0,
+    float(os.environ.get("UNSLOTH_STUDIO_EXTRACT_QUEUE_WAIT", "60")),
+)
 _PAGE_RENDER_DPI = 150
 _MAX_PAGE_RENDER_PIXELS = 4_000_000
 _MIME_TO_SUFFIX = {
@@ -739,6 +747,20 @@ def _run_extract_worker(
         result_queue.put(("error", type(exc).__name__, str(exc)))
 
 
+def _drain_future_exception(fut: Any) -> None:
+    """Retrieve a future's exception (if any) so asyncio's gc-time
+    "Future exception was never retrieved" warning stays quiet when the
+    awaiting task is cancelled mid-flight (e.g. client disconnect or
+    AbortController abort)."""
+    try:
+        if fut.cancelled():
+            return
+        fut.exception()
+    except BaseException:
+        # Never let a drain hook itself raise — best effort only.
+        pass
+
+
 def _terminate_extract_process(proc: multiprocessing.Process) -> None:
     if not proc.is_alive():
         return
@@ -759,7 +781,26 @@ def _run_extract_process_sync(
 ) -> tuple[str, list[ExtractedFigure], int, int, int]:
     if cancel_event is not None and cancel_event.is_set():
         raise DocumentExtractionCancelled("document extraction was cancelled")
-    if not _EXTRACT_SEMAPHORE.acquire(blocking = False):
+    # Park up to _EXTRACT_QUEUE_WAIT_SECONDS waiting for a slot, polling
+    # cancel_event so a client disconnect during the wait short-circuits
+    # cleanly instead of holding the request open.
+    deadline = time.monotonic() + _EXTRACT_QUEUE_WAIT_SECONDS
+    acquired = _EXTRACT_SEMAPHORE.acquire(blocking = False)
+    while True:
+        if acquired:
+            break
+        if cancel_event is not None and cancel_event.is_set():
+            raise DocumentExtractionCancelled(
+                "document extraction was cancelled"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        wait = min(remaining, 0.5)
+        if _EXTRACT_SEMAPHORE.acquire(timeout = wait):
+            acquired = True
+            break
+    if not acquired:
         raise DocumentExtractionBusy("document extraction is busy")
 
     ctx = multiprocessing.get_context("spawn" if os.name == "nt" else "fork")
@@ -891,7 +932,13 @@ async def extract_document(
 
     try:
         if _run_extract_sync is _RUN_EXTRACT_SYNC_ORIGINAL:
-            markdown, figures_out, page_count, truncated_count, seen = await asyncio.to_thread(
+            # Drive run_in_executor directly (rather than asyncio.to_thread)
+            # so we can attach a done-callback that retrieves the future's
+            # exception even when the awaiting task is cancelled — silences
+            # "Future exception was never retrieved" noise on busy/cancel.
+            loop = asyncio.get_running_loop()
+            extract_future = loop.run_in_executor(
+                None,
                 _run_extract_process_sync,
                 file_bytes,
                 filename,
@@ -899,6 +946,10 @@ async def extract_document(
                 content_type,
                 _EXTRACT_TIMEOUT_SECONDS,
                 cancel_event,
+            )
+            extract_future.add_done_callback(_drain_future_exception)
+            markdown, figures_out, page_count, truncated_count, seen = (
+                await extract_future
             )
         else:
             # Tests monkeypatch _run_extract_sync directly; preserve that seam
@@ -947,7 +998,22 @@ async def extract_document(
         )
         sem = asyncio.Semaphore(caption_concurrency)
 
+        captionable_total = sum(
+            1
+            for fig in figures_out[:max_figures]
+            if fig.image_base64 and fig.image_mime
+        )
+        captioned_completed = 0
+        await _emit(
+            stage = "captioning",
+            current = 0,
+            total = captionable_total,
+            page = None,
+            total_pages = page_count,
+        )
+
         async def _describe_one(index: int, figure: ExtractedFigure) -> None:
+            nonlocal captioned_completed
             if figure.caption or not figure.image_base64 or not figure.image_mime:
                 return
             if cancel_event is not None and cancel_event.is_set():
@@ -986,6 +1052,15 @@ async def extract_document(
                     figures_out[index] = replace(
                         figure,
                         error = f"VLM describe failed: {type(exc).__name__}",
+                    )
+                finally:
+                    captioned_completed += 1
+                    await _emit(
+                        stage = "captioning",
+                        current = captioned_completed,
+                        total = captionable_total,
+                        page = figure.page,
+                        total_pages = page_count,
                     )
 
         tasks = [

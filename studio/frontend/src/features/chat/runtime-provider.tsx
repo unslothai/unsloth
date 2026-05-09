@@ -212,25 +212,39 @@ class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
 
     let lastProgress = 0;
 
-    // We drive progress manually: upload phase maps to 0.05–0.70,
-    // server processing phase (after upload) is 0.85, complete is 1.0.
-    // We yield progress updates via a small queue resolved on each tick.
+    // Drive progress through stream events: parsing → 0.10, captioning
+    // → 0.20–1.00 mapped from `current/total`. Older "upload progress"
+    // is no longer reported (the endpoint now streams NDJSON).
     type ProgressResolver = { resolve: (v: number) => void };
     const progressQueue: number[] = [];
     let progressResolver: ProgressResolver | null = null;
 
-    function onProgress(uploadPct: number): void {
-      // Map raw upload fraction (0–1) to the upload portion of the task.
-      const mapped = uploadPct * 0.7;
-      if (mapped <= lastProgress) return;
-      lastProgress = mapped;
+    function publishProgress(value: number): void {
+      if (value <= lastProgress) return;
+      lastProgress = value;
       if (progressResolver) {
         const r = progressResolver;
         progressResolver = null;
-        r.resolve(mapped);
+        r.resolve(value);
       } else {
-        progressQueue.push(mapped);
+        progressQueue.push(value);
       }
+    }
+
+    function onParseStart(): void {
+      publishProgress(0.1);
+    }
+
+    function onCaptionProgress({
+      current,
+      total,
+    }: {
+      current: number;
+      total: number;
+    }): void {
+      if (total <= 0) return;
+      const fraction = Math.max(0, Math.min(1, current / total));
+      publishProgress(0.2 + fraction * 0.8);
     }
 
     // Start extraction in background; we'll race it with progress yields
@@ -241,7 +255,7 @@ class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
     > | null = null;
 
     const extractionPromise = runner
-      .run(file, { onProgress })
+      .run(file, { onParseStart, onCaptionProgress })
       .then((doc) => {
         extractionResult = doc;
       })
@@ -488,8 +502,17 @@ function sanitizePersistedContent(content: ThreadMessage["content"]): ThreadMess
   const sanitized: typeof content = [];
   let skipNextDocumentImage = false;
   for (const part of content) {
-    if (part.type === "text" && /^Visual input \[Image #\d+\] from /i.test(part.text)) {
-      sanitized.push(part);
+    if (
+      part.type === "text" &&
+      /^Visual inputs attached below:/i.test(part.text)
+    ) {
+      skipNextDocumentImage = false;
+      continue;
+    }
+    if (
+      part.type === "text" &&
+      /^Visual input \[Image #\d+\] from /i.test(part.text)
+    ) {
       skipNextDocumentImage = true;
       continue;
     }

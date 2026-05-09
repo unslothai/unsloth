@@ -27,6 +27,8 @@ const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
 const DOC_EXTRACT_KEY = "unsloth_chat_doc_extract";
 const DEFAULT_DOCUMENT_VISUAL_PAYLOADS = 3;
+const DEFAULT_EXTRACT_CONCURRENCY = 2;
+const MAX_EXTRACT_CONCURRENCY = 8;
 
 /**
  * Built-in OCR model presets selectable from the Document Extraction settings.
@@ -79,6 +81,12 @@ export interface DocExtractSettings {
   customOcrModelId: string;
   /** GGUF variant filename for custom OCR repos that ship GGUF; null otherwise. */
   customOcrGgufVariant: string | null;
+  /**
+   * Frontend-side cap on parallel `/chat/extract-document` requests.
+   * Mirrors the backend `_EXTRACT_SEMAPHORE` so dropping many files at
+   * once queues client-side instead of producing 503-busy responses.
+   */
+  extractConcurrency: number;
 }
 
 export const DEFAULT_DOC_EXTRACT: DocExtractSettings = {
@@ -91,7 +99,16 @@ export const DEFAULT_DOC_EXTRACT: DocExtractSettings = {
   ocrModel: "default",
   customOcrModelId: "",
   customOcrGgufVariant: null,
+  extractConcurrency: DEFAULT_EXTRACT_CONCURRENCY,
 };
+
+function clampExtractConcurrency(value: unknown): number {
+  const n =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : DEFAULT_EXTRACT_CONCURRENCY;
+  return Math.max(1, Math.min(MAX_EXTRACT_CONCURRENCY, n));
+}
 
 const VALID_OCR_SELECTIONS: ReadonlySet<OcrModelSelection> = new Set([
   "default",
@@ -321,6 +338,7 @@ function loadDocExtract(): DocExtractSettings {
         typeof parsed.customOcrGgufVariant === "string"
           ? parsed.customOcrGgufVariant
           : DEFAULT_DOC_EXTRACT.customOcrGgufVariant,
+      extractConcurrency: clampExtractConcurrency(parsed.extractConcurrency),
     };
   } catch {
     return DEFAULT_DOC_EXTRACT;
@@ -478,7 +496,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   ocrPhase: "idle",
   setDocExtract: (value) =>
     set((state) => {
-      const next = { ...state.docExtract, ...value };
+      const merged = { ...state.docExtract, ...value };
+      const next: DocExtractSettings = {
+        ...merged,
+        extractConcurrency: clampExtractConcurrency(merged.extractConcurrency),
+      };
       if (!saveDocExtract(next)) {
         warnStoragePersistence();
       }

@@ -12,7 +12,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import structlog
@@ -132,6 +132,14 @@ class ModelProbeRequest(BaseModel):
     trust_remote_code: bool = Field(
         False, description = "Allow probes that require custom model code"
     )
+
+
+def _reject_hf_token_query(request: Request) -> None:
+    if "hf_token" in request.query_params:
+        raise HTTPException(
+            status_code = 400,
+            detail = "HF tokens must be sent with POST JSON probe endpoints, not GET query parameters.",
+        )
 
 
 def derive_model_type(
@@ -1589,14 +1597,15 @@ def _get_model_size_bytes(
 
 @router.get("/config/{model_name:path}")
 async def get_model_config(
+    request: Request,
     model_name: str,
-    hf_token: Optional[str] = None,
     trust_remote_code: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
+    _reject_hf_token_query(request)
     return await _build_model_config_response(
         model_name,
-        hf_token = hf_token,
+        hf_token = None,
         trust_remote_code = trust_remote_code,
     )
 
@@ -2129,14 +2138,15 @@ async def get_lora_base_model(
 
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
 async def check_vision_model(
+    request: Request,
     model_name: str,
-    hf_token: Optional[str] = None,
     trust_remote_code: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
+    _reject_hf_token_query(request)
     return await _check_vision_model_response(
         model_name,
-        hf_token = hf_token,
+        hf_token = None,
         trust_remote_code = trust_remote_code,
     )
 

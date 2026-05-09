@@ -494,23 +494,55 @@ export function SharedComposer({
       { id: placeholderId, name: file.name },
     ]);
     setFailedDocs((prev) => prev.filter((doc) => doc.file !== file));
+    const captionToastId = `doc-caption-${placeholderId}`;
+    let captionToastShown = false;
     try {
       const doc = await runner.run(file, {
-        onProgress: (pct) => {
-          const mapped = pct * 0.7;
+        onParseStart: () => {
           setUploadingDocs((prev) =>
             prev.map((item) =>
               item.id === placeholderId
-                ? {
-                    ...item,
-                    progress: Math.max(
-                      item.progress ?? 0,
-                      Math.min(0.7, mapped),
-                    ),
-                  }
+                ? { ...item, progress: Math.max(item.progress ?? 0, 0.1) }
                 : item,
             ),
           );
+        },
+        onCaptionProgress: ({ current, total, page, totalPages }) => {
+          if (total <= 0) return;
+          const fraction = Math.max(0, Math.min(1, current / total));
+          // Map captioning fraction onto the back half of the chip bar
+          // so the bar moves through both phases (parse → caption).
+          const mapped = 0.2 + fraction * 0.8;
+          setUploadingDocs((prev) =>
+            prev.map((item) =>
+              item.id === placeholderId
+                ? { ...item, progress: Math.max(item.progress ?? 0, mapped) }
+                : item,
+            ),
+          );
+          const pageSuffix =
+            page != null && totalPages > 0
+              ? ` · page ${page} of ${totalPages}`
+              : "";
+          const message = `Captioning images ${current}/${total}${pageSuffix}`;
+          const description = `${file.name}`;
+          if (!captionToastShown) {
+            toast.loading(message, {
+              id: captionToastId,
+              description,
+              duration: Infinity,
+            });
+            captionToastShown = true;
+          } else {
+            toast.loading(message, { id: captionToastId, description });
+          }
+          if (current >= total) {
+            toast.success(`Finished captioning ${total} image${total === 1 ? "" : "s"}`, {
+              id: captionToastId,
+              description,
+              duration: 2500,
+            });
+          }
         },
       });
       // Re-read token budget at send time so Compare Mode sees latest value
@@ -544,8 +576,10 @@ export function SharedComposer({
       setPendingDocs((prev) => [...prev, attachment]);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
+        if (captionToastShown) toast.dismiss(captionToastId);
         return;
       }
+      if (captionToastShown) toast.dismiss(captionToastId);
       const failure = classifyDocumentExtractionError(err);
       setFailedDocs((prev) => [
         ...prev,
@@ -643,7 +677,13 @@ export function SharedComposer({
 
   async function send() {
     if (composingRef.current) return;
-    if (uploadingDocs.length > 0 || running || comparing || modelBusy) {
+    if (
+      uploadingDocs.length > 0 ||
+      failedDocs.length > 0 ||
+      running ||
+      comparing ||
+      modelBusy
+    ) {
       return;
     }
 
@@ -921,14 +961,19 @@ export function SharedComposer({
       pendingAudio !== null ||
       pendingDocs.length > 0) &&
     uploadingDocs.length === 0 &&
+    failedDocs.length === 0 &&
     !modelBusy &&
     !busy &&
     !isComposing;
-  const waitingAttachmentLabel =
+  const blockingAttachmentLabel =
     uploadingDocs.length > 0
       ? `Waiting for ${uploadingDocs.length} attachment${
           uploadingDocs.length === 1 ? "" : "s"
         }...`
+      : failedDocs.length > 0
+        ? `Resolve ${failedDocs.length} failed attachment${
+            failedDocs.length === 1 ? "" : "s"
+          } before sending.`
       : null;
 
   function onKeyDown(e: KeyboardEvent) {
@@ -1137,13 +1182,13 @@ export function SharedComposer({
         className="composer-input"
         rows={1}
       />
-      {waitingAttachmentLabel ? (
+      {blockingAttachmentLabel ? (
         <p
           className="px-5 pb-1 text-[11px] text-muted-foreground"
           role="status"
           aria-live="polite"
         >
-          {waitingAttachmentLabel}
+          {blockingAttachmentLabel}
         </p>
       ) : null}
       <div className="composer-action-wrapper">
@@ -1352,7 +1397,7 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={waitingAttachmentLabel ?? "Send message"}
+              tooltip={blockingAttachmentLabel ?? "Send message"}
               side="bottom"
               variant="default"
               size="icon"

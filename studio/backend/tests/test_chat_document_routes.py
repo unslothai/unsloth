@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ pytest.importorskip("fastapi", reason = "route helper tests require FastAPI")
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from starlette.datastructures import Headers  # noqa: E402
+import core.chat.document_extractor as extractor  # noqa: E402
 from core.chat.vlm_capability import VlmCapability  # noqa: E402
 from models.inference import ChatMessage  # noqa: E402
 from routes import inference as route  # noqa: E402
@@ -112,6 +114,98 @@ async def test_read_json_body_limited_reports_bad_json() -> None:
 async def test_read_json_body_limited_accepts_empty_body() -> None:
     request = _FakeStreamingRequest([])
     assert await route._read_json_body_limited(request, max_bytes = 100) == {}
+
+
+def test_document_extraction_exports_are_available_to_routes() -> None:
+    assert route._DOCUMENT_EXTRACTION_AVAILABLE is True
+    assert route._extract_document is not None
+    assert route._DOC_SUFFIX_OK
+    assert ".pdf" in route._DOC_SUFFIX_OK
+    assert route._drain_doc_future_exception is extractor._drain_future_exception
+
+
+def test_extract_process_zero_queue_wait_admits_available_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def __init__(self, *, maxsize: int) -> None:
+            assert maxsize == 1
+
+        def get(self, *, timeout: float):
+            assert timeout > 0
+            return ("ok", ("plain text", [], 0, 0, 0))
+
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    class FakeProcess:
+        exitcode = 0
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, _timeout: float) -> None:
+            pass
+
+        def terminate(self) -> None:
+            raise AssertionError("process should not be terminated")
+
+        def kill(self) -> None:
+            raise AssertionError("process should not be killed")
+
+    class FakeContext:
+        def Queue(self, *, maxsize: int) -> FakeQueue:  # noqa: N802 - mirrors mp API
+            return FakeQueue(maxsize = maxsize)
+
+        def Process(self, *, target, args, daemon: bool) -> FakeProcess:  # noqa: N802
+            assert target is extractor._run_extract_worker
+            assert args[1] == b"plain text"
+            assert args[2] == "sample.txt"
+            assert daemon is True
+            return FakeProcess()
+
+    monkeypatch.setattr(extractor, "_EXTRACT_QUEUE_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(
+        extractor,
+        "_EXTRACT_SEMAPHORE",
+        threading.BoundedSemaphore(1),
+    )
+    monkeypatch.setattr(
+        extractor.multiprocessing,
+        "get_context",
+        lambda _method: FakeContext(),
+    )
+
+    assert extractor._run_extract_process_sync(
+        b"plain text",
+        "sample.txt",
+        {"extract_images": False},
+        "text/plain",
+        5,
+    ) == ("plain text", [], 0, 0, 0)
+
+
+def test_openai_chat_completions_rejects_oversized_body_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
+    app.include_router(route.router, prefix = "/v1")
+    monkeypatch.setattr(route, "_OPENAI_PROXY_BODY_MAX_BYTES", 20)
+
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        content = b'{"messages":[{"role":"user","content":"' + b"x" * 64 + b'"}]}',
+        headers = {"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
 
 
 @pytest.mark.parametrize(
@@ -317,6 +411,92 @@ def test_legacy_generate_stream_registers_client_cancel_keys(
     assert any(key.startswith("legacy-") for key in seen["keys"])
     with route._CANCEL_LOCK:
         assert route._CANCEL_REGISTRY == {}
+
+
+def test_extract_document_endpoint_streams_ndjson_with_caption_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the client sends `Accept: application/x-ndjson`, the
+    endpoint streams progress events plus a final `{stage:"result"}`."""
+    import json as _json
+
+    app = FastAPI()
+    app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
+    app.include_router(route.studio_router, prefix = "/api/inference")
+
+    async def fake_extract_document(*_args, **kwargs):
+        # Emit a parsing event then two captioning events to simulate
+        # per-figure progress, then return a minimal result.
+        progress_cb = kwargs.get("progress_cb")
+        if progress_cb is not None:
+            await progress_cb({"stage": "parsing"})
+            await progress_cb({
+                "stage": "captioning",
+                "current": 1,
+                "total": 2,
+                "page": 1,
+                "total_pages": 3,
+            })
+            await progress_cb({
+                "stage": "captioning",
+                "current": 2,
+                "total": 2,
+                "page": 2,
+                "total_pages": 3,
+            })
+        return SimpleNamespace(
+            markdown = "# Stream\n",
+            page_count = 3,
+            tokens_est = 5,
+            figures = [],
+            describe_skipped_reason = None,
+            vlm_source = "none",
+            vlm_model = None,
+            warnings = [],
+        )
+
+    monkeypatch.setattr(route, "_DOCUMENT_EXTRACTION_AVAILABLE", True)
+    monkeypatch.setattr(route, "_extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        route,
+        "_extract_self_base_url",
+        lambda _request: "http://127.0.0.1:8000",
+    )
+    monkeypatch.setattr(
+        route,
+        "_detect_loaded_vlm",
+        lambda *_args, **_kwargs: VlmCapability.none("no model loaded"),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/inference/chat/extract-document",
+        headers = {
+            "Authorization": "Bearer test-token",
+            "Accept": "application/x-ndjson",
+        },
+        data = {"describe_images": "false"},
+        files = {"file": ("sample.md", b"# Stream\n", "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [
+        _json.loads(line)
+        for line in response.text.splitlines()
+        if line.strip()
+    ]
+    stages = [e.get("stage") for e in events]
+    assert "parsing" in stages
+    captioning_events = [e for e in events if e.get("stage") == "captioning"]
+    assert len(captioning_events) >= 2
+    assert captioning_events[0]["current"] == 1
+    assert captioning_events[0]["total"] == 2
+    assert captioning_events[0]["page"] == 1
+    assert captioning_events[0]["total_pages"] == 3
+    assert events[-1]["stage"] == "result"
+    assert events[-1]["data"]["markdown"] == "# Stream\n"
+    assert events[-1]["data"]["page_count"] == 3
 
 
 def test_extract_document_endpoint_accepts_multipart_smoke(

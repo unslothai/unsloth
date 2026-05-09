@@ -5,6 +5,8 @@ import asyncio
 import sys
 import types
 
+import pytest
+
 # Keep this test runnable in lightweight environments where optional logging
 # deps are not installed.
 if "structlog" not in sys.modules:
@@ -20,6 +22,14 @@ if "structlog" not in sys.modules:
 
 import routes.models as models_route
 import utils.models.model_config as model_config_module
+
+
+def _request_without_hf_token():
+    return types.SimpleNamespace(query_params = {})
+
+
+def _request_with_hf_token():
+    return types.SimpleNamespace(query_params = {"hf_token": "secret"})
 
 
 def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
@@ -68,8 +78,8 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
 
     result = asyncio.run(
         models_route.get_model_config(
+            request = _request_without_hf_token(),
             model_name = "org/model",
-            hf_token = None,
             current_subject = "test-subject",
         )
     )
@@ -114,8 +124,8 @@ def test_get_model_config_reports_yaml_trc_vision_without_probe(monkeypatch):
 
     result = asyncio.run(
         models_route.get_model_config(
+            request = _request_without_hf_token(),
             model_name = "deepseek-ai/DeepSeek-OCR",
-            hf_token = None,
             current_subject = "test-subject",
         )
     )
@@ -140,6 +150,7 @@ def test_check_vision_reports_yaml_trc_vision_without_probe(monkeypatch):
 
     result = asyncio.run(
         models_route.check_vision_model(
+            request = _request_without_hf_token(),
             model_name = "deepseek-ai/DeepSeek-OCR",
             current_subject = "test-subject",
         )
@@ -164,6 +175,7 @@ def test_check_vision_keeps_yaml_trc_vision_after_opt_in(monkeypatch):
 
     result = asyncio.run(
         models_route.check_vision_model(
+            request = _request_without_hf_token(),
             model_name = "deepseek-ai/DeepSeek-OCR",
             trust_remote_code = True,
             current_subject = "test-subject",
@@ -171,6 +183,34 @@ def test_check_vision_keeps_yaml_trc_vision_after_opt_in(monkeypatch):
     )
 
     assert result.is_vision is True
+
+
+def test_get_model_config_rejects_hf_token_query() -> None:
+    with pytest.raises(models_route.HTTPException) as exc_info:
+        asyncio.run(
+            models_route.get_model_config(
+                request = _request_with_hf_token(),
+                model_name = "org/model",
+                current_subject = "test-subject",
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "POST JSON" in exc_info.value.detail
+
+
+def test_check_vision_rejects_hf_token_query() -> None:
+    with pytest.raises(models_route.HTTPException) as exc_info:
+        asyncio.run(
+            models_route.check_vision_model(
+                request = _request_with_hf_token(),
+                model_name = "org/model",
+                current_subject = "test-subject",
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "POST JSON" in exc_info.value.detail
 
 
 def test_ocr_defaults_mapping_is_case_insensitive():

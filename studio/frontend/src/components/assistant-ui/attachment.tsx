@@ -93,6 +93,7 @@ type DocumentAttachmentState = {
   sizeBytes?: number;
   extractedAt?: number;
   truncated?: boolean;
+  sentImageIndexes?: number[];
   errorCode?: string;
   errorMessage?: string;
   retryCount?: number;
@@ -105,6 +106,11 @@ type DocumentAttachmentState = {
 };
 
 type StackableAttachment = AuiPendingAttachment | CompleteAttachment;
+
+type DocumentVisualAttachment = {
+  content?: ReadonlyArray<{ type: string; image?: string }>;
+  sentImageIndexes?: readonly number[];
+};
 
 function isDocumentAttachmentState(
   attachment: unknown,
@@ -141,22 +147,10 @@ function documentStackItemFromAttachment(
   }
 
   const filename = document.filename || documentAttachment.name;
-  const sentImageUrls = new Set(
-    (documentAttachment.content ?? [])
-      .flatMap((part) => {
-        if (part.type !== "image" || !part.image) {
-          return [];
-        }
-        return [part.image];
-      }),
+  const sentImageIndexes = sentImageIndexesForAttachment(
+    documentAttachment,
+    document,
   );
-  const sentImageIndexes = document.figures
-    .map((figure, index) => ({
-      index,
-      dataUrl: documentFigureImageDataUrl(figure),
-    }))
-    .filter(({ dataUrl }) => dataUrl !== null && sentImageUrls.has(dataUrl))
-    .map(({ index }) => index);
 
   return {
     id: documentAttachment.id,
@@ -167,6 +161,35 @@ function documentStackItemFromAttachment(
     truncated: documentAttachment.truncated ?? document.truncated,
     sentImageIndexes,
   };
+}
+
+function sentImageIndexesForAttachment(
+  documentAttachment: DocumentVisualAttachment,
+  document: ExtractedDocument,
+): number[] {
+  if (Array.isArray(documentAttachment.sentImageIndexes)) {
+    return documentAttachment.sentImageIndexes.filter(
+      (index) =>
+        Number.isInteger(index) && index >= 0 && index < document.figures.length,
+    );
+  }
+
+  const sentImageUrls = new Set(
+    (documentAttachment.content ?? [])
+      .flatMap((part) => {
+        if (part.type !== "image" || !part.image) {
+          return [];
+        }
+        return [part.image];
+      }),
+  );
+  return document.figures
+    .map((figure, index) => ({
+      index,
+      dataUrl: documentFigureImageDataUrl(figure),
+    }))
+    .filter(({ dataUrl }) => dataUrl !== null && sentImageUrls.has(dataUrl))
+    .map(({ index }) => index);
 }
 
 function documentStackItemsFromAttachments(
@@ -312,23 +335,8 @@ const AttachmentUI: FC = () => {
         docAttachment.status.reason ??
         "Extraction failed")
       : null;
-    const sentImageUrls = new Set(
-      (docAttachment.content ?? [])
-        .filter((part) => part.type === "image" && part.image)
-        .map((part) => part.image as string),
-    );
     const sentImageIndexes = new Set(
-      doc
-        ? doc.figures
-            .map((figure, index) => ({
-              index,
-              dataUrl: documentFigureImageDataUrl(figure),
-            }))
-            .filter(
-              ({ dataUrl }) => dataUrl !== null && sentImageUrls.has(dataUrl),
-            )
-            .map(({ index }) => index)
-        : [],
+      doc ? sentImageIndexesForAttachment(docAttachment, doc) : [],
     );
     const progressValue =
       typeof docAttachment.status.progress === "number" &&

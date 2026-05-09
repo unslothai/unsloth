@@ -3,11 +3,26 @@
 
 import { useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { extractDocument } from "../api/chat-api";
+import {
+  extractDocument,
+  type ExtractDocumentProgressEvent,
+} from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ExtractedDocument } from "../types";
 import { MAX_DOC_SIZE } from "../utils/document-extraction";
+import { acquireExtractionSlot } from "../utils/extraction-queue";
 import { runWithTemporaryOcrModel } from "../utils/ocr-model-orchestrator";
+
+export type DocumentExtractionCaptionProgress = {
+  /** 1-based count of figures captioned so far. */
+  current: number;
+  /** Total figures eligible for captioning in this run. */
+  total: number;
+  /** 1-based page number for the most recently captioned figure (null if unknown). */
+  page: number | null;
+  /** Total pages in the document. */
+  totalPages: number;
+};
 
 // ---------------------------------------------------------------------------
 // Non-React helper — usable outside component tree (e.g. async generators
@@ -15,7 +30,14 @@ import { runWithTemporaryOcrModel } from "../utils/ocr-model-orchestrator";
 // ---------------------------------------------------------------------------
 
 export interface DocumentExtractionRunnerOptions {
-  onProgress?: (pct: number) => void;
+  /**
+   * Captioning progress: fired once with `{current:0, total}` before
+   * any figure starts, then once per figure as captions complete.
+   * Skipped entirely when no figures need captioning (no VLM, max=0).
+   */
+  onCaptionProgress?: (progress: DocumentExtractionCaptionProgress) => void;
+  /** Notifies when the parsing phase begins (before captioning). */
+  onParseStart?: () => void;
 }
 
 export interface DocumentExtractionRunner {
@@ -68,23 +90,46 @@ export function createDocumentExtractionRunner(): DocumentExtractionRunner {
     // the extraction call, then restores the original chat model in
     // `finally`. With ocrModel === "default" or "none" the orchestrator is
     // a no-op pass-through and behaviour matches the loaded-model path.
-    const result = await runWithTemporaryOcrModel({
-      settings: docExtract,
-      signal,
-      run: () =>
-        extractDocument(
-          file,
-          {
-            describeImages: docExtract.describeImages,
-            useVlmOcr: docExtract.useVlmOcr,
-            maxFigures: docExtract.maxFigures,
-            maxVisualPayloads: docExtract.maxVisualPayloads,
-            tokenBudget: docExtract.tokenBudget,
-          },
-          signal,
-          options?.onProgress,
-        ),
-    });
+    const handleProgress = (event: ExtractDocumentProgressEvent) => {
+      if (event.stage === "parsing") {
+        options?.onParseStart?.();
+      } else if (event.stage === "captioning") {
+        options?.onCaptionProgress?.({
+          current: event.current,
+          total: event.total,
+          page: event.page,
+          totalPages: event.total_pages,
+        });
+      }
+    };
+
+    // Gate concurrent extractions so we never exceed the backend's
+    // _EXTRACT_SEMAPHORE (default 2). Slot is held until the request
+    // finishes — including the OCR-model swap — so the next runner
+    // doesn't start a swap while another extraction is mid-flight.
+    const release = await acquireExtractionSlot(signal);
+    let result: ExtractedDocument;
+    try {
+      result = await runWithTemporaryOcrModel({
+        settings: docExtract,
+        signal,
+        run: () =>
+          extractDocument(
+            file,
+            {
+              describeImages: docExtract.describeImages,
+              useVlmOcr: docExtract.useVlmOcr,
+              maxFigures: docExtract.maxFigures,
+              maxVisualPayloads: docExtract.maxVisualPayloads,
+              tokenBudget: docExtract.tokenBudget,
+            },
+            signal,
+            handleProgress,
+          ),
+      });
+    } finally {
+      release();
+    }
 
     if (result.describe_skipped_reason) {
       toast.warning("Figure descriptions were skipped", {

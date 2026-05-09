@@ -463,21 +463,36 @@ export interface ExtractDocumentOptions {
   tokenBudget?: number;
 }
 
+/** Streamed progress events emitted by the extraction endpoint. */
+export type ExtractDocumentProgressEvent =
+  | { stage: "parsing" }
+  | { stage: "done" }
+  | {
+      stage: "captioning";
+      current: number;
+      total: number;
+      page: number | null;
+      total_pages: number;
+    };
+
 /**
  * Upload a document (PDF / DOCX / HTML / MD / TXT) and receive
  * layout-aware Markdown plus optional figure captions produced by the
  * currently-loaded vision model. A 501 from the backend means the
  * extraction extras are not installed server-side.
  *
- * Uses XMLHttpRequest so that real upload progress can be reported via
- * `onUploadProgress`. Pass an `AbortSignal` to cancel in-flight requests;
- * abortion rejects with `DOMException("Aborted", "AbortError")`.
+ * The endpoint streams NDJSON: zero or more `{stage, ...}` progress
+ * events followed by a final `{stage:"result", data}` or
+ * `{stage:"error", status_code, detail}` line. Pass `onProgress` to
+ * receive intermediate events (e.g. captioning progress). Pass an
+ * `AbortSignal` to cancel; abortion rejects with
+ * `DOMException("Aborted", "AbortError")`.
  */
 export function extractDocument(
   file: File,
   options: ExtractDocumentOptions = {},
   signal?: AbortSignal,
-  onUploadProgress?: (pct: number) => void,
+  onProgress?: (event: ExtractDocumentProgressEvent) => void,
 ): Promise<import("../types").ExtractedDocument> {
   const buildForm = (): FormData => {
     const form = new FormData();
@@ -500,85 +515,144 @@ export function extractDocument(
     return form;
   };
 
-  type XhrResult =
-    | { ok: true; body: unknown }
-    | { ok: false; status: number; body: unknown };
+  type StreamOutcome =
+    | {
+        kind: "result";
+        data: import("../types").ExtractedDocument;
+      }
+    | {
+        kind: "error";
+        status: number;
+        detail: string;
+      }
+    | {
+        kind: "http-error";
+        status: number;
+        body: unknown;
+      };
 
   const url = apiUrl("/api/inference/chat/extract-document");
 
-  const sendOnce = (): Promise<XhrResult> =>
-    new Promise((resolve, reject) => {
-      if (signal?.aborted) {
-        reject(new DOMException("Aborted", "AbortError"));
-        return;
-      }
+  const sendOnce = async (): Promise<StreamOutcome> => {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
 
-      const xhr = new XMLHttpRequest();
-      const abortXhr = () => xhr.abort();
-      const cleanup = () => {
-        if (signal) {
-          signal.removeEventListener("abort", abortXhr);
-        }
-      };
-      xhr.open("POST", url);
+    const headers: Record<string, string> = {
+      Accept: "application/x-ndjson",
+    };
+    const token = getAuthToken();
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
 
-      const token = getAuthToken();
-      if (token) {
-        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-      }
-
-      if (onUploadProgress) {
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && e.total > 0) {
-            onUploadProgress(e.loaded / e.total);
-          }
-        };
-      }
-
-      xhr.onload = () => {
-        cleanup();
-        let body: unknown = null;
-        try {
-          body = JSON.parse(xhr.responseText);
-        } catch {
-          // leave body null
-        }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve({ ok: true, body });
-        } else {
-          resolve({ ok: false, status: xhr.status, body });
-        }
-      };
-
-      xhr.onerror = () => {
-        cleanup();
-        reject(new Error("Network error during document extraction"));
-      };
-
-      xhr.onabort = () => {
-        cleanup();
-        reject(new DOMException("Aborted", "AbortError"));
-      };
-
-      if (signal) {
-        signal.addEventListener("abort", abortXhr, { once: true });
-      }
-
-      xhr.send(buildForm());
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: buildForm(),
+      signal,
     });
 
-  return (async () => {
-    let result = await sendOnce();
-    if (!result.ok && result.status === 401) {
-      const refreshed = await refreshSession();
-      if (refreshed && !signal?.aborted) {
-        result = await sendOnce();
+    if (!response.ok) {
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      return { kind: "http-error", status: response.status, body };
+    }
+
+    if (!response.body) {
+      throw new Error("Response stream unavailable");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const handleLine = (line: string): StreamOutcome | null => {
+      if (!line) return null;
+      let event: { stage?: string; [key: string]: unknown };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return null;
+      }
+      if (event.stage === "result") {
+        return {
+          kind: "result",
+          data: event.data as import("../types").ExtractedDocument,
+        };
+      }
+      if (event.stage === "error") {
+        return {
+          kind: "error",
+          status:
+            typeof event.status_code === "number" ? event.status_code : 500,
+          detail:
+            typeof event.detail === "string" ? event.detail : "Extraction failed",
+        };
+      }
+      onProgress?.(event as ExtractDocumentProgressEvent);
+      return null;
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          const outcome = handleLine(line);
+          if (outcome) return outcome;
+          nl = buffer.indexOf("\n");
+        }
+      }
+      const tail = buffer.trim();
+      if (tail) {
+        const outcome = handleLine(tail);
+        if (outcome) return outcome;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore — already closed
       }
     }
-    if (result.ok) {
-      return result.body as import("../types").ExtractedDocument;
+    throw new Error("Extraction stream ended without a result");
+  };
+
+  return (async () => {
+    let outcome: StreamOutcome;
+    try {
+      outcome = await sendOnce();
+    } catch (err) {
+      if (
+        err instanceof DOMException &&
+        (err.name === "AbortError" || err.message === "Aborted")
+      ) {
+        throw err;
+      }
+      throw err;
     }
-    throw new Error(parseErrorText(result.status, result.body));
+    if (outcome.kind === "http-error" && outcome.status === 401) {
+      const refreshed = await refreshSession();
+      if (refreshed && !signal?.aborted) {
+        outcome = await sendOnce();
+      }
+    }
+    if (outcome.kind === "result") {
+      return outcome.data;
+    }
+    if (outcome.kind === "error") {
+      throw new Error(outcome.detail);
+    }
+    throw new Error(parseErrorText(outcome.status, outcome.body));
   })();
 }
 

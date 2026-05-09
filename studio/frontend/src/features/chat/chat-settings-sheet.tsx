@@ -470,6 +470,7 @@ const DOC_EXTRACT_SLIDER_MAXES = {
   maxFigures: 1000,
   maxVisualPayloads: 10,
   tokenBudget: 32000,
+  extractConcurrency: 8,
 } as const;
 
 function InlineNumberInput({
@@ -522,6 +523,7 @@ function DocumentNumberSliderRow({
   tooltip,
   value,
   sliderMax,
+  sliderMin = 0,
   step = 1,
   disabled,
   valueAriaLabel,
@@ -531,13 +533,15 @@ function DocumentNumberSliderRow({
   tooltip: string;
   value: number;
   sliderMax: number;
+  sliderMin?: number;
   step?: number;
   disabled?: boolean;
   valueAriaLabel: string;
   onValueChange: (value: number) => void;
 }) {
   const effectiveMax = Math.max(1, sliderMax);
-  const sliderValue = Math.min(value, effectiveMax);
+  const effectiveMin = Math.max(0, Math.min(sliderMin, effectiveMax));
+  const sliderValue = Math.min(Math.max(value, effectiveMin), effectiveMax);
 
   return (
     <div className="space-y-2 py-2">
@@ -554,7 +558,7 @@ function DocumentNumberSliderRow({
         />
       </div>
       <Slider
-        min={0}
+        min={effectiveMin}
         max={effectiveMax}
         step={step}
         value={[sliderValue]}
@@ -1831,6 +1835,18 @@ function DocumentExtractionSection() {
       tokenBudget: next,
     });
   };
+  const setExtractConcurrency = (value: number): void => {
+    const next = Math.max(
+      1,
+      Math.min(
+        DOC_EXTRACT_SLIDER_MAXES.extractConcurrency,
+        normalizeNonNegativeInteger(value),
+      ),
+    );
+    setDocExtract({
+      extractConcurrency: next,
+    });
+  };
 
   function applyMode(mode: DocExtractMode) {
     // OCR selection grants vision capability for the extraction window, so
@@ -2214,6 +2230,18 @@ function DocumentExtractionSection() {
                       onValueChange={setTokenBudget}
                       disabled={!extractorReady}
                       valueAriaLabel="Document extraction token budget"
+                    />
+
+                    <DocumentNumberSliderRow
+                      label="Parallel extractions"
+                      tooltip="Maximum number of documents extracted in parallel. Extra files queue client-side. Must be ≤ the backend's UNSLOTH_STUDIO_EXTRACT_CONCURRENCY (default 2) to avoid 503 busy responses."
+                      value={docExtract.extractConcurrency}
+                      sliderMax={DOC_EXTRACT_SLIDER_MAXES.extractConcurrency}
+                      sliderMin={1}
+                      step={1}
+                      onValueChange={setExtractConcurrency}
+                      disabled={!extractorReady}
+                      valueAriaLabel="Parallel document extractions limit"
                     />
                   </div>
                 </motion.div>
