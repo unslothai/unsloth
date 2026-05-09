@@ -1052,10 +1052,12 @@ async def _aiter_llama_stream_items(
 from models.inference import (
     LoadRequest,
     UnloadRequest,
+    UpdateRequest,
     GenerateRequest,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
+    UpdateResponse,
     InferenceStatusResponse,
     ChatCompletionRequest,
     ChatCompletionChunk,
@@ -2491,6 +2493,40 @@ def _maybe_unsupported_message(msg: str) -> str:
     if any(h.lower() in msg.lower() for h in _NOT_SUPPORTED_HINTS):
         return f"This model is not supported yet. Try a different model. (Original error: {msg})"
     return msg
+
+
+@router.post("/update", response_model = UpdateResponse)
+async def update_hf_model(
+    request: UpdateRequest,
+    fastapi_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    llama_backend = get_llama_cpp_backend()
+    model_identifier, _, _ = (
+        _resolve_model_identifier_for_request(request, operation = "load-model")
+    )
+    config = ModelConfig.from_identifier(
+        model_id = model_identifier,
+        hf_token = request.hf_token,
+        gguf_variant = request.gguf_variant,
+    )
+    if config.is_gguf:
+        model_path = llama_backend._download_gguf(
+            hf_repo=config.gguf_hf_repo,
+            hf_variant=config.gguf_variant,
+            hf_token=request.hf_token
+        )
+        if config.is_vision:
+            llama_backend._download_mmproj(
+                hf_repo=config.gguf_hf_repo,
+                hf_token=request.hf_token
+            )
+    else:
+        from huggingface_hub import snapshot_download
+        hf_repo = config.base_model if config.is_lora and config.base_model else config.path
+        local_dir = hf_repo.split("/")[-1]
+        model_path = snapshot_download(repo_id=hf_repo, local_dir=local_dir)
+    return UpdateResponse(model_path=model_path)
 
 
 @router.post("/load", response_model = LoadResponse)
