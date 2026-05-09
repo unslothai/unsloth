@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthToken, refreshSession } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -49,7 +50,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
+export async function listLoras(
+  outputsDir?: string,
+): Promise<ListLorasResponse> {
   const query = outputsDir
     ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
     : "";
@@ -64,6 +67,7 @@ export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
 
 export async function loadModel(
   payload: LoadModelRequest,
+  signal?: AbortSignal,
 ): Promise<LoadModelResponse> {
   const response = await authFetch("/api/inference/load", {
     method: "POST",
@@ -73,12 +77,14 @@ export async function loadModel(
       native_path_lease: payload.nativePathLease ?? null,
       nativePathLease: undefined,
     }),
+    ...(signal ? { signal } : {}),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
+  signal?: AbortSignal,
 ): Promise<ValidateModelResponse> {
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
@@ -88,16 +94,22 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      trust_remote_code: payload.trust_remote_code ?? false,
     }),
+    ...(signal ? { signal } : {}),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
-export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
+export async function unloadModel(
+  payload: UnloadModelRequest,
+  signal?: AbortSignal,
+): Promise<void> {
   const response = await authFetch("/api/inference/unload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    ...(signal ? { signal } : {}),
   });
   await parseJsonOrThrow<unknown>(response);
 }
@@ -112,13 +124,19 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<{
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+}> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(
+    `/api/models/gguf-download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -213,7 +231,10 @@ export async function listCachedModels(): Promise<CachedModelRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
   const response = await authFetch("/api/models/delete-cached", {
@@ -390,12 +411,17 @@ export async function* streamChatCompletions(
       }
       // Tool status events are custom SSE payloads, not OpenAI chunks
       if ("type" in parsed && parsed.type === "tool_status") {
-        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        yield {
+          _toolStatus: parsed.content ?? "",
+        } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
       // Tool start/end events carry full input/output for the tool outputs panel
-      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+      if (
+        "type" in parsed &&
+        (parsed.type === "tool_start" || parsed.type === "tool_end")
+      ) {
         yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
@@ -423,4 +449,207 @@ export async function generateAudio(
   }
 
   return (await response.json()) as AudioGenerationResponse;
+}
+
+/** Options accepted by {@link extractDocument}. */
+export interface ExtractDocumentOptions {
+  describeImages?: boolean;
+  /** Render full-page visual payloads for scanned PDFs when a vision model is loaded. */
+  useVlmOcr?: boolean;
+  /** Maximum figure/page references to list in extracted document text. */
+  maxFigures?: number;
+  /** Maximum extracted image payloads to keep for vision-capable sends. */
+  maxVisualPayloads?: number;
+  tokenBudget?: number;
+}
+
+/**
+ * Upload a document (PDF / DOCX / HTML / MD / TXT) and receive
+ * layout-aware Markdown plus optional figure captions produced by the
+ * currently-loaded vision model. A 501 from the backend means the
+ * extraction extras are not installed server-side.
+ *
+ * Uses XMLHttpRequest so that real upload progress can be reported via
+ * `onUploadProgress`. Pass an `AbortSignal` to cancel in-flight requests;
+ * abortion rejects with `DOMException("Aborted", "AbortError")`.
+ */
+export function extractDocument(
+  file: File,
+  options: ExtractDocumentOptions = {},
+  signal?: AbortSignal,
+  onUploadProgress?: (pct: number) => void,
+): Promise<import("../types").ExtractedDocument> {
+  const buildForm = (): FormData => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    if (options.describeImages !== undefined) {
+      form.append("describe_images", options.describeImages ? "true" : "false");
+    }
+    if (options.useVlmOcr !== undefined) {
+      form.append("use_vlm_ocr", options.useVlmOcr ? "true" : "false");
+    }
+    if (options.maxFigures !== undefined) {
+      form.append("max_figures", String(options.maxFigures));
+    }
+    if (options.maxVisualPayloads !== undefined) {
+      form.append("max_visual_payloads", String(options.maxVisualPayloads));
+    }
+    if (options.tokenBudget !== undefined) {
+      form.append("token_budget", String(options.tokenBudget));
+    }
+    return form;
+  };
+
+  type XhrResult =
+    | { ok: true; body: unknown }
+    | { ok: false; status: number; body: unknown };
+
+  const url = apiUrl("/api/inference/chat/extract-document");
+
+  const sendOnce = (): Promise<XhrResult> =>
+    new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+
+      const xhr = new XMLHttpRequest();
+      const abortXhr = () => xhr.abort();
+      const cleanup = () => {
+        if (signal) {
+          signal.removeEventListener("abort", abortXhr);
+        }
+      };
+      xhr.open("POST", url);
+
+      const token = getAuthToken();
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+
+      if (onUploadProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && e.total > 0) {
+            onUploadProgress(e.loaded / e.total);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        cleanup();
+        let body: unknown = null;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          // leave body null
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ ok: true, body });
+        } else {
+          resolve({ ok: false, status: xhr.status, body });
+        }
+      };
+
+      xhr.onerror = () => {
+        cleanup();
+        reject(new Error("Network error during document extraction"));
+      };
+
+      xhr.onabort = () => {
+        cleanup();
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+
+      if (signal) {
+        signal.addEventListener("abort", abortXhr, { once: true });
+      }
+
+      xhr.send(buildForm());
+    });
+
+  return (async () => {
+    let result = await sendOnce();
+    if (!result.ok && result.status === 401) {
+      const refreshed = await refreshSession();
+      if (refreshed && !signal?.aborted) {
+        result = await sendOnce();
+      }
+    }
+    if (result.ok) {
+      return result.body as import("../types").ExtractedDocument;
+    }
+    throw new Error(parseErrorText(result.status, result.body));
+  })();
+}
+
+/**
+ * Probe the server for document-extraction support and the currently
+ * loaded model's vision capability. Polled by the Chat settings card
+ * to drive the "describe figures" toggle state + tooltip.
+ */
+export async function getDocumentSupport(
+  signal?: AbortSignal,
+): Promise<import("../types").DocumentSupport> {
+  const response = await authFetch("/api/inference/chat/document-support", {
+    signal,
+  });
+  return parseJsonOrThrow<import("../types").DocumentSupport>(response);
+}
+
+const DOCUMENT_SUPPORT_TTL_MS = 30_000;
+let documentSupportCache: {
+  value: import("../types").DocumentSupport;
+  expiresAt: number;
+} | null = null;
+let documentSupportInflight: Promise<
+  import("../types").DocumentSupport
+> | null = null;
+let documentSupportCacheGeneration = 0;
+
+export function invalidateDocumentSupportCache(): void {
+  documentSupportCacheGeneration += 1;
+  documentSupportCache = null;
+  documentSupportInflight = null;
+}
+
+export async function getCachedDocumentSupport(
+  signal?: AbortSignal,
+): Promise<import("../types").DocumentSupport> {
+  const now = Date.now();
+  if (documentSupportCache && documentSupportCache.expiresAt > now) {
+    return documentSupportCache.value;
+  }
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  if (signal) {
+    const generation = documentSupportCacheGeneration;
+    const value = await getDocumentSupport(signal);
+    if (!signal.aborted && generation === documentSupportCacheGeneration) {
+      documentSupportCache = {
+        value,
+        expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
+      };
+    }
+    return value;
+  }
+  if (!documentSupportInflight) {
+    const generation = documentSupportCacheGeneration;
+    documentSupportInflight = getDocumentSupport()
+      .then((value) => {
+        if (generation === documentSupportCacheGeneration) {
+          documentSupportCache = {
+            value,
+            expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
+          };
+        }
+        return value;
+      })
+      .finally(() => {
+        if (generation === documentSupportCacheGeneration) {
+          documentSupportInflight = null;
+        }
+      });
+  }
+  return documentSupportInflight;
 }

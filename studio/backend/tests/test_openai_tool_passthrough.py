@@ -20,13 +20,17 @@ No running server or GPU required.
 
 import os
 import sys
+import base64
+from io import BytesIO
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
+from PIL import Image
 
 from models.inference import (
     ChatCompletionRequest,
@@ -35,6 +39,7 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
+import routes.inference as route
 from routes.inference import _build_passthrough_payload, _friendly_error
 
 
@@ -336,6 +341,68 @@ class TestChatCompletionRequestToolFields:
         assert req.messages[1].tool_calls[0]["id"] == "call_1"
         assert req.messages[2].role == "tool"
         assert req.messages[2].tool_call_id == "call_1"
+
+
+def _png_data_url() -> str:
+    img = Image.new("RGB", (2, 2), (0, 255, 0))
+    buf = BytesIO()
+    img.save(buf, format = "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+class TestOpenAIPassthroughImageSafety:
+    def test_rejects_too_many_content_part_images(self, monkeypatch):
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGES", 1)
+        data_url = _png_data_url()
+        req = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "noop"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            route._openai_messages_for_passthrough(req, is_vision = True)
+
+        assert exc.value.status_code == 413
+
+    def test_rejects_passthrough_image_when_model_is_text_only(self):
+        req = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": _png_data_url()}},
+                    ],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "noop"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            route._openai_messages_for_passthrough(req, is_vision = False)
+
+        assert exc.value.status_code == 400
+
+    def test_top_level_image_uses_size_guard(self, monkeypatch):
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGE_BYTES", 1)
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS", 10_000)
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "see image"}],
+            image_base64 = _png_data_url().split(",", 1)[1],
+            tools = [{"type": "function", "function": {"name": "noop"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            route._openai_messages_for_passthrough(req, is_vision = True)
+
+        assert exc.value.status_code == 413
 
 
 # =====================================================================

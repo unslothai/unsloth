@@ -293,7 +293,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsError: null,
         });
 
-        void getModelConfig(modelName, controller.signal, get().hfToken || undefined)
+        void getModelConfig(
+          modelName,
+          controller.signal,
+          get().hfToken || undefined,
+          get().trustRemoteCode,
+        )
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
@@ -393,7 +398,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             });
 
             // Fallback vision check if config endpoint fails.
-            void checkVisionModel(modelName)
+            void checkVisionModel(
+              modelName,
+              get().hfToken || undefined,
+              get().trustRemoteCode,
+            )
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({

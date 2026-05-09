@@ -1,0 +1,22 @@
+# Model defaults for deepseek-ai/DeepSeek-OCR
+# Custom-code OCR vision model. Used by Studio chat as a temporary OCR
+# model swap during scanned-PDF extraction; never used for training.
+
+model:
+  identifier: deepseek-ai/DeepSeek-OCR
+  display_name: DeepSeek-OCR
+  is_vision: true
+  is_ocr: true
+
+training:
+  trust_remote_code: true
+  max_seq_length: 8192
+  packing: false
+
+inference:
+  trust_remote_code: true
+  temperature: 0.0
+  top_p: 1.0
+  top_k: -1
+  min_p: 0.0
+  default_max_seq_length: 8192

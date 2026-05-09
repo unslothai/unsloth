@@ -74,7 +74,28 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
-def _build_model_config(config: dict):
+def _resolve_trust_remote_code(config: dict) -> bool:
+    # Auto-enable trust_remote_code for NemotronH/Nano models only.
+    # NemotronH has config parsing bugs requiring trust_remote_code=True.
+    # Other transformers 5.x models are native and do NOT need it.
+    # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
+    trust_remote_code = config.get("trust_remote_code", False)
+    if not trust_remote_code:
+        model_name = config["model_name"]
+        _mn_lower = model_name.lower()
+        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+        if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
+            _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
+        ):
+            trust_remote_code = True
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s",
+                model_name,
+            )
+    return bool(trust_remote_code)
+
+
+def _build_model_config(config: dict, *, trust_remote_code: bool | None = None):
     """Build a ModelConfig from the config dict."""
     from utils.models import ModelConfig
 
@@ -82,11 +103,14 @@ def _build_model_config(config: dict):
     hf_token = config.get("hf_token")
     hf_token = hf_token if hf_token and hf_token.strip() else None
     gguf_variant = config.get("gguf_variant")
+    if trust_remote_code is None:
+        trust_remote_code = _resolve_trust_remote_code(config)
 
     mc = ModelConfig.from_identifier(
         model_id = model_name,
         hf_token = hf_token,
         gguf_variant = gguf_variant,
+        trust_remote_code = trust_remote_code,
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
@@ -247,7 +271,8 @@ def _start_heartbeat(
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
-        mc = _build_model_config(config)
+        trust_remote_code = _resolve_trust_remote_code(config)
+        mc = _build_model_config(config, trust_remote_code = trust_remote_code)
 
         hf_token = config.get("hf_token")
         hf_token = hf_token if hf_token and hf_token.strip() else None
@@ -286,24 +311,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                             load_in_4bit = False
                 except Exception as e:
                     logger.warning("Could not read adapter_config.json: %s", e)
-
-        # Auto-enable trust_remote_code for NemotronH/Nano models only.
-        # NemotronH has config parsing bugs requiring trust_remote_code=True.
-        # Other transformers 5.x models are native and do NOT need it.
-        # NOTE: Must NOT match Llama-Nemotron (standard Llama architecture).
-        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
-        trust_remote_code = config.get("trust_remote_code", False)
-        if not trust_remote_code:
-            model_name = config["model_name"]
-            _mn_lower = model_name.lower()
-            if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
-                _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
-            ):
-                trust_remote_code = True
-                logger.info(
-                    "Auto-enabled trust_remote_code for Nemotron model: %s",
-                    model_name,
-                )
 
         # Send heartbeats every 30s so the orchestrator knows we're still alive
         # (download / weight loading can take a long time on slow connections)

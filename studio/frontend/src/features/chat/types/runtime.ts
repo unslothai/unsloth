@@ -14,6 +14,10 @@ export interface InferenceParams {
   checkpoint: string;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
+  /** Whether the active chat model was loaded with load_in_4bit. The OCR
+   *  orchestrator captures this in its snapshot so restore can round-trip
+   *  the original quantization instead of forcing 4-bit. */
+  loadIn4Bit?: boolean;
 }
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
@@ -28,6 +32,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   systemPrompt: "",
   checkpoint: "",
   trustRemoteCode: false,
+  loadIn4Bit: true,
 };
 
 export interface ChatModelSummary {

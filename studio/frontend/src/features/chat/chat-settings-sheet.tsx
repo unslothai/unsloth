@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
+import type {
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "@/components/assistant-ui/model-selector";
+import { HubModelPicker } from "@/components/assistant-ui/model-selector/pickers";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,11 +23,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -42,28 +49,49 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useIsMobile } from "@/hooks/use-mobile";
-import { cn } from "@/lib/utils";
-import {
-  ArrowDown01Icon,
-  ArrowTurnBackwardIcon,
-  InformationCircleIcon,
-  LayoutAlignRightIcon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { cn } from "@/lib/utils";
+import {
+  ArrowDown01Icon,
+  ArrowTurnBackwardIcon,
+  CodeIcon,
+  Delete02Icon,
+  File01Icon,
+  FloppyDiskIcon,
+  InformationCircleIcon,
+  LayoutAlignRightIcon,
+  Logout01Icon,
+  Settings02Icon,
+  Settings05Icon,
+  SlidersHorizontalIcon,
+  Wrench01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
-import { Fragment, type ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
+import { getCachedDocumentSupport } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import type { DocumentSupport } from "./types";
 import {
   applyPresetParams,
   BUILTIN_PRESET_NAMES,
@@ -80,7 +108,14 @@ import {
   toPresetParams,
   type Preset,
 } from "./presets/preset-policy";
-import type { InferenceParams } from "./types/runtime";
+import {
+  DEFAULT_INFERENCE_PARAMS,
+  type InferenceParams,
+} from "./types/runtime";
+import {
+  OCR_MODEL_PRESETS,
+  resolveOcrModelTarget,
+} from "./utils/ocr-model-presets";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -416,6 +451,120 @@ function ParamSlider({
   );
 }
 
+function normalizeNonNegativeInteger(value: number): number {
+  return Math.max(0, Math.round(value));
+}
+
+function parseNonNegativeIntegerInputValue(
+  raw: string,
+  fallback: number,
+): number {
+  if (raw.trim() === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isNaN(parsed)
+    ? fallback
+    : normalizeNonNegativeInteger(parsed);
+}
+
+const DOC_EXTRACT_SLIDER_MAXES = {
+  maxFigures: 1000,
+  maxVisualPayloads: 10,
+  tokenBudget: 32000,
+} as const;
+
+function InlineNumberInput({
+  value,
+  onCommit,
+  disabled,
+  ariaLabel,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+  disabled?: boolean;
+  ariaLabel: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commitDraft = useCallback(() => {
+    const next = parseNonNegativeIntegerInputValue(draft, value);
+    setDraft(String(next));
+    onCommit(next);
+  }, [draft, onCommit, value]);
+
+  return (
+    <Input
+      type="number"
+      min={0}
+      step={1}
+      inputMode="numeric"
+      value={draft}
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={commitDraft}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className="h-5 w-[3.75rem] rounded border border-border/50 bg-transparent px-1.5 py-0 text-right !text-xs leading-none tabular-nums text-muted-foreground shadow-none transition-colors [appearance:textfield] hover:border-border focus-visible:border-primary focus-visible:ring-0 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 md:!text-xs [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+    />
+  );
+}
+
+function DocumentNumberSliderRow({
+  label,
+  tooltip,
+  value,
+  sliderMax,
+  step = 1,
+  disabled,
+  valueAriaLabel,
+  onValueChange,
+}: {
+  label: string;
+  tooltip: string;
+  value: number;
+  sliderMax: number;
+  step?: number;
+  disabled?: boolean;
+  valueAriaLabel: string;
+  onValueChange: (value: number) => void;
+}) {
+  const effectiveMax = Math.max(1, sliderMax);
+  const sliderValue = Math.min(value, effectiveMax);
+
+  return (
+    <div className="space-y-2 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs font-medium">
+          {label}
+          <SettingInfoTooltip content={tooltip} />
+        </span>
+        <InlineNumberInput
+          value={value}
+          onCommit={onValueChange}
+          disabled={disabled}
+          ariaLabel={valueAriaLabel}
+        />
+      </div>
+      <Slider
+        min={0}
+        max={effectiveMax}
+        step={step}
+        value={[sliderValue]}
+        onValueChange={([next]) => onValueChange(next ?? value)}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
 const COLLAPSIBLE_STATE_KEY = "unsloth_chat_collapsible_state";
 
 function loadCollapsibleState(): Record<string, boolean> {
@@ -575,12 +724,19 @@ export function ChatSettingsPanel({
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
-  const [activePreset, setActivePreset] = useState(() =>
-    loadSavedActivePreset(),
-  );
-  const [presetNameInput, setPresetNameInput] = useState(() =>
-    loadSavedActivePreset(),
-  );
+  const [activePreset, setActivePreset] = useState(() => {
+    const saved = loadSavedActivePreset();
+    const available = new Set([
+      ...BUILTIN_PRESETS.map((preset) => preset.name),
+      ...customPresets.map((preset) => preset.name),
+    ]);
+    return available.has(saved) ? saved : "Default";
+  });
+  const [presetNameInput, setPresetNameInput] = useState(() => activePreset);
+  const presetControlRowRef = useRef<HTMLDivElement>(null);
+  const [presetMenuWidthPx, setPresetMenuWidthPx] = useState<
+    number | undefined
+  >(undefined);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [activePresetBaseline, setActivePresetBaseline] = useState(params);
@@ -647,6 +803,7 @@ export function ChatSettingsPanel({
       });
       setActivePreset(name);
       setActivePresetSource(getPresetSource(name));
+      setPresetNameInput(name);
       if (canUseStorage()) {
         try {
           localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, name);
@@ -698,6 +855,9 @@ export function ChatSettingsPanel({
     if (!hasCustomPreset) {
       return;
     }
+    const builtinPreset = BUILTIN_PRESETS.find(
+      (preset) => preset.name === name,
+    );
     const fallbackPreset =
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ??
       null;
@@ -713,6 +873,7 @@ export function ChatSettingsPanel({
         });
         setActivePreset(fallbackPreset.name);
         setActivePresetSource("builtin-default");
+        setPresetNameInput(fallbackPreset.name);
         if (canUseStorage()) {
           try {
             localStorage.setItem(CHAT_ACTIVE_PRESET_KEY, fallbackPreset.name);
@@ -771,11 +932,15 @@ export function ChatSettingsPanel({
     setPresetNameInput(activePreset);
   }, [activePreset]);
 
-  useEffect(() => {
-    if (!open) {
-      setSystemPromptEditorOpen(false);
-    }
-  }, [open]);
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setSystemPromptEditorOpen(false);
+      }
+      onOpenChange?.(nextOpen);
+    },
+    [onOpenChange],
+  );
 
   const settingsContent = (
     <>
@@ -1226,10 +1391,12 @@ export function ChatSettingsPanel({
             <ToolCallTimeoutSlider />
           </div>
         </CollapsibleSection>
+
+        <DocumentExtractionSection />
       </div>
       </div>
       <Dialog
-        open={systemPromptEditorOpen}
+        open={open && systemPromptEditorOpen}
         onOpenChange={(nextOpen) => {
           setSystemPromptEditorOpen(nextOpen);
         }}
@@ -1288,8 +1455,9 @@ export function ChatSettingsPanel({
 
   if (isMobile) {
     return (
-      <Sheet open={open} onOpenChange={onOpenChange}>
+      <Sheet open={open} onOpenChange={handleOpenChange}>
         <SheetContent side="right" className="w-[18rem] p-0 font-heading">
+
           <SheetHeader className="sr-only">
             <SheetTitle>Configuration</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
@@ -1386,6 +1554,675 @@ function AutoHealToolCallsToggle() {
         onCheckedChange={setAutoHealToolCalls}
       />
     </div>
+  );
+}
+
+type DocExtractMode = "off" | "text" | "images" | "scanned";
+
+const DOC_EXTRACT_MODES: ReadonlyArray<{
+  value: DocExtractMode;
+  label: string;
+}> = [
+  { value: "off", label: "Off" },
+  { value: "text", label: "Text" },
+  { value: "images", label: "Images" },
+  { value: "scanned", label: "Scanned" },
+];
+
+function getDocExtractModeHelp(mode: DocExtractMode, hasVlm: boolean): string {
+  switch (mode) {
+    case "off":
+      return "Extraction disabled. Uploaded documents are skipped.";
+    case "text":
+      return "Extract text only. Best for born-digital PDFs and Office files.";
+    case "images":
+      return hasVlm
+        ? "Extract text plus figures as image inputs for the vision model."
+        : "Text with figure/page citations. Load a vision model to include images.";
+    case "scanned":
+      return hasVlm
+        ? "Render pages as images for OCR. Use for scanned or image-only PDFs."
+        : "Renders pages as images. Load a vision model for OCR.";
+  }
+}
+
+function getDocExtractModePreset(
+  mode: DocExtractMode,
+  hasVlm: boolean,
+): Record<string, unknown> {
+  switch (mode) {
+    case "off":
+      return { enabled: false };
+    case "text":
+      return {
+        enabled: true,
+        useVlmOcr: false,
+        describeImages: false,
+        maxFigures: 0,
+        maxVisualPayloads: 0,
+      };
+    case "images":
+      return {
+        enabled: true,
+        useVlmOcr: false,
+        describeImages: hasVlm,
+        maxFigures: 20,
+        maxVisualPayloads: hasVlm ? 3 : 0,
+      };
+    case "scanned":
+      return {
+        enabled: true,
+        useVlmOcr: true,
+        describeImages: hasVlm,
+        maxFigures: 20,
+        maxVisualPayloads: hasVlm ? 3 : 0,
+      };
+  }
+}
+
+function deriveDocExtractMode(docExtract: {
+  enabled: boolean;
+  useVlmOcr: boolean;
+  describeImages: boolean;
+  maxFigures: number;
+  maxVisualPayloads: number;
+}): DocExtractMode {
+  if (!docExtract.enabled) return "off";
+  if (docExtract.useVlmOcr) return "scanned";
+  if (
+    docExtract.maxFigures > 0 ||
+    docExtract.describeImages ||
+    docExtract.maxVisualPayloads > 0
+  ) {
+    return "images";
+  }
+  return "text";
+}
+
+function SettingInfoTooltip({ content }: { content: string }) {
+  return (
+    <Tooltip>
+      <TooltipPrimitive.Trigger asChild={true}>
+        <button
+          type="button"
+          aria-label="More info"
+          className="inline-flex size-3.5 items-center justify-center rounded-sm text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            className="size-3.5"
+            strokeWidth={2}
+          />
+        </button>
+      </TooltipPrimitive.Trigger>
+      <TooltipContent
+        side="top"
+        sideOffset={6}
+        className="max-w-[240px] text-[11px] leading-relaxed"
+      >
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function DocumentExtractionSection() {
+  const docExtract = useChatRuntimeStore((s) => s.docExtract);
+  const setDocExtract = useChatRuntimeStore((s) => s.setDocExtract);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const trustRemoteCode = useChatRuntimeStore(
+    (s) => s.params.trustRemoteCode ?? false,
+  );
+  const ocrPhase = useChatRuntimeStore((s) => s.ocrPhase);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const allModels = useChatRuntimeStore((s) => s.models);
+  const [ocrPickerOpen, setOcrPickerOpen] = useState(false);
+  const reducedMotion = useReducedMotion();
+
+  const [support, setSupport] = useState<DocumentSupport | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const runProbe = useCallback(() => {
+    if (abortRef.current) abortRef.current.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setProbing(true);
+    void getCachedDocumentSupport(ctrl.signal)
+      .then((result) => {
+        if (!ctrl.signal.aborted) setSupport(result);
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setSupport(null);
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setProbing(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setProbing(true);
+    void getCachedDocumentSupport(ctrl.signal)
+      .then((result) => {
+        if (!cancelled) setSupport(result);
+      })
+      .catch(() => {
+        if (!cancelled) setSupport(null);
+      })
+      .finally(() => {
+        if (!cancelled) setProbing(false);
+      });
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+    };
+  }, [checkpoint]);
+
+  const extractorReady = support?.extraction_available ?? false;
+  const unavailableFormatCount = Object.keys(
+    support?.unavailable_formats ?? {},
+  ).length;
+  const extractorLimited = extractorReady && unavailableFormatCount > 0;
+  const vlm = support?.vlm;
+  const hasVlm = vlm?.is_vlm ?? false;
+  const ocrTarget = resolveOcrModelTarget(docExtract);
+  const ocrSelected = ocrTarget !== null;
+  const ocrModelId = ocrTarget?.modelId ?? "";
+  const defaultOcrLabel = hasVlm ? vlm?.model_name || "Loaded VLM" : "None";
+  const selectedOcrLabel =
+    ocrTarget?.label ??
+    (docExtract.ocrModel === "default"
+      ? `Default: ${defaultOcrLabel}`
+      : "None");
+  const defaultOcrSelected = docExtract.ocrModel === "default";
+  const noneOcrSelected = docExtract.ocrModel === "none";
+  const defaultUsesLoadedVlm = defaultOcrSelected && hasVlm;
+  const visionAvailableForExtraction = hasVlm || ocrSelected;
+  // Scanned mode is normally gated on a vision-capable chat model, but a
+  // selected dedicated OCR model satisfies that requirement at extract time.
+  const ocrControlsDisabled = modelLoading || ocrPhase !== "idle";
+  const trcMissing =
+    ocrSelected &&
+    (ocrTarget?.requiresTrustRemoteCode ?? false) &&
+    !trustRemoteCode;
+  const visionReadyForExtraction =
+    visionAvailableForExtraction && !trcMissing;
+  const canScan = extractorReady && visionReadyForExtraction;
+  const activeMode = deriveDocExtractMode(docExtract);
+
+  // OCR-picker model list: 3 OCR presets pinned at top + the user's
+  // vision-capable downloaded models filtered in below.
+  const ocrPickerModels = useMemo<ModelOption[]>(() => {
+    const presetIds = new Set(OCR_MODEL_PRESETS.map((p) => p.modelId));
+    const presetEntries: ModelOption[] = OCR_MODEL_PRESETS.map((preset) => ({
+      id: preset.modelId,
+      name: preset.label,
+      description: "OCR preset",
+    }));
+    const userEntries: ModelOption[] = allModels
+      .filter((m) => m.isVision && !presetIds.has(m.id))
+      .map((m) => ({
+        id: m.id,
+        name: m.name,
+        description: m.description,
+        isGguf: m.isGguf,
+      }));
+    return [...presetEntries, ...userEntries];
+  }, [allModels]);
+
+  const handleOcrSelect = useCallback(
+    (id: string, meta: ModelSelectorChangeMeta) => {
+      const matchedPreset = OCR_MODEL_PRESETS.find((p) => p.modelId === id);
+      if (matchedPreset) {
+        setDocExtract({
+          ocrModel: matchedPreset.id,
+          customOcrModelId: "",
+          customOcrGgufVariant: null,
+        });
+      } else {
+        setDocExtract({
+          ocrModel: "custom",
+          customOcrModelId: id,
+          customOcrGgufVariant: meta.ggufVariant ?? null,
+        });
+      }
+      setOcrPickerOpen(false);
+    },
+    [setDocExtract],
+  );
+
+  const handleOcrDefault = useCallback(() => {
+    setDocExtract({
+      ocrModel: "default",
+      customOcrModelId: "",
+      customOcrGgufVariant: null,
+    });
+    setOcrPickerOpen(false);
+  }, [setDocExtract]);
+
+  const handleOcrNone = useCallback(() => {
+    setDocExtract({
+      ocrModel: "none",
+      customOcrModelId: "",
+      customOcrGgufVariant: null,
+    });
+    setOcrPickerOpen(false);
+  }, [setDocExtract]);
+  const setVisualPayloadLimit = (value: number): void => {
+    const next = normalizeNonNegativeInteger(value);
+    setDocExtract({
+      maxVisualPayloads: next,
+    });
+  };
+  const setFigureReferenceLimit = (value: number): void => {
+    const next = normalizeNonNegativeInteger(value);
+    setDocExtract({
+      maxFigures: next,
+    });
+  };
+  const setTokenBudget = (value: number): void => {
+    const next = normalizeNonNegativeInteger(value);
+    setDocExtract({
+      tokenBudget: next,
+    });
+  };
+
+  function applyMode(mode: DocExtractMode) {
+    // OCR selection grants vision capability for the extraction window, so
+    // describe-images and visual-payload defaults should match the
+    // "VLM available" branch even if no VLM is loaded right now.
+    setDocExtract(getDocExtractModePreset(mode, visionReadyForExtraction));
+  }
+
+  const statusLabel = probing
+    ? "Checking"
+    : extractorLimited
+      ? "Limited"
+    : extractorReady
+      ? "Ready"
+      : "Unavailable";
+  const vlmLabel = probing
+    ? "Checking vision model"
+    : hasVlm
+      ? vlm?.model_name || "Vision model"
+      : "No vision model";
+  const modeHelp = canScan
+    ? getDocExtractModeHelp(activeMode, visionReadyForExtraction)
+    : getDocExtractModeHelp(activeMode, hasVlm);
+  const canCaption = visionReadyForExtraction && docExtract.maxFigures > 0;
+
+  return (
+    <CollapsibleSection label="Document extraction">
+      <div className="flex flex-col gap-3 py-1">
+        {!extractorReady && !probing && (
+          <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
+            <AlertTitle className="text-[11px] font-medium">
+              Document extraction unavailable
+            </AlertTitle>
+            <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
+              Re-run Studio setup to install the server-side parser
+              dependencies.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Compact status pill */}
+        <div className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-[11px]">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                extractorReady ? "bg-emerald-500" : "bg-amber-500",
+              )}
+              aria-hidden="true"
+            />
+            <span className="font-medium">{statusLabel}</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="truncate text-muted-foreground">{vlmLabel}</span>
+          </div>
+          {!extractorReady && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-5 shrink-0 px-1.5 text-[11px]"
+              onClick={runProbe}
+              disabled={probing}
+              aria-label="Retry capability probe"
+            >
+              {probing ? <Spinner className="size-3" /> : "Retry"}
+            </Button>
+          )}
+        </div>
+
+        {/* OCR model — Default follows the loaded VLM when available; explicit
+            preset/custom choices temporarily load a dedicated OCR model. */}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium">
+              OCR model
+              <SettingInfoTooltip content="Default uses the currently loaded vision model when available. Pick a dedicated OCR model to load it only for extraction, then restore your chat model." />
+            </span>
+            {ocrPhase !== "idle" && (
+              <span
+                className="text-[11px] text-muted-foreground tabular-nums"
+                aria-live="polite"
+              >
+                {ocrPhase === "validating" && "Validating…"}
+                {ocrPhase === "unloading" && "Unloading chat model…"}
+                {ocrPhase === "loading_ocr" &&
+                  `Loading ${ocrTarget?.label ?? "OCR model"}…`}
+                {ocrPhase === "extracting" && "Extracting…"}
+                {ocrPhase === "restoring" && "Restoring chat model…"}
+                {ocrPhase === "error" && "Error"}
+              </span>
+            )}
+          </div>
+          <Popover open={ocrPickerOpen} onOpenChange={setOcrPickerOpen}>
+            <PopoverTrigger asChild={true}>
+              <button
+                type="button"
+                disabled={ocrControlsDisabled}
+                aria-describedby="ocr-model-help"
+                aria-haspopup="dialog"
+                className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {(ocrSelected || defaultUsesLoadedVlm) && (
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="flex-1 truncate text-left font-medium">
+                  {selectedOcrLabel}
+                </span>
+                {ocrTarget?.requiresTrustRemoteCode && (
+                  <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                    TRC
+                  </span>
+                )}
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              side="bottom"
+              align="start"
+              sideOffset={4}
+              collisionPadding={8}
+              className="flex w-[min(16rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] flex-col gap-0 p-1.5"
+              style={{
+                maxHeight: "var(--radix-popover-content-available-height)",
+              }}
+            >
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="mb-1 border-b border-border/70 pb-1">
+                  <button
+                    type="button"
+                    onClick={handleOcrDefault}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+                      defaultOcrSelected && "bg-[#ececec] dark:bg-[#2e3035]",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        defaultOcrSelected
+                          ? "bg-emerald-500"
+                          : "bg-muted-foreground/25",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 flex-1 truncate">Default</span>
+                    <span className="shrink-0 truncate text-[10px] text-muted-foreground">
+                      {defaultOcrLabel}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOcrNone}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+                      noneOcrSelected && "bg-[#ececec] dark:bg-[#2e3035]",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        noneOcrSelected
+                          ? "bg-emerald-500"
+                          : "bg-muted-foreground/25",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 flex-1 truncate">None</span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      No override
+                    </span>
+                  </button>
+                </div>
+                <HubModelPicker
+                  models={ocrPickerModels}
+                  value={ocrModelId}
+                  onSelect={handleOcrSelect}
+                />
+              </div>
+              {!defaultOcrSelected && (
+                <div className="mt-2 shrink-0 border-t border-border/70 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleOcrDefault}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    title="Return OCR model selection to Default"
+                  >
+                    <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
+                    Return to default
+                  </button>
+                </div>
+              )}
+            </PopoverContent>
+          </Popover>
+          <p
+            id="ocr-model-help"
+            className="text-[11px] leading-relaxed text-muted-foreground"
+          >
+            {ocrSelected
+              ? `Scanned PDFs use ${ocrTarget?.label} for OCR/captions, then return to your chat model.`
+              : defaultOcrSelected
+                ? hasVlm
+                  ? `Default uses ${defaultOcrLabel} for OCR/captions.`
+                  : "Default resolves to None until a vision model is loaded."
+                : "No dedicated OCR model is selected."}
+          </p>
+          {trcMissing && (
+            <p className="text-[11px] text-amber-500">
+              {ocrTarget?.label} requires <em>Enable custom code</em>. Turn it
+              on under Inference settings before scanning.
+            </p>
+          )}
+        </div>
+
+        {/* Mode segmented — matches theme-segmented idiom */}
+        <div>
+          <div className="mb-1.5 text-xs font-medium">Mode</div>
+          <div
+            className="grid grid-cols-4 items-center rounded-md border border-border bg-muted/30 p-0.5"
+            role="radiogroup"
+            aria-label="Document extraction mode"
+          >
+            {DOC_EXTRACT_MODES.map((opt) => {
+              const active = activeMode === opt.value;
+              const disabled =
+                (!extractorReady && opt.value !== "off") ||
+                (opt.value === "scanned" && !canScan);
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={disabled}
+                  onClick={() => applyMode(opt.value)}
+                  className={cn(
+                    "relative flex h-7 items-center justify-center rounded px-1 text-[11px] font-medium transition-colors",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                    disabled && "cursor-not-allowed opacity-50",
+                  )}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="doc-extract-mode-pill"
+                      className="absolute inset-0 rounded bg-background shadow-border"
+                      transition={
+                        reducedMotion
+                          ? { duration: 0 }
+                          : {
+                              type: "spring",
+                              stiffness: 500,
+                              damping: 35,
+                              mass: 0.5,
+                            }
+                      }
+                    />
+                  )}
+                  <span className="relative z-10">{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            {modeHelp}
+          </p>
+        </div>
+
+        {/* Advanced disclosure */}
+        {docExtract.enabled && (
+          <div className="flex flex-col">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="flex items-center gap-1 self-start rounded px-1 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+              aria-expanded={showAdvanced}
+            >
+              <motion.span
+                animate={{ rotate: showAdvanced ? 180 : 0 }}
+                transition={{ duration: 0.15 }}
+                className="inline-flex"
+              >
+                <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
+              </motion.span>
+              Advanced
+            </button>
+            <AnimatePresence initial={false}>
+              {showAdvanced && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
+                  className="overflow-hidden"
+                >
+                  <div className="flex flex-col gap-4 pt-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium">
+                          Caption images
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {hasVlm
+                            ? "Describe attached figures with the vision model."
+                            : ocrSelected
+                              ? `Describe attached figures with ${ocrTarget?.label} during extraction.`
+                              : defaultOcrSelected
+                                ? "Default will enable this when a vision model is loaded."
+                                : "Load a vision model or pick an OCR model to enable."}
+                        </div>
+                      </div>
+                      <Switch
+                        aria-label="Caption images"
+                        checked={docExtract.describeImages && canCaption}
+                        onCheckedChange={(v) =>
+                          setDocExtract({ describeImages: !!v })
+                        }
+                        disabled={!canCaption}
+                      />
+                    </div>
+
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium">
+                          Render pages as images
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          OCR scanned PDFs. Leave off for born-digital docs.
+                        </div>
+                      </div>
+                      <Switch
+                        aria-label="Render pages as images"
+                        checked={docExtract.useVlmOcr}
+                        onCheckedChange={(v) =>
+                          setDocExtract({ useVlmOcr: !!v })
+                        }
+                        disabled={!extractorReady || trcMissing}
+                      />
+                    </div>
+
+                    <DocumentNumberSliderRow
+                      label="Figure/page citations"
+                      tooltip="How many figure and page references to include in the extracted text, e.g. [Figure 3] or [Page 7]. Set to 0 to disable citations and image inputs."
+                      value={docExtract.maxFigures}
+                      sliderMax={DOC_EXTRACT_SLIDER_MAXES.maxFigures}
+                      onValueChange={setFigureReferenceLimit}
+                      disabled={!extractorReady}
+                      valueAriaLabel="Figure and page citation limit"
+                    />
+
+                    <div className="space-y-1">
+                      <DocumentNumberSliderRow
+                        label="Image inputs"
+                        tooltip="How many figure or page images to attach or caption for each document. Set to 0 to keep visual references text-only."
+                        value={docExtract.maxVisualPayloads}
+                        sliderMax={DOC_EXTRACT_SLIDER_MAXES.maxVisualPayloads}
+                        onValueChange={setVisualPayloadLimit}
+                        disabled={!extractorReady}
+                        valueAriaLabel="Image input limit"
+                      />
+                      {!visionReadyForExtraction && (
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          Load a vision model or pick an OCR model to attach
+                          images.
+                        </p>
+                      )}
+                    </div>
+
+                    <DocumentNumberSliderRow
+                      label="Token budget"
+                      tooltip="Cap on extracted text tokens sent to the model per document. Lower values trim long PDFs; raise for more context at higher cost."
+                      value={docExtract.tokenBudget}
+                      sliderMax={DOC_EXTRACT_SLIDER_MAXES.tokenBudget}
+                      step={500}
+                      onValueChange={setTokenBudget}
+                      disabled={!extractorReady}
+                      valueAriaLabel="Document extraction token budget"
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
   );
 }
 

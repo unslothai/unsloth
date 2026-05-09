@@ -13,6 +13,7 @@ import sys
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import structlog
 from loggers import get_logger
@@ -123,6 +124,16 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+class ModelProbeRequest(BaseModel):
+    model_name: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated/private models"
+    )
+    trust_remote_code: bool = Field(
+        False, description = "Allow probes that require custom model code"
+    )
+
+
 def derive_model_type(
     is_vision: bool, audio_type: Optional[str], is_embedding: bool = False
 ) -> ModelType:
@@ -134,6 +145,38 @@ def derive_model_type(
     if is_vision:
         return "vision"
     return "text"
+
+
+def _defaults_vision_flags(config_dict: dict) -> tuple[bool, bool]:
+    model_config = config_dict.get("model", {}) if isinstance(config_dict, dict) else {}
+    inference_config = (
+        config_dict.get("inference", {}) if isinstance(config_dict, dict) else {}
+    )
+    yaml_is_vision = bool(model_config.get("is_vision", False))
+    yaml_requires_trust_remote_code = bool(
+        model_config.get("trust_remote_code", False)
+        or inference_config.get("trust_remote_code", False)
+    )
+    return yaml_is_vision, yaml_requires_trust_remote_code
+
+
+def _detect_vision_for_config_endpoint(
+    model_name: str,
+    *,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
+    config_dict: Optional[dict] = None,
+) -> bool:
+    defaults = config_dict if config_dict is not None else load_model_defaults(model_name)
+    yaml_is_vision, yaml_requires_trust_remote_code = _defaults_vision_flags(defaults)
+    if yaml_is_vision and yaml_requires_trust_remote_code:
+        return True
+    detected = is_vision_model(
+        model_name,
+        hf_token = hf_token,
+        trust_remote_code = trust_remote_code,
+    )
+    return detected
 
 
 def _resolve_hf_cache_dir() -> Path:
@@ -1463,7 +1506,7 @@ async def list_models(
             loaded_models.append(model_info)
 
         # Include active GGUF model (loaded via llama-server)
-        from routes.inference import get_llama_cpp_backend
+        from core.inference.llama_cpp import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
@@ -1547,8 +1590,33 @@ def _get_model_size_bytes(
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
     current_subject: str = Depends(get_current_subject),
+):
+    return await _build_model_config_response(
+        model_name,
+        hf_token = hf_token,
+        trust_remote_code = trust_remote_code,
+    )
+
+
+@router.post("/config")
+async def post_model_config(
+    request: ModelProbeRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    return await _build_model_config_response(
+        request.model_name,
+        hf_token = request.hf_token,
+        trust_remote_code = request.trust_remote_code,
+    )
+
+
+async def _build_model_config_response(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
 ):
     """
     Get configuration for a specific model.
@@ -1573,7 +1641,12 @@ async def get_model_config(
         config_dict = load_model_defaults(model_name)
 
         # Detect model capabilities (pass HF token for gated models)
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
+        is_vision = _detect_vision_for_config_endpoint(
+            model_name,
+            hf_token = hf_token,
+            trust_remote_code = trust_remote_code,
+            config_dict = config_dict,
+        )
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
         audio_type = detect_audio_type(model_name, hf_token = hf_token)
 
@@ -1582,7 +1655,11 @@ async def get_model_config(
         base_model = None
         max_position_embeddings = None
         try:
-            model_config = ModelConfig.from_identifier(model_name)
+            model_config = ModelConfig.from_identifier(
+                model_name,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+            )
             is_lora = model_config.is_lora
             base_model = model_config.base_model if is_lora else None
             max_position_embeddings = _get_max_position_embeddings(model_config)
@@ -2053,7 +2130,33 @@ async def get_lora_base_model(
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
 async def check_vision_model(
     model_name: str,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
     current_subject: str = Depends(get_current_subject),
+):
+    return await _check_vision_model_response(
+        model_name,
+        hf_token = hf_token,
+        trust_remote_code = trust_remote_code,
+    )
+
+
+@router.post("/check-vision", response_model = VisionCheckResponse)
+async def post_check_vision_model(
+    request: ModelProbeRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    return await _check_vision_model_response(
+        request.model_name,
+        hf_token = request.hf_token,
+        trust_remote_code = request.trust_remote_code,
+    )
+
+
+async def _check_vision_model_response(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
 ):
     """
     Check if a model is a vision model.
@@ -2062,7 +2165,11 @@ async def check_vision_model(
     """
     try:
         logger.info(f"Checking if vision model: {model_name}")
-        is_vision = is_vision_model(model_name)
+        is_vision = _detect_vision_for_config_endpoint(
+            model_name,
+            hf_token = hf_token,
+            trust_remote_code = trust_remote_code,
+        )
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
@@ -2587,7 +2694,7 @@ async def delete_cached_model(
 
     # Check if model is currently loaded
     try:
-        from routes.inference import get_llama_cpp_backend
+        from core.inference.llama_cpp import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:

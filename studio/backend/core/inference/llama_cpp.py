@@ -492,6 +492,10 @@ class LlamaCppBackend:
         return f"http://127.0.0.1:{self._port}"
 
     @property
+    def api_key(self) -> Optional[str]:
+        return self._api_key
+
+    @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
 
@@ -2943,6 +2947,9 @@ class LlamaCppBackend:
     def _build_openai_messages(
         messages: list[dict],
         image_b64: Optional[str] = None,
+        image_b64s: Optional[list[str]] = None,
+        image_mime: Optional[str] = None,
+        image_mimes: Optional[list[str]] = None,
     ) -> list[dict]:
         """
         Build OpenAI-format messages, optionally injecting an image_url
@@ -2950,8 +2957,20 @@ class LlamaCppBackend:
 
         If no image is provided, returns messages as-is.
         """
-        if not image_b64:
+        images = (
+            image_b64s
+            if image_b64s is not None
+            else ([image_b64] if image_b64 else [])
+        )
+        images = [image for image in images if image]
+        if not images:
             return messages
+        if image_b64s is not None:
+            mimes = image_mimes or ["image/png"] * len(images)
+        else:
+            mimes = [image_mime or "image/png"]
+        if len(mimes) < len(images):
+            mimes = [*mimes, *(["image/png"] * (len(images) - len(mimes)))]
 
         # Find the last user message and convert to multimodal content parts
         result = [msg.copy() for msg in messages]
@@ -2962,14 +2981,18 @@ class LlamaCppBackend:
 
         if last_user_idx is not None:
             text_content = result[last_user_idx].get("content", "")
-            result[last_user_idx]["content"] = [
-                {"type": "text", "text": text_content},
+            image_parts = [
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/png;base64,{image_b64}",
+                        "url": f"data:{mime if mime and '/' in mime else 'image/png'};base64,{image}",
                     },
-                },
+                }
+                for image, mime in zip(images, mimes)
+            ]
+            result[last_user_idx]["content"] = [
+                {"type": "text", "text": text_content},
+                *image_parts,
             ]
 
         return result
@@ -3101,6 +3124,9 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         image_b64: Optional[str] = None,
+        image_b64s: Optional[list[str]] = None,
+        image_mime: Optional[str] = None,
+        image_mimes: Optional[list[str]] = None,
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -3125,7 +3151,13 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        openai_messages = self._build_openai_messages(messages, image_b64)
+        openai_messages = self._build_openai_messages(
+            messages,
+            image_b64 = image_b64,
+            image_b64s = image_b64s,
+            image_mime = image_mime,
+            image_mimes = image_mimes,
+        )
 
         payload = {
             "messages": openai_messages,
@@ -4338,3 +4370,20 @@ class LlamaCppBackend:
         return LlamaCppBackend._codec_mgr.decode(
             audio_type, device, token_ids = token_ids, text = data.get("content", "")
         )
+
+
+_llama_cpp_backend: Optional[LlamaCppBackend] = None
+
+
+def get_llama_cpp_backend() -> LlamaCppBackend:
+    """Return the process-wide GGUF llama-server backend.
+
+    Keep the singleton in ``core.inference`` so core helpers such as
+    ``core.chat.detect_loaded_vlm`` do not need to import route modules.
+    The instance is lazy to avoid subprocess cleanup side effects for
+    callers that only import model helpers.
+    """
+    global _llama_cpp_backend
+    if _llama_cpp_backend is None:
+        _llama_cpp_backend = LlamaCppBackend()
+    return _llama_cpp_backend

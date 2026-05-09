@@ -19,3 +19,20 @@ export {
   useChatSidebarItems,
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";
+export {
+  AttachmentChipBody,
+  AttachmentChipButton,
+  AttachmentChipProgress,
+  AttachmentChipRemoveButton,
+  AttachmentChipTitle,
+  attachmentChipTokens,
+} from "./components/attachment-chip-primitives";
+export { DocumentStack } from "./components/document-stack";
+export { DocumentPreviewSheet } from "./components/document-preview-panel";
+export {
+  isDocumentAttachment,
+  type DocumentPendingAttachment,
+  type ExtractedDocument,
+  type PendingDocumentAttachment,
+} from "./types";
+export { documentFigureImageDataUrl } from "./utils/document-extraction";

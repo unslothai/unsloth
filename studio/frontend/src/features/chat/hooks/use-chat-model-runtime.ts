@@ -243,6 +243,7 @@ export function useChatModelRuntime() {
         const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
         const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
+        const loadedKv = statusRes.cache_type_kv ?? null;
         const currentGgufContextLength = statusRes.is_gguf
           ? (statusRes.context_length ?? null)
           : null;
@@ -478,6 +479,7 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              trust_remote_code: trustRemoteCode,
             });
             if (validation.requires_trust_remote_code && !trustRemoteCode) {
               throw new Error(getTrustRemoteCodeRequiredMessage(displayName));

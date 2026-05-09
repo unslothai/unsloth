@@ -34,6 +34,7 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+import routes.inference as route
 from routes.inference import _normalize_anthropic_openai_images
 from fastapi import HTTPException
 import base64 as _b64
@@ -1011,3 +1012,21 @@ class TestNormalizeAnthropicOpenAIImages:
         with pytest.raises(HTTPException) as exc:
             _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert exc.value.status_code == 400
+
+    def test_image_count_limit_applies(self, monkeypatch):
+        monkeypatch.setattr(route, "_OPENAI_CHAT_MAX_IMAGES", 1)
+        data_url = _jpeg_data_url()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
+
+        with pytest.raises(HTTPException) as exc:
+            _normalize_anthropic_openai_images(msgs, is_vision = True)
+
+        assert exc.value.status_code == 413
