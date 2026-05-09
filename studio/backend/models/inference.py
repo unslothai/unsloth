@@ -90,6 +90,20 @@ class UnloadRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier to unload")
 
 
+class UpdateRequest(BaseModel):
+    """Request to update a model"""
+    model_path: str = Field(..., description = "Model identifier or local path to update")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
+    has_vision: Optional[bool] = Field(
+        False, description = "Whether this model has vision capabilities"
+    )
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+
+
 class ValidateModelRequest(BaseModel):
     """
     Lightweight validation request to check whether a model identifier
@@ -151,6 +165,11 @@ class GenerateRequest(BaseModel):
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"
     )
+
+
+class UpdateResponse(BaseModel):
+    """Response after updating a model"""
+    model_path: str = Field(..., description = "Updated model path")
 
 
 class LoadResponse(BaseModel):
