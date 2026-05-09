@@ -259,7 +259,7 @@ def _is_eager_only(model_type):
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
-    if model_class is None or not getattr(model_class, "_supports_flex_attn", False):
+    if not getattr(model_class, "_supports_flex_attn", False):
         return False
     if _is_flex_excluded(model_type):
         return False
@@ -487,21 +487,23 @@ def resolve_attention_implementation(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
-    supports_flex_attention = _supports_flex_attention(
-        model_class, config, model_type
-    )
     disable_reason = _get_flash_attention_disable_reason(config)
     flash_attention_disabled = disable_reason is not None
 
     if model_class is None:
         attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
     else:
+        supports_flex_attention = _supports_flex_attention(
+            model_class, config, model_type
+        )
+        prefers_flex_attention = _config_prefers_flex_attention(config)
         if _is_eager_only(model_type):
             attn_impl = _set_attn_impl(config, "eager")
-        elif _config_prefers_flex_attention(config) and supports_flex_attention:
+        elif prefers_flex_attention and supports_flex_attention:
             attn_impl = _set_attn_impl(config, "flex_attention")
         elif (
-            not flash_attention_disabled
+            not prefers_flex_attention
+            and not flash_attention_disabled
             and HAS_FLASH_ATTENTION
             and supports_flash_attention
         ):
