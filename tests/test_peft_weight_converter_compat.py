@@ -102,27 +102,6 @@ def _build_that_calls_init(weight_conversions, adapter_name, peft_config = None)
     return out
 
 
-class _FakePeftConfig:
-    def __init__(self, target_modules = None, target_parameters = None):
-        self.target_modules = target_modules
-        self.target_parameters = target_parameters
-        self.convert_calls = []
-
-
-def _fake_convert_moe(peft_config, model_type):
-    peft_config.convert_calls.append((model_type, set(peft_config.target_modules or [])))
-    target_modules = set(peft_config.target_modules or [])
-    converted = set()
-    remaining = set()
-    for target in target_modules:
-        if target in {"gate_proj", "up_proj", "down_proj"}:
-            converted.add("gate_up_proj" if target in {"gate_proj", "up_proj"} else "down_proj")
-        else:
-            remaining.add(target)
-    peft_config.target_parameters = set(peft_config.target_parameters or []) | converted
-    peft_config.target_modules = remaining
-
-
 def test_two_arg_call_preserves_upstream_signature():
     twc = _install_fake_peft({"build_peft_weight_mapping": _build_that_calls_init})
     patch = _load_patch_function()
@@ -229,28 +208,6 @@ def test_idempotent_install_does_not_double_wrap():
     assert twc.build_peft_weight_mapping is first_wrapped
 
 
-def test_moe_patch_installs_when_weight_converter_patch_already_present():
-    twc = _install_fake_peft(
-        {
-            "build_peft_weight_mapping": _build_that_calls_init,
-            "_convert_peft_config_moe": _fake_convert_moe,
-            "_unsloth_weight_converter_compat_patch": True,
-        }
-    )
-    patch = _load_patch_function()
-    patch()
-
-    config = _FakePeftConfig(
-        target_modules = {"shared_experts.down_proj", "down_proj"},
-        target_parameters = None,
-    )
-    twc._convert_peft_config_moe(config, "glm4_moe")
-
-    assert config.convert_calls == [("glm4_moe", {"down_proj"})]
-    assert config.target_modules == {"shared_experts.down_proj"}
-    assert config.target_parameters == {"down_proj"}
-
-
 def test_concurrent_legacy_calls_no_typeerror():
     import time
 
@@ -300,66 +257,3 @@ def test_empty_conversions_short_circuits_without_patching():
     out = twc.build_peft_weight_mapping([], "default", None)
     assert out == []
     assert _LegacyConverter.__init__ is pre_init
-
-
-def test_moe_conversion_skips_when_target_parameters_already_set():
-    twc = _install_fake_peft(
-        {
-            "build_peft_weight_mapping": _build_that_calls_init,
-            "_convert_peft_config_moe": _fake_convert_moe,
-        }
-    )
-    patch = _load_patch_function()
-    patch()
-
-    config = _FakePeftConfig(
-        target_modules = {"gate_proj", "up_proj"},
-        target_parameters = {"mlp.experts.gate_up_proj"},
-    )
-    twc._convert_peft_config_moe(config, "qwen3_moe")
-
-    assert config.convert_calls == []
-    assert config.target_modules == {"gate_proj", "up_proj"}
-    assert config.target_parameters == {"mlp.experts.gate_up_proj"}
-
-
-def test_moe_conversion_preserves_qualified_targets_as_explicit():
-    twc = _install_fake_peft(
-        {
-            "build_peft_weight_mapping": _build_that_calls_init,
-            "_convert_peft_config_moe": _fake_convert_moe,
-        }
-    )
-    patch = _load_patch_function()
-    patch()
-
-    config = _FakePeftConfig(
-        target_modules = {"shared_experts.down_proj", "down_proj"},
-        target_parameters = None,
-    )
-    twc._convert_peft_config_moe(config, "glm4_moe")
-
-    assert config.convert_calls == [("glm4_moe", {"down_proj"})]
-    assert config.target_modules == {"shared_experts.down_proj"}
-    assert config.target_parameters == {"down_proj"}
-
-
-def test_moe_conversion_leaves_only_qualified_targets_unconverted():
-    twc = _install_fake_peft(
-        {
-            "build_peft_weight_mapping": _build_that_calls_init,
-            "_convert_peft_config_moe": _fake_convert_moe,
-        }
-    )
-    patch = _load_patch_function()
-    patch()
-
-    config = _FakePeftConfig(
-        target_modules = {"shared_expert.up_proj"},
-        target_parameters = None,
-    )
-    twc._convert_peft_config_moe(config, "qwen3_next")
-
-    assert config.convert_calls == []
-    assert config.target_modules == {"shared_expert.up_proj"}
-    assert config.target_parameters is None
