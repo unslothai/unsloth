@@ -346,7 +346,7 @@ const AttachmentUI: FC = () => {
     const progressLabel =
       progressValue === null
         ? "Reading document"
-        : `${Math.round(progressValue)}% uploaded`;
+        : `${Math.round(progressValue)}% processed`;
     const ext = fileExtension(docAttachment.name);
     const visualPayloadCount = sentImageIndexes.size;
     const readyDetails = doc ? buildDocSubtitle(doc, visualPayloadCount) : ext;

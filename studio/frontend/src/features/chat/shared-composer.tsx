@@ -1058,12 +1058,12 @@ export function SharedComposer({
                     {doc.name}
                   </AttachmentChipTitle>
                   <span className="truncate text-xs text-muted-foreground">
-                    {pct !== null ? `Uploading… ${pct}%` : "Reading…"}
+                    {pct !== null ? `Reading… ${pct}%` : "Reading…"}
                   </span>
                   <AttachmentChipProgress
                     value={pct}
                     label={
-                      pct !== null ? `${pct}% uploaded` : `Reading ${doc.name}`
+                      pct !== null ? `${pct}% processed` : `Reading ${doc.name}`
                     }
                     className="mt-1"
                   />

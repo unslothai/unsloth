@@ -119,9 +119,26 @@ async def test_read_json_body_limited_accepts_empty_body() -> None:
 def test_document_extraction_exports_are_available_to_routes() -> None:
     assert route._DOCUMENT_EXTRACTION_AVAILABLE is True
     assert route._extract_document is not None
+    assert route._DOCUMENT_EXTRACT_CONCURRENCY >= 1
     assert route._DOC_SUFFIX_OK
     assert ".pdf" in route._DOC_SUFFIX_OK
     assert route._drain_doc_future_exception is extractor._drain_future_exception
+
+
+def test_chat_body_limit_covers_document_visual_payload_budget() -> None:
+    expected_image_slots = max(
+        1,
+        min(
+            route._OPENAI_CHAT_MAX_IMAGES,
+            route._MAX_DOCUMENT_VISUAL_PAYLOADS
+            or route._DEFAULT_DOCUMENT_VISUAL_PAYLOADS
+            or 1,
+        ),
+    )
+    assert route._OPENAI_CHAT_BODY_IMAGE_SLOTS == expected_image_slots
+    assert route._OPENAI_CHAT_BODY_MAX_BYTES >= (
+        route._OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS * expected_image_slots
+    )
 
 
 def test_extract_process_zero_queue_wait_admits_available_slot(
@@ -197,7 +214,7 @@ def test_openai_chat_completions_rejects_oversized_body_before_validation(
     app = FastAPI()
     app.dependency_overrides[route.get_current_subject] = lambda: "test-user"
     app.include_router(route.router, prefix = "/v1")
-    monkeypatch.setattr(route, "_OPENAI_PROXY_BODY_MAX_BYTES", 20)
+    monkeypatch.setattr(route, "_OPENAI_CHAT_BODY_MAX_BYTES", 20)
 
     response = TestClient(app).post(
         "/v1/chat/completions",
@@ -816,6 +833,7 @@ def test_document_support_reports_format_parser_availability(
     assert response.status_code == 200
     body = response.json()
     assert body["extraction_available"] is True
+    assert body["max_extract_concurrency"] == route._DOCUMENT_EXTRACT_CONCURRENCY
     assert body["format_support"]["pdf"] is False
     assert body["format_support"]["text"] is True
     assert "pymupdf" in body["unavailable_formats"]["pdf"]

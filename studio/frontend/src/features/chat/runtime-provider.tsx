@@ -198,8 +198,8 @@ class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
 
     const retryCount = documentExtractionRetryCount(file);
 
-    // Yield initial running state. Upload progress is omitted until XHR
-    // reports a real computable value.
+    // Yield initial running state. The NDJSON endpoint reports server-side
+    // parse/caption progress, not browser upload progress.
     const initial0: DocumentPendingAttachment = {
       ...base,
       retryCount,

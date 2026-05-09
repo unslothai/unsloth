@@ -1673,7 +1673,7 @@ async def openai_chat_completions(
 ):
     body = await _read_json_body_limited(
         request,
-        max_bytes = _OPENAI_PROXY_BODY_MAX_BYTES,
+        max_bytes = _OPENAI_CHAT_BODY_MAX_BYTES,
     )
     try:
         payload = ChatCompletionRequest.model_validate(body)
@@ -4725,6 +4725,7 @@ try:
         DocumentExtractionEncrypted as _DocumentExtractionEncrypted,
         DocumentExtractionTimeout as _DocumentExtractionTimeout,
         DocumentExtractionUnavailable as _DocumentExtractionUnavailable,
+        _EXTRACT_CONCURRENCY as _DOCUMENT_EXTRACT_CONCURRENCY,
         MAX_DOCUMENT_VISUAL_PAYLOADS as _MAX_DOCUMENT_VISUAL_PAYLOADS,
         SUPPORTED_MIME_TYPES as _DOC_MIME_OK,
         SUPPORTED_SUFFIXES as _DOC_SUFFIX_OK,
@@ -4740,6 +4741,7 @@ try:
 except ImportError:  # pragma: no cover - package always installed alongside
     _DOCUMENT_EXTRACTION_AVAILABLE = False
     _DEFAULT_DOCUMENT_VISUAL_PAYLOADS = 0
+    _DOCUMENT_EXTRACT_CONCURRENCY = 1
     _MAX_DOCUMENT_VISUAL_PAYLOADS = 0
     _DOC_MIME_OK = frozenset()
     _DOC_SUFFIX_OK = frozenset()
@@ -4960,11 +4962,27 @@ async def _read_multipart_form_limited(request: Request, *, max_bytes: int):
         raise HTTPException(status_code = 400, detail = exc.message) from exc
 
 
-# Cap on /completions and /embeddings JSON bodies. The OpenAI-compatible
-# payload should be small (a few prompts + sampling params); 10 MB is generous
-# headroom while still protecting against unbounded buffering when a client
-# sends a falsified Content-Length and streams a much larger body.
+# Cap on /completions and /embeddings JSON bodies. Those proxy payloads should
+# be small (a few prompts + sampling params); 10 MB is generous headroom while
+# still protecting against unbounded buffering when a client sends a falsified
+# Content-Length and streams a much larger body.
 _OPENAI_PROXY_BODY_MAX_BYTES = 10 * 1024 * 1024
+# Chat-completions also carries multimodal data URLs. Keep it bounded, but
+# large enough that document extraction's visual-payload budget reaches the
+# existing per-image guards instead of being rejected by the JSON body reader
+# first.
+_OPENAI_CHAT_BODY_IMAGE_SLOTS = max(
+    1,
+    min(
+        _OPENAI_CHAT_MAX_IMAGES,
+        _MAX_DOCUMENT_VISUAL_PAYLOADS or _DEFAULT_DOCUMENT_VISUAL_PAYLOADS or 1,
+    ),
+)
+_OPENAI_CHAT_BODY_MAX_BYTES = max(
+    32 * 1024 * 1024,
+    (_OPENAI_CHAT_MAX_IMAGE_BASE64_CHARS * _OPENAI_CHAT_BODY_IMAGE_SLOTS)
+    + (2 * 1024 * 1024),
+)
 
 
 async def _read_json_body_limited(request: Request, *, max_bytes: int) -> Any:
@@ -5112,6 +5130,7 @@ async def document_support_endpoint(
         return DocumentSupportResponse(
             extraction_available = False,
             max_visual_payloads = 0,
+            max_extract_concurrency = 1,
             format_support = {},
             unavailable_formats = {},
             vlm = {
@@ -5142,6 +5161,7 @@ async def document_support_endpoint(
     return DocumentSupportResponse(
         extraction_available = True,
         max_visual_payloads = _MAX_DOCUMENT_VISUAL_PAYLOADS,
+        max_extract_concurrency = _DOCUMENT_EXTRACT_CONCURRENCY,
         format_support = _document_parser_support(),
         unavailable_formats = _document_parser_unavailable_reasons(),
         vlm = cap.to_dict()
@@ -5411,13 +5431,10 @@ async def extract_document_endpoint(
                 _wait_for_document_request_disconnect(fastapi_request, cancel_event)
             )
             try:
+                extract_wait = asyncio.ensure_future(asyncio.shield(extraction_task))
+                extract_wait.add_done_callback(_drain_doc_future_exception)
                 while True:
                     queue_get = asyncio.ensure_future(progress_queue.get())
-                    extract_wait = asyncio.ensure_future(asyncio.shield(extraction_task))
-                    # The shielded copy is a fresh future that mirrors
-                    # extraction_task's outcome. Without a drain hook its
-                    # exception goes unretrieved on busy/cancel races.
-                    extract_wait.add_done_callback(_drain_doc_future_exception)
                     queue_get.add_done_callback(_drain_doc_future_exception)
                     done, _pending = await asyncio.wait(
                         {queue_get, extract_wait, disconnect_task},

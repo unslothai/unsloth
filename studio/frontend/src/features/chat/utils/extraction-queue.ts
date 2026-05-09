@@ -11,11 +11,13 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 // requests than the worker pool can serve, avoiding `503 busy` responses.
 
 let activeCount = 0;
+let backendLimit: number | null = null;
 const waitQueue: Array<() => void> = [];
 
 function getLimit(): number {
   const value = useChatRuntimeStore.getState().docExtract.extractConcurrency;
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+  const requested = Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+  return backendLimit === null ? requested : Math.min(requested, backendLimit);
 }
 
 function pump(): void {
@@ -32,6 +34,15 @@ export function getExtractionQueueDepth(): number {
 
 export function getExtractionActiveCount(): number {
   return activeCount;
+}
+
+export function setExtractionBackendLimit(value: number | null | undefined): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    backendLimit = null;
+  } else {
+    backendLimit = Math.max(1, Math.floor(value));
+  }
+  pump();
 }
 
 /**

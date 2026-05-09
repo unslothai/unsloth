@@ -79,6 +79,7 @@ export interface DocumentSupport {
   schema_version?: 1;
   extraction_available: boolean;
   max_visual_payloads: number;
+  max_extract_concurrency?: number;
   format_support?: Record<string, boolean>;
   unavailable_formats?: Record<string, string>;
   vlm: VlmCapabilityInfo;

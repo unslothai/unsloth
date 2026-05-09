@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthToken, refreshSession } from "@/features/auth";
-import { apiUrl } from "@/lib/api-base";
+import { authFetch } from "@/features/auth";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -16,6 +15,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { setExtractionBackendLimit } from "../utils/extraction-queue";
 
 function parseErrorText(status: number, body: unknown): string {
   if (
@@ -531,24 +531,16 @@ export function extractDocument(
         body: unknown;
       };
 
-  const url = apiUrl("/api/inference/chat/extract-document");
-
   const sendOnce = async (): Promise<StreamOutcome> => {
     if (signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
 
-    const headers: Record<string, string> = {
-      Accept: "application/x-ndjson",
-    };
-    const token = getAuthToken();
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
-    const response = await fetch(url, {
+    const response = await authFetch("/api/inference/chat/extract-document", {
       method: "POST",
-      headers,
+      headers: {
+        Accept: "application/x-ndjson",
+      },
       body: buildForm(),
       signal,
     });
@@ -640,12 +632,6 @@ export function extractDocument(
       }
       throw err;
     }
-    if (outcome.kind === "http-error" && outcome.status === 401) {
-      const refreshed = await refreshSession();
-      if (refreshed && !signal?.aborted) {
-        outcome = await sendOnce();
-      }
-    }
     if (outcome.kind === "result") {
       return outcome.data;
     }
@@ -680,10 +666,24 @@ let documentSupportInflight: Promise<
 > | null = null;
 let documentSupportCacheGeneration = 0;
 
+function rememberDocumentSupport(
+  value: import("../types").DocumentSupport,
+  generation: number,
+): void {
+  if (generation === documentSupportCacheGeneration) {
+    documentSupportCache = {
+      value,
+      expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
+    };
+    setExtractionBackendLimit(value.max_extract_concurrency);
+  }
+}
+
 export function invalidateDocumentSupportCache(): void {
   documentSupportCacheGeneration += 1;
   documentSupportCache = null;
   documentSupportInflight = null;
+  setExtractionBackendLimit(null);
 }
 
 export async function getCachedDocumentSupport(
@@ -691,6 +691,7 @@ export async function getCachedDocumentSupport(
 ): Promise<import("../types").DocumentSupport> {
   const now = Date.now();
   if (documentSupportCache && documentSupportCache.expiresAt > now) {
+    setExtractionBackendLimit(documentSupportCache.value.max_extract_concurrency);
     return documentSupportCache.value;
   }
   if (signal?.aborted) {
@@ -700,10 +701,7 @@ export async function getCachedDocumentSupport(
     const generation = documentSupportCacheGeneration;
     const value = await getDocumentSupport(signal);
     if (!signal.aborted && generation === documentSupportCacheGeneration) {
-      documentSupportCache = {
-        value,
-        expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
-      };
+      rememberDocumentSupport(value, generation);
     }
     return value;
   }
@@ -711,12 +709,7 @@ export async function getCachedDocumentSupport(
     const generation = documentSupportCacheGeneration;
     documentSupportInflight = getDocumentSupport()
       .then((value) => {
-        if (generation === documentSupportCacheGeneration) {
-          documentSupportCache = {
-            value,
-            expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
-          };
-        }
+        rememberDocumentSupport(value, generation);
         return value;
       })
       .finally(() => {

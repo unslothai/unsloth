@@ -1732,6 +1732,14 @@ function DocumentExtractionSection() {
     support?.unavailable_formats ?? {},
   ).length;
   const extractorLimited = extractorReady && unavailableFormatCount > 0;
+  const backendExtractConcurrencyLimit = Math.max(
+    1,
+    Math.min(
+      DOC_EXTRACT_SLIDER_MAXES.extractConcurrency,
+      support?.max_extract_concurrency ??
+        DOC_EXTRACT_SLIDER_MAXES.extractConcurrency,
+    ),
+  );
   const vlm = support?.vlm;
   const hasVlm = vlm?.is_vlm ?? false;
   const ocrTarget = resolveOcrModelTarget(docExtract);
@@ -1839,7 +1847,7 @@ function DocumentExtractionSection() {
     const next = Math.max(
       1,
       Math.min(
-        DOC_EXTRACT_SLIDER_MAXES.extractConcurrency,
+        backendExtractConcurrencyLimit,
         normalizeNonNegativeInteger(value),
       ),
     );
@@ -1847,6 +1855,16 @@ function DocumentExtractionSection() {
       extractConcurrency: next,
     });
   };
+
+  useEffect(() => {
+    if (docExtract.extractConcurrency > backendExtractConcurrencyLimit) {
+      setDocExtract({ extractConcurrency: backendExtractConcurrencyLimit });
+    }
+  }, [
+    backendExtractConcurrencyLimit,
+    docExtract.extractConcurrency,
+    setDocExtract,
+  ]);
 
   function applyMode(mode: DocExtractMode) {
     // OCR selection grants vision capability for the extraction window, so
@@ -2234,9 +2252,9 @@ function DocumentExtractionSection() {
 
                     <DocumentNumberSliderRow
                       label="Parallel extractions"
-                      tooltip="Maximum number of documents extracted in parallel. Extra files queue client-side. Must be ≤ the backend's UNSLOTH_STUDIO_EXTRACT_CONCURRENCY (default 2) to avoid 503 busy responses."
+                      tooltip="Maximum number of documents extracted in parallel. Extra files queue client-side and this value is capped to the backend worker limit."
                       value={docExtract.extractConcurrency}
-                      sliderMax={DOC_EXTRACT_SLIDER_MAXES.extractConcurrency}
+                      sliderMax={backendExtractConcurrencyLimit}
                       sliderMin={1}
                       step={1}
                       onValueChange={setExtractConcurrency}

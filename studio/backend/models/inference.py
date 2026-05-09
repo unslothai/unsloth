@@ -1231,6 +1231,11 @@ class DocumentSupportResponse(BaseModel):
         ge = 0,
         description = "Legacy visual-payload hint; not a hard request cap",
     )
+    max_extract_concurrency: int = Field(
+        1,
+        ge = 1,
+        description = "Maximum server-side document extraction workers",
+    )
     format_support: Dict[str, bool] = Field(
         default_factory = dict,
         description = "Per-format parser availability for document extraction",
