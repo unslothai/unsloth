@@ -1078,7 +1078,8 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
 
     if model_family is not None:
         family_filtered = [
-            c for c in candidates
+            c
+            for c in candidates
             if (cf := _detect_family_token(c.name)) is None or cf == model_family
         ]
         if not family_filtered:
@@ -1099,7 +1100,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     # ``Qwen3.5-35B-A3B-...`` for ``Qwen3.5-9B-Q4_K_M.gguf``).
     best = max(
         family_filtered,
-        key=lambda c: (_shared_prefix_len(model_stem, c.stem.lower()), -len(c.stem)),
+        key = lambda c: (_shared_prefix_len(model_stem, c.stem.lower()), -len(c.stem)),
     )
     return str(best)
 

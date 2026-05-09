@@ -17,7 +17,7 @@ from utils.models.model_config import detect_mmproj_file
 
 
 def _touch(path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"")
     return path
 
@@ -106,5 +106,5 @@ def test_search_root_walk_still_works(tmp_path: Path):
     snapshot = tmp_path / "snapshot"
     weight = _touch(snapshot / "BF16" / "Qwen3.5-9B-BF16.gguf")
     mmproj = _touch(snapshot / "Qwen3.5-9B-BF16-mmproj.gguf")
-    result = detect_mmproj_file(str(weight), search_root=str(snapshot))
+    result = detect_mmproj_file(str(weight), search_root = str(snapshot))
     assert result == str(mmproj.resolve())
