@@ -181,6 +181,24 @@ class LocalModelInfo(BaseModel):
         description = "Unix timestamp of latest observed update",
     )
 
+class UpdateRequest(BaseModel):
+    """Request to update a model"""
+    repo_id: str = Field(..., description = "HuggingFace repo ID")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
+    has_vision: Optional[bool] = Field(
+        False, description = "Whether this model has vision capabilities"
+    )
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+
+
+class UpdateResponse(BaseModel):
+    """Response after updating a model"""
+    model_path: str = Field(..., description = "Updated model path")
+
 
 class LocalModelListResponse(BaseModel):
     """Response schema for listing local/cached models."""

@@ -6,6 +6,7 @@ Model Management API routes
 """
 
 import hashlib
+import asyncio
 import json
 import os
 import shutil
@@ -112,6 +113,8 @@ from models.models import (
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
+    UpdateRequest,
+    UpdateResponse,
 )
 from models.responses import (
     LoRABaseModelResponse,
@@ -2575,9 +2578,13 @@ async def list_cached_models(
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     if existing is None or total_size > existing["size_bytes"]:
+                        from huggingface_hub import list_repo_commits
+                        latest_remote_commit = list_repo_commits(repo_id=repo_id)[0].commit_id
+                        local_commit_list = [i.commit_hash for i in repo_info.revisions]
                         seen_lower[key] = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
+                            "update_available": True if latest_remote_commit not in local_commit_list else False,
                         }
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
@@ -2588,6 +2595,76 @@ async def list_cached_models(
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
+
+
+@router.post("/update", response_model = UpdateResponse)
+async def update_hf_model(
+    request: UpdateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Update a cached model repo (or a specific GGUF variant) from the HF cache."""
+    try:
+        from studio.backend.routes.inference import get_llama_cpp_backend
+        llama_backend = get_llama_cpp_backend()
+        config = ModelConfig.from_identifier(
+            model_id = request.repo_id,
+            hf_token = request.hf_token,
+            gguf_variant = request.gguf_variant,
+        )
+        if not config:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid model identifier: {request.repo_id}",
+            )
+        if config.is_local:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Only Hugging Face models can be updated.",
+            )
+
+        if config.is_gguf:
+            if not config.gguf_hf_repo:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "GGUF update requires a Hugging Face repo.",
+                )
+            model_path = await asyncio.to_thread(
+                llama_backend._download_gguf,
+                hf_repo = config.gguf_hf_repo,
+                hf_variant = config.gguf_variant,
+                hf_token = request.hf_token,
+            )
+            if config.is_vision:
+                await asyncio.to_thread(
+                    llama_backend._download_mmproj,
+                    hf_repo = config.gguf_hf_repo,
+                    hf_token = request.hf_token,
+                )
+        else:
+            from huggingface_hub import snapshot_download
+
+            if config.is_audio and config.audio_type == "bicodec":
+                hf_repo = config.base_model if config.is_lora and config.base_model else config.path
+                local_path = hf_repo.split("/")[-1]
+                model_path = await asyncio.to_thread(
+                    snapshot_download,
+                    repo_id = hf_repo,
+                    local_path = local_path,
+                    token = request.hf_token,
+                )
+            else:
+                hf_repo = config.path
+                model_path = await asyncio.to_thread(
+                    snapshot_download,
+                    repo_id = hf_repo,
+                    token = request.hf_token,
+                )
+        return UpdateResponse(model_path = model_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating model '{request.repo_id}': {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to update model: {str(e)}")
 
 
 @router.delete("/delete-cached")
