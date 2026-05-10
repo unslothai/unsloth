@@ -1853,9 +1853,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _ta_whl=$(_pick_radeon_wheel    "torchaudio"  2>/dev/null) || _ta_whl=""
                 _tri_whl=$(_pick_radeon_wheel   "triton"      2>/dev/null) || _tri_whl=""
 
-                # Sanity-check torch / torchvision / torchaudio are a
-                # matching release. 
-                #
                 # Check that torch and torchaudio share the same X.Y public
                 # version prefix, and that torchvision's minor correctly
                 # pairs with torch's minor (torchvision = torch.minor + 15
@@ -1879,7 +1876,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 }
 
                 _torch_ver=$(_extract_version "$_torch_whl" "torch")
-                _tv_ver=$(_extract_version "$_tv_ver" "torchvision")
+                _tv_ver=$(_extract_version "$_tv_whl" "torchvision")
                 _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
 
                 _radeon_versions_match=false
@@ -1905,12 +1902,12 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         _curr_ta=$(_pick_radeon_wheel    "torchaudio"  "2.${_target_minor}." 2>/dev/null) || _curr_ta=""
 
                         if [ -n "$_curr_torch" ] && [ -n "$_curr_tv" ] && [ -n "$_curr_ta" ]; then
-                            # Extract exact versions from the specific wheels found in this iteration
+                            # Extract versions from the wheels found in this iteration
                             _c_torch_ver=$(_extract_version "$_curr_torch" "torch")
                             _c_tv_ver=$(_extract_version "$_curr_tv" "torchvision")
                             _c_ta_ver=$(_extract_version "$_curr_ta" "torchaudio")
 
-                            # Parse components for the final validation
+                            # Parse Major.Minor for validation
                             _c_torch_major=${_c_torch_ver%%.*}
                             _c_torch_minor=${_c_torch_ver#*.}
                             _c_ta_major=${_c_ta_ver%%.*}
@@ -1918,7 +1915,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                             _c_tv_major=${_c_tv_ver%%.*}
                             _c_tv_minor=${_c_tv_ver#*.}
 
-                            # Strict validation: Major/Minor must match the expected pairing exactly
+                            # Strict X.Y validation: allow patch versions to differ (e.g. torch 2.9.1 + vision 0.24.0)
+                            # as long as the Major and Minor pairing is correct.
                             if [ "$_c_torch_major" = "$_c_ta_major" ] && \
                                [ "$_c_torch_minor" = "$_c_ta_minor" ] && \
                                [ "$_c_tv_major" = "0" ] && \
