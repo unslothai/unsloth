@@ -1663,9 +1663,9 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
 }
 
 _pick_radeon_wheel() {
-    # Usage: _pick_radeon_wheel PACKAGE_NAME
+    # Usage: _pick_radeon_wheel PACKAGE_NAME [VERSION_PREFIX]
     # Scans $_RADEON_LISTING for the newest wheel whose filename starts exactly
-    # with PACKAGE_NAME- and matches _RADEON_PYTAG + linux_x86_64.
+    # with PACKAGE_NAME- (and optionally VERSION_PREFIX) and matches _RADEON_PYTAG + linux_x86_64.
     # Prints the full URL (resolving relative hrefs against _RADEON_BASE_URL).
     #
     # POSIX-compliant pipeline: all href parsing, filtering, and version
@@ -1673,11 +1673,12 @@ _pick_radeon_wheel() {
     # for GNU extensions (grep -o, sort -V) that would break under BSD
     # or BusyBox coreutils.
     _pkg="$1"
+    _ver_prefix="${2:-}"
     [ -n "$_RADEON_LISTING" ] || return 1
     [ -n "$_RADEON_PYTAG"   ] || return 1
     _tag="$_RADEON_PYTAG"
     _href=$(printf '%s\n' "$_RADEON_LISTING" \
-        | awk -v pkg="$_pkg" -v tag="$_tag" '
+        | awk -v pkg="$_pkg" -v tag="$_tag" -v ver_prefix="$_ver_prefix" '
             BEGIN { max_pad = ""; max_url = "" }
             {
                 line = $0
@@ -1691,7 +1692,8 @@ _pick_radeon_wheel() {
                     base = p[n]
                     sub(/[?#].*/, "", base)
 
-                    prefix = pkg "-"
+                    # Append the ver_prefix so it searches for "torch-2.9." for example
+                    prefix = pkg "-" ver_prefix
                     # Match cpXY-cpXY or cpXY-abi3 with any linux x86_64
                     # platform tag (linux_x86_64, manylinux_2_28_x86_64,
                     # manylinux2014_x86_64, etc.)
@@ -1841,24 +1843,26 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
 
             if [ "$_radeon_listing_ok" = true ]; then
                 # Require torch, torchvision, torchaudio wheels to all resolve
-                # from the Radeon listing. If any is missing for this Python
-                # tag, fall through to the standard ROCm index instead of
-                # silently mixing Radeon wheels with PyPI defaults.
+                # from the Radeon listing. The repo often publishes multiple
+                # generations simultaneously, so picking the highest-version
+                # for each package independently can assemble a mismatched trio
+                # (e.g. torch 2.9.1 + torchvision 0.23.0). To prevent this,
+                # we identify the highest common minor version and downpair
+                # wheels if necessary to ensure a compatible set.
                 _torch_whl=$(_pick_radeon_wheel "torch"       2>/dev/null) || _torch_whl=""
                 _tv_whl=$(_pick_radeon_wheel    "torchvision" 2>/dev/null) || _tv_whl=""
                 _ta_whl=$(_pick_radeon_wheel    "torchaudio"  2>/dev/null) || _ta_whl=""
                 _tri_whl=$(_pick_radeon_wheel   "triton"      2>/dev/null) || _tri_whl=""
+
                 # Sanity-check torch / torchvision / torchaudio are a
-                # matching release. The Radeon repo publishes multiple
-                # generations simultaneously, so picking the highest-version
-                # wheel for each package independently can assemble a
-                # mismatched trio (e.g. torch 2.9.1 + torchvision 0.23.0 +
-                # torchaudio 2.9.0 from the current rocm-rel-7.2.1 index).
+                # matching release. 
+                #
                 # Check that torch and torchaudio share the same X.Y public
                 # version prefix, and that torchvision's minor correctly
-                # pairs with torch's minor (torchvision = torch.minor - 5
+                # pairs with torch's minor (torchvision = torch.minor + 15
                 # since torch 2.4 -> torchvision 0.19 -> torch 2.9 ->
                 # torchvision 0.24).
+                #
                 # URL-decode each wheel name so %2B -> + before version
                 # extraction. Real Radeon wheel hrefs are percent-encoded
                 # (torch-2.10.0%2Brocm7.2.0...), so a plain [+-] terminator
@@ -1866,21 +1870,19 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 # _radeon_versions_match would stay false for every real
                 # listing, silently forcing a fallback to the generic
                 # ROCm index.
-                _torch_ver=""
-                _tv_ver=""
-                _ta_ver=""
-                if [ -n "$_torch_whl" ]; then
-                    _torch_name=$(printf '%s' "${_torch_whl##*/}" | sed 's/%2[Bb]/+/g')
-                    _torch_ver=$(printf '%s\n' "$_torch_name" | sed -n 's|^torch-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
-                fi
-                if [ -n "$_tv_whl" ]; then
-                    _tv_name=$(printf '%s' "${_tv_whl##*/}" | sed 's/%2[Bb]/+/g')
-                    _tv_ver=$(printf '%s\n' "$_tv_name" | sed -n 's|^torchvision-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
-                fi
-                if [ -n "$_ta_whl" ]; then
-                    _ta_name=$(printf '%s' "${_ta_whl##*/}" | sed 's/%2[Bb]/+/g')
-                    _ta_ver=$(printf '%s\n' "$_ta_name" | sed -n 's|^torchaudio-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p')
-                fi
+                _extract_version() {
+                    local whl=$1
+                    local pkg=$2
+                    if [ -n "$whl" ]; then
+                        local name=$(printf '%s' "${whl##*/}" | sed 's/%2[Bb]/+/g')
+                        printf '%s\n' "$name" | sed -n "s|^${pkg}-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p"
+                    fi
+                }
+
+                _torch_ver=$(_extract_version "$_torch_whl" "torch")
+                _tv_ver=$(_extract_version "$_tv_whl" "torchvision")
+                _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
+
                 _radeon_versions_match=false
                 if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
                     _torch_major=${_torch_ver%%.*}
@@ -1889,7 +1891,38 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     _ta_minor=${_ta_ver#*.}
                     _tv_major=${_tv_ver%%.*}
                     _tv_minor=${_tv_ver#*.}
-                    # torchvision expected minor (e.g. torch 2.9 -> 0.24)
+
+                    # Determine target minor based on lowest common denominator
+                    _tv_equiv_minor=$((_tv_minor - 15))
+                    _target_minor=$_torch_minor
+                    [ "$_tv_equiv_minor" -lt "$_target_minor" ] && _target_minor=$_tv_equiv_minor
+                    [ "$_ta_minor" -lt "$_target_minor" ] && _target_minor=$_ta_minor
+
+                    # Downpair if the latest found version exceeds the common minor
+                    _repick=false
+                    if [ "$_torch_minor" != "$_target_minor" ]; then
+                        _torch_whl=$(_pick_radeon_wheel "torch" "2.${_target_minor}.")
+                        _torch_ver=$(_extract_version "$_torch_whl" "torch")
+                        _repick=true
+                    fi
+                    _expected_tv_minor=$((_target_minor + 15))
+                    if [ "$_tv_minor" != "$_expected_tv_minor" ]; then
+                        _tv_whl=$(_pick_radeon_wheel "torchvision" "0.${_expected_tv_minor}.")
+                        _tv_ver=$(_extract_version "$_tv_whl" "torchvision")
+                        _repick=true
+                    fi
+                    if [ "$_ta_minor" != "$_target_minor" ]; then
+                        _ta_whl=$(_pick_radeon_wheel "torchaudio" "2.${_target_minor}.")
+                        _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
+                        _repick=true
+                    fi
+
+                    if [ "$_repick" = true ] && [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
+                        _torch_major=${_torch_ver%%.*}; _torch_minor=${_torch_ver#*.}
+                        _ta_major=${_ta_ver%%.*}; _ta_minor=${_ta_ver#*.}
+                        _tv_major=${_tv_ver%%.*}; _tv_minor=${_tv_ver#*.}
+                    fi
+
                     _expected_tv_minor=$((_torch_minor + 15))
                     if [ "$_torch_major" = "$_ta_major" ] && \
                        [ "$_torch_minor" = "$_ta_minor" ] && \
@@ -1898,6 +1931,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         _radeon_versions_match=true
                     fi
                 fi
+
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
                    [ "$_radeon_versions_match" != true ]; then
                     substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
