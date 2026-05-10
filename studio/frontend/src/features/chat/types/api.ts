@@ -65,6 +65,17 @@ export interface LoadModelRequest {
   tensor_parallel?: boolean | null;
 }
 
+export interface UpdateModelRequest {
+  repo_id: string;
+  hf_token?: string | null;
+  has_vision?: boolean | null;
+  gguf_variant?: string | null;
+}
+
+export interface UpdateModelResponse {
+  model_path: string;
+}
+
 export interface ValidateModelResponse {
   valid: boolean;
   message: string;
@@ -85,6 +96,7 @@ export interface GgufVariantDetail {
   quant: string;
   size_bytes: number;
   downloaded?: boolean;
+  update_available?: boolean;
 }
 
 export interface GgufVariantsResponse {
