@@ -1867,11 +1867,11 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 # listing, silently forcing a fallback to the generic
                 # ROCm index.
                 _extract_version() {
-                    local whl=$1
-                    local pkg=$2
-                    if [ -n "$whl" ]; then
-                        local name=$(printf '%s' "${whl##*/}" | sed 's/%2[Bb]/+/g')
-                        printf '%s\n' "$name" | sed -n "s|^${pkg}-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p"
+                    _whl=$1
+                    _pkg=$2
+                    if [ -n "$_whl" ]; then
+                        _name=$(printf '%s' "${_whl##*/}" | sed 's/%2[Bb]/+/g')
+                        printf '%s\n' "$_name" | sed -n "s|^${_pkg}-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p"
                     fi
                 }
 
