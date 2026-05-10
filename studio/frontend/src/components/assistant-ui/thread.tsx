@@ -210,13 +210,29 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+  let currentEmoji = "large sloth drink.png"; // fallback/default
+  try {
+    const hour = new Date().getHours();
+    if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
+      if (hour >= 6 && hour < 12) currentEmoji = "large sloth drink.png";
+      else if (hour >= 12 && hour < 17) currentEmoji = "sloth magnify final.png";
+      else if (hour >= 17 && hour < 21) currentEmoji = "sloth huglove large.png";
+      else if (hour < 6 || hour >= 21) currentEmoji = "unsloth-gem.png";
+    }
+  } catch {}
+
+  const currentEmojiSrc =
+    currentEmoji === "unsloth-gem.png"
+      ? `/${currentEmoji}`
+      : `/Sloth emojis/${currentEmoji}`;
+
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img
-              src="/Sloth emojis/sloth pc square.png"
+              src={currentEmojiSrc}
               alt="Sloth mascot"
               className="size-20"
             />
