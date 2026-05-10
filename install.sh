@@ -1879,7 +1879,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 }
 
                 _torch_ver=$(_extract_version "$_torch_whl" "torch")
-                _tv_ver=$(_extract_version "$_tv_whl" "torchvision")
+                _tv_ver=$(_extract_version "$_tv_ver" "torchvision")
                 _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
 
                 _radeon_versions_match=false
@@ -1895,8 +1895,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     [ "$_ta_minor" -lt "$_target_minor" ] && _target_minor=$_ta_minor
 
                     # Loop downwards to find the first complete matching trio.
-                    # This avoids aborting if the repo has gaps (e.g., has torch 2.10 
-                    # but lacks the matching torchvision 0.25).
+                    # This avoids aborting if the repo has gaps.
                     _attempts=0
                     while [ "$_attempts" -lt 5 ] && [ "$_target_minor" -ge 0 ]; do
                         _expected_tv_minor=$((_target_minor + 15))
@@ -1906,11 +1905,31 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         _curr_ta=$(_pick_radeon_wheel    "torchaudio"  "2.${_target_minor}." 2>/dev/null) || _curr_ta=""
 
                         if [ -n "$_curr_torch" ] && [ -n "$_curr_tv" ] && [ -n "$_curr_ta" ]; then
-                            _torch_whl=$_curr_torch
-                            _tv_whl=$_curr_tv
-                            _ta_whl=$_curr_ta
-                            _radeon_versions_match=true
-                            break
+                            # Extract exact versions from the specific wheels found in this iteration
+                            _c_torch_ver=$(_extract_version "$_curr_torch" "torch")
+                            _c_tv_ver=$(_extract_version "$_curr_tv" "torchvision")
+                            _c_ta_ver=$(_extract_version "$_curr_ta" "torchaudio")
+
+                            # Parse components for the final validation
+                            _c_torch_major=${_c_torch_ver%%.*}
+                            _c_torch_minor=${_c_torch_ver#*.}
+                            _c_ta_major=${_c_ta_ver%%.*}
+                            _c_ta_minor=${_c_ta_ver#*.}
+                            _c_tv_major=${_c_tv_ver%%.*}
+                            _c_tv_minor=${_c_tv_ver#*.}
+
+                            # Strict validation: Major/Minor must match the expected pairing exactly
+                            if [ "$_c_torch_major" = "$_c_ta_major" ] && \
+                               [ "$_c_torch_minor" = "$_c_ta_minor" ] && \
+                               [ "$_c_tv_major" = "0" ] && \
+                               [ "$_c_tv_minor" = "$((_c_torch_minor + 15))" ]; then
+                                
+                                _torch_whl=$_curr_torch
+                                _tv_whl=$_curr_tv
+                                _ta_whl=$_curr_ta
+                                _radeon_versions_match=true
+                                break
+                            fi
                         fi
                         _target_minor=$((_target_minor - 1))
                         _attempts=$((_attempts + 1))
