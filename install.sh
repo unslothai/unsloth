@@ -1692,7 +1692,6 @@ _pick_radeon_wheel() {
                     base = p[n]
                     sub(/[?#].*/, "", base)
 
-                    # Append the ver_prefix so it searches for "torch-2.9." for example
                     prefix = pkg "-" ver_prefix
                     # Match cpXY-cpXY or cpXY-abi3 with any linux x86_64
                     # platform tag (linux_x86_64, manylinux_2_28_x86_64,
@@ -1846,7 +1845,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 # from the Radeon listing. The repo often publishes multiple
                 # generations simultaneously, so picking the highest-version
                 # for each package independently can assemble a mismatched trio
-                # (e.g. torch 2.9.1 + torchvision 0.23.0). To prevent this,
+                # (e.g. torch 2.10 + torchvision 0.24). To prevent this,
                 # we identify the highest common minor version and downpair
                 # wheels if necessary to ensure a compatible set.
                 _torch_whl=$(_pick_radeon_wheel "torch"       2>/dev/null) || _torch_whl=""
@@ -1871,11 +1870,11 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 # listing, silently forcing a fallback to the generic
                 # ROCm index.
                 _extract_version() {
-                    _whl=$1
-                    _pkg=$2
-                    if [ -n "$_whl" ]; then
-                        _name=$(printf '%s' "${_whl##*/}" | sed 's/%2[Bb]/+/g')
-                        printf '%s\n' "$_name" | sed -n "s|^${_pkg}-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p"
+                    local whl=$1
+                    local pkg=$2
+                    if [ -n "$whl" ]; then
+                        local name=$(printf '%s' "${whl##*/}" | sed 's/%2[Bb]/+/g')
+                        printf '%s\n' "$name" | sed -n "s|^${pkg}-\([0-9][0-9]*\.[0-9][0-9]*\)\(\.[0-9][0-9]*\)\{0,1\}[+-].*|\1|p"
                     fi
                 }
 
@@ -1885,55 +1884,37 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
 
                 _radeon_versions_match=false
                 if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
-                    _torch_major=${_torch_ver%%.*}
                     _torch_minor=${_torch_ver#*.}
-                    _ta_major=${_ta_ver%%.*}
                     _ta_minor=${_ta_ver#*.}
-                    _tv_major=${_tv_ver%%.*}
                     _tv_minor=${_tv_ver#*.}
-
-                    # Determine target minor based on lowest common denominator
                     _tv_equiv_minor=$((_tv_minor - 15))
+
+                    # Determine initial target minor (lowest common denominator)
                     _target_minor=$_torch_minor
                     [ "$_tv_equiv_minor" -lt "$_target_minor" ] && _target_minor=$_tv_equiv_minor
                     [ "$_ta_minor" -lt "$_target_minor" ] && _target_minor=$_ta_minor
 
-                    # Downpair if the latest found version exceeds the common minor
-                    _repick=false
-                    if [ "$_torch_minor" != "$_target_minor" ]; then
-                        # Use || _torch_whl="" to prevent set -e from aborting if this minor is missing
-                        _torch_whl=$(_pick_radeon_wheel "torch" "2.${_target_minor}." 2>/dev/null) || _torch_whl=""
-                        _torch_ver=$(_extract_version "$_torch_whl" "torch")
-                        _repick=true
-                    fi
-                    _expected_tv_minor=$((_target_minor + 15))
-                    if [ "$_tv_minor" != "$_expected_tv_minor" ]; then
-                        _tv_whl=$(_pick_radeon_wheel "torchvision" "0.${_expected_tv_minor}." 2>/dev/null) || _tv_whl=""
-                        _tv_ver=$(_extract_version "$_tv_whl" "torchvision")
-                        _repick=true
-                    fi
-                    if [ "$_ta_minor" != "$_target_minor" ]; then
-                        _ta_whl=$(_pick_radeon_wheel "torchaudio" "2.${_target_minor}." 2>/dev/null) || _ta_whl=""
-                        _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
-                        _repick=true
-                    fi
+                    # Loop downwards to find the first complete matching trio.
+                    # This avoids aborting if the repo has gaps (e.g., has torch 2.10 
+                    # but lacks the matching torchvision 0.25).
+                    _attempts=0
+                    while [ "$_attempts" -lt 5 ] && [ "$_target_minor" -ge 0 ]; do
+                        _expected_tv_minor=$((_target_minor + 15))
+                        
+                        _curr_torch=$(_pick_radeon_wheel "torch"       "2.${_target_minor}." 2>/dev/null) || _curr_torch=""
+                        _curr_tv=$(_pick_radeon_wheel    "torchvision" "0.${_expected_tv_minor}." 2>/dev/null) || _curr_tv=""
+                        _curr_ta=$(_pick_radeon_wheel    "torchaudio"  "2.${_target_minor}." 2>/dev/null) || _curr_ta=""
 
-                    # If we attempted a repick but any of the required wheels came up empty,
-                    # the final sanity check (comparing _torch_minor to _ta_minor etc.) 
-                    # will naturally fail, safely triggering the existing fallback path.
-                    if [ "$_repick" = true ] && [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
-                        _torch_major=${_torch_ver%%.*}; _torch_minor=${_torch_ver#*.}
-                        _ta_major=${_ta_ver%%.*}; _ta_minor=${_ta_ver#*.}
-                        _tv_major=${_tv_ver%%.*}; _tv_minor=${_tv_ver#*.}
-                    fi
-
-                    _expected_tv_minor=$((_torch_minor + 15))
-                    if [ "$_torch_major" = "$_ta_major" ] && \
-                       [ "$_torch_minor" = "$_ta_minor" ] && \
-                       [ "$_tv_major" = "0" ] && \
-                       [ "$_tv_minor" = "$_expected_tv_minor" ]; then
-                        _radeon_versions_match=true
-                    fi
+                        if [ -n "$_curr_torch" ] && [ -n "$_curr_tv" ] && [ -n "$_curr_ta" ]; then
+                            _torch_whl=$_curr_torch
+                            _tv_whl=$_curr_tv
+                            _ta_whl=$_curr_ta
+                            _radeon_versions_match=true
+                            break
+                        fi
+                        _target_minor=$((_target_minor - 1))
+                        _attempts=$((_attempts + 1))
+                    done
                 fi
 
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
