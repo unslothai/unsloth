@@ -21,7 +21,9 @@ import {
   listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
+  updateModel,
 } from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
@@ -42,6 +44,7 @@ import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
+import { ModelUpdateAction } from "./model-update-action";
 import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon } from "lucide-react";
 import {
   type ReactNode,
@@ -209,22 +212,32 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  onUpdateVariant,
   onDeleteVariant,
   sourceOverride,
+  updateVariantTitle = "Update cached model?",
   deleteVariantTitle = "Delete cached model?",
+  renderUpdateVariantDescription,
   renderDeleteVariantDescription,
+  getUpdateVariantSuccessMessage,
   getDeleteVariantSuccessMessage,
+  updateDisabled = false,
   deleteDisabled = false,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  onUpdateVariant?: (quant: string) => Promise<void> | void;
   onDeleteVariant?: (quant: string) => Promise<void> | void;
   sourceOverride?: ModelSelectorChangeMeta["source"];
+  updateVariantTitle?: string;
   deleteVariantTitle?: string;
+  renderUpdateVariantDescription?: (quant: string) => ReactNode;
   renderDeleteVariantDescription?: (quant: string) => ReactNode;
+  getUpdateVariantSuccessMessage?: (quant: string) => string;
   getDeleteVariantSuccessMessage?: (quant: string) => string;
+  updateDisabled?: boolean;
   deleteDisabled?: boolean;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
@@ -232,6 +245,7 @@ function GgufVariantExpander({
   const [hasVision, setHasVision] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let canceled = false;
@@ -258,7 +272,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId]);
+  }, [repoId, refreshKey]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
@@ -391,9 +405,16 @@ function GgufVariantExpander({
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
                 <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>{v.quant}</span>
                 {v.downloaded ? (
-                  <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
-                    downloaded
-                  </span>
+                  <>
+                    <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                      downloaded
+                    </span>
+                    {v.update_available ? (
+                      <span className="ml-1.5 text-[9px] font-sans font-medium text-yellow-400">
+                        update available
+                      </span>
+                    ): null}
+                  </>
                 ) : v.quant === effectiveRecommended ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
                     recommended
@@ -416,6 +437,31 @@ function GgufVariantExpander({
                 </span>
               </span>
             </button>
+            {v.downloaded && v.update_available && onUpdateVariant && (
+              <ModelUpdateAction
+                ariaLabel={`Update ${repoId} ${v.quant}`}
+                title={updateVariantTitle}
+                description={
+                  renderUpdateVariantDescription?.(v.quant) ?? (
+                    <>
+                      This will update{" "}
+                      <span className="font-medium text-foreground">
+                        {repoId} ({v.quant})
+                      </span>{"."}
+                    </>
+                  )
+                }
+                successMessage={
+                  getUpdateVariantSuccessMessage?.(v.quant) ??
+                  `Updated ${repoId} ${v.quant}`
+                }
+                buttonClassName="p-1"
+                iconClassName="size-3"
+                disabled={updateDisabled}
+                onConfirm={() => onUpdateVariant(v.quant)}
+                onUpdated={() => setRefreshKey((key) => key + 1)}
+              />
+            )}
             {v.downloaded && onDeleteVariant && (
               <ModelDeleteAction
                 ariaLabel={`Delete ${repoId} ${v.quant}`}
@@ -499,6 +545,7 @@ export function HubModelPicker({
   onFoldersChange?: () => void;
 }) {
   const gpu = useGpuInfo();
+  const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   const { results, isLoading, isLoadingMore, fetchMore } =
@@ -660,6 +707,30 @@ export function HubModelPicker({
       .catch(() => {});
     refreshLocalModelsList();
   }, [refreshLocalModelsList]);
+
+  const updateGgufVariant = useCallback(
+    async (repoId: string, quant: string) => {
+      await updateModel({
+        repo_id: repoId,
+        hf_token: hfToken || null,
+        gguf_variant: quant,
+      });
+      refreshCachedLists();
+    },
+    [hfToken, refreshCachedLists],
+  );
+
+  const updateCachedVariant = useCallback(
+    async (repoId: string) => {
+      await updateModel({
+        repo_id: repoId,
+        hf_token: hfToken || null,
+        gguf_variant: null
+      });
+      refreshCachedLists();
+    },
+    [hfToken, refreshCachedLists],
+  );
 
   useEffect(() => {
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached)
@@ -950,6 +1021,9 @@ export function HubModelPicker({
                       systemRamGb={
                         gpu.available ? gpu.systemRamAvailableGb : undefined
                       }
+                      onUpdateVariant={(quant) =>
+                        updateGgufVariant(c.repo_id, quant)
+                      }
                       onDeleteVariant={async (quant) => {
                         await deleteCachedModel(c.repo_id, quant);
                         refreshCachedLists();
@@ -976,6 +1050,25 @@ export function HubModelPicker({
                         vramStatus={null}
                       />
                     </div>
+                    <>
+                    {c.update_available && (
+                      <ModelUpdateAction
+                        ariaLabel={`Update ${c.repo_id}`}
+                        title="Update cached model?"
+                        description={
+                          <>
+                            This will update{" "}
+                            <span className="font-medium text-foreground">
+                              {c.repo_id}
+                            </span>{"."}
+                          </>
+                        }
+                        successMessage={`Updated ${c.repo_id}`}
+                        onConfirm={() => updateCachedVariant(c.repo_id)}
+                        onUpdated={refreshCachedLists}
+                      />
+                    )}
+                    </>
                     <ModelDeleteAction
                       ariaLabel={`Delete ${c.repo_id}`}
                       title="Delete cached model?"
