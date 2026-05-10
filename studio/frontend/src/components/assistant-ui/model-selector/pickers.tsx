@@ -22,13 +22,14 @@ import {
   listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
+  updateModel,
 } from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import {
@@ -85,6 +86,7 @@ import {
   hasAnyCapability,
 } from "./model-capabilities";
 import { ModelDeleteAction } from "./model-delete-action";
+import { ModelUpdateAction } from "./model-update-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import {
   type ModelLoadTimes,
@@ -624,11 +626,16 @@ function GgufVariantExpander({
   parentOptionKey,
   onNavigatePastStart,
   onNavigatePastEnd,
+  onUpdateVariant,
   onDeleteVariant,
   sourceOverride,
+  updateVariantTitle = "Update cached model?",
   deleteVariantTitle = "Delete cached model?",
+  renderUpdateVariantDescription,
   renderDeleteVariantDescription,
+  getUpdateVariantSuccessMessage,
   getDeleteVariantSuccessMessage,
+  updateDisabled = false,
   deleteDisabled = false,
   onDevice = false,
   onHasVision,
@@ -640,11 +647,16 @@ function GgufVariantExpander({
   parentOptionKey?: string;
   onNavigatePastStart?: () => void;
   onNavigatePastEnd?: () => void;
+  onUpdateVariant?: (quant: string) => Promise<void> | void;
   onDeleteVariant?: (quant: string) => Promise<void> | void;
   sourceOverride?: ModelSelectorChangeMeta["source"];
+  updateVariantTitle?: string;
   deleteVariantTitle?: string;
+  renderUpdateVariantDescription?: (quant: string) => ReactNode;
   renderDeleteVariantDescription?: (quant: string) => ReactNode;
+  getUpdateVariantSuccessMessage?: (quant: string) => string;
   getDeleteVariantSuccessMessage?: (quant: string) => string;
+  updateDisabled?: boolean;
   deleteDisabled?: boolean;
   /** On Device rows honor the Show all quantizations setting; Recommended and
    *  other browse lists always show every quant. */
@@ -659,6 +671,7 @@ function GgufVariantExpander({
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let canceled = false;
@@ -688,7 +701,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId]);
+  }, [repoId, refreshKey]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
@@ -891,9 +904,16 @@ function GgufVariantExpander({
                   {v.quant}
                 </span>
                 {v.downloaded ? (
-                  <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
-                    downloaded
-                  </span>
+                  <>
+                    <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                      downloaded
+                    </span>
+                    {v.update_available ? (
+                      <span className="ml-1.5 text-[9px] font-sans font-medium text-yellow-400">
+                        update available
+                      </span>
+                    ): null}
+                  </>
                 ) : v.quant === effectiveRecommended ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
                     recommended
@@ -916,6 +936,31 @@ function GgufVariantExpander({
                 </span>
               </span>
             </button>
+            {v.downloaded && v.update_available && onUpdateVariant && (
+              <ModelUpdateAction
+                ariaLabel={`Update ${repoId} ${v.quant}`}
+                title={updateVariantTitle}
+                description={
+                  renderUpdateVariantDescription?.(v.quant) ?? (
+                    <>
+                      This will update{" "}
+                      <span className="font-medium text-foreground">
+                        {repoId} ({v.quant})
+                      </span>{"."}
+                    </>
+                  )
+                }
+                successMessage={
+                  getUpdateVariantSuccessMessage?.(v.quant) ??
+                  `Updated ${repoId} ${v.quant}`
+                }
+                buttonClassName="p-1"
+                iconClassName="size-3"
+                disabled={updateDisabled}
+                onConfirm={() => onUpdateVariant(v.quant)}
+                onUpdated={() => setRefreshKey((key) => key + 1)}
+              />
+            )}
             {v.downloaded && (
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
@@ -1174,12 +1219,13 @@ export function HubModelPicker({
   // rows sit below the fold.
   const [listScrolled, setListScrolled] = useState(false);
   const [listMoreBelow, setListMoreBelow] = useState(false);
+  const hfToken = useHfTokenStore((s) => s.token);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   // Shared Hub search stack (the same hooks the Hub page uses) so the picker
   // and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
-  const accessToken = useHfTokenStore((s) => s.token) || undefined;
+  const accessToken = hfToken || undefined;
   // Recommended section: a live unsloth listing sorted by the dropdown. The
   // same sort drives the search results so the dropdown works while searching.
   const [recommendedSort, setRecommendedSort] =
@@ -1477,6 +1523,30 @@ export function HubModelPicker({
       .catch(() => {});
     refreshLocalModelsList();
   }, [refreshLocalModelsList]);
+
+  const updateGgufVariant = useCallback(
+    async (repoId: string, quant: string) => {
+      await updateModel({
+        repo_id: repoId,
+        hf_token: hfToken || null,
+        gguf_variant: quant,
+      });
+      refreshCachedLists();
+    },
+    [hfToken, refreshCachedLists],
+  );
+
+  const updateCachedVariant = useCallback(
+    async (repoId: string) => {
+      await updateModel({
+        repo_id: repoId,
+        hf_token: hfToken || null,
+        gguf_variant: null
+      });
+      refreshCachedLists();
+    },
+    [hfToken, refreshCachedLists],
+  );
 
   useEffect(() => {
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
@@ -2311,6 +2381,7 @@ export function HubModelPicker({
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
             systemRamGb={gpu.systemRamAvailableGb || undefined}
+            onUpdateVariant={(quant) => updateGgufVariant(c.repo_id, quant)}
             onDeleteVariant={async (quant) => {
               await deleteCachedModel(c.repo_id, quant);
               refreshCachedLists();
@@ -2352,6 +2423,25 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
+        {c.update_available && (
+          <ModelUpdateAction
+            ariaLabel={`Update ${c.repo_id}`}
+            title="Update cached model?"
+            description={
+              <>
+                This will update{" "}
+                <span className="font-medium text-foreground">
+                  {c.repo_id}
+                </span>
+                {"."}
+              </>
+            }
+            successMessage={`Updated ${c.repo_id}`}
+            buttonClassName="mr-1"
+            onConfirm={() => updateCachedVariant(c.repo_id)}
+            onUpdated={refreshCachedLists}
+          />
+        )}
         <ModelDeleteAction
           ariaLabel={`Delete ${c.repo_id}`}
           title="Delete cached model?"
