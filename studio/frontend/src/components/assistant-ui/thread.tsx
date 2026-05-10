@@ -210,16 +210,15 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
-  let currentEmoji = "large sloth drink.png"; // fallback/default
-  try {
+  const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
+
+  useEffect(() => {
     const hour = new Date().getHours();
-    if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
-      if (hour >= 6 && hour < 12) currentEmoji = "large sloth drink.png";
-      else if (hour >= 12 && hour < 17) currentEmoji = "sloth magnify final.png";
-      else if (hour >= 17 && hour < 21) currentEmoji = "sloth huglove large.png";
-      else if (hour < 6 || hour >= 21) currentEmoji = "unsloth-gem.png";
-    }
-  } catch {}
+    if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
+    else if (hour >= 12 && hour < 17) setCurrentEmoji("sloth magnify final.png");
+    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth huglove large.png");
+    else setCurrentEmoji("unsloth-gem.png");
+  }, []);
 
   const currentEmojiSrc =
     currentEmoji === "unsloth-gem.png"
