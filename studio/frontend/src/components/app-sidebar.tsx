@@ -89,7 +89,7 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 
@@ -211,17 +211,6 @@ export function AppSidebar() {
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
   useEffect(() => { if (isStudioRoute) setRunsOpen(true); }, [isStudioRoute]);
-
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [scrolled, setScrolled] = useState(false);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const handler = () => setScrolled(el.scrollTop > 0);
-    handler();
-    el.addEventListener("scroll", handler, { passive: true });
-    return () => el.removeEventListener("scroll", handler);
-  }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
@@ -347,7 +336,7 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       variant="sidebar"
-      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+      className="font-heading"
     >
       <SidebarHeader className="pl-[17px] pr-3 pt-[12px] pb-[8px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
@@ -521,13 +510,13 @@ export function AppSidebar() {
         </SidebarGroupContent>
       </SidebarGroup>
 
-      <SidebarContent ref={scrollRef} className="gap-0 overflow-y-auto overscroll-contain min-h-0">
+      <SidebarContent className="gap-0 overflow-y-auto overscroll-contain min-h-0 [scrollbar-gutter:stable]">
         {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
         {!isStudioRoute && chatItems.length > 0 && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
-              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+            <SidebarGroupLabel className="sidebar-sticky-label" asChild>
+              <CollapsibleTrigger className="cursor-pointer flex items-center justify-between">
                 Recents
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
@@ -598,8 +587,8 @@ export function AppSidebar() {
         {isStudioRoute && runItems.length > 0 && !chatOnly && (
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
-              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+            <SidebarGroupLabel className="sidebar-sticky-label" asChild>
+              <CollapsibleTrigger className="cursor-pointer flex items-center justify-between">
                 Recents
                 <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>

@@ -358,7 +358,7 @@ export function ModelSection() {
                         model?.source === "hf_cache"
                           ? "HF cache"
                           : model?.source === "lmstudio"
-                            ? "LM Studio"
+                            ? "External"
                             : model?.source === "custom"
                               ? "Custom Folders"
                               : "Local dir";

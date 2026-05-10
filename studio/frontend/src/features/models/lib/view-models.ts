@@ -212,7 +212,7 @@ export function matchesCapability(
 export function localSourceLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
-      return "LM Studio";
+      return "External";
     case "custom":
       return "Custom folder";
     case "models_dir":

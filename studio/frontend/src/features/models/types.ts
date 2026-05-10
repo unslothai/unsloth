@@ -72,4 +72,5 @@ export interface SelectedModelView {
   cachedBytes?: number;
   updatedAt?: string;
   localUpdatedAt?: number | null;
+  tags?: string[];
 }

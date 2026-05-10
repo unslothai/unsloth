@@ -2,30 +2,121 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowUpRight01Icon,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn, formatCompact } from "@/lib/utils";
+import { Streamdown } from "streamdown";
+import {
   Calendar03Icon,
   CheckmarkCircle02Icon,
+  Copy01Icon,
   CpuIcon,
   CubeIcon,
-  DownloadCircle02Icon,
+  Database02Icon,
+  Download01Icon,
   FavouriteIcon,
+  Globe02Icon,
+  LayersLogoIcon,
   LicenseIcon,
   PackageIcon,
   PlayIcon,
   RamMemoryIcon,
+  Share05Icon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useRef, useState } from "react";
 import { DatasetDownloadSection } from "./dataset-download-section";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { CapabilityPill } from "./shared";
 import { DownloadSection } from "./download-section";
-import { formatRelativeShort } from "../lib/format";
+import { ACCENT_RING, ACCENT_TEXT, pickAccent } from "../lib/accent";
+import {
+  type DatasetSizeInfo,
+  fetchDatasetSize,
+} from "../lib/dataset-size";
+import { formatBytes, formatRelativeShort } from "../lib/format";
 import { formatLocalUpdated, formatPipelineTag } from "../lib/view-models";
 import type { SelectedModelView } from "../types";
+
+function ViewRepositoryButton({
+  repoId,
+  isDataset,
+}: {
+  repoId: string;
+  isDataset: boolean;
+}) {
+  const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="view-repo-link relative inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+          <HugeiconsIcon
+            icon={Share05Icon}
+            strokeWidth={1.75}
+            className="pointer-events-none size-4"
+          />
+          <span aria-label="View repository">
+            <Streamdown mode="static">{`[View repository](${url})`}</Streamdown>
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        Open on Hugging Face
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function CopyRepoButton({ repoId }: { repoId: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+
+  const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(repoId);
+      setCopied(true);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="Copy repository ID"
+          onClick={handleCopy}
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <HugeiconsIcon
+            icon={copied ? Tick02Icon : Copy01Icon}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        {repoId}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function StatRow({
   label,
@@ -37,37 +128,26 @@ function StatRow({
   icon: IconSvgElement;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
-      <div className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <HugeiconsIcon
-          icon={icon}
-          strokeWidth={1.75}
-          className="size-3 text-muted-foreground/70"
-        />
-        {label}
-      </div>
-      <div
-        title={value}
-        className="truncate text-[12px] font-medium tabular-nums text-foreground"
-      >
-        {value}
-      </div>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground/80">
+          <HugeiconsIcon
+            icon={icon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0"
+          />
+          <span className="font-medium tabular-nums">{value}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="tooltip-compact">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
 function StatGrid({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[12px] border border-border/60 bg-muted/30">
-      <div className="grid grid-cols-1 sm:grid-cols-2 sm:divide-x divide-border/50">
-        {children}
-      </div>
-    </div>
+    <div className="flex flex-wrap items-center gap-1.5">{children}</div>
   );
-}
-
-function StatColumn({ children }: { children: React.ReactNode }) {
-  return <div className="divide-y divide-border/50">{children}</div>;
 }
 
 function LocalLoadPanel({
@@ -86,7 +166,7 @@ function LocalLoadPanel({
   onLoad: () => void;
 }) {
   return (
-    <div className="rounded-[14px] border border-border/60 bg-muted/30 p-3">
+    <div className="rounded-[14px] border border-border bg-muted/30 p-3">
       <div className="flex flex-col gap-2.5">
         <div className="space-y-0.5">
           <p className="text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
@@ -148,7 +228,6 @@ export function ModelInspector({
   loadingPhase,
   minMemory,
   vramInfo,
-  gpuLabel,
   gpuGb,
   systemRamGb,
   onLoad,
@@ -168,7 +247,6 @@ export function ModelInspector({
     est: number;
     status: "fits" | "tight" | "exceeds";
   } | null;
-  gpuLabel: string;
   gpuGb?: number;
   systemRamGb?: number;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
@@ -176,6 +254,35 @@ export function ModelInspector({
   onUseInChat: () => void;
   onInventoryChange?: () => void;
 }) {
+  const datasetRepoId =
+    isDataset && model?.hubRepoId ? model.hubRepoId : null;
+  const [datasetSize, setDatasetSize] = useState<DatasetSizeInfo | null>(null);
+  useEffect(() => {
+    if (!datasetRepoId) {
+      setDatasetSize(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchDatasetSize(datasetRepoId).then((res) => {
+      if (cancelled) return;
+      setDatasetSize(res);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetRepoId]);
+
+  const descScrollRef = useRef<HTMLDivElement | null>(null);
+  const [descScrolled, setDescScrolled] = useState(false);
+  useEffect(() => {
+    const el = descScrollRef.current;
+    if (!el) return;
+    const onScroll = () => setDescScrolled(el.scrollTop > 0);
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [model?.id]);
+
   if (!model) {
     return (
       <div className="flex h-[calc(100dvh-205px)] flex-col items-center justify-center gap-3 px-6 py-10 text-center">
@@ -195,93 +302,86 @@ export function ModelInspector({
     );
   }
 
-  const updatedLabel = model.updatedAt
+  const updatedRaw = model.updatedAt
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
+  const updatedLabel = updatedRaw === "Unknown update" ? "N/A" : updatedRaw;
   const taskLabel = formatPipelineTag(model.pipelineTag) ?? "General";
-  const licenseLabel = model.license ?? "—";
+  const licenseLabel = model.license ?? "N/A";
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
-    : model.isGguf
-      ? "Unavailable"
-      : "—";
+    : "N/A";
+
+  const accent = pickAccent(model.capabilities);
+
+  const languages = (() => {
+    const tags = model.tags ?? [];
+    const langs: string[] = [];
+    for (const t of tags) {
+      if (t.startsWith("language:")) {
+        const code = t.slice("language:".length);
+        if (code && !langs.includes(code)) langs.push(code);
+      }
+    }
+    return langs;
+  })();
 
   return (
-    <div className="flex h-[calc(100dvh-205px)] flex-col pb-3">
-      <div className="shrink-0 border-b border-border/60 px-5 pb-3 pt-4">
-        <div className="flex items-center gap-3">
+    <div className="flex h-[calc(100dvh-205px)] flex-col">
+      <div className="shrink-0 px-6 pb-2 pt-4">
+        <div className="flex items-center gap-3.5">
           <OwnerAvatar
             owner={model.owner}
-            className="size-10 rounded-[11px] text-[14px]"
+            className="size-[52px] rounded-[14px] text-[16px]"
           />
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-[17px] font-semibold leading-[22px] tracking-[-0.02em] text-foreground">
-              {model.title}
-            </h2>
-            <p className="truncate text-[12.5px] leading-[18px] text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <h2 className="truncate text-[22px] font-semibold leading-[28px] tracking-[-0.025em] text-foreground">
+                {model.title}
+              </h2>
+              {model.hubRepoId && (
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <CopyRepoButton repoId={model.hubRepoId} />
+                  <ViewRepositoryButton
+                    repoId={model.hubRepoId}
+                    isDataset={isDataset}
+                  />
+                </div>
+              )}
+            </div>
+            <p className="mt-0.5 min-w-0 truncate text-[14px] leading-[22px] text-muted-foreground">
               {model.owner}
             </p>
           </div>
         </div>
 
-        <div className="mt-2.5 flex flex-wrap gap-1.5">
-          {isDataset && (
-            <span className="inline-flex h-5 items-center rounded-full border border-violet-500/40 bg-transparent px-2 text-[9.5px] font-semibold uppercase tracking-wider text-violet-600 dark:text-violet-400">
-              Dataset
-            </span>
-          )}
-          {!isDataset && model.isGguf && (
-            <span className="inline-flex h-5 items-center rounded-full border border-blue-500/40 bg-transparent px-2 text-[9.5px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-              GGUF
-            </span>
-          )}
-          {!isDataset && model.isDownloaded && (
-            <span className="inline-flex h-5 items-center gap-1 rounded-full border border-emerald-500/40 px-2 text-[9.5px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-              <HugeiconsIcon
-                icon={CheckmarkCircle02Icon}
-                strokeWidth={2.5}
-                className="size-2.5"
-              />
-              On device
-            </span>
-          )}
-          {isActive && (
-            <span className="inline-flex h-5 items-center rounded-full border border-primary/40 px-2 text-[9.5px] font-semibold uppercase tracking-wider text-primary">
-              Loaded
-            </span>
-          )}
-        </div>
+        {(isDataset || isActive || !isDataset || model.capabilities.length > 0) && (
+          <div className="mt-4 flex flex-wrap items-center gap-1.5">
+            {isDataset && (
+              <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400">
+                Dataset
+              </span>
+            )}
+            {!isDataset && (
+              <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] font-medium text-foreground">
+                <HugeiconsIcon
+                  icon={CubeIcon}
+                  strokeWidth={1.75}
+                  className="size-3 text-muted-foreground"
+                />
+                {taskLabel}
+              </span>
+            )}
+            {model.capabilities.map((capability) => (
+              <CapabilityPill key={capability.key} capability={capability} />
+            ))}
+          </div>
+        )}
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {model.hubRepoId && (
-            <a
-              href={`https://huggingface.co/${isDataset ? "datasets/" : ""}${model.hubRepoId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-border/60 bg-muted/40 px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              View repository
-              <HugeiconsIcon
-                icon={ArrowUpRight01Icon}
-                strokeWidth={1.75}
-                className="size-3.5"
-              />
-            </a>
-          )}
-          {isActive && (
-            <Button
-              variant="dark"
-              className="h-9 rounded-[10px]"
-              onClick={onUseInChat}
-            >
-              Open in chat
-            </Button>
-          )}
-        </div>
       </div>
 
       {isDataset && model.hubRepoId && !model.isLocal && (
-        <div className="shrink-0 border-b border-border/60 px-5 py-4">
+        <div className="shrink-0 px-6 pt-3">
           <DatasetDownloadSection
             repoId={model.hubRepoId}
             isDownloaded={model.isDownloaded}
@@ -290,7 +390,7 @@ export function ModelInspector({
         </div>
       )}
       {!isDataset && (
-        <div className="shrink-0 border-b border-border/60 px-5 py-4">
+        <div className="shrink-0 px-6 pt-3">
           {model.isLocal ? (
             <LocalLoadPanel
               isActive={isActive}
@@ -312,82 +412,107 @@ export function ModelInspector({
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
               onLoad={onLoad}
+              onUseInChat={onUseInChat}
               onChange={onInventoryChange}
             />
           )}
         </div>
       )}
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-        {!isDataset && model.capabilities.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Capabilities
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {model.capabilities.map((capability) => (
-                <CapabilityPill key={capability.key} capability={capability} />
-              ))}
-            </div>
-          </div>
-        )}
-
+      <div className="shrink-0 px-6 pb-5 pt-5">
         <StatGrid>
-          <StatColumn>
-            <StatRow
-              label={isDataset ? "Type" : "Task"}
-              value={isDataset ? "Dataset" : taskLabel}
-              icon={CubeIcon}
-            />
-            <StatRow
-              label="License"
-              value={licenseLabel}
-              icon={LicenseIcon}
-            />
-            <StatRow
-              label="Downloads"
-              value={
-                model.downloads !== undefined
-                  ? formatCompact(model.downloads)
-                  : "—"
-              }
-              icon={DownloadCircle02Icon}
-            />
-            <StatRow
-              label="Likes"
-              value={
-                model.likes !== undefined ? formatCompact(model.likes) : "—"
-              }
-              icon={FavouriteIcon}
-            />
-          </StatColumn>
+          <StatRow
+            label="Updated"
+            value={updatedLabel}
+            icon={Calendar03Icon}
+          />
+          <StatRow
+            label="Downloads"
+            value={
+              model.downloads !== undefined
+                ? formatCompact(model.downloads)
+                : "N/A"
+            }
+            icon={Download01Icon}
+          />
+          <StatRow
+            label="Likes"
+            value={
+              model.likes !== undefined ? formatCompact(model.likes) : "N/A"
+            }
+            icon={FavouriteIcon}
+          />
           {!isDataset && (
-            <StatColumn>
-              <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
-              <StatRow
-                label="Memory"
-                value={minMemory ?? "—"}
-                icon={RamMemoryIcon}
-              />
-              <StatRow
-                label="Updated"
-                value={updatedLabel}
-                icon={Calendar03Icon}
-              />
-              <StatRow label="GPU fit" value={gpuLabel} icon={PackageIcon} />
-            </StatColumn>
+            <StatRow
+              label="Parameters"
+              value={paramsLabel}
+              icon={CpuIcon}
+            />
           )}
-          {isDataset && (
-            <StatColumn>
-              <StatRow
-                label="Updated"
-                value={updatedLabel}
-                icon={Calendar03Icon}
-              />
-            </StatColumn>
+          {!isDataset && (
+            <StatRow
+              label="Memory"
+              value={minMemory ?? "N/A"}
+              icon={RamMemoryIcon}
+            />
           )}
+          {isDataset && datasetSize?.numRows != null && (
+            <StatRow
+              label="Rows"
+              value={formatCompact(datasetSize.numRows)}
+              icon={Database02Icon}
+            />
+          )}
+          {isDataset &&
+            (datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal) !=
+              null && (
+              <StatRow
+                label="Size"
+                value={formatBytes(
+                  (datasetSize?.numBytesParquet ??
+                    datasetSize?.numBytesOriginal) as number,
+                )}
+                icon={PackageIcon}
+              />
+            )}
+          {isDataset && datasetSize?.numSplits != null && datasetSize.numSplits > 0 && (
+            <StatRow
+              label="Splits"
+              value={String(datasetSize.numSplits)}
+              icon={LayersLogoIcon}
+            />
+          )}
+          {isDataset && languages.length > 0 && (
+            <StatRow
+              label="Languages"
+              value={
+                languages.length > 3
+                  ? `${languages.slice(0, 3).join(", ")} +${languages.length - 3}`
+                  : languages.join(", ")
+              }
+              icon={Globe02Icon}
+            />
+          )}
+          <StatRow
+            label="License"
+            value={licenseLabel}
+            icon={LicenseIcon}
+          />
         </StatGrid>
+      </div>
 
+      <div
+        aria-hidden="true"
+        className={cn(
+          "mx-6 shrink-0 border-t transition-colors",
+          descScrolled ? "border-border" : "border-transparent",
+        )}
+      />
+
+      <div
+        ref={descScrollRef}
+        className="min-h-0 flex-1 space-y-7 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
+      >
         {!isDataset && vramInfo && !model.isGguf && (
           <div
             className={cn(
@@ -409,17 +534,14 @@ export function ModelInspector({
         )}
 
         {model.hubRepoId && (
-          <div className="space-y-2 border-t border-border/60 pt-4">
-            <p className="text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              {isDataset ? "Dataset card" : "Model card"}
-            </p>
-            <ModelReadme
-              repoId={model.hubRepoId}
-              kind={isDataset ? "dataset" : "model"}
-            />
-          </div>
+          <ModelReadme
+            repoId={model.hubRepoId}
+            kind={isDataset ? "dataset" : "model"}
+          />
         )}
       </div>
+
+      <div aria-hidden="true" className="h-3 shrink-0" />
     </div>
   );
 }

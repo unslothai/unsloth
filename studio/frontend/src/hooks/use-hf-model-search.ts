@@ -17,7 +17,8 @@ export type HfSortKey =
   | "trendingScore"
   | "downloads"
   | "likes"
-  | "lastModified";
+  | "lastModified"
+  | "createdAt";
 
 export type HfSortDirection = "desc" | "asc";
 
@@ -341,6 +342,7 @@ export function useHfModelSearch(
     sortBy?: HfSortKey;
     sortDirection?: HfSortDirection;
     pinUnslothFirst?: boolean;
+    enabled?: boolean;
   },
 ) {
   const {
@@ -351,6 +353,7 @@ export function useHfModelSearch(
     sortBy = "downloads",
     sortDirection = "desc",
     pinUnslothFirst = true,
+    enabled = true,
   } = options ?? {};
 
   // Parse publisher detection once and share between the iterator factory
@@ -423,7 +426,7 @@ export function useHfModelSearch(
     () => makeMapModel(excludeGguf, excludedTags),
     [excludeGguf, excludedTags],
   );
-  const search = useHfPaginatedSearch(createIter, mapModel);
+  const search = useHfPaginatedSearch(createIter, mapModel, { enabled });
 
   // Secondary sort: only when there's no user query. With a query, the merged
   // iterator already floats a small number of unsloth results to the top —

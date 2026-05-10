@@ -835,7 +835,7 @@ export function ChatPage(): ReactElement {
                   : m.display_name,
               baseModel:
                 m.source === "lmstudio"
-                  ? "LM Studio"
+                  ? "External"
                   : m.source === "custom"
                     ? "Custom Folders"
                     : "Local models",

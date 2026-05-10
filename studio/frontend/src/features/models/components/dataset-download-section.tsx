@@ -10,11 +10,12 @@ import {
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
-  DownloadCircle02Icon,
+  Download01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { fetchDatasetSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
 
 interface ProgressState {
@@ -49,6 +50,7 @@ export function DatasetDownloadSection({
     stopPolling();
 
     let cancelled = false;
+
     void getDatasetDownloadProgress(repoId)
       .then((res) => {
         if (cancelled) return;
@@ -57,6 +59,15 @@ export function DatasetDownloadSection({
         }
       })
       .catch(() => {});
+
+    void fetchDatasetSize(repoId).then((info) => {
+      if (cancelled || !info) return;
+      const upstream = info.numBytesParquet ?? info.numBytesOriginal;
+      if (upstream && upstream > 0) {
+        setTotalBytes((prev) => prev ?? upstream);
+      }
+    });
+
     return () => {
       cancelled = true;
     };
@@ -149,34 +160,41 @@ export function DatasetDownloadSection({
   const downloading = progress !== null;
 
   return (
-    <div className="flex flex-col gap-3 rounded-[24px] border border-border/60 bg-background/80 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Download
+    <div className="download-card">
+      <div className="flex items-center">
+        <div className="flex h-9 min-w-0 flex-1 items-center pl-3">
+          <span className="flex items-center gap-2.5 text-[12px] text-muted-foreground">
+            <span className="font-medium text-amber-600 dark:text-amber-400">
+              Dataset
+            </span>
             {totalBytes && totalBytes > 0 && (
-              <span className="rounded-[5px] border border-border/60 px-1.5 py-px text-[10px] font-medium normal-case tracking-normal text-foreground/80 tabular-nums">
-                {formatBytes(totalBytes)}
+              <span className="tabular-nums">{formatBytes(totalBytes)}</span>
+            )}
+            {isDownloaded && (
+              <span className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+                <HugeiconsIcon
+                  icon={CheckmarkCircle02Icon}
+                  strokeWidth={2.5}
+                  className="size-3"
+                />
+                On device
               </span>
             )}
           </span>
-          <span className="text-[13px] text-foreground">
-            {isDownloaded
-              ? "Cached locally. Ready for fine-tuning runs."
-              : downloading
-                ? "Pulling dataset blobs into the HF cache."
-                : "Pulls the full snapshot via huggingface_hub. Reuses the same cache the fine-tuning runner uses."}
-          </span>
         </div>
+        <div
+          aria-hidden="true"
+          className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] dark:bg-white/[0.04]"
+        />
         <button
           type="button"
           disabled={downloading || isDownloaded}
           onClick={() => void startDownload()}
           className={cn(
-            "inline-flex h-10 shrink-0 items-center gap-1.5 rounded-[16px] px-4 text-[12.5px] font-medium transition-colors",
+            "inline-flex h-9 w-24 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12.5px] font-medium tracking-tight transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]",
             isDownloaded
-              ? "cursor-default bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-              : "bg-foreground text-background hover:bg-foreground/85",
+              ? "cursor-default text-emerald-700 dark:text-emerald-400"
+              : "text-foreground",
             downloading && "opacity-70",
           )}
         >
@@ -197,9 +215,9 @@ export function DatasetDownloadSection({
           ) : (
             <>
               <HugeiconsIcon
-                icon={DownloadCircle02Icon}
+                icon={Download01Icon}
                 strokeWidth={1.75}
-                className="size-3.5"
+                className="size-4"
               />
               Download
             </>

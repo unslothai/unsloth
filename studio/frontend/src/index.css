@@ -81,7 +81,7 @@
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
 	--radius: 1.1rem;
-	--sidebar: #f9faf9;
+	--sidebar: var(--background);
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
@@ -169,13 +169,15 @@
 	   chat-message action bar so the leftmost icon's visual edge aligns
 	   with the message text edge. Auto-tracks --icon-size. */
 	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
+
+	--sidebar-scrollbar-gutter: 16px;
 }
 
 .dark {
 	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
 	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
 	   drifted ~3% darker and shifted the neutral hue. */
-	--background: #1f2023;
+	--background: #000000;
 	--foreground: #ececee;
 	--card: #2d2e32;
 	--card-foreground: #ececee;
@@ -201,13 +203,13 @@
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	--sidebar: #18181a;
-	--sidebar-foreground: #ececee;
+	--sidebar: #000000;
+	--sidebar-foreground: #ffffff;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: #2f2f31;
 	--sidebar-accent-foreground: #ececee;
-	--sidebar-border: #2d2d2f;
+	--sidebar-border: #161616;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
@@ -232,10 +234,10 @@
 	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 
 	--nav-fg: #c7c7c4;
-	--nav-fg-muted: #96979b;
+	--nav-fg-muted: #b8b9bc;
 	--nav-surface-hover: #2e2e30;
 	--nav-icon-idle: #5c5c5c;
-	--nav-beta-border: #3a3c3f;
+	--nav-beta-border: #55575a;
 	--panel-surface-hover: #3a3c42;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
@@ -529,10 +531,8 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-nav-fg-muted focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150;
-	}
-	.sidebar-sticky-label.is-scrolled {
-		@apply shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)];
+		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-6 text-[13px]! font-medium normal-case tracking-[0.04em] text-nav-fg-muted focus-visible:ring-0! focus-visible:outline-none;
+		width: calc(100% + var(--sidebar-scrollbar-gutter));
 	}
 
 	/* Neutral panel input surface — sidesteps the green cast on
@@ -695,6 +695,280 @@
 	}
 	.tooltip-rich .border-border\/40 {
 		border-color: rgb(255 255 255 / 0.12) !important;
+	}
+
+	.tag-soft,
+	.tag-meta {
+		@apply min-h-[26px] rounded-[11px] bg-muted/70 ring-1 ring-inset ring-border;
+	}
+	.dark .tag-soft,
+	.dark .tag-meta {
+		@apply bg-white/[0.05] ring-white/[0.06];
+	}
+
+	.download-card {
+		@apply flex w-full max-w-[560px] flex-col gap-2 rounded-[18px] p-1.5;
+		background-color: #ffffff;
+		border: 1px solid rgba(17, 24, 39, 0.08);
+		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
+	}
+	.dark .download-card {
+		background-color: rgba(255, 255, 255, 0.03);
+		border: 1px solid rgba(255, 255, 255, 0.04);
+		box-shadow: none;
+	}
+
+	.field-soft {
+		@apply border border-foreground/15 bg-transparent;
+	}
+	.dark .field-soft {
+		@apply border-border bg-white/[0.035];
+	}
+	.field-soft:hover {
+		@apply bg-muted/50;
+	}
+	.dark .field-soft:hover {
+		@apply bg-white/[0.06];
+	}
+
+	html:not(.dark) .hub-page {
+		background-color: #ffffff;
+	}
+
+	html:not(.dark) .hub-page > div > section {
+		background-color: #f8f8f8;
+		border: 1px solid rgba(0, 0, 0, 0.06);
+		box-shadow:
+			0 2px 6px rgba(0, 0, 0, 0.03),
+			0 10px 30px rgba(0, 0, 0, 0.06);
+	}
+	html:not(.dark) .hub-page > div > section .border-b,
+	html:not(.dark) .hub-page > div > section .border-r,
+	html:not(.dark) .hub-page > div > section .border-t.border-border {
+		border-color: rgba(17, 24, 39, 0.06);
+	}
+	html:not(.dark) .hub-page .hub-side-surface {
+		background-color: #ffffff;
+	}
+
+	html:not(.dark) .hub-page .tag-soft,
+	html:not(.dark) .hub-page .tag-meta {
+		background-color: transparent;
+		--tw-ring-shadow: 0 0 #0000;
+		border: 1px solid rgba(17, 24, 39, 0.09);
+		box-shadow: none;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+	html:not(.dark) .hub-page .tag-soft:hover,
+	html:not(.dark) .hub-page .tag-meta:hover {
+		background-color: rgba(17, 24, 39, 0.04);
+	}
+
+	html:not(.dark) .hub-page .field-soft {
+		background-color: #ffffff;
+		border: 1px solid rgba(17, 24, 39, 0.09);
+		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+	html:not(.dark) .hub-page .field-soft:hover,
+	html:not(.dark) .hub-page .field-soft[data-state="open"] {
+		background-color: #f7f7f8;
+	}
+
+	html:not(.dark) .hub-page input.field-soft {
+		background-color: #ffffff;
+		border: 1px solid rgba(17, 24, 39, 0.09);
+		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
+	}
+	html:not(.dark) .hub-page input.field-soft:hover {
+		background-color: #fafafa;
+		border-color: rgba(17, 24, 39, 0.14);
+	}
+	html:not(.dark) .hub-page input.field-soft:focus {
+		background-color: #ffffff;
+		border-color: rgba(17, 24, 39, 0.2);
+	}
+
+	html.dark .hub-page {
+		background-color: #000000;
+	}
+
+	html.dark .hub-page > div > section {
+		background-color: #1c1d1f !important;
+		background-image: radial-gradient(
+			ellipse 130% 90% at 50% 0%,
+			rgba(255, 255, 255, 0.006),
+			rgba(255, 255, 255, 0) 100%
+		);
+		border: 1px solid rgba(255, 255, 255, 0.06);
+		box-shadow:
+			0 1px 2px rgba(0, 0, 0, 0.25),
+			0 8px 24px -8px rgba(0, 0, 0, 0.35);
+	}
+	html.dark .hub-page > div > section [class*="bg-card"],
+	html.dark .hub-page > div > section [class*="bg-background"] {
+		background-color: #25272b;
+	}
+	html.dark .hub-page > div > section .border-b,
+	html.dark .hub-page > div > section .border-r,
+	html.dark .hub-page > div > section .border-t.border-border {
+		border-color: rgba(255, 255, 255, 0.05);
+	}
+	html.dark .hub-page .hub-side-surface {
+		background-color: transparent;
+	}
+
+	html.dark .hub-page .tag-soft,
+	html.dark .hub-page .tag-meta {
+		background-color: transparent;
+		--tw-ring-shadow: 0 0 #0000;
+		box-shadow: none;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+	html.dark .hub-page .tag-soft {
+		border: 1px solid rgba(255, 255, 255, 0.28);
+		color: rgba(255, 255, 255, 0.7);
+	}
+	html.dark .hub-page .tag-meta {
+		border: 1px solid rgba(255, 255, 255, 0.08);
+	}
+	html.dark .hub-page .tag-soft:hover,
+	html.dark .hub-page .tag-meta:hover {
+		background-color: rgba(255, 255, 255, 0.05);
+	}
+
+	html.dark .hub-page .field-soft {
+		background-color: rgba(255, 255, 255, 0.03);
+		border: 1px solid rgba(255, 255, 255, 0.04);
+		box-shadow: none;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+	html.dark .hub-page .field-soft:hover,
+	html.dark .hub-page .field-soft[data-state="open"] {
+		background-color: rgba(255, 255, 255, 0.06);
+	}
+
+	html.dark .hub-page input.field-soft {
+		background-color: rgba(255, 255, 255, 0.03) !important;
+		border: 1px solid rgba(255, 255, 255, 0.04) !important;
+		box-shadow: none;
+	}
+	html.dark .hub-page input.field-soft:hover {
+		background-color: rgba(255, 255, 255, 0.05) !important;
+		border-color: rgba(255, 255, 255, 0.06) !important;
+	}
+	html.dark .hub-page input.field-soft:focus {
+		background-color: rgba(255, 255, 255, 0.07) !important;
+		border-color: rgba(255, 255, 255, 0.1) !important;
+	}
+
+	.menu-instant {
+		animation: none !important;
+		--tw-translate-x: 0px !important;
+		--tw-translate-y: 0px !important;
+		translate: 0 0 !important;
+		user-select: none;
+		-webkit-user-select: none;
+	}
+	.menu-instant [data-slot="select-item"]:focus,
+	.menu-instant [data-slot="select-item"][data-highlighted] {
+		background-color: rgba(17, 24, 39, 0.06);
+		color: var(--foreground);
+	}
+	html.dark .menu-instant [data-slot="select-item"]:focus,
+	html.dark .menu-instant [data-slot="select-item"][data-highlighted] {
+		background-color: rgba(255, 255, 255, 0.08);
+		color: var(--foreground);
+	}
+	html.dark .menu-instant {
+		background-color: #2e2f31 !important;
+	}
+
+	.view-repo-link > span {
+		position: absolute;
+		inset: 0;
+	}
+	.view-repo-link > span > p {
+		position: absolute;
+		inset: 0;
+		margin: 0;
+	}
+	.view-repo-link [data-streamdown="link"] {
+		position: absolute;
+		inset: 0;
+		display: block;
+		font-size: 0;
+		color: transparent;
+		text-decoration: none;
+		background: transparent;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+	}
+
+	[data-streamdown="link-safety-modal"] {
+		background-color: rgba(0, 0, 0, 0.35) !important;
+		backdrop-filter: none !important;
+		-webkit-backdrop-filter: none !important;
+	}
+	.menu-instant *,
+	.menu-trigger,
+	.menu-trigger * {
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	html:not(.dark) .hub-page .tab-toggle {
+		background-color: #ffffff;
+		border: 1px solid rgba(17, 24, 39, 0.09);
+		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
+	}
+	html.dark .hub-page .tab-toggle {
+		background-color: rgba(255, 255, 255, 0.03);
+		border: 1px solid rgba(255, 255, 255, 0.04);
+	}
+	html:not(.dark) .hub-page .tab-toggle-pill {
+		background-color: #ffffff;
+		border: 1px solid rgba(17, 24, 39, 0.06);
+		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
+	}
+	html.dark .hub-page .tab-toggle-pill {
+		background-color: rgba(255, 255, 255, 0.13);
+		border: 1px solid rgba(255, 255, 255, 0.16);
+	}
+
+	html:not(.dark) .hub-page .catalog-row {
+		background-color: transparent;
+		border-color: transparent;
+		box-shadow: none;
+		transition: background-color 160ms ease;
+	}
+	html:not(.dark) .hub-page .catalog-row:hover {
+		background-color: rgba(17, 24, 39, 0.035);
+	}
+	html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
+		background-color: rgba(17, 24, 39, 0.06);
+	}
+
+	html.dark .hub-page .catalog-row {
+		background-color: transparent;
+		border-color: transparent;
+		box-shadow: none;
+		transition: background-color 160ms ease;
+	}
+	html.dark .hub-page .catalog-row:hover {
+		background-color: rgba(255, 255, 255, 0.035);
+	}
+	html.dark .hub-page .catalog-row[data-selected="true"] {
+		background-color: rgba(255, 255, 255, 0.07);
 	}
 
 	.app-user-menu [data-slot="dropdown-menu-item"] {
@@ -1048,6 +1322,19 @@
 
 .dark *::-webkit-scrollbar-thumb {
 	background: oklch(0.67 0 0 / 0.5);
+}
+
+html:not(.dark) .hub-page * {
+	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
+}
+html.dark .hub-page * {
+	scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
+}
+html:not(.dark) .hub-page *::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.22);
+}
+html.dark .hub-page *::-webkit-scrollbar-thumb {
+	background: oklch(0.55 0 0 / 0.16);
 }
 
 /* Chat viewport: solid track matching sidebar so the scrollbar reads as a

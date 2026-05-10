@@ -7,6 +7,7 @@ import {
   CheckmarkCircle02Icon,
   CloudOffIcon,
   CubeIcon,
+  Download01Icon,
   DownloadCircle02Icon,
   FavouriteIcon,
   FolderSearchIcon,
@@ -16,10 +17,108 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactNode, RefObject } from "react";
+import { type ReactNode, type RefObject, useEffect, useState } from "react";
+import { ModelDeleteAction } from "@/components/assistant-ui/model-selector/model-delete-action";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  deleteCachedModel,
+  listGgufVariants,
+} from "@/features/chat/api/chat-api";
+import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { OwnerAvatar } from "./owner-avatar";
+import { ACCENT_RULE, type AccentSlug, pickAccent } from "../lib/accent";
 import { formatBytes, formatRelativeShort } from "../lib/format";
 import { formatLocalUpdated } from "../lib/view-models";
+
+/**
+ * Cached GGUF size chip — same look as a StatChip but lazily fetches the
+ * per-variant breakdown when the user hovers/opens it. The list of files
+ * appears in a `rich` tooltip so users can see exactly which quantizations
+ * make up the total size shown on the chip.
+ */
+function CachedSizeChip({
+  repoId,
+  totalBytes,
+  isGguf,
+}: {
+  repoId: string;
+  totalBytes: number;
+  isGguf: boolean;
+}) {
+  // For GGUF repos, the cache may hold multiple downloaded quants — fetch the
+  // per-variant breakdown on mount so the tooltip is ready by the time the
+  // user hovers (otherwise it would render twice: once with the total, then
+  // again with the file list once the async resolves).
+  // For non-GGUF (safetensors) repos, the listing isn't needed — those repos
+  // present as a single model artifact, so the tooltip shows one row with the
+  // repo id and total size.
+  const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
+  useEffect(() => {
+    if (!isGguf) return;
+    let canceled = false;
+    listGgufVariants(repoId)
+      .then((res) => {
+        if (canceled) return;
+        setVariants(res.variants.filter((v) => v.downloaded));
+      })
+      .catch(() => {
+        if (canceled) return;
+        setVariants([]);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [repoId, isGguf]);
+
+  const displayBytes =
+    isGguf && variants && variants.length > 0
+      ? variants.reduce((sum, v) => sum + v.size_bytes, 0)
+      : totalBytes;
+
+  const trigger = (
+    <span onClick={(e) => e.stopPropagation()}>
+      <StatChip icon={PackageIcon} value={formatBytes(displayBytes)} />
+    </span>
+  );
+
+  // Wait for the GGUF breakdown to land before we wrap with a tooltip — keeps
+  // the first hover content stable.
+  if (isGguf && (!variants || variants.length === 0)) {
+    return trigger;
+  }
+
+  const rows: Array<{ filename: string; size_bytes: number }> = isGguf
+    ? variants!
+    : [{ filename: repoId, size_bytes: totalBytes }];
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+      <TooltipContent variant="default" side="top" sideOffset={4}>
+        <ul className="flex flex-col gap-1">
+          {rows.map((row) => (
+            <li
+              key={row.filename}
+              className="flex items-center gap-3 tabular-nums"
+            >
+              <span className="min-w-0 truncate">{row.filename}</span>
+              <span className="ml-auto">
+                <StatChip
+                  icon={PackageIcon}
+                  value={formatBytes(row.size_bytes)}
+                />
+              </span>
+            </li>
+          ))}
+        </ul>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function StatChip({
   icon,
@@ -29,11 +128,11 @@ function StatChip({
   value: string;
 }) {
   return (
-    <span className="inline-flex h-[18px] items-center gap-0.5 rounded-[5px] border border-border/60 bg-background/60 px-1 text-[9.5px] font-medium tabular-nums leading-none text-foreground/80">
+    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10.5px] font-medium leading-none tabular-nums text-muted-foreground">
       <HugeiconsIcon
         icon={icon}
-        strokeWidth={1.75}
-        className="size-2.5 text-muted-foreground"
+        strokeWidth={2}
+        className="size-3 shrink-0"
       />
       {value}
     </span>
@@ -49,29 +148,30 @@ import type {
 function CatalogRow({
   selected,
   active,
+  accent = "slate",
   onClick,
   children,
 }: {
   selected: boolean;
   active?: boolean;
+  accent?: AccentSlug;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
+      data-selected={selected || undefined}
       onClick={onClick}
-      className={cn(
-        "group relative block w-full px-3 py-2 text-left transition-colors",
-        selected
-          ? "bg-foreground/[0.08] hover:bg-foreground/[0.10] dark:bg-white/[0.07] dark:hover:bg-white/[0.09]"
-          : "hover:bg-foreground/[0.05] dark:hover:bg-white/[0.04]",
-      )}
+      className="catalog-row group/row relative block w-full cursor-pointer select-none overflow-hidden rounded-[14px] pl-3 pr-2 py-2.5 text-left"
     >
       {active && (
         <span
           aria-hidden="true"
-          className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-emerald-500"
+          className={cn(
+            "absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full",
+            ACCENT_RULE[accent],
+          )}
         />
       )}
       {children}
@@ -111,7 +211,7 @@ function NetworkErrorState({
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-border/60 bg-muted/40 px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-muted"
+        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
       >
         <HugeiconsIcon
           icon={RefreshIcon}
@@ -127,14 +227,16 @@ function NetworkErrorState({
 function EmptyState({
   title,
   body,
+  icon = CubeIcon,
 }: {
   title: string;
   body: string;
+  icon?: IconSvgElement;
 }) {
   return (
     <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
-        <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
+        <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
         <p className="text-[14px] font-semibold tracking-tight text-foreground">
@@ -145,6 +247,30 @@ function EmptyState({
         </p>
       </div>
     </div>
+  );
+}
+
+function SkeletonRow() {
+  return (
+    <div className="flex items-center gap-2.5 px-3 py-2">
+      <div className="size-9 shrink-0 animate-pulse rounded-[10px] bg-muted" />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="h-[14px] w-1/2 animate-pulse rounded-full bg-muted" />
+        <div className="h-[12px] w-3/4 animate-pulse rounded-full bg-muted/70" />
+      </div>
+    </div>
+  );
+}
+
+function SkeletonList({ count = 6 }: { count?: number }) {
+  return (
+    <ul className="divide-y divide-border" aria-hidden="true">
+      {Array.from({ length: count }).map((_, i) => (
+        <li key={i}>
+          <SkeletonRow />
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -167,7 +293,7 @@ function SectionLabel({
       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
         {label}
       </p>
-      <span className="rounded-[6px] bg-muted px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
+      <span className="text-[10.5px] font-medium tabular-nums text-muted-foreground/70">
         {count}
       </span>
     </div>
@@ -185,8 +311,14 @@ function DiscoverModelRow({
   active: boolean;
   onClick: () => void;
 }) {
+  const accent = pickAccent(row.capabilities);
   return (
-    <CatalogRow selected={selected} active={active} onClick={onClick}>
+    <CatalogRow
+      selected={selected}
+      active={active}
+      accent={accent}
+      onClick={onClick}
+    >
       <div className="flex items-center gap-2.5">
         <OwnerAvatar owner={row.owner} className="size-9 rounded-[10px]" />
         <div className="min-w-0 flex-1">
@@ -196,7 +328,7 @@ function DiscoverModelRow({
                 {row.repo}
               </p>
               {row.result.isGguf && (
-                <span className="inline-flex h-[14px] shrink-0 items-center rounded-full border border-blue-500/40 px-1 text-[8px] font-semibold uppercase tracking-[0.08em] leading-none text-blue-600 dark:text-blue-400">
+                <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.08em] leading-none text-blue-600 dark:text-blue-400">
                   GGUF
                 </span>
               )}
@@ -210,12 +342,12 @@ function DiscoverModelRow({
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <StatChip
-                icon={DownloadCircle02Icon}
-                value={formatCompact(row.result.downloads)}
-              />
-              <StatChip
                 icon={FavouriteIcon}
                 value={formatCompact(row.result.likes)}
+              />
+              <StatChip
+                icon={Download01Icon}
+                value={formatCompact(row.result.downloads)}
               />
             </div>
           </div>
@@ -250,11 +382,13 @@ function InventoryRow({
   selected,
   activeCheckpoint,
   onClick,
+  onChange,
 }: {
   row: CachedInventoryRow | LocalInventoryRow;
   selected: boolean;
   activeCheckpoint: string | null;
   onClick: () => void;
+  onChange?: () => void;
 }) {
   const active =
     row.kind === "cache"
@@ -267,10 +401,17 @@ function InventoryRow({
     row.kind === "local" && row.updatedAt
       ? formatLocalUpdated(row.updatedAt)
       : null;
+  const canDelete = row.kind === "cache";
+  const accent = pickAccent(undefined);
 
   return (
-    <CatalogRow selected={selected} active={active} onClick={onClick}>
-      <div className="flex items-center gap-2.5">
+    <CatalogRow
+      selected={selected}
+      active={active}
+      accent={accent}
+      onClick={onClick}
+    >
+      <div className="group/inventory flex items-center gap-2.5">
         <OwnerAvatar owner={row.owner} className="size-9 rounded-[10px]" />
         <div className="min-w-0 flex-1">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
@@ -279,14 +420,44 @@ function InventoryRow({
                 {title}
               </p>
               {row.isGguf && (
-                <span className="inline-flex h-[14px] shrink-0 items-center rounded-full border border-blue-500/40 px-1 text-[8px] font-semibold uppercase tracking-[0.08em] leading-none text-blue-600 dark:text-blue-400">
+                <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.08em] leading-none text-blue-600 dark:text-blue-400">
                   GGUF
                 </span>
               )}
             </div>
-            {row.kind === "cache" && (
-              <StatChip icon={PackageIcon} value={formatBytes(row.bytes)} />
-            )}
+            <div className="flex shrink-0 items-center gap-1">
+              {canDelete && (
+                <ModelDeleteAction
+                  ariaLabel={`Delete ${row.repoId}`}
+                  title="Delete cached model?"
+                  description={
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">
+                        {row.repoId}
+                      </span>{" "}
+                      {row.isGguf
+                        ? "and all of its downloaded quantizations"
+                        : "and all of its downloaded files"}{" "}
+                      ({formatBytes(row.bytes)}) from disk. You can re-download
+                      it later.
+                    </>
+                  }
+                  successMessage={`Deleted ${row.repoId}`}
+                  buttonClassName="opacity-0 transition-opacity group-hover/inventory:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                  iconClassName="size-3.5"
+                  onConfirm={() => deleteCachedModel(row.repoId)}
+                  onDeleted={onChange}
+                />
+              )}
+              {row.kind === "cache" && (
+                <CachedSizeChip
+                  repoId={row.repoId}
+                  totalBytes={row.bytes}
+                  isGguf={row.isGguf}
+                />
+              )}
+            </div>
           </div>
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2 text-[12px] leading-[18px] text-muted-foreground">
             <span className="truncate">{subLabel}</span>
@@ -317,6 +488,7 @@ export function ModelsCatalog({
   searchError,
   online,
   onRetry,
+  onInventoryChange,
 }: {
   tab: ModelsTab;
   discoverRows: DiscoverRow[];
@@ -334,11 +506,25 @@ export function ModelsCatalog({
   searchError: string | null;
   online: boolean;
   onRetry: () => void;
+  onInventoryChange?: () => void;
 }) {
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setScrolled(el.scrollTop > 0);
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [scrollRef]);
+
   return (
     <div
       ref={scrollRef}
-      className="h-[calc(100dvh-205px)] overflow-y-auto"
+      className={cn(
+        "h-[calc(100dvh-205px)] overflow-y-auto border-t border-transparent pb-6 pl-6 pr-4 pt-4 transition-colors [scrollbar-gutter:stable] [scrollbar-width:thin]",
+        scrolled && "border-border",
+      )}
     >
       {tab === "discover" ? (
         <>
@@ -348,25 +534,22 @@ export function ModelsCatalog({
               message={searchError}
               onRetry={onRetry}
             />
+          ) : discoverRows.length === 0 && isLoading ? (
+            <SkeletonList />
           ) : discoverRows.length === 0 ? (
             <EmptyState
+              icon={query.trim() ? FolderSearchIcon : CubeIcon}
               title={
-                query.trim()
-                  ? "No matching models"
-                  : isLoading
-                    ? "Loading models"
-                    : "No models available"
+                query.trim() ? "No matching models" : "No models available"
               }
               body={
                 query.trim()
                   ? "Try a broader search or remove some filters."
-                  : isLoading
-                    ? "The discovery feed is still warming up."
-                    : "The current filters are excluding every result."
+                  : "The current filters are excluding every result."
               }
             />
           ) : (
-            <ul className="divide-y divide-border">
+            <ul>
               {discoverRows.map((row) => (
                 <li key={row.id}>
                   <DiscoverModelRow
@@ -396,59 +579,41 @@ export function ModelsCatalog({
         </div>
       ) : cachedRows.length === 0 && localRows.length === 0 ? (
         <EmptyState
-          title="Nothing on device yet"
+          icon={query.trim() ? FolderSearchIcon : DownloadCircle02Icon}
+          title={
+            query.trim() ? "No matches on device" : "Nothing on device yet"
+          }
           body={
             query.trim()
-              ? "No cached or local models match this search."
+              ? "Clear the search or try a different query. No cached or local model matches it."
               : "Downloaded repositories and indexed local folders will appear here."
           }
         />
       ) : (
-        <div className="space-y-3">
-          {cachedRows.length > 0 && (
-            <section>
-              <SectionLabel
-                icon={PackageIcon}
-                label="Hub cache"
-                count={cachedRows.length}
+        <ul>
+          {cachedRows.map((row) => (
+            <li key={row.id}>
+              <InventoryRow
+                row={row}
+                selected={selectedId === row.id}
+                activeCheckpoint={activeCheckpoint}
+                onClick={() => onSelect(row.id)}
+                onChange={onInventoryChange}
               />
-              <ul className="divide-y divide-border">
-                {cachedRows.map((row) => (
-                  <li key={row.id}>
-                    <InventoryRow
-                      row={row}
-                      selected={selectedId === row.id}
-                      activeCheckpoint={activeCheckpoint}
-                      onClick={() => onSelect(row.id)}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {localRows.length > 0 && (
-            <section>
-              <SectionLabel
-                icon={FolderSearchIcon}
-                label="Local libraries"
-                count={localRows.length}
+            </li>
+          ))}
+          {localRows.map((row) => (
+            <li key={row.id}>
+              <InventoryRow
+                row={row}
+                selected={selectedId === row.id}
+                activeCheckpoint={activeCheckpoint}
+                onClick={() => onSelect(row.id)}
+                onChange={onInventoryChange}
               />
-              <ul className="divide-y divide-border">
-                {localRows.map((row) => (
-                  <li key={row.id}>
-                    <InventoryRow
-                      row={row}
-                      selected={selectedId === row.id}
-                      activeCheckpoint={activeCheckpoint}
-                      onClick={() => onSelect(row.id)}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </div>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

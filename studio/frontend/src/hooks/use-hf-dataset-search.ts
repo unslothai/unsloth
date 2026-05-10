@@ -80,26 +80,43 @@ function mapDataset(raw: unknown): HfDatasetResult {
   };
 }
 
-function withTrendingSort(
-  input: Parameters<typeof fetch>[0],
-  init?: Parameters<typeof fetch>[1],
-): ReturnType<typeof fetch> {
-  const rawUrl =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url;
-  const url = new URL(rawUrl);
+type DatasetSortKey =
+  | "trendingScore"
+  | "downloads"
+  | "likes"
+  | "lastModified"
+  | "createdAt";
+type DatasetSortDirection = "desc" | "asc";
 
-  if (!url.searchParams.has("sort")) {
-    url.searchParams.set("sort", "trendingScore");
-  }
-  if (!url.searchParams.has("direction")) {
-    url.searchParams.set("direction", "-1");
-  }
+const DESC_ONLY_DATASET_SORTS = new Set<DatasetSortKey>(["trendingScore"]);
 
-  return fetch(url, init);
+function makeDatasetSortFetch(
+  sortBy: DatasetSortKey,
+  direction: DatasetSortDirection,
+): typeof fetch {
+  return (input, init) => {
+    const rawUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    const url = new URL(rawUrl);
+
+    if (!url.searchParams.has("sort")) {
+      url.searchParams.set("sort", sortBy);
+    }
+    const effectiveSort = (url.searchParams.get("sort") ?? sortBy) as
+      | DatasetSortKey
+      | undefined;
+    const effectiveDir =
+      effectiveSort && DESC_ONLY_DATASET_SORTS.has(effectiveSort)
+        ? "desc"
+        : direction;
+    url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
+
+    return fetch(url, init);
+  };
 }
 
 type DatasetRelevance = "incompatible" | "neutral" | "boosted";
@@ -345,25 +362,36 @@ function toCuratedDatasetResult(id: string): HfDatasetResult {
 
 export function useHfDatasetSearch(
   query: string,
-  options?: { modelType?: ModelType | null; accessToken?: string; enabled?: boolean },
+  options?: {
+    modelType?: ModelType | null;
+    accessToken?: string;
+    enabled?: boolean;
+    sortBy?: DatasetSortKey;
+    sortDirection?: DatasetSortDirection;
+  },
 ) {
-  const { modelType, accessToken, enabled = true } = options ?? {};
+  const {
+    modelType,
+    accessToken,
+    enabled = true,
+    sortBy = "trendingScore",
+    sortDirection = "desc",
+  } = options ?? {};
   const hasQuery = query.trim().length > 0;
   const useCuratedOnly = !hasQuery && !!modelType;
   const createIter = useCallback(
     () => {
-      // Use curated defaults for typed model flows only.
       if (useCuratedOnly) {
         return (async function* empty() {})() as AsyncGenerator<unknown>;
       }
       return listDatasets({
         search: hasQuery ? { query } : {},
         additionalFields: ["cardData", "tags"],
-        fetch: withTrendingSort,
+        fetch: makeDatasetSortFetch(sortBy, sortDirection),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>;
     },
-    [useCuratedOnly, hasQuery, query, accessToken],
+    [useCuratedOnly, hasQuery, query, accessToken, sortBy, sortDirection],
   );
 
   const search = useHfPaginatedSearch(createIter, mapDataset, { enabled });

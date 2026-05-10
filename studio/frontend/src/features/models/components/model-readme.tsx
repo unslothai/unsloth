@@ -8,7 +8,11 @@ import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
-import { fetchReadme, stripFrontmatter } from "../lib/hf-readme";
+import {
+  fetchReadme,
+  stripChromeHeadings,
+  stripFrontmatter,
+} from "../lib/hf-readme";
 
 const PLUGINS = { code, math, mermaid } as const;
 
@@ -54,7 +58,7 @@ export function ModelReadme({
           return;
         }
         const { body } = stripFrontmatter(markdown);
-        setBody(body.trim());
+        setBody(stripChromeHeadings(body).trim());
       })
       .catch((err) => {
         if (canceled) return;
@@ -72,36 +76,29 @@ export function ModelReadme({
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 rounded-[14px] border border-border/60 bg-background/80 px-4 py-3 text-[12.5px] text-muted-foreground">
+      <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
         <Spinner className="size-3.5" />
-        Loading model card…
+        Loading {kind === "dataset" ? "dataset" : "model"} card…
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="rounded-[14px] border border-border/60 bg-background/80 px-4 py-3 text-[12.5px] text-muted-foreground">
-        {error}
-      </div>
+      <p className="text-[12.5px] text-muted-foreground">{error}</p>
     );
   }
 
   if (!body) {
     return (
-      <div className="rounded-[14px] border border-border/60 bg-background/80 px-4 py-3 text-[12.5px] text-muted-foreground">
+      <p className="text-[12.5px] text-muted-foreground">
         This repository has no README.
-      </div>
+      </p>
     );
   }
 
   return (
-    <div
-      className={cn(
-        "rounded-[14px] border border-border/60 bg-background/80 px-5 py-4",
-        PROSE,
-      )}
-    >
+    <div className={PROSE}>
       <Streamdown mode="static" plugins={PLUGINS} controls={false}>
         {body}
       </Streamdown>

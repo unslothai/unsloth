@@ -63,12 +63,14 @@ function SelectTrigger({
   children,
   icon,
   iconClassName,
+  iconStrokeWidth = 2,
   animateRadius = true,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
   size?: "sm" | "default";
   icon?: typeof UnfoldMoreIcon;
   iconClassName?: string;
+  iconStrokeWidth?: number;
   animateRadius?: boolean;
 }) {
   const isOpen = useContext(SelectOpenContext);
@@ -97,7 +99,7 @@ function SelectTrigger({
       <SelectPrimitive.Icon asChild>
         <HugeiconsIcon
           icon={icon ?? UnfoldMoreIcon}
-          strokeWidth={2}
+          strokeWidth={iconStrokeWidth}
           className={cn(
             "text-muted-foreground size-4 pointer-events-none",
             iconClassName,

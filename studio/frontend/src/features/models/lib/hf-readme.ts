@@ -51,6 +51,42 @@ export function stripFrontmatter(markdown: string): {
   return { body: markdown, frontmatter: null };
 }
 
+/**
+ * Drop heading lines that duplicate the inspector's own chrome:
+ *   - leading `# Model Card …`, `## Dataset Card …`, `# Card for …`
+ *   - standalone `Details` / `Model Card` / `Dataset Card` headings anywhere
+ *
+ * The page header already shows the repo name and section context, so these
+ * titles appear as redundant duplicates inside the rendered README body.
+ */
+export function stripChromeHeadings(markdown: string): string {
+  const RE_HEADING = /^(#{1,6})\s+(.+?)\s*$/;
+  const isChromeTitle = (text: string): boolean => {
+    const t = text
+      .toLowerCase()
+      .replace(/[*_`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return (
+      t === "details" ||
+      t === "model card" ||
+      t === "dataset card" ||
+      t.startsWith("model card for") ||
+      t.startsWith("dataset card for") ||
+      t.startsWith("card for")
+    );
+  };
+
+  const lines = markdown.split(/\r?\n/);
+  const out: string[] = [];
+  for (const line of lines) {
+    const m = RE_HEADING.exec(line);
+    if (m && isChromeTitle(m[2])) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 export function extractDescription(markdown: string): string | null {
   const { body } = stripFrontmatter(markdown);
   const lines = body.split(/\r?\n/);

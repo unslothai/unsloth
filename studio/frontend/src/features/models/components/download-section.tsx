@@ -33,20 +33,18 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  Alert02Icon,
-  ArrowDataTransferHorizontalIcon,
   ArrowDown01Icon,
-  Cancel01Icon,
   CheckmarkCircle02Icon,
   Delete02Icon,
-  DownloadCircle02Icon,
+  Download01Icon,
+  InformationCircleIcon,
+  PencilEdit02Icon,
   PlayIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { fetchModelSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
 
 type FitClass = "fits" | "marginal" | "partial" | "oom";
@@ -106,7 +104,7 @@ function DownloadProgressBar({
     <div className="flex flex-col gap-1.5">
       <div className="h-1 overflow-hidden rounded-full bg-border/40">
         <div
-          className="h-full rounded-full bg-foreground/80 transition-[width] duration-300"
+          className="h-full rounded-full bg-primary transition-[width] duration-300"
           style={{ width: `${percent}%` }}
         />
       </div>
@@ -122,106 +120,105 @@ function DownloadProgressBar({
 }
 
 interface FitBadgeMeta {
-  icon: IconSvgElement;
   label: string;
   tooltip: string;
-  className: string;
   iconClassName: string;
 }
 
 const FIT_BADGE: Record<FitClass, FitBadgeMeta> = {
   fits: {
-    icon: Tick02Icon,
     label: "Full GPU offload",
-    tooltip: "Full offload possible. Fits comfortably in VRAM.",
-    className:
-      "bg-primary border-primary/30 dark:border-primary/40",
-    iconClassName: "text-primary-foreground",
+    tooltip: "Full offload likely possible on your system.",
+    iconClassName: "text-emerald-600 dark:text-emerald-400",
   },
   marginal: {
-    icon: Alert02Icon,
     label: "Might fit",
     tooltip:
       "Might fit. Within the last GB of VRAM headroom, so loading can fail if other apps are using GPU memory.",
-    className:
-      "bg-orange-500 border-orange-600/30 dark:bg-orange-500 dark:border-orange-400/30",
-    iconClassName: "text-white",
+    iconClassName: "text-amber-600 dark:text-amber-400",
   },
   partial: {
-    icon: ArrowDataTransferHorizontalIcon,
     label: "Partial offload",
     tooltip:
       "Partial offload possible. Exceeds VRAM but fits with system RAM offload. Inference will be slower.",
-    className:
-      "bg-blue-500 border-blue-600/25 dark:bg-blue-500 dark:border-blue-400/25",
-    iconClassName: "text-white",
+    iconClassName: "text-sky-600 dark:text-sky-400",
   },
   oom: {
-    icon: Cancel01Icon,
     label: "Won't fit",
-    tooltip: "Won't fit. Exceeds combined VRAM and system RAM budget.",
-    className:
-      "bg-rose-400 border-rose-500/30 dark:bg-rose-400 dark:border-rose-300/30",
-    iconClassName: "text-white",
+    tooltip: "Exceeds combined VRAM and system RAM budget.",
+    iconClassName: "text-rose-600 dark:text-rose-400",
   },
 };
 
-function FitBadge({
+/** Chip styling matching the on-device list's StatChip — no icon. */
+const CHIP_BASE =
+  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-[7px] border px-1.5 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+const CHIP_DEFAULT =
+  "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
+const CHIP_ACTIVE =
+  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+const CHIP_GGUF =
+  "border-blue-500/40 bg-transparent text-blue-600 dark:text-blue-400";
+const CHIP_SAFETENSORS =
+  "border-violet-500/40 bg-transparent text-violet-600 dark:text-violet-400";
+
+function QuantBadge({
+  quant,
   fit,
-  size = "md",
+  showFit = true,
+  active = false,
+  variant = "trigger",
 }: {
+  quant: string;
   fit: FitClass;
-  size?: "sm" | "md";
+  showFit?: boolean;
+  active?: boolean;
+  variant?: "trigger" | "menu";
 }) {
   const meta = FIT_BADGE[fit];
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        type="button"
-        aria-label={meta.label}
+  const inner =
+    variant === "menu" ? (
+      <span
         className={cn(
-          "inline-flex shrink-0 items-center justify-center rounded-[6px] border transition-colors",
-          size === "sm" ? "size-[18px]" : "size-5",
-          meta.className,
+          CHIP_BASE,
+          "gap-1.5 cursor-help",
+          active ? CHIP_ACTIVE : CHIP_DEFAULT,
         )}
       >
-        <HugeiconsIcon
-          icon={meta.icon}
-          strokeWidth={2}
-          className={cn(
-            size === "sm" ? "size-3" : "size-3.5",
-            meta.iconClassName,
-          )}
-        />
-      </TooltipTrigger>
+        {showFit && (
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            strokeWidth={2.25}
+            className={cn("size-3.5 shrink-0", meta.iconClassName)}
+          />
+        )}
+        <span>{quant}</span>
+      </span>
+    ) : (
+      <span
+        className={cn(
+          "inline-flex cursor-help items-center gap-1.5 text-[12.5px] font-medium tracking-tight tabular-nums",
+          active ? "text-emerald-600 dark:text-emerald-400" : "text-foreground",
+        )}
+      >
+        {showFit && (
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            strokeWidth={2.25}
+            className={cn("size-3.5 shrink-0", meta.iconClassName)}
+          />
+        )}
+        <span>{quant}</span>
+      </span>
+    );
+  if (!showFit) return inner;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{inner}</TooltipTrigger>
       <TooltipContent side="top" sideOffset={4}>
         {meta.tooltip}
       </TooltipContent>
     </Tooltip>
-  );
-}
-
-function QuantChip({
-  label,
-  size = "md",
-  tone = "default",
-}: {
-  label: string;
-  size?: "sm" | "md";
-  tone?: "default" | "active";
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-[6px] border font-mono font-semibold tracking-tight",
-        size === "sm" ? "h-5 px-1.5 text-[10px]" : "h-6 px-2 text-[11px]",
-        tone === "active"
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-          : "border-border/60 bg-muted/60 text-foreground",
-      )}
-    >
-      {label}
-    </span>
   );
 }
 
@@ -243,6 +240,7 @@ export function DownloadSection({
   gpuGb,
   systemRamGb,
   onLoad,
+  onUseInChat,
   onChange,
 }: {
   repoId: string;
@@ -255,6 +253,7 @@ export function DownloadSection({
   gpuGb?: number;
   systemRamGb?: number;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
+  onUseInChat?: () => void;
   onChange?: () => void;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
@@ -266,7 +265,22 @@ export function DownloadSection({
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [progress, setProgress] = useState<DownloadProgressState | null>(null);
+  const [modelTotalBytes, setModelTotalBytes] = useState<number | null>(null);
   const pollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setModelTotalBytes(null);
+    if (isGguf || !repoId) return;
+    let cancelled = false;
+    void fetchModelSize(repoId).then((info) => {
+      if (cancelled || !info) return;
+      const upstream = info.weightsBytes ?? info.totalBytes;
+      if (upstream && upstream > 0) setModelTotalBytes(upstream);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isGguf, repoId]);
   const stopPolling = useCallback(() => {
     if (pollRef.current != null) {
       window.clearInterval(pollRef.current);
@@ -311,6 +325,8 @@ export function DownloadSection({
 
   useEffect(() => {
     setProgress(null);
+    setSelectedQuant(null);
+    setVariants(null);
     stopPolling();
   }, [repoId, stopPolling]);
 
@@ -486,24 +502,42 @@ export function DownloadSection({
   if (!isGguf) {
     const downloading = progress !== null && progress.variant === null;
     return (
-      <div className="flex flex-col gap-3 rounded-[24px] border border-border/60 bg-background/80 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Download
-            </span>
-            <span className="text-[13px] text-foreground">
-              {isDownloaded
-                ? "Already downloaded — ready to load into memory."
-                : downloading
-                  ? "Downloading model weights to local cache."
-                  : "Pulls the full safetensors snapshot to your HF cache."}
+      <div className="download-card">
+        <div className="flex items-center">
+          <div className="flex h-9 min-w-0 flex-1 items-center pl-3">
+            <span className="flex items-center gap-2.5 text-[12px] text-muted-foreground">
+              <span className="font-medium text-violet-600 dark:text-violet-400">
+                Safetensors
+              </span>
+              {modelTotalBytes && modelTotalBytes > 0 && (
+                <span className="tabular-nums">
+                  {formatBytes(modelTotalBytes)}
+                </span>
+              )}
+              {(isActive || isDownloaded) && (
+                <span className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+                  <HugeiconsIcon
+                    icon={CheckmarkCircle02Icon}
+                    strokeWidth={2.5}
+                    className="size-3"
+                  />
+                  {isActive ? "Loaded" : "On device"}
+                </span>
+              )}
             </span>
           </div>
+          <div
+            aria-hidden="true"
+            className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] dark:bg-white/[0.04]"
+          />
           <button
             type="button"
-            disabled={isLoadingThisModel || isActive || downloading}
+            disabled={isLoadingThisModel || downloading}
             onClick={() => {
+              if (isActive) {
+                onUseInChat?.();
+                return;
+              }
               if (isDownloaded) {
                 onLoad({});
               } else {
@@ -511,10 +545,7 @@ export function DownloadSection({
               }
             }}
             className={cn(
-              "inline-flex h-10 shrink-0 items-center gap-1.5 rounded-[16px] px-4 text-[12.5px] font-medium transition-colors",
-              isActive
-                ? "cursor-default bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                : "bg-foreground text-background hover:bg-foreground/85",
+              "inline-flex h-9 w-24 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12.5px] font-medium tracking-tight text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]",
               (isLoadingThisModel || downloading) && "opacity-70",
             )}
           >
@@ -529,18 +560,29 @@ export function DownloadSection({
                 {loadingPhase === "downloading" ? "Downloading…" : "Loading…"}
               </>
             ) : isActive ? (
-              "Loaded"
+              <>
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                New Chat
+              </>
             ) : isDownloaded ? (
               <>
-                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-3.5" />
-                Load
+                <HugeiconsIcon
+                  icon={PlayIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                Run
               </>
             ) : (
               <>
                 <HugeiconsIcon
-                  icon={DownloadCircle02Icon}
+                  icon={Download01Icon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-4"
                 />
                 Download
               </>
@@ -556,7 +598,7 @@ export function DownloadSection({
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 rounded-[24px] border border-border/60 bg-background/80 px-4 py-4 text-[12.5px] text-muted-foreground">
+      <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
         <Spinner className="size-3.5" />
         Loading available quantizations…
       </div>
@@ -565,7 +607,7 @@ export function DownloadSection({
 
   if (error || !sortedVariants || sortedVariants.length === 0) {
     return (
-      <div className="rounded-[24px] border border-destructive/30 bg-destructive/5 px-4 py-3 text-[12.5px] text-destructive">
+      <div className="text-[12.5px] text-destructive">
         {error ?? "No GGUF quantizations found in this repository."}
       </div>
     );
@@ -579,86 +621,68 @@ export function DownloadSection({
   const selectedIsActive =
     isActive && activeQuant && selected?.quant === activeQuant;
 
+  const selectedFit = selected
+    ? getFitClass(selected.size_bytes, gpuGb, systemRamGb)
+    : null;
+  const fitDescription =
+    selected && gpuGb && selectedFit ? FIT_BADGE[selectedFit].tooltip : null;
+  const fitColor =
+    selected && gpuGb && selectedFit
+      ? FIT_BADGE[selectedFit].iconClassName
+      : "text-muted-foreground";
+
   return (
     <>
-      <div className="flex flex-col gap-3 rounded-[24px] border border-border/60 bg-background/80 p-4">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Download
-          </span>
-          <span className="text-[11px] text-muted-foreground">
-            {sortedVariants.length} quantization
-            {sortedVariants.length === 1 ? "" : "s"}
-            {hasVision && (
-              <span className="ml-2 inline-flex h-5 items-center rounded-full border border-violet-500/40 px-2 text-[9.5px] font-semibold uppercase tracking-wider text-violet-600 dark:text-violet-400">
-                Vision
-              </span>
-            )}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  "flex h-10 min-w-0 flex-1 items-center gap-2.5 rounded-[16px] border border-border/60 bg-background px-3 text-left transition-colors hover:bg-muted/40",
-                  open && "ring-2 ring-ring/30",
-                )}
-              >
+      <div className="download-card">
+        <div className="flex items-center">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
+            >
                 {selected ? (
-                  <>
-                    <QuantChip
-                      label={selected.quant}
-                      tone={selectedIsActive ? "active" : "default"}
-                    />
-                    <span className="flex min-w-0 flex-col leading-tight">
-                      {selected.downloaded && (
-                        <span className="truncate text-[12.5px] font-medium text-foreground">
-                          Downloaded
-                        </span>
-                      )}
-                      <span className="text-[11px] text-muted-foreground">
-                        {formatBytes(selected.size_bytes)}
-                        {(() => {
-                          if (!gpuGb) return null;
-                          const fit = getFitClass(
-                            selected.size_bytes,
-                            gpuGb,
-                            systemRamGb,
-                          );
-                          return ` · ${FIT_BADGE[fit].label.toLowerCase()}`;
-                        })()}
-                      </span>
-                    </span>
-                    {gpuGb && (
-                      <FitBadge
-                        fit={getFitClass(
-                          selected.size_bytes,
-                          gpuGb,
-                          systemRamGb,
-                        )}
-                      />
+                  <QuantBadge
+                    quant={selected.quant}
+                    fit={getFitClass(
+                      selected.size_bytes,
+                      gpuGb,
+                      systemRamGb,
                     )}
-                  </>
+                    showFit={Boolean(gpuGb)}
+                    active={Boolean(selectedIsActive)}
+                  />
                 ) : (
                   <span className="text-[12.5px] text-muted-foreground">
                     Select quantization
                   </span>
                 )}
-                <HugeiconsIcon
-                  icon={ArrowDown01Icon}
-                  strokeWidth={1.75}
-                  className="ml-auto size-4 shrink-0 text-muted-foreground"
-                />
+                <span className="ml-auto flex items-center gap-2.5 text-[12px] text-muted-foreground">
+                  {selected && !selected.downloaded && (
+                    <>
+                      <span>GGUF</span>
+                      <span className="tabular-nums">
+                        {formatBytes(selected.size_bytes)}
+                      </span>
+                    </>
+                  )}
+                  <HugeiconsIcon
+                    icon={ArrowDown01Icon}
+                    strokeWidth={1.25}
+                    className="ml-0.5 size-3.5 shrink-0"
+                  />
+                </span>
               </button>
             </PopoverTrigger>
             <PopoverContent
               align="start"
-              sideOffset={6}
-              className="menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[280px] max-h-[360px] overflow-y-auto p-1 ring-0"
+              side="bottom"
+              sideOffset={8}
+              avoidCollisions={false}
+              noAnimation
+              className="menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
             >
+              <div className="max-h-[344px] overflow-y-auto [scrollbar-width:thin]">
               {sortedVariants.map((v) => {
                 const fit = getFitClass(v.size_bytes, gpuGb, systemRamGb);
                 const isSelected = v.quant === selectedQuant;
@@ -667,8 +691,10 @@ export function DownloadSection({
                   <div
                     key={v.filename}
                     className={cn(
-                      "group flex items-center gap-2 rounded-[8px] px-2 py-1.5 transition-colors",
-                      isSelected ? "bg-muted/70" : "hover:bg-muted/50",
+                      "group relative mx-2 flex items-center gap-2 rounded-[12px] px-2.5 py-2 transition-colors",
+                      isSelected
+                        ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
+                        : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
                     )}
                   >
                     <button
@@ -677,59 +703,80 @@ export function DownloadSection({
                         setSelectedQuant(v.quant);
                         setOpen(false);
                       }}
-                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
                     >
-                      <QuantChip
-                        label={v.quant}
-                        size="sm"
-                        tone={isLoaded ? "active" : "default"}
+                      <QuantBadge
+                        quant={v.quant}
+                        fit={fit}
+                        active={isLoaded}
+                        variant="menu"
                       />
-                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                        <span className="text-[11px] tabular-nums text-muted-foreground">
+                      {isLoaded && (
+                        <span className="text-[10.5px] font-medium text-emerald-600 dark:text-emerald-400">
+                          Loaded
+                        </span>
+                      )}
+                    </button>
+                    <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                      {v.downloaded && (
+                        <span className={cn(CHIP_BASE, CHIP_ACTIVE, "gap-1")}>
+                          <HugeiconsIcon
+                            icon={CheckmarkCircle02Icon}
+                            strokeWidth={2.5}
+                            className="size-3"
+                          />
+                          On device
+                        </span>
+                      )}
+                      <span className={cn(CHIP_BASE, CHIP_GGUF)}>GGUF</span>
+                      <span className="relative">
+                        <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
                           {formatBytes(v.size_bytes)}
                         </span>
                         {v.downloaded && (
-                          <HugeiconsIcon
-                            icon={CheckmarkCircle02Icon}
-                            strokeWidth={2}
-                            className="size-3 text-emerald-500"
-                          />
-                        )}
-                        <FitBadge fit={fit} size="sm" />
-                        {isLoaded && (
-                          <span className="ml-auto text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                            Loaded
-                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteTarget(v.quant);
+                            }}
+                            aria-label={`Delete ${v.quant}`}
+                            className={cn(
+                              "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-[7px]",
+                              "bg-popover text-foreground/70 ring-1 ring-border transition-colors",
+                              "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                              "hover:text-destructive hover:ring-destructive/40",
+                            )}
+                          >
+                            <HugeiconsIcon
+                              icon={Delete02Icon}
+                              strokeWidth={1.75}
+                              className="size-3"
+                            />
+                          </button>
                         )}
                       </span>
-                    </button>
-                    {v.downloaded && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget(v.quant);
-                        }}
-                        aria-label={`Delete ${v.quant}`}
-                        className="rounded-md p-1 text-muted-foreground/60 opacity-0 transition-colors group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
-                      >
-                        <HugeiconsIcon
-                          icon={Delete02Icon}
-                          strokeWidth={1.75}
-                          className="size-3"
-                        />
-                      </button>
-                    )}
+                    </span>
                   </div>
                 );
               })}
+              </div>
             </PopoverContent>
-          </Popover>
+        </Popover>
+
+          <div
+            aria-hidden="true"
+            className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] dark:bg-white/[0.04]"
+          />
 
           <button
             type="button"
-            disabled={ctaDisabled || Boolean(selectedIsActive)}
+            disabled={ctaDisabled && !selectedIsActive}
             onClick={() => {
+              if (selectedIsActive) {
+                onUseInChat?.();
+                return;
+              }
               if (!selected) return;
               if (selected.downloaded) {
                 onLoad({
@@ -741,38 +788,46 @@ export function DownloadSection({
               }
             }}
             className={cn(
-              "inline-flex h-10 shrink-0 items-center gap-1.5 rounded-[16px] px-4 text-[12.5px] font-medium transition-colors",
-              selectedIsActive
-                ? "cursor-default bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                : "bg-foreground text-background hover:bg-foreground/85",
+              "inline-flex h-9 w-24 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12.5px] font-medium tracking-tight text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]",
               ctaDisabled && !selectedIsActive && "opacity-70",
             )}
           >
             {downloadingThisVariant ? (
-              <>
+              <span className="inline-flex items-center gap-2">
                 <Spinner className="size-3.5" />
                 Downloading…
-              </>
+              </span>
             ) : downloadingAnyVariant ? (
               "Download in progress…"
             ) : isLoadingThisModel ? (
-              <>
+              <span className="inline-flex items-center gap-2">
                 <Spinner className="size-3.5" />
                 {loadingPhase === "downloading" ? "Downloading…" : "Loading…"}
-              </>
+              </span>
             ) : selectedIsActive ? (
-              "Loaded"
+              <>
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                New Chat
+              </>
             ) : selected?.downloaded ? (
               <>
-                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-3.5" />
-                Load
+                <HugeiconsIcon
+                  icon={PlayIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                Run
               </>
             ) : (
               <>
                 <HugeiconsIcon
-                  icon={DownloadCircle02Icon}
+                  icon={Download01Icon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-4"
                 />
                 Download
               </>

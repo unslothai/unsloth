@@ -78,13 +78,17 @@ export function ModelsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const debouncedQuery = useDebouncedValue(query);
+  const isDiscoverTab = tab === "discover";
   const modelSearch = useHfModelSearch(debouncedQuery, {
     sortBy,
     sortDirection: direction,
     pinUnslothFirst: sortBy === "trendingScore" && direction === "desc",
+    enabled: isDiscoverTab && resourceType !== "datasets",
   });
   const datasetSearch = useHfDatasetSearch(debouncedQuery, {
-    enabled: resourceType === "datasets",
+    enabled: isDiscoverTab && resourceType === "datasets",
+    sortBy,
+    sortDirection: direction,
   });
   const isDatasetMode = resourceType === "datasets";
   const results = isDatasetMode ? [] : modelSearch.results;
@@ -321,7 +325,7 @@ export function ModelsPage() {
     [discoverRows, formatFilter, capabilityFilter],
   );
 
-  const inventoryNeedle = query.trim().toLowerCase();
+  const inventoryNeedle = isDiscoverTab ? "" : query.trim().toLowerCase();
   const filteredCachedRows = useMemo(
     () =>
       effectiveCachedRows.filter((row) => {
@@ -355,7 +359,12 @@ export function ModelsPage() {
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
-    filteredDiscoverRows.length,
+    // Drive re-evaluation off the raw fetched count, not the filtered one —
+    // the page-level format/capability filters can reject every incoming
+    // row, leaving filteredDiscoverRows.length stalled while results keep
+    // growing. Using the raw count guarantees the auto-fire effect re-runs
+    // after each fetch lands so we don't dead-end on aggressive filters.
+    discoverRows.length,
     tab === "discover",
   );
 
@@ -475,6 +484,7 @@ export function ModelsPage() {
         totalParams: selectedDiscoverRow.result.totalParams,
         estimatedSizeBytes: selectedDiscoverRow.result.estimatedSizeBytes,
         updatedAt: selectedDiscoverRow.result.updatedAt,
+        tags: selectedDiscoverRow.result.tags,
       };
     }
 
@@ -510,6 +520,7 @@ export function ModelsPage() {
         estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
         cachedBytes: selectedCachedRow.bytes,
         updatedAt: selectedHfResult?.updatedAt,
+        tags: selectedHfResult?.tags,
       };
     }
 
@@ -546,6 +557,7 @@ export function ModelsPage() {
         estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
         updatedAt: selectedHfResult?.updatedAt,
         localUpdatedAt: selectedLocalRow.updatedAt,
+        tags: selectedHfResult?.tags,
       };
     }
 
@@ -606,9 +618,11 @@ export function ModelsPage() {
     return null;
   }, [selectedModel, vramInfo]);
 
-  const gpuLabel = gpu.available ? `${gpu.memoryTotalGb} GB` : "Unavailable";
+  const gpuLabel = gpu.available
+    ? `${Math.floor(gpu.memoryTotalGb)} GB`
+    : "Unavailable";
   const ramLabel = gpu.available
-    ? `${gpu.systemRamAvailableGb.toFixed(0)} GB`
+    ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
     : "Unavailable";
   const downloadedCount = effectiveCachedRows.length + effectiveLocalRows.length;
 
@@ -641,8 +655,8 @@ export function ModelsPage() {
   }
 
   return (
-    <div className="min-h-full bg-background">
-      <div className="flex flex-col gap-3 px-4 py-4 sm:px-5 xl:px-6">
+    <div className="hub-page min-h-full bg-background">
+      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 px-5 py-5 sm:px-6 xl:px-8">
         <ModelsHeader
           cachedCount={effectiveCachedRows.length}
           localCount={effectiveLocalRows.length}
@@ -653,8 +667,8 @@ export function ModelsPage() {
           onEject={() => void ejectModel()}
         />
 
-        <section className="flex flex-col overflow-hidden rounded-[24px] border border-border/70 bg-[#f7f7f9] dark:bg-card/60">
-          <div className="border-b border-border/70 p-3">
+        <section className="flex flex-col overflow-hidden rounded-[32px] border border-border bg-card shadow-[0_1px_2px_-1px_rgba(0,0,0,0.04)] dark:bg-card/60 dark:shadow-none">
+          <div className="hub-side-surface p-4">
             <ModelsToolbar
               tab={tab}
               onTabChange={setTab}
@@ -662,27 +676,21 @@ export function ModelsPage() {
               onQueryChange={setQuery}
               isLoading={isLoading}
               sortBy={sortBy}
-              direction={direction}
               onSortChange={(next) => {
                 setSortBy(next);
                 if (next === "trendingScore") setDirection("desc");
               }}
-              onDirectionToggle={() =>
-                setDirection((value) => (value === "desc" ? "asc" : "desc"))
-              }
               resourceType={resourceType}
               onResourceTypeChange={setResourceType}
               formatFilter={formatFilter}
               onFormatFilterChange={setFormatFilter}
               capabilityFilter={capabilityFilter}
               onCapabilityFilterChange={setCapabilityFilter}
-              discoverCount={filteredDiscoverRows.length}
-              downloadedCount={downloadedCount}
             />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[400px_minmax(0,1fr)] 2xl:grid-cols-[440px_minmax(0,1fr)]">
-            <div className="min-w-0 border-b border-border/70 bg-foreground/[0.015] dark:bg-transparent lg:border-b-0 lg:border-r">
+            <div className="hub-side-surface min-w-0 border-b border-border lg:border-b-0 lg:border-r">
               <ModelsCatalog
                 tab={tab}
                 discoverRows={filteredDiscoverRows}
@@ -700,10 +708,11 @@ export function ModelsPage() {
                 searchError={searchError}
                 online={online}
                 onRetry={handleRetrySearch}
+                onInventoryChange={refreshInventory}
               />
             </div>
 
-            <div className="bg-background dark:bg-background/50">
+            <div className="hub-side-surface">
               <ModelInspector
                 model={selectedModel}
                 isDataset={isDatasetMode}
@@ -713,11 +722,6 @@ export function ModelsPage() {
                 loadingPhase={loadProgress?.phase}
                 minMemory={minMemory}
                 vramInfo={vramInfo}
-                gpuLabel={
-                  gpu.available
-                    ? `${gpu.memoryTotalGb} GB available`
-                    : "GPU data unavailable"
-                }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                 systemRamGb={
                   gpu.available ? gpu.systemRamAvailableGb : undefined

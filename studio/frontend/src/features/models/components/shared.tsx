@@ -26,26 +26,29 @@ const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
 
 const CAPABILITY_TONE: Record<CapabilityKey, string> = {
   vision:
-    "border-indigo-500/40 text-indigo-600 dark:text-indigo-400",
-  audio: "border-rose-500/40 text-rose-600 dark:text-rose-400",
-  tools: "border-amber-600/40 text-amber-700 dark:text-amber-400",
+    "bg-indigo-500/10 text-indigo-700 dark:bg-indigo-400/10 dark:text-indigo-300",
+  audio:
+    "bg-rose-500/10 text-rose-700 dark:bg-rose-400/10 dark:text-rose-300",
+  tools:
+    "bg-amber-500/10 text-amber-800 dark:bg-amber-400/10 dark:text-amber-300",
   reasoning:
-    "border-violet-500/40 text-violet-600 dark:text-violet-400",
-  code: "border-cyan-600/40 text-cyan-700 dark:text-cyan-400",
+    "bg-violet-500/10 text-violet-700 dark:bg-violet-400/10 dark:text-violet-300",
+  code: "bg-cyan-500/10 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-300",
   embedding:
-    "border-emerald-600/40 text-emerald-700 dark:text-emerald-400",
-  multilingual: "border-sky-500/40 text-sky-600 dark:text-sky-400",
+    "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300",
+  multilingual:
+    "bg-sky-500/10 text-sky-700 dark:bg-sky-400/10 dark:text-sky-300",
 };
 
 export function CapabilityPill({ capability }: { capability: Capability }) {
   return (
     <span
-      className={`inline-flex h-5 items-center gap-1 rounded-full border px-2 text-[9.5px] font-semibold uppercase tracking-wider ${CAPABILITY_TONE[capability.key]}`}
+      className={`inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium ${CAPABILITY_TONE[capability.key]}`}
     >
       <HugeiconsIcon
         icon={CAPABILITY_ICON[capability.key]}
-        strokeWidth={2}
-        className="size-2.5"
+        strokeWidth={1.75}
+        className="size-3"
       />
       {capability.label}
     </span>

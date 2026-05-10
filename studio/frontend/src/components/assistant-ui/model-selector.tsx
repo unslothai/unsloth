@@ -154,8 +154,8 @@ function ModelSelectorContent({
       ) : (
         <Tabs defaultValue="hub" className="w-full">
           <TabsList className="mb-2 w-full">
-            <TabsTrigger value="hub">Hub models</TabsTrigger>
-            <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
+            <TabsTrigger value="hub" className="flex-1">Downloaded</TabsTrigger>
+            <TabsTrigger value="lora" className="flex-1">Fine-tuned</TabsTrigger>
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
