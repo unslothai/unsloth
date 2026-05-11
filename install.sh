@@ -1477,11 +1477,8 @@ _find_no_torch_runtime() {
 }
 
 # ── AMD ROCm GPU detection helper ──
-# Returns 0 (true) if an actual AMD GPU is present, 1 (false) otherwise.
-# Checks rocminfo for gfx[1-9][0-9]+ (excludes gfx000 CPU agent),
-# amd-smi list for GPU data rows, and falls back to sysfs KFD topology
-# which is env-var-independent (works even when HIP_VISIBLE_DEVICES or
-# ROCR_VISIBLE_DEVICES hides devices from rocminfo/amd-smi).
+# Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
+# KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
 _has_amd_rocm_gpu() {
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
@@ -1573,10 +1570,7 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*) echo "$_base/cpu"; return ;;
             esac
-            # Enumerate explicit supported ROCm wheel tags.  A host on ROCm
-            # 6.5+ (no published PyTorch wheels) is clipped to rocm6.4.
-            # PyTorch publishes: rocm5.7, 6.0, 6.1, 6.2, 6.3, 6.4, 7.0, 7.1,
-            # 7.2 (5.7 is below our minimum; rocm7.2 ships torch 2.11.0).
+            # Supported tags; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
             case "$_rocm_tag" in
                 rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*|rocm7.2|rocm7.2.*)
                     echo "$_base/$_rocm_tag" ;;

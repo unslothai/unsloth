@@ -1085,12 +1085,9 @@ def run_training_process(
             )
 
     # ── 1d. Ensure torch.distributed is importable before ML libs load ──
-    # The Windows ROCm wheel ships without torch._C._distributed_c10d.
-    # Two failure modes: (a) ImportError on `import torch.distributed`, or
-    # (b) the import succeeds (lazy load) but the first call by trl/transformers
-    # crashes. Pre-stubbing before the import covers both.
-    # Guard with `not in sys.modules` so we never overwrite a real CUDA/NVIDIA
-    # implementation that was already loaded.
+    # Windows ROCm wheel lacks torch._C._distributed_c10d. Pre-stub it to handle
+    # both ImportError and lazy-load crashes from trl/transformers. The
+    # `not in sys.modules` guard preserves a real NVIDIA implementation.
     import types as _types
 
     _td_stubs = {

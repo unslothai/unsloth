@@ -1285,12 +1285,8 @@ shell.Run cmd, 0, False
     }
 
     # ── AMD ROCm: prefer Python 3.12 (Windows wheels are cp312-only) ──
-    # Python detection runs before GPU detection, so if an AMD GPU is found and the
-    # selected Python is not 3.12, try to locate a 3.12 install now.  This lets
-    # users who have both 3.13 and 3.12 installed get ROCm support automatically
-    # without having to uninstall 3.13.  3.13 remains the default for NVIDIA.
-    # Fires on $ROCmGpuLabel (WMI-only, no HIP SDK) as well as $HasROCm so that
-    # users are switched to 3.12 upfront rather than after a second install pass.
+    # If a non-3.12 Python was selected and an AMD GPU is present, try to find 3.12.
+    # Fires on $ROCmGpuLabel (WMI/no-HIP-SDK) as well as $HasROCm.
     if (($HasROCm -or $ROCmGpuLabel) -and $DetectedPython -and ($DetectedPython.Version -split '\.')[0..1] -join '.' -ne "3.12") {
         $py312 = $null
         # 1. Try py launcher (official CPython installs)

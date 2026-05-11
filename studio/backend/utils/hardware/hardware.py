@@ -1632,23 +1632,15 @@ def apply_gpu_ids(gpu_ids) -> None:
     # parent process already set a ROCm visibility variable -- that
     # way a downstream ROCm process inherits the narrowed mask even
     # before Studio's hardware detection has classified the host.
-    # As a final fallback, probe torch.version.hip directly so spawned
-    # training workers on AMD hosts where the user never set HIP_VISIBLE_DEVICES
-    # still get the correct ROCm visibility mask (mirrors the llama_cpp.py
-    # approach for llama-server subprocess GPU pinning).
+    # Final fallback: probe torch.version.hip so AMD workers without
+    # HIP_VISIBLE_DEVICES still get the correct ROCm visibility mask.
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
     _is_rocm = IS_ROCM or _inherits_rocm_visibility
     if not _is_rocm:
-        # Use ``is not None`` here to match the detect_hardware() check at
-        # module top -- torch ships HIP version as a non-empty string on
-        # ROCm builds and None on CUDA builds, so the two forms agree on
-        # every shipping torch wheel; the ``is not None`` form is the one
-        # the rest of the codebase reads for "this torch was built with
-        # HIP". Keep the broad ``except`` as a safety net (we never want
-        # apply_gpu_ids to crash a worker over a probe failure) but log at
-        # debug level so the skip is observable when needed.
+        # torch.version.hip is a non-empty string on ROCm, None on CUDA.
+        # Broad except: a probe failure must never crash a training worker.
         try:
             import torch as _torch
 

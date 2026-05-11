@@ -51,9 +51,7 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (6, 0): "rocm6.0",
 }
 
-# Per-tag torch/torchvision/torchaudio version specs for pip.
-# rocm7.2 ships torch 2.11.0 which is a major version bump; older tags top out
-# at 2.10.x.  These specs prevent uv from picking an incompatible minor.
+# Per-tag pip specs; rocm7.2 ships torch 2.11.0 (older tags cap at 2.10.x).
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "rocm7.2": (
         "torch>=2.11.0,<2.12.0",
@@ -71,8 +69,7 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
-# AMD Windows ROCm wheels — repo.radeon.com (cp312 only; AMD does not publish
-# Windows ROCm wheels for other Python versions)
+# AMD Windows ROCm wheels — repo.radeon.com (cp312 only)
 _ROCM_WINDOWS_WHEEL_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR")
     or "https://repo.radeon.com/rocm/windows"
@@ -316,9 +313,7 @@ def _detect_amd_gfx_codes() -> list[str]:
     return list(dict.fromkeys(f"gfx{c}" for c in codes))  # deduplicate, preserve order
 
 
-# Set to True by _ensure_rocm_torch() when AMD Windows wheels are installed
-# successfully. Used by the post-install warning block to skip the "must be
-# installed manually" note without spawning a subprocess.
+# Set by _ensure_rocm_torch() on success; suppresses the post-install AMD warning.
 _rocm_windows_torch_installed: bool = False
 
 
@@ -403,9 +398,7 @@ def _ensure_rocm_torch() -> None:
         _rocm_windows_torch_installed = True
         return
 
-    # ── Linux x86_64 path ──────────────────────────────────────────────────────
-    # PyTorch only publishes ROCm wheels for linux_x86_64; skip aarch64 / arm64
-    # to avoid a missing-wheel error on `unsloth studio update`.
+    # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
     # NVIDIA takes precedence on mixed hosts -- but only if an actual GPU is usable

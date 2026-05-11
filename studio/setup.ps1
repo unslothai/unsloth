@@ -661,9 +661,7 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
-# ── AMD ROCm detection (Windows) ────────────────────────────────────────────
-# Mirror setup.sh: probe hipinfo then amd-smi for an actual GPU, not just
-# tool presence. amdhip64.dll alone is NOT treated as GPU evidence.
+# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
 $HasROCm = $false
 $ROCmGpuLabel = $null
 if (-not $HasNvidiaSmi) {
@@ -1863,9 +1861,7 @@ if ($HasROCm -and $CuTag -eq "cpu") {
     if ($pyMajMin -eq "3.12" -and $ROCmVersion) {
         if ($ROCmVersion -match '^7\.2') {
             $rb = "$amdWheelBase/rocm-rel-7.2.1"
-            # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
-            # torch/_rocm_init.py imports at startup.
-            $ROCmTarballUrl = "$rb/rocm-7.2.1.tar.gz"
+            $ROCmTarballUrl = "$rb/rocm-7.2.1.tar.gz"  # rocm_sdk namespace
             $ROCmTorchWheelUrls = @(
                 "$rb/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
                 "$rb/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
@@ -1876,9 +1872,7 @@ if ($HasROCm -and $CuTag -eq "cpu") {
             )
         } elseif ($ROCmVersion -match '^7\.1') {
             $rb = "$amdWheelBase/rocm-rel-7.1.1"
-            # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
-            # torch/_rocm_init.py imports at startup.
-            $ROCmTarballUrl = "$rb/rocm-0.1.dev0.tar.gz"
+            $ROCmTarballUrl = "$rb/rocm-0.1.dev0.tar.gz"  # rocm_sdk namespace
             $ROCmTorchWheelUrls = @(
                 "$rb/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
                 "$rb/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
@@ -1911,8 +1905,7 @@ if ($ROCmTorchWheelUrls) {
         Write-Host $output -ForegroundColor Yellow
         $ROCmTorchWheelUrls = $null
     } else {
-        # Signal to install_python_stack.py that AMD wheels are already installed
-        # so it skips the subprocess probe and suppresses the manual-install warning.
+        # Tell install_python_stack.py to skip probe + suppress manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
     }
 }
