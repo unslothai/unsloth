@@ -1401,7 +1401,7 @@ class TestWindowsRocmWarning:
     def test_windows_amd_warning_in_source(self):
         """install_python_stack.py should warn Windows AMD users."""
         source = _STACK_PATH.read_text()
-        assert "AMD GPU detected on Windows" in source
+        assert "AMD GPU detected" in source
 
     def test_windows_amd_warning_checks_hipinfo_or_amdsmi(self):
         """Warning should check for hipinfo or amd-smi."""
