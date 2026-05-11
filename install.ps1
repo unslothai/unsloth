@@ -1338,6 +1338,16 @@ shell.Run cmd, 0, False
         if ($py312) {
             $DetectedPython = $py312
             substep "AMD GPU detected -- switching to Python 3.12 (ROCm wheels are cp312-only)" "Cyan"
+            # Recreate the venv with Python 3.12 (it was just created with 3.13 above).
+            if (Test-Path -LiteralPath $VenvDir) {
+                Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            step "venv" "creating Python 3.12 virtual environment"
+            substep "$VenvDir"
+            $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+            if ($venvExit -ne 0) {
+                return (Exit-InstallFailure "Failed to create Python 3.12 virtual environment (exit code $venvExit)" $venvExit)
+            }
         } else {
             substep "AMD GPU detected but Python 3.12 not found -- ROCm GPU support requires Python 3.12" "Yellow"
             substep "Install Python 3.12 from python.org and re-run." "Yellow"
