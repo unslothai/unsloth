@@ -109,11 +109,14 @@ assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 echo ""
 echo "=== Structural: tokenizers in no-torch-runtime.txt ==="
 
-_has_tokenizers=$(grep -c '^tokenizers$' "$NO_TORCH_RT" || true)
-assert_eq "tokenizers present as standalone line" "1" "$_has_tokenizers"
+# Accept bare `tokenizers` or version-pinned forms (e.g. `tokenizers<=0.23.0`).
+# Per #5359 the line is pinned because unpinned resolves to 0.23.1+ which
+# transformers rejects at import time.
+_has_tokenizers=$(grep -cE '^tokenizers([<>=!,~ ]|$)' "$NO_TORCH_RT" || true)
+assert_eq "tokenizers present as standalone or pinned line" "1" "$_has_tokenizers"
 
 # tokenizers before transformers
-_tok_line=$(grep -n '^tokenizers$' "$NO_TORCH_RT" | head -1 | cut -d: -f1)
+_tok_line=$(grep -nE '^tokenizers([<>=!,~ ]|$)' "$NO_TORCH_RT" | head -1 | cut -d: -f1)
 _tf_line=$(grep -n '^transformers' "$NO_TORCH_RT" | head -1 | cut -d: -f1)
 _tok_first=$([ "$_tok_line" -lt "$_tf_line" ] && echo "yes" || echo "no")
 assert_eq "tokenizers before transformers" "yes" "$_tok_first"
