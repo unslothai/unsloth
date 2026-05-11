@@ -4993,24 +4993,21 @@ def write_prebuilt_metadata(
         approved_checksums,
         llama_tag,
     )
-    fingerprint_payload = {
-        "published_repo": approved_checksums.repo,
-        "release_tag": release_tag,
-        "upstream_tag": llama_tag,
-        "asset": choice.name,
-        "asset_sha256": choice.expected_sha256,
-        "source": choice.source_label,
-        "source_asset": source_asset_name,
-        "source_sha256": source_sha256,
-        "runtime_line": choice.runtime_line,
-        "bundle_profile": choice.bundle_profile,
-        "coverage_class": choice.coverage_class,
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_payload, sort_keys = True, separators = (",", ":")).encode(
-            "utf-8"
+    # expected_install_fingerprint is the source of truth for what the
+    # fingerprint must contain. Calling it here -- instead of inlining a
+    # parallel payload -- prevents drift where new keys (e.g. the cudart
+    # pair fields added for #5106) are added to one side but not the
+    # other, which would cause every install to look stale.
+    fingerprint = expected_install_fingerprint(
+        llama_tag = llama_tag,
+        release_tag = release_tag,
+        choice = choice,
+        approved_checksums = approved_checksums,
+    )
+    if fingerprint is None:
+        raise PrebuiltFallback(
+            f"cannot compute install fingerprint for {choice.name}"
         )
-    ).hexdigest()
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
@@ -5061,6 +5058,14 @@ def expected_install_fingerprint(
         "source_asset": source_asset_name,
         "source_sha256": source_sha256,
         "runtime_line": choice.runtime_line,
+        # Including the paired runtime archive (Windows cudart bundle)
+        # in the fingerprint is what forces existing #5106 installs to
+        # refresh: pre-PR installs hashed nothing in this slot, post-PR
+        # paired installs hash the cudart sha. Without these two keys
+        # an existing cudart-less install would keep matching the new
+        # choice and never re-overlay the cudart DLLs.
+        "runtime_asset": choice.runtime_name,
+        "runtime_sha256": choice.runtime_sha256,
         "bundle_profile": choice.bundle_profile,
         "coverage_class": choice.coverage_class,
     }
@@ -5121,7 +5126,16 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "windows-cpu":
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
-        return [["llama.dll"], ["ggml-cuda.dll"]]
+        groups = [["llama.dll"], ["ggml-cuda.dll"]]
+        # When the cudart bundle was paired in (#5106) require its
+        # DLLs alongside the main archive's payload. install_kind alone
+        # is not enough -- legacy installs without the cudart pair must
+        # still pass the health check on the no-pair fallback path,
+        # otherwise pair-less builds would loop on reinstall forever.
+        if choice.runtime_name:
+            groups.append(["cudart64_*.dll"])
+            groups.append(["cublas64_*.dll"])
+        return groups
     if choice.install_kind == "windows-hip":
         return [["llama.dll"], ["*hip*.dll"]]
     return []
