@@ -1104,12 +1104,8 @@ def run_training_process(
         if _c10d_key not in sys.modules:  # guard: never overwrite real NVIDIA impl
             _c10d_stub = _types.ModuleType(_c10d_key)
 
-            # ROCm Windows wheels omit the _distributed_c10d C extension.
-            # torch._dynamo imports torch.distributed.fsdp at load time which
-            # pulls in FakeProcessGroup (and potentially other symbols) from
-            # this module. PEP-562 module __getattr__ auto-stubs any missing
-            # symbol so every `from torch._C._distributed_c10d import X`
-            # succeeds; each stub is a plain class cached after first access.
+            # ROCm Windows wheels omit this C extension; auto-stub every
+            # missing symbol so torch._dynamo's fsdp imports don't crash.
             def _c10d_stub_getattr(_attr):
                 if _attr.startswith("__"):
                     raise AttributeError(_attr)
