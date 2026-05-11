@@ -1177,6 +1177,27 @@ def run_training_process(
                 if _fsdp_name not in sys.modules:
                     sys.modules[_fsdp_name] = _make_mod_stub(_fsdp_name)
 
+            # torch._dynamo.trace_rules.get_torch_obj_rule_map() eagerly loads
+            # torch.distributed.tensor, which in turn imports
+            # torch.distributed._functional_collectives.  That module registers
+            # Meta kernels for ops in the _c10d_functional C++ namespace, but
+            # that namespace only exists when torch._C._distributed_c10d (the
+            # C extension absent from ROCm Windows wheels) has been loaded.
+            # Without it the impl() call raises "operator does not exist".
+            # Pre-stubbing these modules short-circuits the real import so
+            # torch._dynamo gets empty stub objects instead of crashing.
+            for _dist_name in (
+                "torch.distributed._functional_collectives",
+                "torch.distributed._functional_collectives_impl",
+                "torch.distributed.tensor",
+                "torch.distributed.tensor._ops",
+                "torch.distributed.tensor._ops._conv_ops",
+                "torch.distributed.tensor._dtensor_spec",
+                "torch.distributed.tensor.placement_types",
+            ):
+                if _dist_name not in sys.modules:
+                    sys.modules[_dist_name] = _make_mod_stub(_dist_name)
+
     try:
         import torch.distributed as _td
 
