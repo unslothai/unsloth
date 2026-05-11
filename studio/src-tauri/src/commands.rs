@@ -228,13 +228,20 @@ pub async fn start_managed_server(
 
 /// Stop the current desktop-owned backend if this app can safely control it.
 #[tauri::command]
-pub fn stop_server(
+pub async fn stop_server(
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     info!("stop_server command called");
-    process::stop_backend(&state, &shutdown, Some(diagnostics.inner()))
+    let state = state.inner().clone();
+    let shutdown = shutdown.inner().clone();
+    let diagnostics = diagnostics.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        process::stop_backend(&state, &shutdown, Some(&diagnostics))
+    })
+    .await
+    .map_err(|e| format!("stop backend task failed: {e}"))?
 }
 
 /// Check if a healthy Unsloth backend is running on the given port.
@@ -297,7 +304,7 @@ async fn check_watchdog_health(
         return false;
     };
     matches!(
-        crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port)).await,
+        crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), true).await,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
     )
 }

@@ -151,6 +151,41 @@ struct DesktopLoginProbe<'a> {
     secret: &'a str,
 }
 
+pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return BackendProbe::Missing,
+    };
+    let Some(health) = backend_health(&client, port).await else {
+        return BackendProbe::Missing;
+    };
+    if let Some(reason) = backend_capability_stale_reason(&health) {
+        return BackendProbe::Old { port, reason };
+    }
+
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
+        .json(&DesktopLoginProbe {
+            secret: "desktop-preflight-invalid-secret",
+        })
+        .send()
+        .await;
+    match response.map(|response| response.status()) {
+        Ok(reqwest::StatusCode::UNAUTHORIZED) => BackendProbe::Ready { port },
+        Ok(reqwest::StatusCode::NOT_FOUND) => BackendProbe::Old {
+            port,
+            reason: "desktop_login_not_found".to_string(),
+        },
+        _ => BackendProbe::Old {
+            port,
+            reason: "desktop_login_probe_failed".to_string(),
+        },
+    }
+}
+
 pub(super) async fn backend_desktop_auth_status(
     client: &reqwest::Client,
     port: u16,

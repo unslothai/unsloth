@@ -130,6 +130,34 @@ fn choose_owned_transitional_preflight(
     }
 }
 
+fn choose_ownerless_spawned_preflight(
+    managed: &ManagedProbe,
+    backend: &BackendProbe,
+    port: Option<u16>,
+) -> DesktopPreflightResult {
+    match (port, backend) {
+        (Some(owned_port), BackendProbe::Ready { port }) if owned_port == *port => {
+            DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::OwnedReady,
+                reason: None,
+                port: Some(*port),
+                can_auto_repair: false,
+                managed_bin: managed_bin_for_result(managed),
+            }
+        }
+        (Some(owned_port), BackendProbe::Old { port, reason }) if owned_port == *port => {
+            DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::OwnedStale,
+                reason: Some(reason.clone()),
+                port: Some(*port),
+                can_auto_repair: release_auto_repair(),
+                managed_bin: managed_bin_for_result(managed),
+            }
+        }
+        _ => choose_owned_transitional_preflight(managed, port),
+    }
+}
+
 fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
     match probe {
         BackendProbe::ExternalConflict { port, reason } => {
@@ -165,12 +193,22 @@ pub async fn desktop_preflight_result_with_state(
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
         let Some(owner) = snapshot.owner.clone() else {
+            let probe = match snapshot.port {
+                Some(port) => backend::probe_ownerless_spawned_backend(port).await,
+                None => backend,
+            };
             return Ok((
-                choose_owned_transitional_preflight(&managed, snapshot.port),
+                choose_ownerless_spawned_preflight(&managed, &probe, snapshot.port),
                 None,
             ));
         };
-        match crate::desktop_backend_owner::probe_owned_backend_state(owner, snapshot.port).await {
+        match crate::desktop_backend_owner::probe_owned_backend_state(
+            owner,
+            snapshot.port,
+            snapshot.is_adopted,
+        )
+        .await
+        {
             OwnedBackendProbe::Verified(verified) => {
                 if snapshot.port.is_none() {
                     crate::process::record_owned_backend_port_if_current(

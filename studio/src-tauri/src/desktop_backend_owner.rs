@@ -583,9 +583,34 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
     }
 }
 
+async fn desktop_secret_login_compatible(port: u16) -> Result<(), String> {
+    let secret = read_desktop_secret()?.ok_or_else(|| "desktop_auth_secret_missing".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(LOCAL_HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
+        .json(&DesktopLoginPayload { secret: &secret })
+        .send()
+        .await
+        .map_err(|_| "desktop_auth_secret_probe_failed".to_string())?;
+    if response.status().is_success() {
+        Ok(())
+    } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        Err("desktop_auth_secret_rejected".to_string())
+    } else {
+        Err(format!(
+            "desktop_auth_secret_probe_http_{}",
+            response.status()
+        ))
+    }
+}
+
 pub(crate) async fn probe_owned_backend_state(
     owner: BackendOwnerState,
     port: Option<u16>,
+    require_desktop_secret: bool,
 ) -> OwnedBackendProbe {
     let ports: Vec<u16> = match port {
         Some(port) => vec![port],
@@ -615,6 +640,11 @@ pub(crate) async fn probe_owned_backend_state(
                 port,
                 reason: "desktop_login_probe_failed".to_string(),
             };
+        }
+        if require_desktop_secret {
+            if let Err(reason) = desktop_secret_login_compatible(port).await {
+                return OwnedBackendProbe::Unmanageable { port, reason };
+            }
         }
         verified.push((port, ready_for_use_status(&health)));
     }
@@ -688,7 +718,7 @@ async fn probe_verified_owned_backend_at_path_with_expected(
 
     let owner = BackendOwnerState::from_metadata(path.to_path_buf(), metadata);
     let port = owner.port();
-    Ok(probe_owned_backend_state(owner, port).await)
+    Ok(probe_owned_backend_state(owner, port, true).await)
 }
 
 fn previous_app_pid_status(pid: u32) -> PreviousAppPidStatus {

@@ -758,7 +758,7 @@ async fn validate_candidate_port(
 
     let valid = if let Some(owner) = owner {
         matches!(
-            crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port)).await,
+            crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
             crate::desktop_backend_owner::OwnedBackendProbe::Verified(
                 crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
             ) if verified_port == port
