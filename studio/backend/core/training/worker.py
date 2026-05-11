@@ -1112,12 +1112,28 @@ def run_training_process(
         return m
 
     # Metaclass for stub *classes* so class-level attribute access works too.
-    # e.g. torchao does ProcessGroup.BackendType — plain type() has no __getattr__
-    # on the metaclass, so we need this to avoid AttributeError on class attrs.
+    # e.g. torchao / distributed_c10d does ProcessGroup.BackendType.NCCL —
+    # plain type() has no __getattr__ on the metaclass, so we need this to
+    # avoid AttributeError on arbitrary class-level attribute access.
+    #
+    # We intentionally do NOT use a real enum.Enum here: the C++ BackendType
+    # enum gains new members across PyTorch versions (XCCL was added in 2.6+)
+    # and hard-coding the list means every new member causes another crash.
+    # Instead _StubClassMeta auto-creates child stubs for any attr access, and
+    # the __members__ safety net satisfies Enum-duck-typing checks in torchao.
     class _StubClassMeta(type):
         def __getattr__(cls, attr):
+            if attr == "__members__":
+                # torchao checks ProcessGroup.BackendType.__members__ (Enum
+                # interface).  Return an empty dict — we have no real members
+                # to enumerate and the caller just iterates / checks membership.
+                return {}
             if attr.startswith("__"):
                 raise AttributeError(attr)
+            # Auto-create a child stub for any member access (BackendType.NCCL,
+            # BackendType.XCCL, BackendType.UNDEFINED, …).  We cache it on the
+            # class so repeated accesses return the same object (identity
+            # comparisons stay consistent).
             child = _StubClassMeta(attr, (), {"__init__": lambda self, *a, **kw: None})
             setattr(cls, attr, child)
             return child
