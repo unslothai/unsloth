@@ -2237,7 +2237,9 @@ async def get_gguf_variants(
                     )
             return updates_dict
 
-        updates_dict: dict[str, bool] = await asyncio.to_thread(_check_available_updates)
+        updates_dict: dict[str, bool] = await asyncio.to_thread(
+            _check_available_updates
+        )
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -2571,6 +2573,7 @@ async def list_cached_models(
 
     try:
         from huggingface_hub import list_repo_commits
+
         cache_scans = _all_hf_cache_scans()
 
         seen_lower: dict[str, dict] = {}
