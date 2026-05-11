@@ -1107,16 +1107,17 @@ def run_training_process(
     import importlib.machinery as _ilm
     import importlib.abc as _ilabc
 
+    _STUB_SENTINEL = object()  # identity tag placed on every stub module
+
     def _make_mod_stub(mod_name):
         m = _types.ModuleType(mod_name)
         m.__path__ = []        # marks this as a package to the import system
         m.__package__ = mod_name
-        # importlib.util.find_spec() raises ValueError when __spec__ is None
-        # on a module that's already in sys.modules (our manually-injected
-        # stubs).  Give every stub a minimal ModuleSpec so find_spec() returns
-        # a spec object (non-None) instead of raising.
-        # loader=None is our sentinel: _StubSubpackageFinder uses it to detect
-        # stub modules and auto-stub their children via the import machinery.
+        # _STUB_SENTINEL survives __spec__ being replaced by the import
+        # machinery (which overwrites __spec__ with the spec returned by
+        # find_spec, breaking the loader=None sentinel we used before).
+        m._unsloth_stub = _STUB_SENTINEL
+        # importlib.util.find_spec() raises ValueError when __spec__ is None.
         m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
         def _ga(attr, _m=m, _n=mod_name):
             if attr.startswith("__"):
@@ -1141,9 +1142,9 @@ def run_training_process(
     class _StubSubpackageFinder(_ilabc.MetaPathFinder):
         """Auto-stubs any subpackage import whose parent is one of our stubs.
 
-        Identified by parent.__spec__.loader is None (our sentinel).  Real
-        installed packages always have a SourceFileLoader or similar.  This
-        means we never accidentally intercept real subpackage loads.
+        Uses _unsloth_stub sentinel on the module object — NOT __spec__.loader,
+        which the import machinery overwrites with the loader from find_spec,
+        breaking the loader=None check for second-level subpackages.
         """
         def find_spec(self, fullname, path, target=None):
             if "." not in fullname:
@@ -1152,11 +1153,8 @@ def run_training_process(
             parent = sys.modules.get(parent_name)
             if parent is None:
                 return None
-            parent_spec = getattr(parent, "__spec__", None)
-            if not isinstance(parent_spec, _ilm.ModuleSpec):
-                return None
-            if parent_spec.loader is not None:
-                return None  # real module — don't intercept
+            if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
+                return None  # real installed module — don't intercept
             loader = _StubSubpackageLoader(fullname)
             return _ilm.ModuleSpec(fullname, loader, is_package=True)
 
