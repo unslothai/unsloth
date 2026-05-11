@@ -27,9 +27,19 @@ logger = get_logger(__name__)
 # can take 15-25 s on cold hardware.  Linux is consistently < 2 s.
 _AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
+# Circuit breaker: stop calling amd-smi after this many consecutive failures.
+# On Windows, each failed call spawns a process that may show a UAC/DiskPart
+# elevation prompt.  Once we know amd-smi doesn't work we stop polling it.
+_AMD_SMI_FAILURE_LIMIT = 3
+_amd_smi_consecutive_failures = 0
+_amd_smi_disabled = False
+
 
 def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
     """Run amd-smi with the given arguments and return parsed JSON, or None."""
+    global _amd_smi_consecutive_failures, _amd_smi_disabled
+    if _amd_smi_disabled:
+        return None
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
@@ -41,10 +51,19 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("amd-smi query failed: %s", e)
+        _amd_smi_consecutive_failures += 1
+        if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
+            logger.warning("amd-smi unavailable -- disabling GPU polling to avoid repeated prompts")
+            _amd_smi_disabled = True
         return None
     if result.returncode != 0 or not result.stdout.strip():
         logger.warning("amd-smi returned code %d", result.returncode)
+        _amd_smi_consecutive_failures += 1
+        if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
+            logger.warning("amd-smi unavailable -- disabling GPU polling to avoid repeated prompts")
+            _amd_smi_disabled = True
         return None
+    _amd_smi_consecutive_failures = 0  # reset on success
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:

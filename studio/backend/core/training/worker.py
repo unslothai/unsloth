@@ -1111,6 +1111,20 @@ def run_training_process(
         m.__getattr__ = _ga
         return m
 
+    # Metaclass for stub *classes* so class-level attribute access works too.
+    # e.g. torchao does ProcessGroup.BackendType — plain type() has no __getattr__
+    # on the metaclass, so we need this to avoid AttributeError on class attrs.
+    class _StubClassMeta(type):
+        def __getattr__(cls, attr):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            child = _StubClassMeta(attr, (), {"__init__": lambda self, *a, **kw: None})
+            setattr(cls, attr, child)
+            return child
+
+    def _make_stub_class(name):
+        return _StubClassMeta(name, (), {"__init__": lambda self, *a, **kw: None})
+
     if sys.platform == "win32":
         _c10d_key = "torch._C._distributed_c10d"
         if _c10d_key not in sys.modules:  # guard: never overwrite real NVIDIA impl
@@ -1121,7 +1135,7 @@ def run_training_process(
             def _c10d_stub_getattr(_attr):
                 if _attr.startswith("__"):
                     raise AttributeError(_attr)
-                _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
+                _cls = _make_stub_class(_attr)
                 setattr(_c10d_stub, _attr, _cls)
                 return _cls
 
@@ -1165,7 +1179,7 @@ def run_training_process(
                     _mod = sys.modules[_full]
                     setattr(_td, _attr, _mod)
                     return _mod
-                _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
+                _cls = _make_stub_class(_attr)
                 setattr(_td, _attr, _cls)
                 return _cls
             _td.__getattr__ = _td_getattr
@@ -1184,9 +1198,16 @@ def run_training_process(
 
     # ── 1e. Point bitsandbytes at the ROCm 7.2 DLL on Windows ──
     # The AMD continuous-release wheel ships libbitsandbytes_rocm72.dll.
-    # BNB_ROCM_VERSION overrides the version string bnb uses to locate the DLL.
+    # Only set BNB_ROCM_VERSION when that DLL is actually present — setting it
+    # when the DLL is absent makes bnb fail harder than the default detection.
     if sys.platform == "win32" and os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
-        os.environ.setdefault("BNB_ROCM_VERSION", "72")
+        import importlib.util as _ilu
+        _bnb_spec = _ilu.find_spec("bitsandbytes")
+        if _bnb_spec and _bnb_spec.origin:
+            import pathlib as _pl
+            _bnb_dll = _pl.Path(_bnb_spec.origin).parent / "libbitsandbytes_rocm72.dll"
+            if _bnb_dll.exists():
+                os.environ.setdefault("BNB_ROCM_VERSION", "72")
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
