@@ -2170,9 +2170,9 @@ async def get_gguf_variants(
         # which may differ from the canonical HF repo_id, so do a
         # case-insensitive match.
         cached_bytes_by_quant: dict[str, int] = {}
-        cached_blob_ids: list = []
+        cached_revision_ids: list[str] = []
+        cached_blob_ids: list[str] = []
         try:
-            import re as _re
             from huggingface_hub import constants as hf_constants
 
             # Sanitize repo_id: must be "owner/name" with safe chars only
@@ -2191,6 +2191,7 @@ async def get_gguf_variants(
                                 cached_bytes_by_quant[q] = (
                                     cached_bytes_by_quant.get(q, 0) + f.stat().st_size
                                 )
+                            cached_revision_ids.append(str(snap.relative_to(snapshots)))
                     blobs = entry / "blobs"
                     if blobs.is_dir():
                         cached_blob_ids = [str(blob.relative_to(blobs)) for blob in blobs.iterdir()]
@@ -2199,6 +2200,16 @@ async def get_gguf_variants(
             pass
 
         def _is_fully_downloaded(variant) -> bool:
+            from huggingface_hub import try_to_load_from_cache
+            for revision in cached_revision_ids:
+                cache_exists = try_to_load_from_cache(
+                    repo_id=repo_id,
+                    filename=variant.filename,
+                    revision=revision
+                )
+                if isinstance(cache_exists, str):
+                    # Return True if an older revision of a variant exists
+                    return True
             cached = cached_bytes_by_quant.get(variant.quant, 0)
             if cached == 0 or variant.size_bytes == 0:
                 return False
@@ -2209,7 +2220,6 @@ async def get_gguf_variants(
             from huggingface_hub import get_paths_info
             updates_dict: dict[str, bool] = {}
             downloaded_filenames = [v.filename for v in variants if _is_fully_downloaded(v)]
-            logger.error(downloaded_filenames)
             if downloaded_filenames != []:
                 remote_path_infos = get_paths_info(repo_id=repo_id, paths=downloaded_filenames)
                 for path_info in remote_path_infos:
