@@ -432,10 +432,8 @@ pub async fn start_backend_update(
         let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
         block_external_conflict(&ignored_ports).await?;
 
-        // Signal the health watchdog to exit only after conflict guards pass.
-        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         info!("Stopping backend before update...");
-        process::stop_backend(&backend_state, &shutdown, Some(diagnostics.inner()))?;
+        process::stop_backend_for_mutation(&backend_state, &shutdown, Some(diagnostics.inner()))?;
         block_external_conflict(&[]).await?;
     } else {
         block_external_conflict(&[]).await?;
@@ -484,9 +482,8 @@ pub async fn start_managed_repair(
         let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
         block_external_conflict(&ignored_ports).await?;
 
-        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         info!("Stopping backend before repair...");
-        process::stop_backend(&backend_state, &shutdown, Some(&diagnostics_state))?;
+        process::stop_backend_for_mutation(&backend_state, &shutdown, Some(&diagnostics_state))?;
         block_external_conflict(&[]).await?;
     } else {
         block_external_conflict(&[]).await?;

@@ -139,15 +139,15 @@ jobs:
           const { readFileSync } = require('node:fs');
 
           (async () => {
-            const cargo = readFileSync('studio/src-tauri/Cargo.toml', 'utf8');
-            const match = cargo.match(/^version\s*=\s*"([^"]+)"/m);
-            if (!match) throw new Error('Could not read desktop app version');
+            const preflightVersion = readFileSync('studio/src-tauri/src/preflight/version.rs', 'utf8');
+            const match = preflightVersion.match(/MIN_DESKTOP_BACKEND_VERSION:\s*&str\s*=\s*"([^"]+)"/);
+            if (!match) throw new Error('Could not read desktop backend minimum version');
 
-            const appVersion = match[1];
-            const response = await fetch(`https://pypi.org/pypi/unsloth/${appVersion}/json`);
+            const backendVersion = match[1];
+            const response = await fetch(`https://pypi.org/pypi/unsloth/${backendVersion}/json`);
             if (!response.ok) {
-              const message = 'Publish unsloth=={app_version} to PyPI before the desktop release';
-              throw new Error(`${message.replace('{app_version}', appVersion)} (HTTP ${response.status})`);
+              const message = 'Publish unsloth=={backend_version} to PyPI before the desktop release';
+              throw new Error(`${message.replace('{backend_version}', backendVersion)} (HTTP ${response.status})`);
             }
           })();
           JS

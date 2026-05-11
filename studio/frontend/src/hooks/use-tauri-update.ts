@@ -59,7 +59,7 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releaseTagPrefix: "desktop-v",
 };
 
-const UPDATE_VERSION_RE = /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const UPDATE_VERSION_RE = /^v?\d+\.\d+\.\d+(?:(?:[-+][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)|(?:\.(?:post|dev|rc)\d*)|(?:(?:post|dev|rc|a|b)\d*))?$/;
 
 function normalizeUpdateVersion(version: string): string | null {
   const trimmed = version.trim();

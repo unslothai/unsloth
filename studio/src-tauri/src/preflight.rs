@@ -433,8 +433,7 @@ mod tests {
             "2027.1.0",
             "2026.5.3.post1",
             "2026.5.3+local",
-            "2026.5.3rc1",
-            "2026.5.3.dev1",
+            "2026.5.3.post1",
         ] {
             assert!(backend_version_compatible(Some(version)), "{version}");
         }
@@ -443,7 +442,10 @@ mod tests {
             (Some("not-a-version"), "desktop_backend_version_invalid"),
             (Some("2026.5.3.1"), "desktop_backend_version_invalid"),
             (Some("2026.5.3foo"), "desktop_backend_version_invalid"),
+            (Some("2026.5.3.devx"), "desktop_backend_version_invalid"),
             (Some("2026.5.2"), "desktop_backend_version_too_old"),
+            (Some("2026.5.3rc1"), "desktop_backend_version_too_old"),
+            (Some("2026.5.3.dev1"), "desktop_backend_version_too_old"),
         ] {
             assert_eq!(
                 backend_version_stale_reason(version).as_deref(),

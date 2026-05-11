@@ -1131,7 +1131,27 @@ pub fn stop_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: Option<&DiagnosticsState>,
 ) -> Result<(), String> {
-    shutdown.store(true, Ordering::SeqCst);
+    stop_backend_inner(state, shutdown, diagnostics_state, true)
+}
+
+/// Stop before update/repair mutations without letting the watchdog exit unless the stop succeeds.
+pub fn stop_backend_for_mutation(
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: Option<&DiagnosticsState>,
+) -> Result<(), String> {
+    stop_backend_inner(state, shutdown, diagnostics_state, false)
+}
+
+fn stop_backend_inner(
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: Option<&DiagnosticsState>,
+    signal_shutdown_before_stop: bool,
+) -> Result<(), String> {
+    if signal_shutdown_before_stop {
+        shutdown.store(true, Ordering::SeqCst);
+    }
     if let Some(diagnostics_state) = diagnostics_state {
         diagnostics::record_backend_intentional_stop(diagnostics_state);
     }
@@ -1179,7 +1199,7 @@ pub fn stop_backend(
         }
     };
 
-    match target {
+    let result = match target {
         Some(StopTarget::Spawned(OwnedBackendHandle::Spawned {
             child,
             owner,
@@ -1205,28 +1225,42 @@ pub fn stop_backend(
                         Some(port),
                         "adopted port disappeared during stop",
                     );
-                    return Ok(());
+                    Ok(())
+                } else {
+                    Err(error)
                 }
-                return Err(error);
+            } else {
+                let mut proc = match state.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        warn!("Backend state mutex poisoned, recovering after adopted stop");
+                        poisoned.into_inner()
+                    }
+                };
+                if matches!(
+                    proc.owned.as_ref(),
+                    Some(OwnedBackendHandle::Adopted {
+                        port: current_port,
+                        pid: current_pid,
+                        generation: current_generation,
+                        ..
+                    }) if *current_port == port && *current_pid == pid && *current_generation == generation
+                ) {
+                    proc.owned = None;
+                    proc.port = None;
+                    proc.diagnostics_session = None;
+                    proc.adopted_watchdog_generation = None;
+                }
+                Ok(())
             }
-            let mut proc = state.lock().map_err(|error| error.to_string())?;
-            if matches!(
-                proc.owned.as_ref(),
-                Some(OwnedBackendHandle::Adopted {
-                    port: current_port,
-                    pid: current_pid,
-                    generation: current_generation,
-                    ..
-                }) if *current_port == port && *current_pid == pid && *current_generation == generation
-            ) {
-                proc.owned = None;
-                proc.port = None;
-                proc.diagnostics_session = None;
-                proc.adopted_watchdog_generation = None;
-            }
-            Ok(())
         }
         Some(StopTarget::Spawned(OwnedBackendHandle::Adopted { .. })) => unreachable!(),
         None => Ok(()),
+    };
+
+    if result.is_ok() && !signal_shutdown_before_stop {
+        shutdown.store(true, Ordering::SeqCst);
     }
+
+    result
 }
