@@ -135,6 +135,11 @@ import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.native_path_leases import native_path_leases_supported
+from utils.update_status import (
+    get_studio_install_source_status,
+    get_studio_update_status,
+)
+from utils.studio_version import get_studio_version
 
 
 def get_unsloth_version() -> str:
@@ -156,6 +161,7 @@ def get_unsloth_version() -> str:
 
 
 UNSLOTH_VERSION = get_unsloth_version()
+STUDIO_VERSION = get_studio_version()
 
 
 def _load_desktop_owner() -> dict[str, str] | None:
@@ -315,6 +321,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "version": UNSLOTH_VERSION,
+        "studio_version": STUDIO_VERSION,
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
@@ -328,6 +335,18 @@ async def health_check():
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+
+
+@app.get("/api/studio/install-source")
+def studio_install_source(_current_subject: str = Depends(get_current_subject)):
+    """Return source-aware install metadata without remote update checks."""
+    return get_studio_install_source_status(UNSLOTH_VERSION)
+
+
+@app.get("/api/studio/update-status")
+def studio_update_status(_current_subject: str = Depends(get_current_subject)):
+    """Return source-aware manual update status for browser-served Studio."""
+    return get_studio_update_status(UNSLOTH_VERSION)
 
 
 @app.post("/api/shutdown")
