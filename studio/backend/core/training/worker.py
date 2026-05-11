@@ -1248,7 +1248,70 @@ def run_training_process(
         except Exception:
             pass
 
-    # ── 1e. Point bitsandbytes at the ROCm 7.2 DLL on Windows ──
+    # ── 1e. Stub torch.ops._c10d_functional (and c10d.scatter_) ──
+    # torchao.dtypes.nf4tensor accesses these at *import time* as dict keys:
+    #   NF4_OPS_TABLE = {
+    #       torch.ops._c10d_functional.all_gather_into_tensor.default: ...,
+    #       torch.ops._c10d_functional.wait_tensor.default: ...,   (decorator)
+    #       torch.ops.c10d.scatter_.default: ...,
+    #   }
+    # The real _c10d_functional ops are registered by torch._C._distributed_c10d
+    # (absent on ROCm Windows).  We replace the whole namespace with a stub
+    # whose op objects are hashable so dict-key usage doesn't crash.
+    try:
+        import torch as _torch_ops
+
+        class _C10dFunctionalOpDefault:
+            """Hashable stub for op.default — used as dict keys."""
+            __slots__ = ("_name",)
+            def __init__(self, name):
+                self._name = name
+            def __hash__(self):
+                return hash(("_c10d_functional_stub", self._name))
+            def __eq__(self, other):
+                return (type(other) is _C10dFunctionalOpDefault
+                        and self._name == other._name)
+            def __call__(self, *a, **kw):
+                return a[0] if a else None
+            def __repr__(self):
+                return f"torch.ops._c10d_functional.{self._name}.default"
+
+        class _C10dFunctionalOp:
+            """Stub for a single _c10d_functional op (has a .default attr)."""
+            __slots__ = ("_name", "default")
+            def __init__(self, name):
+                self._name = name
+                self.default = _C10dFunctionalOpDefault(name)
+            def __call__(self, *a, **kw):
+                return self.default(*a, **kw)
+            def __repr__(self):
+                return f"torch.ops._c10d_functional.{self._name}"
+
+        class _C10dFunctionalNamespace:
+            """Drop-in for torch.ops._c10d_functional; auto-stubs every op."""
+            def __getattr__(self, name):
+                if name.startswith("_"):
+                    raise AttributeError(name)
+                op = _C10dFunctionalOp(name)
+                object.__setattr__(self, name, op)
+                return op
+
+        _torch_ops.ops._c10d_functional = _C10dFunctionalNamespace()
+
+        # Also stub torch.ops.c10d.scatter_ if it's missing (same root cause).
+        try:
+            _ = _torch_ops.ops.c10d.scatter_.default
+        except AttributeError:
+            # c10d namespace exists but scatter_ op isn't registered; inject stub.
+            _c10d_scatter_stub = _C10dFunctionalOp("scatter_")
+            try:
+                setattr(_torch_ops.ops.c10d, "scatter_", _c10d_scatter_stub)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ── 1g. Point bitsandbytes at the ROCm 7.2 DLL on Windows ──
     # The AMD continuous-release wheel ships libbitsandbytes_rocm72.dll.
     # Only set BNB_ROCM_VERSION when that DLL is actually present — setting it
     # when the DLL is absent makes bnb fail harder than the default detection.
