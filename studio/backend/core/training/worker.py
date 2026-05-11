@@ -1104,10 +1104,17 @@ def run_training_process(
     # any attempt to import a submodule (e.g. "torch.distributed.tensor._foo")
     # raises "is not a package" because Python checks __path__ before looking
     # in sys.modules for the child.
+    import importlib.machinery as _ilm
+
     def _make_mod_stub(mod_name):
         m = _types.ModuleType(mod_name)
         m.__path__ = []        # marks this as a package to the import system
         m.__package__ = mod_name
+        # importlib.util.find_spec() raises ValueError when __spec__ is None
+        # on a module that's already in sys.modules (our manually-injected
+        # stubs).  Give every stub a minimal ModuleSpec so find_spec() returns
+        # a spec object (non-None) instead of raising.
+        m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
         def _ga(attr, _m=m, _n=mod_name):
             if attr.startswith("__"):
                 raise AttributeError(attr)
