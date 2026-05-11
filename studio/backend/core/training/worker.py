@@ -1148,6 +1148,22 @@ def run_training_process(
         return _StubClassMeta(name, (), {"__init__": lambda self, *a, **kw: None})
 
     if sys.platform == "win32":
+        # torchao is not supported on ROCm Windows and its import chain
+        # transitively pulls in torch._C._distributed_c10d (absent from the
+        # ROCm Windows wheel), causing cascading AttributeErrors.  We don't
+        # use torchao quantization (unsloth uses bitsandbytes), so stub the
+        # entire package up-front.  transformers falls back gracefully when
+        # torchao is importable but empty.
+        for _tao_name in (
+            "torchao",
+            "torchao.quantization",
+            "torchao.dtypes",
+            "torchao.float8",
+            "torchao.utils",
+        ):
+            if _tao_name not in sys.modules:
+                sys.modules[_tao_name] = _make_mod_stub(_tao_name)
+
         _c10d_key = "torch._C._distributed_c10d"
         if _c10d_key not in sys.modules:  # guard: never overwrite real NVIDIA impl
             _c10d_stub = _types.ModuleType(_c10d_key)
