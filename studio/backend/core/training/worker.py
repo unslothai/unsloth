@@ -1099,6 +1099,18 @@ def run_training_process(
         "barrier": lambda: None,
     }
 
+    # Helper: build a ModuleType stub whose __getattr__ auto-creates child stubs.
+    def _make_mod_stub(mod_name):
+        m = _types.ModuleType(mod_name)
+        def _ga(attr, _m=m, _n=mod_name):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            child = _make_mod_stub(f"{_n}.{attr}")
+            setattr(_m, attr, child)
+            return child
+        m.__getattr__ = _ga
+        return m
+
     if sys.platform == "win32":
         _c10d_key = "torch._C._distributed_c10d"
         if _c10d_key not in sys.modules:  # guard: never overwrite real NVIDIA impl
@@ -1110,18 +1122,30 @@ def run_training_process(
                 if _attr.startswith("__"):
                     raise AttributeError(_attr)
                 _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
-                setattr(_c10d_stub, _attr, _cls)  # cache — next access hits __dict__
+                setattr(_c10d_stub, _attr, _cls)
                 return _cls
 
             _c10d_stub.__getattr__ = _c10d_stub_getattr
             sys.modules[_c10d_key] = _c10d_stub
             try:
                 import torch._C as _torch_C_mod  # C ext — always importable
-
                 if not hasattr(_torch_C_mod, "_distributed_c10d"):
                     _torch_C_mod._distributed_c10d = _c10d_stub
             except Exception:
                 pass
+
+            # Pre-register torch.distributed.fsdp submodules as stubs so
+            # torch._dynamo's module-level fsdp import short-circuits before
+            # the real package loads (it has a circular import on ROCm Windows).
+            for _fsdp_name in (
+                "torch.distributed.fsdp",
+                "torch.distributed.fsdp._flat_param",
+                "torch.distributed.fsdp._fully_shard",
+                "torch.distributed.fsdp._fsdp_param_group",
+                "torch.distributed.fsdp._common_utils",
+            ):
+                if _fsdp_name not in sys.modules:
+                    sys.modules[_fsdp_name] = _make_mod_stub(_fsdp_name)
 
     try:
         import torch.distributed as _td
@@ -1129,46 +1153,31 @@ def run_training_process(
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
-        # ROCm Windows wheels omit C-extension-backed distributed classes
-        # (Store, ProcessGroup, …). Auto-stub any missing attribute so
-        # torch._dynamo's fake_pg class definitions don't crash at import time.
+        # Stub C-extension-backed class attrs (Store, ProcessGroup, …) that
+        # the ROCm Windows wheel omits. __getattr__ checks sys.modules first
+        # so it never intercepts real subpackage lookups as plain classes.
         if not hasattr(_td, "__getattr__"):
             def _td_getattr(_attr):
                 if _attr.startswith("__"):
                     raise AttributeError(_attr)
+                _full = f"torch.distributed.{_attr}"
+                if _full in sys.modules:
+                    _mod = sys.modules[_full]
+                    setattr(_td, _attr, _mod)
+                    return _mod
                 _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
                 setattr(_td, _attr, _cls)
                 return _cls
             _td.__getattr__ = _td_getattr
     except Exception:
-        _td_mock = _types.ModuleType("torch.distributed")
+        _td_mock = _make_mod_stub("torch.distributed")
         for _name, _stub in _td_stubs.items():
             setattr(_td_mock, _name, _stub)
-
-        def _td_mock_getattr(_attr):
-            if _attr.startswith("__"):
-                raise AttributeError(_attr)
-            _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
-            setattr(_td_mock, _attr, _cls)
-            return _cls
-
-        _td_mock.__getattr__ = _td_mock_getattr
         sys.modules["torch.distributed"] = _td_mock
         if "torch._C._distributed_c10d" not in sys.modules:
-            _c10d_fb = _types.ModuleType("torch._C._distributed_c10d")
-
-            def _c10d_fb_getattr(_attr):
-                if _attr.startswith("__"):
-                    raise AttributeError(_attr)
-                _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
-                setattr(_c10d_fb, _attr, _cls)
-                return _cls
-
-            _c10d_fb.__getattr__ = _c10d_fb_getattr
-            sys.modules["torch._C._distributed_c10d"] = _c10d_fb
+            sys.modules["torch._C._distributed_c10d"] = _make_mod_stub("torch._C._distributed_c10d")
         try:
             import torch as _torch
-
             _torch.distributed = _td_mock
         except Exception:
             pass
