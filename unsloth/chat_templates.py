@@ -213,7 +213,7 @@ vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions."
 
 # =========================================== Vicuna Old
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
