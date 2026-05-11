@@ -1100,8 +1100,14 @@ def run_training_process(
     }
 
     # Helper: build a ModuleType stub whose __getattr__ auto-creates child stubs.
+    # __path__ is set to [] so Python treats the stub as a package — without it,
+    # any attempt to import a submodule (e.g. "torch.distributed.tensor._foo")
+    # raises "is not a package" because Python checks __path__ before looking
+    # in sys.modules for the child.
     def _make_mod_stub(mod_name):
         m = _types.ModuleType(mod_name)
+        m.__path__ = []        # marks this as a package to the import system
+        m.__package__ = mod_name
         def _ga(attr, _m=m, _n=mod_name):
             if attr.startswith("__"):
                 raise AttributeError(attr)
@@ -1194,6 +1200,15 @@ def run_training_process(
                 "torch.distributed.tensor._ops._conv_ops",
                 "torch.distributed.tensor._dtensor_spec",
                 "torch.distributed.tensor.placement_types",
+                # torch.distributed._tensor is the canonical private package;
+                # its __init__.py tries to re-export submodules from
+                # torch.distributed.tensor (which we stubbed above), causing
+                # "is not a package" errors.  Stubbing _tensor directly
+                # short-circuits that __init__ so torchao's
+                # `from torch.distributed._tensor import DTensor` gets a stub.
+                "torch.distributed._tensor",
+                "torch.distributed._tensor.placement_types",
+                "torch.distributed._tensor.api",
             ):
                 if _dist_name not in sys.modules:
                     sys.modules[_dist_name] = _make_mod_stub(_dist_name)
