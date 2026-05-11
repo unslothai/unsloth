@@ -42,16 +42,9 @@ anyio
 sniffio
 h11
 
-# Pinned to match the transformers >=4.56 / 5.x window above. The
-# allowed transformers range here resolves to >=4.56.0 in practice
-# (every earlier line in the !=... exclusion list crosses the
-# tokenizers 0.21 -> 0.22 boundary upstream), and 4.56.0..5.3.0 all
-# require tokenizers>=0.22.0,<=0.23.0. With --no-deps installs (which
-# this file is designed for) pip skips transitive resolution, so
-# leaving tokenizers unpinned resolves to the latest (0.23.1+) and
-# `from transformers import AutoConfig` then fails at import time:
-#     ImportError: tokenizers>=0.22.0,<=0.23.0 is required ...,
-#                  but found tokenizers==0.23.1.
+# Must match the bound every transformers 4.56..5.3 declares.
+# With --no-deps, unpinned resolves to 0.23.1+ and `from transformers
+# import AutoConfig` raises ImportError at import time.
 tokenizers>=0.22.0,<=0.23.0
 transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0
 trl>=0.18.2,!=0.19.0,<=0.24.0
