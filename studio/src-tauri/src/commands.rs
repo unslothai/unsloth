@@ -429,8 +429,9 @@ pub async fn start_backend_update(
     let owned_port = owned_backend_port(&backend_state)?;
     let has_owned = has_owned_backend(&backend_state)?;
     if has_owned {
-        let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
-        block_external_conflict(&ignored_ports).await?;
+        if let Some(port) = owned_port {
+            block_external_conflict(&[port]).await?;
+        }
 
         info!("Stopping backend before update...");
         process::stop_backend_for_mutation(&backend_state, &shutdown, Some(diagnostics.inner()))?;
@@ -479,8 +480,9 @@ pub async fn start_managed_repair(
     let owned_port = owned_backend_port(&backend_state)?;
     let has_owned = has_owned_backend(&backend_state)?;
     if has_owned {
-        let ignored_ports: Vec<u16> = owned_port.into_iter().collect();
-        block_external_conflict(&ignored_ports).await?;
+        if let Some(port) = owned_port {
+            block_external_conflict(&[port]).await?;
+        }
 
         info!("Stopping backend before repair...");
         process::stop_backend_for_mutation(&backend_state, &shutdown, Some(&diagnostics_state))?;

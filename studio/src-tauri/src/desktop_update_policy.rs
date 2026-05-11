@@ -293,6 +293,15 @@ fn compare_suffixes(left: &VersionSuffix, right: &VersionSuffix) -> std::cmp::Or
         | (VersionSuffix::Beta(left), VersionSuffix::Beta(right))
         | (VersionSuffix::Rc(left), VersionSuffix::Rc(right))
         | (VersionSuffix::Post(left), VersionSuffix::Post(right)) => left.cmp(right),
+        (VersionSuffix::Rc(left), VersionSuffix::PreRelease(right)) => {
+            compare_numbered_prefix_to_prerelease("rc", *left, right)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (VersionSuffix::PreRelease(left), VersionSuffix::Rc(right)) => {
+            compare_numbered_prefix_to_prerelease("rc", *right, left)
+                .map(std::cmp::Ordering::reverse)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
         (VersionSuffix::PreRelease(left), VersionSuffix::PreRelease(right)) => {
             compare_prerelease(left, right)
         }
@@ -325,11 +334,39 @@ fn compare_prerelease_part(left: &str, right: &str) -> std::cmp::Ordering {
     let left_number = left.parse::<u64>();
     let right_number = right.parse::<u64>();
     match (left_number, right_number) {
-        (Ok(left), Ok(right)) => left.cmp(&right),
-        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-        (Err(_), Err(_)) => left.cmp(right),
+        (Ok(left), Ok(right)) => return left.cmp(&right),
+        (Ok(_), Err(_)) => return std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => return std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => {}
     }
+
+    match (split_alpha_numeric(left), split_alpha_numeric(right)) {
+        (Some((left_prefix, left_number)), Some((right_prefix, right_number)))
+            if left_prefix == right_prefix =>
+        {
+            return left_number.cmp(&right_number);
+        }
+        _ => {}
+    }
+
+    left.cmp(right)
+}
+
+fn compare_numbered_prefix_to_prerelease(
+    prefix: &str,
+    number: u64,
+    prerelease: &str,
+) -> Option<std::cmp::Ordering> {
+    let (other_prefix, other_number) = split_alpha_numeric(prerelease)?;
+    (other_prefix == prefix).then(|| number.cmp(&other_number))
+}
+
+fn split_alpha_numeric(value: &str) -> Option<(&str, u64)> {
+    let digit_start = value.find(|c: char| c.is_ascii_digit())?;
+    if digit_start == 0 || value[digit_start..].bytes().any(|b| !b.is_ascii_digit()) {
+        return None;
+    }
+    Some((&value[..digit_start], value[digit_start..].parse().ok()?))
 }
 
 #[cfg(test)]
@@ -342,6 +379,10 @@ mod tests {
         assert!(super::compare_versions("2026.5.3.post1", "2026.5.3") > 0);
         assert!(super::compare_versions("2026.5.3.post1", "2026.5.3+build1") > 0);
         assert!(super::compare_versions("2026.5.3+build1", "2026.5.3-beta.1") > 0);
+        assert!(super::compare_versions("2026.5.3-rc10", "2026.5.3-rc2") > 0);
+        assert!(super::compare_versions("2026.5.3-rc10", "2026.5.3rc2") > 0);
+        assert!(super::compare_versions("2026.5.3rc2", "2026.5.3-rc10") < 0);
+        assert!(super::compare_versions("2026.5.3-beta10", "2026.5.3-beta2") > 0);
         assert!(super::compare_versions("2026.5.3rc2", "2026.5.3rc1") > 0);
         assert!(super::compare_versions("2026.5.3b1", "2026.5.3a1") > 0);
     }
