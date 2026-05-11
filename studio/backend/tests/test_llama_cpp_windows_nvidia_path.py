@@ -197,13 +197,7 @@ class TestWindowsPipNvidiaDllDirs:
         # Without this, users on the new CUDA 13 wheel generation hit
         # the original #5106 failure mode.
         dll_dir = (
-            tmp_path
-            / "Lib"
-            / "site-packages"
-            / "nvidia"
-            / "cu13"
-            / "bin"
-            / "x86_64"
+            tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
         )
         dll_dir.mkdir(parents = True)
         for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
@@ -214,15 +208,7 @@ class TestWindowsPipNvidiaDllDirs:
     def test_picks_up_bin_x64_layout(self, tmp_path):
         # Some repackaged wheels use ``bin/x64`` (Windows-x64 convention)
         # instead of ``bin/x86_64`` (NVIDIA-internal convention).
-        dll_dir = (
-            tmp_path
-            / "Lib"
-            / "site-packages"
-            / "nvidia"
-            / "cu13"
-            / "bin"
-            / "x64"
-        )
+        dll_dir = tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x64"
         dll_dir.mkdir(parents = True)
         (dll_dir / "cudart64_13.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
@@ -252,9 +238,7 @@ class TestWindowsPipNvidiaDllDirs:
         dll_dir.mkdir(parents = True)
         (dll_dir / "cudart64_12.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(prefix))
-        assert str(dll_dir) in result, (
-            f"bracket-prefixed path returned empty: {result}"
-        )
+        assert str(dll_dir) in result, f"bracket-prefixed path returned empty: {result}"
 
     def test_arch_subdir_listed_before_parent_bin(self, tmp_path):
         # When both ``nvidia/<pkg>/bin/`` and
