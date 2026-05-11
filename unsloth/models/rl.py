@@ -540,6 +540,20 @@ def _wrap_grpo_generate_and_score(trainer_cls):
 
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+    # Defensive wrapper: matches patch_trl_rl_trainers()'s try/except so
+    # direct callers don't see exceptions from the impl on TRL versions
+    # that rename or move classes (e.g. TRL 1.x trl.experimental).
+    try:
+        return _patch_trl_rl_trainers_impl(trainer_file)
+    except Exception as e:
+        logger.info(
+            f"Unsloth: Could not patch trl.trainer.{trainer_file}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return
+
+
+def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer

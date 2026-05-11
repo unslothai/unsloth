@@ -474,7 +474,6 @@ async def load_model(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
-                from utils.models import is_audio_input_type
 
                 _gguf_audio = (
                     llama_backend._audio_type
@@ -495,9 +494,7 @@ async def load_model(
                     is_gguf = True,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
-                    has_audio_input = is_audio_input_type(_gguf_audio)
-                    if _gguf_audio
-                    else False,
+                    has_audio_input = False,
                     inference = inference_config,
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
@@ -658,9 +655,10 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Detect TTS audio by probing the loaded model's vocabulary
-            from utils.models import is_audio_input_type
-
+            # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
+            # GGUF audio input is not wired through the chat path yet, so do not
+            # advertise has_audio_input for GGUF models until uploaded audio is
+            # actually forwarded to llama-server.
             _gguf_audio = llama_backend.detect_audio_type()
             _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
@@ -686,7 +684,7 @@ async def load_model(
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
-                has_audio_input = is_audio_input_type(_gguf_audio),
+                has_audio_input = False,
                 inference = inference_config,
                 requires_trust_remote_code = bool(
                     inference_config.get("trust_remote_code", False)
@@ -1156,13 +1154,15 @@ async def get_status(
             ):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
+            _audio_type = getattr(llama_backend, "_audio_type", None)
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
-                audio_type = getattr(llama_backend, "_audio_type", None),
+                audio_type = _audio_type,
+                has_audio_input = False,
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
@@ -1178,6 +1178,8 @@ async def get_status(
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
+                cache_type_kv = llama_backend.cache_type_kv,
+                chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
             )
 
@@ -1669,6 +1671,12 @@ async def openai_chat_completions(
         and not _effective_enable_tools(payload)
         and (_tools_passthrough or _has_response_format)
     ):
+        if payload.audio_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported for GGUF chat models yet.",
+            )
+
         # Preserve the vision guard that would otherwise run in the
         # non-passthrough path below: text-only tool-capable GGUFs
         # should return a clear 400 here rather than forwarding the
@@ -1716,6 +1724,12 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
+        if payload.audio_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported for GGUF chat models yet.",
+            )
+
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
         if image_b64 and not llama_backend.is_vision:

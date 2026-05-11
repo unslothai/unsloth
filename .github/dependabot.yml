@@ -24,4 +24,25 @@ updates:
     groups:
       npm-oxc-validator:
         patterns: ["*"]
+
+  # pip + cargo so security advisories on Python deps + the Tauri shell
+  # auto-generate PRs alongside the github-actions / bun / npm updates.
+  # Grouped weekly so we don't get one PR per dep; security advisories
+  # bypass the group and open immediately.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: "cargo"
+    directory: "/studio/src-tauri"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo-tauri:
+        patterns: ["*"]
 ...

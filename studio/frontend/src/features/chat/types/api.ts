@@ -70,6 +70,25 @@ export interface GgufVariantsResponse {
   default_variant: string | null;
 }
 
+export function isMultimodalResponse(
+  response:
+    | {
+        is_vision?: boolean;
+        is_audio?: boolean;
+        audio_type?: string | null;
+        has_audio_input?: boolean;
+      }
+    | null
+    | undefined,
+): boolean {
+  return (
+    Boolean(response?.is_vision) ||
+    Boolean(response?.is_audio) ||
+    Boolean(response?.has_audio_input) ||
+    response?.audio_type === "audio_vlm"
+  );
+}
+
 export interface LoadModelResponse {
   status: string;
   model: string;
@@ -134,6 +153,8 @@ export interface InferenceStatusResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  cache_type_kv?: string | null;
+  chat_template_override?: string | null;
   speculative_type?: string | null;
 }
 

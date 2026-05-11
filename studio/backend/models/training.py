@@ -5,7 +5,7 @@
 Pydantic schemas for Training API
 """
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
 
@@ -224,6 +224,7 @@ class TrainingRunSummary(BaseModel):
     status: Literal["running", "completed", "stopped", "error"]
     model_name: str
     dataset_name: str
+    display_name: Optional[str] = None
     started_at: str
     ended_at: Optional[str] = None
     total_steps: Optional[int] = None
@@ -235,6 +236,14 @@ class TrainingRunSummary(BaseModel):
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
     resumed_later: bool = False
+
+
+class TrainingRunUpdateRequest(BaseModel):
+    """Mutable fields on a training run."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    display_name: Optional[str] = Field(None, max_length = 120)
 
 
 class TrainingRunListResponse(BaseModel):

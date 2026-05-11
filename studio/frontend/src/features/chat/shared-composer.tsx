@@ -4,6 +4,7 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,12 +15,12 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { useAui } from "@assistant-ui/react";
-import { cn } from "@/lib/utils";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { loadModel, validateModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
+  type CompositionEvent,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
@@ -51,6 +52,10 @@ export interface CompareHandle {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+
+function isNativeComposing(event: Event) {
+  return "isComposing" in event && (event as InputEvent).isComposing === true;
+}
 
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -238,7 +243,9 @@ export function SharedComposer({
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -323,7 +330,13 @@ export function SharedComposer({
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  function setCompositionState(next: boolean) {
+    composingRef.current = next;
+    setIsComposing(next);
+  }
+
   async function send() {
+    if (composingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
 
@@ -358,6 +371,8 @@ export function SharedComposer({
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const chatTemplateOverride = store.chatTemplateOverride;
+      const effectiveChatTemplateOverride =
+        chatTemplateOverride?.trim() ? chatTemplateOverride : null;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -379,7 +394,7 @@ export function SharedComposer({
             is_lora: sel.isLora,
             gguf_variant: sel.ggufVariant ?? null,
             trust_remote_code: trustRemoteCode,
-            chat_template_override: chatTemplateOverride,
+            chat_template_override: effectiveChatTemplateOverride,
           });
           if (validation.requires_trust_remote_code && !trustRemoteCode) {
             throw new Error(
@@ -395,7 +410,7 @@ export function SharedComposer({
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
-          chat_template_override: chatTemplateOverride,
+          chat_template_override: effectiveChatTemplateOverride,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -480,6 +495,9 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
+    // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
+    // Don't hijack it. See issue #5318.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -488,11 +506,11 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy;
+  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
 
   return (
     <div
-      className={`chat-composer-surface relative flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 transition-shadow outline-none ${dragging ? "border-ring bg-accent/50" : ""}`}
+      className={`chat-composer-surface ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
         if (isTauri) return;
         e.preventDefault();
@@ -536,13 +554,29 @@ export function SharedComposer({
       <textarea
         ref={textareaRef}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          // ALWAYS mirror the DOM value into React state, even during IME
+          // composition. The controlled `value` prop must match the DOM at
+          // all times, otherwise any unrelated parent re-render reconciles
+          // the textarea back to the stored value mid-composition — wiping
+          // the IME preedit AND prior committed text (e.g. Tab cycling
+          // candidates erases earlier words). Issue #5318.
+          setCompositionState(isNativeComposing(e.nativeEvent));
+          setText(e.target.value);
+        }}
+        onCompositionStart={() => {
+          setCompositionState(true);
+        }}
+        onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
+          setCompositionState(false);
+          setText(e.currentTarget.value);
+        }}
         onKeyDown={onKeyDown}
         placeholder="Send to both models..."
-        className="mb-1 min-h-12 w-full resize-none overflow-y-hidden bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+        className="composer-input"
         rows={1}
       />
-      <div className="relative mx-2 mb-2 flex items-center justify-between">
+      <div className="composer-action-wrapper">
         <div className="flex items-center gap-1">
           <input
             ref={fileInputRef}
@@ -682,14 +716,8 @@ export function SharedComposer({
             type="button"
             disabled={toolsDisabled}
             onClick={() => setToolsEnabled(!toolsEnabled)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-              toolsDisabled
-                ? "cursor-not-allowed opacity-40"
-                : toolsEnabled
-                  ? "bg-primary/10 text-primary hover:bg-primary/20"
-                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-            )}
+            className="composer-pill-btn"
+            data-active={toolsEnabled && !toolsDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
             <GlobeIcon className="size-3.5" />
@@ -699,14 +727,8 @@ export function SharedComposer({
             type="button"
             disabled={toolsDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-              toolsDisabled
-                ? "cursor-not-allowed opacity-40"
-                : codeToolsEnabled
-                  ? "bg-primary/10 text-primary hover:bg-primary/20"
-                  : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-            )}
+            className="composer-pill-btn"
+            data-active={codeToolsEnabled && !toolsDisabled ? "true" : "false"}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
             <CodeToggleIcon className="size-3.5" />
@@ -762,6 +784,7 @@ export function SharedComposer({
               className="size-8 rounded-full"
               onClick={send}
               disabled={!canSend}
+              aria-label="Send message"
             >
               <ArrowUpIcon className="size-4" />
             </TooltipIconButton>
