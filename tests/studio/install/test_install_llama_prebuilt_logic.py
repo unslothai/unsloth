@@ -2392,9 +2392,7 @@ def test_paired_runtime_dll_patterns_excludes_executables() -> None:
     prevents a malformed cudart bundle from overwriting
     llama-server.exe at install time.
     """
-    paired_runtime_dll_patterns = (
-        INSTALL_LLAMA_PREBUILT.paired_runtime_dll_patterns
-    )
+    paired_runtime_dll_patterns = INSTALL_LLAMA_PREBUILT.paired_runtime_dll_patterns
     paired_choice = AssetChoice(
         repo = "x",
         tag = "t",
