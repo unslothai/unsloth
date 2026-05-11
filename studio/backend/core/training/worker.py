@@ -1129,10 +1129,30 @@ def run_training_process(
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
+        # ROCm Windows wheels omit C-extension-backed distributed classes
+        # (Store, ProcessGroup, …). Auto-stub any missing attribute so
+        # torch._dynamo's fake_pg class definitions don't crash at import time.
+        if not hasattr(_td, "__getattr__"):
+            def _td_getattr(_attr):
+                if _attr.startswith("__"):
+                    raise AttributeError(_attr)
+                _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
+                setattr(_td, _attr, _cls)
+                return _cls
+            _td.__getattr__ = _td_getattr
     except Exception:
         _td_mock = _types.ModuleType("torch.distributed")
         for _name, _stub in _td_stubs.items():
             setattr(_td_mock, _name, _stub)
+
+        def _td_mock_getattr(_attr):
+            if _attr.startswith("__"):
+                raise AttributeError(_attr)
+            _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
+            setattr(_td_mock, _attr, _cls)
+            return _cls
+
+        _td_mock.__getattr__ = _td_mock_getattr
         sys.modules["torch.distributed"] = _td_mock
         if "torch._C._distributed_c10d" not in sys.modules:
             _c10d_fb = _types.ModuleType("torch._C._distributed_c10d")
