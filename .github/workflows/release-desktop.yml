@@ -7,10 +7,10 @@ on:
         description: 'Studio version tag to release (for example, v0.1.39-beta)'
         type: string
         required: true
-      backend_version:
-        description: 'Backend PyPI version required by desktop preflight (for example 2026.5.3; must match MIN_DESKTOP_BACKEND_VERSION)'
+      pypi_version:
+        description: 'Exact PyPI unsloth version just published/stamped (for example, 2026.5.3); leave blank to use MIN_DESKTOP_BACKEND_VERSION'
         type: string
-        required: true
+        required: false
       draft:
         description: 'Create as draft release; draft runs do not advance desktop-latest updater channel'
         type: boolean
@@ -18,6 +18,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-desktop-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   prepare-version:
@@ -28,7 +32,7 @@ jobs:
       app_version: ${{ steps.prepare.outputs.app_version }}
       desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
       prerelease: ${{ steps.prepare.outputs.prerelease }}
-      backend_version: ${{ steps.prepare.outputs.backend_version }}
+      pypi_version: ${{ steps.prepare.outputs.pypi_version }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -38,7 +42,7 @@ jobs:
         shell: bash
         env:
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
-          INPUT_BACKEND_VERSION: ${{ inputs.backend_version }}
+          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
         run: |
           python3 <<'PY'
           import os
@@ -63,19 +67,60 @@ jobs:
           desktop_release_tag = f'desktop-v{app_version}'
           prerelease = 'true' if '-' in app_version.split('+', 1)[0] else 'false'
 
+          def parse_backend_version(version):
+              match = re.fullmatch(
+                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+                  r'(?:([a-zA-Z]|\.dev|dev|\.rc|rc|\.post|post)(\d*))?'
+                  r'(?:[-+]([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?',
+                  version,
+              )
+              if not match:
+                  return None
+              major, minor, patch, suffix_name, suffix_number, suffix_text = match.groups()
+              if suffix_name:
+                  normalized = suffix_name.lower().lstrip('.')
+                  order = {'dev': 0, 'a': 1, 'b': 2, 'rc': 3, 'post': 5}.get(normalized)
+                  if order is None:
+                      return None
+                  number = int(suffix_number or '0')
+              elif suffix_text:
+                  order = 3 if version[version.find(suffix_text) - 1] == '-' else 4
+                  number = 0
+              else:
+                  order = 4
+                  number = 0
+              return (int(major), int(minor), int(patch), order, number)
+
           preflight = pathlib.Path('studio/src-tauri/src/preflight/version.rs').read_text()
           match = re.search(r'MIN_DESKTOP_BACKEND_VERSION:\s*&str\s*=\s*"([^"]+)"', preflight)
           if not match:
               sys.exit('Could not read MIN_DESKTOP_BACKEND_VERSION')
-          backend_version = match.group(1)
+          min_backend_version = match.group(1)
 
-          input_backend_version = os.environ['INPUT_BACKEND_VERSION'].strip()
-          if not input_backend_version:
-              sys.exit('backend_version is required and must match MIN_DESKTOP_BACKEND_VERSION')
-          if input_backend_version != backend_version:
+          input_pypi_version = os.environ.get('INPUT_PYPI_VERSION', '').strip()
+          parsed_min_backend = parse_backend_version(min_backend_version)
+          if parsed_min_backend is None:
+              sys.exit(f'MIN_DESKTOP_BACKEND_VERSION is not a supported backend package version: {min_backend_version}')
+
+          pypi_version = input_pypi_version or min_backend_version
+          parsed_pypi = parse_backend_version(pypi_version)
+          if parsed_pypi is None:
+              sys.exit(f'pypi_version is not a supported backend package version: {pypi_version}')
+          if parsed_pypi < parsed_min_backend:
               sys.exit(
-                  'backend_version input must match MIN_DESKTOP_BACKEND_VERSION: '
-                  f'input={input_backend_version} rust={backend_version}'
+                  f'pypi_version {pypi_version} is lower than desktop minimum '
+                  f'MIN_DESKTOP_BACKEND_VERSION {min_backend_version}'
+              )
+
+          if input_pypi_version:
+              print(
+                  'Using exact PyPI unsloth version from pypi_version input: '
+                  f'{pypi_version} (desktop minimum: {min_backend_version})'
+              )
+          else:
+              print(
+                  'Using exact PyPI unsloth version from MIN_DESKTOP_BACKEND_VERSION: '
+                  f'{pypi_version}'
               )
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
@@ -83,14 +128,14 @@ jobs:
               print(f'app_version={app_version}', file=output)
               print(f'desktop_release_tag={desktop_release_tag}', file=output)
               print(f'prerelease={prerelease}', file=output)
-              print(f'backend_version={backend_version}', file=output)
+              print(f'pypi_version={pypi_version}', file=output)
           PY
 
       - name: Verify PyPI package and Studio stamp
         shell: bash
         env:
           STUDIO_VERSION: ${{ steps.prepare.outputs.studio_version }}
-          BACKEND_VERSION: ${{ steps.prepare.outputs.backend_version }}
+          PYPI_VERSION: ${{ steps.prepare.outputs.pypi_version }}
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -102,10 +147,10 @@ jobs:
           import urllib.error
           import urllib.request
 
-          backend_version = os.environ['BACKEND_VERSION']
+          pypi_version = os.environ['PYPI_VERSION']
           dist_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'pypi-unsloth-dist')
           dist_dir.mkdir(parents=True, exist_ok=True)
-          metadata_url = f'https://pypi.org/pypi/unsloth/{backend_version}/json'
+          metadata_url = f'https://pypi.org/pypi/unsloth/{pypi_version}/json'
 
           last_error = None
           for attempt in range(1, 6):
@@ -118,17 +163,17 @@ jobs:
                   if attempt < 5:
                       time.sleep(10 * attempt)
           else:
-              sys.exit(f'Publish unsloth=={backend_version} to PyPI before the desktop release ({last_error})')
+              sys.exit(f'Publish unsloth=={pypi_version} to PyPI before the desktop release ({last_error})')
 
           files = metadata.get('urls') or []
           if not files:
-              sys.exit(f'PyPI returned no distribution files for unsloth=={backend_version}')
+              sys.exit(f'PyPI returned no distribution files for unsloth=={pypi_version}')
 
           for file_info in files:
               filename = file_info.get('filename')
               url = file_info.get('url')
               if not filename or '/' in filename or not url:
-                  sys.exit(f'Unexpected PyPI file entry for unsloth=={backend_version}: {file_info!r}')
+                  sys.exit(f'Unexpected PyPI file entry for unsloth=={pypi_version}: {file_info!r}')
               target = dist_dir / filename
               for attempt in range(1, 4):
                   try:
@@ -146,7 +191,7 @@ jobs:
           if [ -f scripts/stamp_studio_release.py ]; then
             mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
             if [ "${#dists[@]}" -eq 0 ]; then
-              echo "No PyPI wheel/sdist artifacts downloaded for unsloth==$BACKEND_VERSION" >&2
+              echo "No PyPI wheel/sdist artifacts downloaded for unsloth==$PYPI_VERSION" >&2
               exit 1
             fi
             python3 scripts/stamp_studio_release.py --verify-dist "$RUNNER_TEMP/pypi-unsloth-dist" --expected "$STUDIO_VERSION"
@@ -189,6 +234,29 @@ jobs:
               major, minor, patch, prerelease = match.groups()
               return (int(major), int(minor), int(patch), prerelease)
 
+          def numeric_tail(identifier: str) -> tuple[str, int] | None:
+              match = re.fullmatch(r'([A-Za-z-]+)(\d+)', identifier)
+              if not match:
+                  return None
+              return (match.group(1).lower(), int(match.group(2)))
+
+          def compare_identifier(left: str, right: str) -> int:
+              left_num = left.isdigit()
+              right_num = right.isdigit()
+              if left_num and right_num:
+                  return (int(left) > int(right)) - (int(left) < int(right))
+              if left_num:
+                  return -1
+              if right_num:
+                  return 1
+
+              left_tail = numeric_tail(left)
+              right_tail = numeric_tail(right)
+              if left_tail and right_tail and left_tail[0] == right_tail[0]:
+                  return (left_tail[1] > right_tail[1]) - (left_tail[1] < right_tail[1])
+
+              return (left > right) - (left < right)
+
           def compare_prerelease(left: str | None, right: str | None) -> int:
               if left == right:
                   return 0
@@ -199,16 +267,7 @@ jobs:
               left_parts = left.split('.')
               right_parts = right.split('.')
               for left_part, right_part in zip(left_parts, right_parts):
-                  left_num = left_part.isdigit()
-                  right_num = right_part.isdigit()
-                  if left_num and right_num:
-                      order = (int(left_part) > int(right_part)) - (int(left_part) < int(right_part))
-                  elif left_num:
-                      order = -1
-                  elif right_num:
-                      order = 1
-                  else:
-                      order = (left_part > right_part) - (left_part < right_part)
+                  order = compare_identifier(left_part, right_part)
                   if order:
                       return order
               return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
@@ -262,7 +321,6 @@ jobs:
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
-      BACKEND_VERSION: ${{ needs.prepare-version.outputs.backend_version }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -577,7 +635,6 @@ jobs:
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
-      BACKEND_VERSION: ${{ needs.prepare-version.outputs.backend_version }}
 
     steps:
       - name: Download versioned updater metadata
@@ -726,6 +783,29 @@ jobs:
               major, minor, patch, prerelease = match.groups()
               return (int(major), int(minor), int(patch), prerelease)
 
+          def numeric_tail(identifier: str) -> tuple[str, int] | None:
+              match = re.fullmatch(r'([A-Za-z-]+)(\d+)', identifier)
+              if not match:
+                  return None
+              return (match.group(1).lower(), int(match.group(2)))
+
+          def compare_identifier(left: str, right: str) -> int:
+              left_num = left.isdigit()
+              right_num = right.isdigit()
+              if left_num and right_num:
+                  return (int(left) > int(right)) - (int(left) < int(right))
+              if left_num:
+                  return -1
+              if right_num:
+                  return 1
+
+              left_tail = numeric_tail(left)
+              right_tail = numeric_tail(right)
+              if left_tail and right_tail and left_tail[0] == right_tail[0]:
+                  return (left_tail[1] > right_tail[1]) - (left_tail[1] < right_tail[1])
+
+              return (left > right) - (left < right)
+
           def compare_prerelease(left: str | None, right: str | None) -> int:
               if left == right:
                   return 0
@@ -736,16 +816,7 @@ jobs:
               left_parts = left.split('.')
               right_parts = right.split('.')
               for left_part, right_part in zip(left_parts, right_parts):
-                  left_num = left_part.isdigit()
-                  right_num = right_part.isdigit()
-                  if left_num and right_num:
-                      order = (int(left_part) > int(right_part)) - (int(left_part) < int(right_part))
-                  elif left_num:
-                      order = -1
-                  elif right_num:
-                      order = 1
-                  else:
-                      order = (left_part > right_part) - (left_part < right_part)
+                  order = compare_identifier(left_part, right_part)
                   if order:
                       return order
               return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
