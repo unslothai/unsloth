@@ -11,6 +11,7 @@ nvidia.py counterparts.
 import json
 import math
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -22,8 +23,12 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
+# amd-smi on Windows must initialise the full ROCm runtime on first call, which
+# can take 15-25 s on cold hardware.  Linux is consistently < 2 s.
+_AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
+
+def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
     """Run amd-smi with the given arguments and return parsed JSON, or None."""
     try:
         result = subprocess.run(
