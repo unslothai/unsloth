@@ -3744,6 +3744,17 @@ def overlay_directory_for_choice(
     return path
 
 
+def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
+    """Filename patterns the paired runtime archive is allowed to drop
+    into the install. Used for the second copy_globs pass in
+    install_from_archives, narrower than runtime_patterns_for_choice so
+    the runtime archive cannot overwrite main-archive payload like
+    llama-server.exe. Only Windows CUDA has paired runtimes today."""
+    if choice.install_kind == "windows-cuda":
+        return ["cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll"]
+    return []
+
+
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
         return [
@@ -4093,13 +4104,20 @@ def install_from_archives(
             source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
         )
         if runtime_extract_dir is not None:
-            # The runtime archive only contributes the CUDA DLLs --
-            # not all runtime_patterns_for_choice entries -- so
-            # required=False.
+            # The runtime archive only contributes the CUDA DLLs.
+            # Restrict the overlay to the cudart bundle's known
+            # filenames (cudart64_X.dll / cublas64_X.dll /
+            # cublasLt64_X.dll) rather than the broad ``*.exe`` /
+            # ``*.dll`` set from runtime_patterns_for_choice, so a
+            # malformed runtime archive can never overwrite
+            # llama-server.exe or other main-archive payload. The
+            # upstream cudart-llama-bin-win-cuda-X.Y-x64.zip currently
+            # ships exactly these three DLLs (verified against b9103
+            # cuda-12.4 and cuda-13.1 bundles).
             copy_globs(
                 runtime_extract_dir,
                 overlay_dir,
-                runtime_patterns_for_choice(choice),
+                paired_runtime_dll_patterns(choice),
                 required = False,
             )
         copy_globs(
@@ -4315,8 +4333,27 @@ def python_runtime_dirs() -> list[str]:
     for root in search_roots:
         if not root.is_dir():
             continue
+        # ``nvidia/<pkg>/lib`` -- Linux convention; harmless on Windows
+        # where the directory simply does not exist on real wheels.
         candidates.extend(root.glob("nvidia/*/lib"))
+        # ``nvidia/<pkg>/bin`` -- legacy modular Windows wheels
+        # (``nvidia-cuda-runtime-cu12``, ``nvidia-cublas-cu12``).
         candidates.extend(root.glob("nvidia/*/bin"))
+        # ``nvidia/<pkg>/bin/x86_64`` and ``.../bin/x64`` -- current
+        # CUDA 13 Windows wheel layout (the unsuffixed
+        # ``nvidia-cuda-runtime`` 13.x and ``nvidia-cublas`` 13.x
+        # packages ship under ``nvidia/cu13/bin/x86_64/cudart64_13.dll``).
+        # Without these, Windows preflight CUDA detection misses cu13
+        # installs and falls back to the upstream cudart bundle path
+        # even when usable DLLs are already on disk (#5106). Kept in
+        # sync with the backend resolver
+        # ``llama_cpp.LlamaCppBackend._windows_pip_nvidia_dll_dirs``.
+        candidates.extend(root.glob("nvidia/*/bin/x86_64"))
+        candidates.extend(root.glob("nvidia/*/bin/x64"))
+        # ``nvidia/<pkg>/Library/bin`` -- conda-style wheel repacks.
+        candidates.extend(root.glob("nvidia/*/Library/bin"))
+        candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
+        candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
     return dedupe_existing_dirs(candidates)
 
@@ -5125,14 +5162,18 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
         groups = [["llama.dll"], ["ggml-cuda.dll"]]
-        # When the cudart bundle was paired in (#5106) require its
-        # DLLs alongside the main archive's payload. install_kind alone
-        # is not enough -- legacy installs without the cudart pair must
-        # still pass the health check on the no-pair fallback path,
-        # otherwise pair-less builds would loop on reinstall forever.
+        # When the cudart bundle was paired in (#5106) require all
+        # three of its DLLs alongside the main archive's payload.
+        # install_kind alone is not enough -- legacy installs without
+        # the cudart pair must still pass the health check on the
+        # no-pair fallback path, otherwise pair-less builds would loop
+        # on reinstall forever. The upstream cudart bundle ships
+        # cudart64_X.dll + cublas64_X.dll + cublasLt64_X.dll; missing
+        # any one of them still breaks GPU initialisation.
         if choice.runtime_name:
             groups.append(["cudart64_*.dll"])
             groups.append(["cublas64_*.dll"])
+            groups.append(["cublasLt64_*.dll"])
         return groups
     if choice.install_kind == "windows-hip":
         return [["llama.dll"], ["*hip*.dll"]]

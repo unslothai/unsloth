@@ -1266,6 +1266,19 @@ def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(
     (install_dir / "build" / "bin" / "Release" / "cudart64_12.dll").unlink()
     assert existing_install_matches_plan(install_dir, host, plan) is False
 
+    # cublasLt missing -- stale, must reinstall. The upstream cudart
+    # bundle ships all three of cudart / cublas / cublasLt; a user with
+    # cudart + cublas but no cublasLt is still missing a required GPU
+    # initialisation DLL and Studio must refresh the install.
+    write_windows_install_shape(
+        install_dir,
+        include_llama_dll = True,
+        include_cuda_dll = True,
+        include_cudart_dlls = True,
+    )
+    (install_dir / "build" / "bin" / "Release" / "cublasLt64_12.dll").unlink()
+    assert existing_install_matches_plan(install_dir, host, plan) is False
+
 
 def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
     tmp_path: Path,
@@ -2370,3 +2383,186 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
         )
         is False
     )
+
+
+def test_paired_runtime_dll_patterns_excludes_executables() -> None:
+    """The paired runtime archive must only contribute CUDA DLLs to
+    the install. The narrow pattern list -- not the broad
+    runtime_patterns_for_choice ``*.exe`` / ``*.dll`` -- is what
+    prevents a malformed cudart bundle from overwriting
+    llama-server.exe at install time.
+    """
+    paired_runtime_dll_patterns = (
+        INSTALL_LLAMA_PREBUILT.paired_runtime_dll_patterns
+    )
+    paired_choice = AssetChoice(
+        repo = "x",
+        tag = "t",
+        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url = "u",
+        source_label = "published",
+        install_kind = "windows-cuda",
+        runtime_line = "cuda12",
+        expected_sha256 = "a" * 64,
+        runtime_name = "cudart-llama-bin-win-cuda-12.4-x64.zip",
+        runtime_url = "https://example.com/cudart.zip",
+        runtime_sha256 = "c" * 64,
+    )
+    patterns = paired_runtime_dll_patterns(paired_choice)
+    assert "cudart64_*.dll" in patterns
+    assert "cublas64_*.dll" in patterns
+    assert "cublasLt64_*.dll" in patterns
+    assert "*.exe" not in patterns
+    assert "*.dll" not in patterns
+
+    for kind in (
+        "linux-cpu",
+        "linux-cuda",
+        "linux-rocm",
+        "macos-arm64",
+        "macos-x64",
+        "windows-cpu",
+        "windows-hip",
+    ):
+        non_windows = AssetChoice(
+            repo = "x",
+            tag = "t",
+            name = "x",
+            url = "u",
+            source_label = "published",
+            install_kind = kind,
+            expected_sha256 = "a" * 64,
+        )
+        assert paired_runtime_dll_patterns(non_windows) == []
+
+
+def test_runtime_overlay_cannot_overwrite_main_archive_payload(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: a malformed runtime archive containing
+    ``llama-server.exe`` alongside the real cudart DLLs must NOT
+    replace the main archive's ``llama-server.exe``.
+    """
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    main_zip = archives / "llama-b9001-bin-win-cuda-12.4-x64.zip"
+    runtime_zip = archives / "cudart-llama-bin-win-cuda-12.4-x64.zip"
+    with zipfile.ZipFile(main_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("llama-server.exe", b"MAIN-SERVER")
+        zf.writestr("llama-quantize.exe", b"MAIN-Q")
+        zf.writestr("llama.dll", b"DLL-llama")
+        zf.writestr("ggml-cuda.dll", b"DLL-ggml")
+    import hashlib
+
+    main_sha = hashlib.sha256(main_zip.read_bytes()).hexdigest()
+    with zipfile.ZipFile(runtime_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("cudart64_12.dll", b"DLL-cudart")
+        zf.writestr("cublas64_12.dll", b"DLL-cublas")
+        zf.writestr("cublasLt64_12.dll", b"DLL-cublasLt")
+        zf.writestr("llama-server.exe", b"RUNTIME-OVERWRITE")
+    runtime_sha = hashlib.sha256(runtime_zip.read_bytes()).hexdigest()
+
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = main_zip.name,
+        url = f"https://example.com/{main_zip.name}",
+        source_label = "published",
+        install_kind = "windows-cuda",
+        runtime_line = "cuda12",
+        expected_sha256 = main_sha,
+        runtime_name = runtime_zip.name,
+        runtime_url = f"https://example.com/{runtime_zip.name}",
+        runtime_sha256 = runtime_sha,
+    )
+    host = HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = (12, 4),
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = True,
+    )
+
+    import shutil as _shutil
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, *, expected_sha256 = None, label = None, **kw):
+        src = main_zip if "cudart" not in url else runtime_zip
+        _shutil.copy2(src, target_path)
+        if expected_sha256:
+            actual = hashlib.sha256(Path(target_path).read_bytes()).hexdigest()
+            if actual != expected_sha256:
+                raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+                    f"sha256 mismatch on {label}"
+                )
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, host, install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    release_dir = install / "build" / "bin" / "Release"
+    server = release_dir / "llama-server.exe"
+    assert server.exists()
+    assert server.read_bytes() == b"MAIN-SERVER", (
+        "runtime archive overwrote main llama-server.exe; "
+        f"got {server.read_bytes()!r}"
+    )
+    for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
+        assert (release_dir / name).exists(), f"missing {name}"
+
+
+def test_python_runtime_dirs_covers_cu13_and_library_bin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Installer-side runtime DLL discovery must scan the same path
+    set as the backend ``_windows_pip_nvidia_dll_dirs``: legacy
+    ``nvidia/<pkg>/bin``, current ``nvidia/<pkg>/bin/x86_64``
+    (cu13 layout), conda-style ``nvidia/<pkg>/Library/bin``, plus
+    ``torch/lib``. Otherwise installer preflight and backend launch
+    can disagree about which DLLs are actually present.
+    """
+    import site as _site
+
+    python_runtime_dirs = INSTALL_LLAMA_PREBUILT.python_runtime_dirs
+
+    site_dir = tmp_path / "Lib" / "site-packages"
+    # cu12-style modular wheel
+    cu12_bin = site_dir / "nvidia" / "cuda_runtime" / "bin"
+    cu12_bin.mkdir(parents = True)
+    # cu13-style unsuffixed wheel
+    cu13_arch = site_dir / "nvidia" / "cu13" / "bin" / "x86_64"
+    cu13_arch.mkdir(parents = True)
+    # conda-style repack
+    library_bin = site_dir / "nvidia" / "cublas" / "Library" / "bin"
+    library_bin.mkdir(parents = True)
+    # PyTorch bundled-CUDA wheel
+    torch_lib = site_dir / "torch" / "lib"
+    torch_lib.mkdir(parents = True)
+
+    monkeypatch.setattr(sys, "path", [str(site_dir)])
+    monkeypatch.setattr(_site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(_site, "getusersitepackages", lambda: "")
+
+    dirs = python_runtime_dirs()
+    assert str(cu12_bin) in dirs
+    assert str(cu13_arch) in dirs
+    assert str(library_bin) in dirs
+    assert str(torch_lib) in dirs
