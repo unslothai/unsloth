@@ -540,6 +540,31 @@ def _wrap_grpo_generate_and_score(trainer_cls):
 
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+    # Thin defensive wrapper around _patch_trl_rl_trainers_impl.
+    #
+    # The impl below has many internal `try: ... except: ... return`
+    # branches for the cases we anticipated, but a few paths can still
+    # raise on TRL versions that rename or move classes (notably TRL
+    # 1.x, which shuffled trainers into trl.experimental and broke
+    # `inspect.getsource` on the thin wrappers left behind in
+    # trl.trainer). The umbrella patch_trl_rl_trainers() below already
+    # ring-fences every call with try/except + warning_once, but direct
+    # callers (e.g. the CI shim in .github/workflows/consolidated-tests-ci.yml
+    # which exercises one trainer at a time) used to see the raw
+    # exception and had to wrap with `pytest.skip` to keep the cell
+    # green. Match the umbrella behaviour here so direct callers don't
+    # have to.
+    try:
+        return _patch_trl_rl_trainers_impl(trainer_file)
+    except Exception as e:
+        logger.info(
+            f"Unsloth: Could not patch trl.trainer.{trainer_file}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return
+
+
+def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
