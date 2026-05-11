@@ -1569,7 +1569,7 @@ if (-not $PythonCmd) {
     exit 1
 }
 
-substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
+substep "Python found: $PythonCmd"
 
 # The venv must already exist (created by install.ps1); this script only
 # updates packages. UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the
@@ -1737,6 +1737,13 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
     exit 1
 } else {
     substep "reusing existing virtual environment at $VenvDir"
+    $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    if (Test-Path -LiteralPath $_venvPyExe) {
+        try {
+            $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
+            if ($_venvPyVer) { substep $_venvPyVer }
+        } catch {}
+    }
 }
 
 # pip and python write to stderr even on success (progress bars, warnings).

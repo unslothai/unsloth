@@ -950,12 +950,71 @@ shell.Run cmd, 0, False
         return $null
     }
 
+    # ── Quick AMD GPU probe (before Python selection) ──
+    # Checks hipinfo and WMI now so we can pick Python 3.12 upfront if AMD is
+    # present (ROCm Windows wheels are cp312-only). The full GPU detection with
+    # version strings and display labels runs after venv creation below.
+    $_EarlyAmdDetected = $false
+    try {
+        $hipinfoEarly = Get-Command hipinfo -ErrorAction SilentlyContinue
+        if ($hipinfoEarly) {
+            $hipEarlyOut = & $hipinfoEarly.Source 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $hipEarlyOut -match "(?i)gcnArchName") {
+                $_EarlyAmdDetected = $true
+            }
+        }
+    } catch {}
+    if (-not $_EarlyAmdDetected) {
+        try {
+            $wmiGpuEarly = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" } | Select-Object -First 1
+            if ($wmiGpuEarly) { $_EarlyAmdDetected = $true }
+        } catch {}
+    }
+
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
     $DetectedPython = Find-CompatiblePython
+
+    # If AMD GPU is present and we didn't land on Python 3.12, find 3.12 now
+    # before creating the venv -- avoids creating the environment twice.
+    if ($_EarlyAmdDetected -and $DetectedPython -and (($DetectedPython.Version -split '\.')[0..1] -join '.') -ne "3.12") {
+        $py312Pre = $null
+        $pyLauncherPre = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+        if ($pyLauncherPre -and $pyLauncherPre.Source -notmatch $script:CondaSkipPattern) {
+            try {
+                $out312 = & $pyLauncherPre.Source "-3.12" --version 2>&1 | Out-String
+                if ($out312 -match "Python 3\.12\.\d+") {
+                    $resolvedExe312 = (& $pyLauncherPre.Source "-3.12" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                    if ($resolvedExe312 -and (Test-Path $resolvedExe312) -and -not (Test-IsCondaPython $resolvedExe312)) {
+                        $py312Pre = @{ Version = "3.12"; Path = $resolvedExe312 }
+                    }
+                }
+            } catch {}
+        }
+        if (-not $py312Pre) {
+            foreach ($name312 in @("python3.12", "python3", "python")) {
+                foreach ($cmd312 in @(Get-Command $name312 -All -ErrorAction SilentlyContinue)) {
+                    if (-not $cmd312.Source -or $cmd312.Source -like "*\WindowsApps\*") { continue }
+                    if (Test-IsCondaPython $cmd312.Source) { continue }
+                    try {
+                        $out312 = & $cmd312.Source --version 2>&1 | Out-String
+                        if ($out312 -match "Python 3\.12\.\d+") { $py312Pre = @{ Version = "3.12"; Path = $cmd312.Source }; break }
+                    } catch {}
+                }
+                if ($py312Pre) { break }
+            }
+        }
+        if ($py312Pre) { $DetectedPython = $py312Pre }
+    }
+
     if ($DetectedPython) {
-        step "python" "Python $($DetectedPython.Version) already installed"
+        $pyStepLabel = "Python $($DetectedPython.Version) already installed"
+        if ($_EarlyAmdDetected -and (($DetectedPython.Version -split '\.')[0..1] -join '.') -eq "3.12") {
+            $pyStepLabel = "Python 3.12 selected (ROCm wheels are cp312-only)"
+        }
+        step "python" $pyStepLabel
     }
     if (-not $DetectedPython) {
         substep "installing Python ${PythonVersion}..."
@@ -1284,74 +1343,12 @@ shell.Run cmd, 0, False
         substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
 
-    # ── AMD ROCm: prefer Python 3.12 (Windows wheels are cp312-only) ──
-    # If a non-3.12 Python was selected and an AMD GPU is present, try to find 3.12.
-    # Fires on $ROCmGpuLabel (WMI/no-HIP-SDK) as well as $HasROCm.
-    if (($HasROCm -or $ROCmGpuLabel) -and $DetectedPython -and ($DetectedPython.Version -split '\.')[0..1] -join '.' -ne "3.12") {
-        $py312 = $null
-        # 1. Try py launcher (official CPython installs)
-        $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-        if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            try {
-                $out = & $pyLauncher.Source "-3.12" --version 2>&1 | Out-String
-                if ($out -match "Python 3\.12\.\d+") {
-                    $resolvedExe = (& $pyLauncher.Source "-3.12" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
-                        $py312 = @{ Version = "3.12"; Path = $resolvedExe }
-                    }
-                }
-            } catch {}
-        }
-        # 2. Try PATH (catches manually placed python3.12 / python)
-        if (-not $py312) {
-            foreach ($name in @("python3.12", "python3", "python")) {
-                foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
-                    if (-not $cmd.Source) { continue }
-                    if ($cmd.Source -like "*\WindowsApps\*") { continue }
-                    if (Test-IsCondaPython $cmd.Source) { continue }
-                    try {
-                        $out = & $cmd.Source --version 2>&1 | Out-String
-                        if ($out -match "Python 3\.12\.\d+") {
-                            $py312 = @{ Version = "3.12"; Path = $cmd.Source }
-                            break
-                        }
-                    } catch {}
-                }
-                if ($py312) { break }
-            }
-        }
-        # 3. Ask uv for its managed Python 3.12 (uv installs don't appear in PATH or py.exe)
-        if (-not $py312) {
-            $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
-            if ($uvCmd) {
-                try {
-                    $uvPy = (& $uvCmd.Source python find 3.12 2>$null | Out-String).Trim()
-                    if ($uvPy -and (Test-Path $uvPy) -and -not (Test-IsCondaPython $uvPy)) {
-                        $verOut = (& $uvPy --version 2>&1 | Out-String)
-                        if ($verOut -match "Python 3\.12\.\d+") {
-                            $py312 = @{ Version = "3.12"; Path = $uvPy }
-                        }
-                    }
-                } catch {}
-            }
-        }
-        if ($py312) {
-            $DetectedPython = $py312
-            substep "AMD GPU detected -- switching to Python 3.12 (ROCm wheels are cp312-only)" "Cyan"
-            # Recreate the venv with Python 3.12 (it was just created with 3.13 above).
-            if (Test-Path -LiteralPath $VenvDir) {
-                Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            step "venv" "creating Python 3.12 virtual environment"
-            substep "$VenvDir"
-            $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
-            if ($venvExit -ne 0) {
-                return (Exit-InstallFailure "Failed to create Python 3.12 virtual environment (exit code $venvExit)" $venvExit)
-            }
-        } else {
-            substep "AMD GPU detected but Python 3.12 not found -- ROCm GPU support requires Python 3.12" "Yellow"
-            substep "Install Python 3.12 from python.org and re-run." "Yellow"
-        }
+    # Warn if AMD GPU is present but the venv still isn't Python 3.12.
+    # The early probe above covers the normal case; this fires only when the
+    # full GPU detection reveals AMD that the early probe missed (e.g. hipinfo
+    # not yet on PATH) and 3.12 still wasn't found.
+    if (($HasROCm -or $ROCmGpuLabel) -and $DetectedPython -and (($DetectedPython.Version -split '\.')[0..1] -join '.') -ne "3.12") {
+        substep "AMD GPU requires Python 3.12 for ROCm wheels -- install it from python.org and re-run." "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
