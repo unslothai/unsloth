@@ -2642,6 +2642,7 @@ async def get_gguf_variants(
         # Per-snapshot so a split GGUF's shards must all sit in one snapshot;
         # mmproj adapters are excluded so they can't inflate a quant's bytes.
         cached_bytes_by_quant_per_snapshot: list[dict[str, int]] = []
+        cached_revision_ids: list[str] = []
         cached_blob_ids: list[str] = []
         try:
             from huggingface_hub import constants as hf_constants
@@ -2672,6 +2673,7 @@ async def get_gguf_variants(
                                 by_quant[q] = by_quant.get(q, 0) + size
                             if by_quant:
                                 cached_bytes_by_quant_per_snapshot.append(by_quant)
+                            cached_revision_ids.append(str(snap.relative_to(snapshots)))
                     blobs = entry / "blobs"
                     if blobs.is_dir():
                         cached_blob_ids = [str(blob.relative_to(blobs)) for blob in blobs.iterdir()]
@@ -2680,6 +2682,16 @@ async def get_gguf_variants(
             pass
 
         def _is_fully_downloaded(variant) -> bool:
+            from huggingface_hub import try_to_load_from_cache
+
+            for revision in cached_revision_ids:
+                cache_exists = try_to_load_from_cache(
+                    repo_id = repo_id,
+                    filename = variant.filename,
+                    revision = revision,
+                )
+                if isinstance(cache_exists, str):
+                    return True
             if variant.size_bytes == 0:
                 return False
             # Complete within one snapshot (tolerance for symlink size jitter).
