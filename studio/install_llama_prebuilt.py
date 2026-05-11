@@ -430,6 +430,16 @@ def is_github_api_url(url: str | None) -> bool:
 
 def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
+        # GitHub returns 403 (not the standard 429) when the API rate
+        # limit is hit. Anonymous calls share a 60-req/hour bucket per
+        # runner IP, which CI fleets can exhaust trivially. Treat 403
+        # against api.github.com as retryable so we get one or two
+        # backoff cycles before the source-build fallback fires; honour
+        # Retry-After / X-RateLimit-Reset in sleep_backoff for accurate
+        # waits. Real 403s on other hosts (private artefact downloads,
+        # auth failures) stay non-retryable.
+        if exc.code == 403:
+            return is_github_api_url(getattr(exc, "url", None))
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, urllib.error.URLError):
         return True
@@ -440,10 +450,43 @@ def is_retryable_url_error(exc: Exception) -> bool:
     return False
 
 
+_RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
+
+
+def _http_error_retry_delay(exc: Exception) -> float | None:
+    """Extract a recommended wait from rate-limit headers on a 403/429.
+
+    Returns None when no header is present or the indicated wait is
+    longer than _RATE_LIMIT_WAIT_CAP_SECONDS (in which case the caller
+    should not block on it -- the source-build fallback is faster).
+    """
+    if not isinstance(exc, urllib.error.HTTPError):
+        return None
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+    retry_after = headers.get("Retry-After")
+    if retry_after and retry_after.strip().isdigit():
+        wait = float(retry_after.strip())
+        return wait if wait <= _RATE_LIMIT_WAIT_CAP_SECONDS else None
+    rate_reset = headers.get("X-RateLimit-Reset")
+    if rate_reset and rate_reset.strip().isdigit():
+        wait = float(rate_reset.strip()) - time.time()
+        if 0.0 < wait <= _RATE_LIMIT_WAIT_CAP_SECONDS:
+            return wait + 1.0  # +1s of slack so the bucket is fresh
+    return None
+
+
 def sleep_backoff(
-    attempt: int, *, base_delay: float = HTTP_FETCH_BASE_DELAY_SECONDS
+    attempt: int,
+    *,
+    base_delay: float = HTTP_FETCH_BASE_DELAY_SECONDS,
+    exc: Exception | None = None,
 ) -> None:
     delay = base_delay * (2 ** max(attempt - 1, 0))
+    header_delay = _http_error_retry_delay(exc) if exc is not None else None
+    if header_delay is not None:
+        delay = max(delay, header_delay)
     delay += random.uniform(0.0, 0.2)
     time.sleep(delay)
 
@@ -829,7 +872,7 @@ def download_bytes(
             if attempt >= attempts or not is_retryable_url_error(exc):
                 raise
             log(f"fetch failed ({attempt}/{attempts}) for {url}: {exc}; retrying")
-            sleep_backoff(attempt)
+            sleep_backoff(attempt, exc = exc)
     assert last_exc is not None
     raise last_exc
 
@@ -927,7 +970,7 @@ def download_file(url: str, destination: Path) -> None:
             log(
                 f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying"
             )
-            sleep_backoff(attempt)
+            sleep_backoff(attempt, exc = exc)
     assert last_exc is not None
     raise last_exc
 

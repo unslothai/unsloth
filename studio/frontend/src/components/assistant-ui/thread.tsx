@@ -51,6 +51,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
+import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -72,6 +73,8 @@ import {
 import { Copy01Icon, Delete02Icon, Edit03Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ChangeEvent,
+  type CompositionEvent,
   type FC,
   type FormEvent,
   useCallback,
@@ -282,13 +285,15 @@ const PendingAudioChip: FC = () => {
 };
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled) {
+      if (disabled || isComposingRef.current) {
         event.preventDefault();
       }
     },
-    [disabled],
+    [disabled, isComposingRef],
   );
 
   const composerContent = (
@@ -304,8 +309,12 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         autoFocus={!disabled}
         disabled={disabled}
         aria-label="Message input"
+        {...inputProps}
       />
-      <ComposerAction disabled={disabled} />
+      <ComposerAction
+        disabled={disabled || isComposing}
+        blockSend={() => isComposingRef.current}
+      />
     </>
   );
 
@@ -329,6 +338,64 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
     </ComposerPrimitive.Root>
   );
 };
+
+function isNativeComposing(event: Event) {
+  return "isComposing" in event && (event as InputEvent).isComposing === true;
+}
+
+function useImeComposerInputHandlers() {
+  const aui = useAui();
+  const composingRef = useRef(false);
+  const [isComposing, setIsComposing] = useState(false);
+
+  const setCompositionState = useCallback((next: boolean) => {
+    composingRef.current = next;
+    setIsComposing(next);
+  }, []);
+
+  const setComposerText = useCallback(
+    (value: string) => {
+      const composer = aui.composer();
+      if (!composer.getState().isEditing) {
+        return;
+      }
+      flushResourcesSync(() => {
+        composer.setText(value);
+      });
+    },
+    [aui],
+  );
+
+  const onCompositionStart = useCallback(() => {
+    setCompositionState(true);
+  }, [setCompositionState]);
+
+  const onCompositionEnd = useCallback(
+    (e: CompositionEvent<HTMLTextAreaElement>) => {
+      setCompositionState(false);
+      setComposerText(e.currentTarget.value);
+    },
+    [setComposerText, setCompositionState],
+  );
+
+  const onChange = useCallback(
+    (e: ChangeEvent<HTMLTextAreaElement>) => {
+      setCompositionState(isNativeComposing(e.nativeEvent));
+      setComposerText(e.target.value);
+    },
+    [setComposerText, setCompositionState],
+  );
+
+  return {
+    inputProps: {
+      onCompositionStart,
+      onCompositionEnd,
+      onChange,
+    },
+    isComposing,
+    isComposingRef: composingRef,
+  };
+}
 
 const ComposerAudioUpload: FC = () => {
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -607,7 +674,10 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
+  disabled,
+  blockSend,
+}) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
       <div className="flex items-center gap-1">
@@ -650,6 +720,11 @@ const ComposerAction: FC<{ disabled?: boolean }> = ({ disabled }) => {
               variant="default"
               size="icon"
               disabled={disabled}
+              onClick={(event) => {
+                if (blockSend?.()) {
+                  event.preventDefault();
+                }
+              }}
               className="aui-composer-send size-8 rounded-full"
               aria-label="Send message"
             >
@@ -903,6 +978,7 @@ const UserActionBar: FC = () => {
 
 const EditComposer: FC = () => {
   const aui = useAui();
+  const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
 
   useAuiEvent("thread.runEnd", () => {
@@ -919,16 +995,22 @@ const EditComposer: FC = () => {
         <ComposerPrimitive.Input
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
+          {...inputProps}
         />
         <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
           <ComposerPrimitive.Cancel asChild={true}>
-            <Button variant="ghost" size="sm">
+            <Button type="button" variant="ghost" size="sm">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
           <Button
+            type="button"
             size="sm"
-            onClick={() => {
+            onClick={(event) => {
+              if (isComposingRef.current) {
+                event.preventDefault();
+                return;
+              }
               const newText = aui.composer().getState().text;
               const originalText = aui.message().getCopyText();
 
