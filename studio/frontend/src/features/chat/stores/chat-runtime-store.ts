@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { create } from "zustand";
 import { toast } from "sonner";
+import { create } from "zustand";
+import { invalidateDocumentSupportCache } from "../api/chat-api";
 import {
-  DEFAULT_INFERENCE_PARAMS,
   type ChatLoraSummary,
   type ChatModelSummary,
+  DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
 import {
@@ -24,6 +25,106 @@ const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
 const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
 const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
+const DOC_EXTRACT_KEY = "unsloth_chat_doc_extract";
+const DEFAULT_DOCUMENT_VISUAL_PAYLOADS = 3;
+const DEFAULT_EXTRACT_CONCURRENCY = 2;
+const MAX_EXTRACT_CONCURRENCY = 8;
+
+/**
+ * Built-in OCR model presets selectable from the Document Extraction settings.
+ * "default" means: use the loaded chat VLM when it is vision-capable,
+ * otherwise behave as no dedicated OCR model.
+ * "none" means: no dedicated OCR model override.
+ * "custom" means: a user-supplied HF id or local path (see `customOcrModelId`).
+ */
+export type OcrModelPresetId = "deepseek-ocr" | "glm-ocr" | "paddleocr-vl";
+export type OcrModelSelection =
+  | OcrModelPresetId
+  | "custom"
+  | "default"
+  | "none";
+
+/**
+ * Transient state for the temporary OCR-model swap performed during scanned-PDF
+ * extraction. Lives in the store (not localStorage) so the settings sheet, the
+ * composer, and the chat header can all subscribe to a single source of truth.
+ */
+export type OcrPhase =
+  | "idle"
+  | "validating"
+  | "unloading"
+  | "loading_ocr"
+  | "extracting"
+  | "restoring"
+  | "error";
+
+export interface DocExtractSettings {
+  /** Global on/off for document-drop extraction. */
+  enabled: boolean;
+  /** Caption extracted visual payloads using the currently loaded vision model. */
+  describeImages: boolean;
+  /** Render full-page visual payloads for scanned PDFs without a text layer. */
+  useVlmOcr: boolean;
+  /** Upper bound on figure/page references listed per document. */
+  maxFigures: number;
+  /** Upper bound on extracted image bytes sent with a document. */
+  maxVisualPayloads: number;
+  /** Approx chars/4 token budget injected into the outgoing message. */
+  tokenBudget: number;
+  /**
+   * Selected OCR model. "default" follows the loaded VLM if present;
+   * "none" keeps the OCR override empty; a preset id loads that preset;
+   * "custom" reads from `customOcrModelId`.
+   */
+  ocrModel: OcrModelSelection;
+  /** HF id or absolute local path used when `ocrModel === "custom"`. */
+  customOcrModelId: string;
+  /** GGUF variant filename for custom OCR repos that ship GGUF; null otherwise. */
+  customOcrGgufVariant: string | null;
+  /**
+   * Frontend-side cap on parallel `/chat/extract-document` requests.
+   * Mirrors the backend `_EXTRACT_SEMAPHORE` so dropping many files at
+   * once queues client-side instead of producing 503-busy responses.
+   */
+  extractConcurrency: number;
+}
+
+export const DEFAULT_DOC_EXTRACT: DocExtractSettings = {
+  enabled: true,
+  describeImages: true,
+  useVlmOcr: false,
+  maxFigures: 40,
+  maxVisualPayloads: DEFAULT_DOCUMENT_VISUAL_PAYLOADS,
+  tokenBudget: 8000,
+  ocrModel: "default",
+  customOcrModelId: "",
+  customOcrGgufVariant: null,
+  extractConcurrency: DEFAULT_EXTRACT_CONCURRENCY,
+};
+
+function clampExtractConcurrency(value: unknown): number {
+  const n =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : DEFAULT_EXTRACT_CONCURRENCY;
+  return Math.max(1, Math.min(MAX_EXTRACT_CONCURRENCY, n));
+}
+
+const VALID_OCR_SELECTIONS: ReadonlySet<OcrModelSelection> = new Set([
+  "default",
+  "none",
+  "custom",
+  "deepseek-ocr",
+  "glm-ocr",
+  "paddleocr-vl",
+]);
+
+function asOcrSelection(value: unknown): OcrModelSelection {
+  return typeof value === "string" &&
+    VALID_OCR_SELECTIONS.has(value as OcrModelSelection)
+    ? (value as OcrModelSelection)
+    : DEFAULT_DOC_EXTRACT.ocrModel;
+}
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type ReasoningEffort = "low" | "medium" | "high";
@@ -39,6 +140,7 @@ function loadReasoningEffort(fallback: ReasoningEffort): ReasoningEffort {
   }
 }
 let hasShownInferencePersistenceWarning = false;
+let hasShownStoragePersistenceWarning = false;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -55,12 +157,21 @@ function loadBool(key: string, fallback: boolean): boolean {
   }
 }
 
-function saveBool(key: string, value: boolean): void {
-  if (!canUseStorage()) return;
+function warnStoragePersistence(): void {
+  if (hasShownStoragePersistenceWarning) return;
+  hasShownStoragePersistenceWarning = true;
+  toast.warning("Chat settings could not be persisted", {
+    description: "Your changes apply now, but may reset after refresh.",
+  });
+}
+
+function saveBool(key: string, value: boolean): boolean {
+  if (!canUseStorage()) return false;
   try {
     localStorage.setItem(key, value ? "true" : "false");
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }
 
@@ -69,19 +180,20 @@ function loadInt(key: string, fallback: number): number {
   try {
     const raw = localStorage.getItem(key);
     if (raw === null) return fallback;
-    const parsed = parseInt(raw, 10);
+    const parsed = Number.parseInt(raw, 10);
     return Number.isNaN(parsed) ? fallback : parsed;
   } catch {
     return fallback;
   }
 }
 
-function saveInt(key: string, value: number): void {
-  if (!canUseStorage()) return;
+function saveInt(key: string, value: number): boolean {
+  if (!canUseStorage()) return false;
   try {
     localStorage.setItem(key, String(value));
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }
 
@@ -94,17 +206,22 @@ function loadString(key: string, fallback: string): string {
   }
 }
 
-function saveString(key: string, value: string): void {
-  if (!canUseStorage()) return;
+function saveString(key: string, value: string): boolean {
+  if (!canUseStorage()) return false;
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }
 
 function asFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asNonNegativeInteger(value: unknown, fallback: number): number {
+  return Math.max(0, Math.round(asFiniteNumber(value, fallback)));
 }
 
 function asString(value: unknown, fallback: string): string {
@@ -122,7 +239,10 @@ function loadInferenceParams(): InferenceParams {
     if (!raw) return DEFAULT_INFERENCE_PARAMS;
     const parsed = JSON.parse(raw) as Partial<InferenceParams>;
     return {
-      temperature: asFiniteNumber(parsed.temperature, DEFAULT_INFERENCE_PARAMS.temperature),
+      temperature: asFiniteNumber(
+        parsed.temperature,
+        DEFAULT_INFERENCE_PARAMS.temperature,
+      ),
       topP: asFiniteNumber(parsed.topP, DEFAULT_INFERENCE_PARAMS.topP),
       topK: asFiniteNumber(parsed.topK, DEFAULT_INFERENCE_PARAMS.topK),
       minP: asFiniteNumber(parsed.minP, DEFAULT_INFERENCE_PARAMS.minP),
@@ -138,8 +258,14 @@ function loadInferenceParams(): InferenceParams {
         parsed.maxSeqLength,
         DEFAULT_INFERENCE_PARAMS.maxSeqLength,
       ),
-      maxTokens: asFiniteNumber(parsed.maxTokens, DEFAULT_INFERENCE_PARAMS.maxTokens),
-      systemPrompt: asString(parsed.systemPrompt, DEFAULT_INFERENCE_PARAMS.systemPrompt),
+      maxTokens: asFiniteNumber(
+        parsed.maxTokens,
+        DEFAULT_INFERENCE_PARAMS.maxTokens,
+      ),
+      systemPrompt: asString(
+        parsed.systemPrompt,
+        DEFAULT_INFERENCE_PARAMS.systemPrompt,
+      ),
       checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
       trustRemoteCode: asBoolean(
         parsed.trustRemoteCode,
@@ -176,6 +302,57 @@ function loadPresetSource(): ChatPresetSource {
     }
   }
   return getPresetSource(activePreset);
+}
+
+function loadDocExtract(): DocExtractSettings {
+  if (!canUseStorage()) return DEFAULT_DOC_EXTRACT;
+  try {
+    const raw = localStorage.getItem(DOC_EXTRACT_KEY);
+    if (!raw) return DEFAULT_DOC_EXTRACT;
+    const parsed = JSON.parse(raw) as Partial<DocExtractSettings>;
+    return {
+      enabled: asBoolean(parsed.enabled, DEFAULT_DOC_EXTRACT.enabled),
+      describeImages: asBoolean(
+        parsed.describeImages,
+        DEFAULT_DOC_EXTRACT.describeImages,
+      ),
+      useVlmOcr: asBoolean(parsed.useVlmOcr, DEFAULT_DOC_EXTRACT.useVlmOcr),
+      maxFigures: asNonNegativeInteger(
+        parsed.maxFigures,
+        DEFAULT_DOC_EXTRACT.maxFigures,
+      ),
+      maxVisualPayloads: asNonNegativeInteger(
+        parsed.maxVisualPayloads,
+        DEFAULT_DOC_EXTRACT.maxVisualPayloads,
+      ),
+      tokenBudget: asNonNegativeInteger(
+        parsed.tokenBudget,
+        DEFAULT_DOC_EXTRACT.tokenBudget,
+      ),
+      ocrModel: asOcrSelection(parsed.ocrModel),
+      customOcrModelId: asString(
+        parsed.customOcrModelId,
+        DEFAULT_DOC_EXTRACT.customOcrModelId,
+      ),
+      customOcrGgufVariant:
+        typeof parsed.customOcrGgufVariant === "string"
+          ? parsed.customOcrGgufVariant
+          : DEFAULT_DOC_EXTRACT.customOcrGgufVariant,
+      extractConcurrency: clampExtractConcurrency(parsed.extractConcurrency),
+    };
+  } catch {
+    return DEFAULT_DOC_EXTRACT;
+  }
+}
+
+function saveDocExtract(value: DocExtractSettings): boolean {
+  if (!canUseStorage()) return false;
+  try {
+    localStorage.setItem(DOC_EXTRACT_KEY, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 type ChatRuntimeStore = {
@@ -229,6 +406,10 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  docExtract: DocExtractSettings;
+  ocrPhase: OcrPhase;
+  setDocExtract: (value: Partial<DocExtractSettings>) => void;
+  setOcrPhase: (phase: OcrPhase) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -311,6 +492,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  docExtract: loadDocExtract(),
+  ocrPhase: "idle",
+  setDocExtract: (value) =>
+    set((state) => {
+      const merged = { ...state.docExtract, ...value };
+      const next: DocExtractSettings = {
+        ...merged,
+        extractConcurrency: clampExtractConcurrency(merged.extractConcurrency),
+      };
+      if (!saveDocExtract(next)) {
+        warnStoragePersistence();
+      }
+      return { docExtract: next };
+    }),
+  setOcrPhase: (ocrPhase) => set({ ocrPhase }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
@@ -320,8 +516,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       if (!persisted && !hasShownInferencePersistenceWarning) {
         hasShownInferencePersistenceWarning = true;
         toast.warning("Chat settings could not be persisted", {
-          description:
-            "Your changes apply now, but may reset after refresh.",
+          description: "Your changes apply now, but may reset after refresh.",
         });
       }
       return { params };
@@ -358,73 +553,82 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     }),
   setAutoTitle: (autoTitle) =>
     set(() => {
-      saveBool(AUTO_TITLE_KEY, autoTitle);
+      if (!saveBool(AUTO_TITLE_KEY, autoTitle)) {
+        warnStoragePersistence();
+      }
       return { autoTitle };
     }),
   setHfToken: (hfToken) =>
     set(() => {
-      saveString(HF_TOKEN_KEY, hfToken);
+      if (!saveString(HF_TOKEN_KEY, hfToken)) {
+        warnStoragePersistence();
+      }
       return { hfToken };
     }),
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
-    set((state) => ({
-      params: {
-        ...state.params,
-        checkpoint: modelId,
-      },
-      activeGgufVariant: ggufVariant ?? null,
-    })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
+    set((state) => {
+      invalidateDocumentSupportCache();
+      return {
+        params: {
+          ...state.params,
+          checkpoint: modelId,
+        },
+        activeGgufVariant: ggufVariant ?? null,
+      };
+    }),
+  setActiveThreadId: (activeThreadId) =>
+    set({ activeThreadId, contextUsage: null }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () =>
-    set((state) => ({
-      params: {
-        ...state.params,
-        checkpoint: "",
-      },
-      activeGgufVariant: null,
-      activeNativePathToken: null,
-      ggufContextLength: null,
-      ggufMaxContextLength: null,
-      ggufNativeContextLength: null,
-      modelRequiresTrustRemoteCode: false,
-      contextUsage: null,
-      supportsReasoning: false,
-      reasoningAlwaysOn: false,
-      reasoningEnabled: true,
-      reasoningStyle: "enable_thinking",
-      supportsPreserveThinking: false,
-      supportsTools: false,
-      toolsEnabled: false,
-      codeToolsEnabled: false,
-      toolStatus: null,
-      kvCacheDtype: null,
-      loadedKvCacheDtype: null,
-      speculativeType: "default",
-      loadedSpeculativeType: null,
-      loadedIsMultimodal: false,
-      customContextLength: null,
-      defaultChatTemplate: null,
-      chatTemplateOverride: null,
-      loadedChatTemplateOverride: null,
-    })),
+    set((state) => {
+      invalidateDocumentSupportCache();
+      return {
+        params: {
+          ...state.params,
+          checkpoint: "",
+        },
+        activeGgufVariant: null,
+        activeNativePathToken: null,
+        ggufContextLength: null,
+        ggufMaxContextLength: null,
+        ggufNativeContextLength: null,
+        modelRequiresTrustRemoteCode: false,
+        contextUsage: null,
+        supportsReasoning: false,
+        reasoningAlwaysOn: false,
+        reasoningEnabled: true,
+        reasoningStyle: "enable_thinking",
+        supportsPreserveThinking: false,
+        supportsTools: false,
+        toolsEnabled: false,
+        codeToolsEnabled: false,
+        toolStatus: null,
+        kvCacheDtype: null,
+        loadedKvCacheDtype: null,
+        speculativeType: "default",
+        loadedSpeculativeType: null,
+        loadedIsMultimodal: false,
+        customContextLength: null,
+        defaultChatTemplate: null,
+        chatTemplateOverride: null,
+        loadedChatTemplateOverride: null,
+      };
+    }),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
   setReasoningEffort: (reasoningEffort) =>
     set(() => {
-      if (canUseStorage()) {
-        try {
-          localStorage.setItem(REASONING_EFFORT_KEY, reasoningEffort);
-        } catch {
-          // ignore
-        }
+      if (!saveString(REASONING_EFFORT_KEY, reasoningEffort)) {
+        warnStoragePersistence();
       }
       return { reasoningEffort };
     }),
   setPreserveThinking: (preserveThinking) =>
     set(() => {
-      saveBool(PRESERVE_THINKING_KEY, preserveThinking);
+      if (!saveBool(PRESERVE_THINKING_KEY, preserveThinking)) {
+        warnStoragePersistence();
+      }
       return { preserveThinking };
     }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
@@ -433,23 +637,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set(() => {
-      saveBool(AUTO_HEAL_TOOL_CALLS_KEY, autoHealToolCalls);
+      if (!saveBool(AUTO_HEAL_TOOL_CALLS_KEY, autoHealToolCalls)) {
+        warnStoragePersistence();
+      }
       return { autoHealToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set(() => {
-      saveInt(MAX_TOOL_CALLS_KEY, maxToolCallsPerMessage);
+      if (!saveInt(MAX_TOOL_CALLS_KEY, maxToolCallsPerMessage)) {
+        warnStoragePersistence();
+      }
       return { maxToolCallsPerMessage };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
     set(() => {
-      saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout);
+      if (!saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout)) {
+        warnStoragePersistence();
+      }
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
+  setChatTemplateOverride: (chatTemplateOverride) =>
+    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>

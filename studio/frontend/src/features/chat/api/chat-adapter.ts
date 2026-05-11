@@ -4,7 +4,7 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
-import { getAuthToken } from "@/features/auth/session";
+import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import {
   generateAudio,
@@ -17,12 +17,18 @@ import {
 } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import { isMultimodalResponse } from "../types/api";
+import { isTemporaryOcrModelBusy } from "../utils/ocr-model-lock";
+import {
+  isMultimodalResponse,
+  type OpenAIChatContentPart,
+  type OpenAIChatMessage,
+} from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { DOCUMENT_TRUST_BOUNDARY } from "../utils/document-extraction";
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -162,10 +168,79 @@ function collectTextParts(message: RunMessage): string[] {
   return textParts;
 }
 
-function toOpenAIMessage(message: RunMessage): {
-  role: "system" | "user" | "assistant";
-  content: string;
-} | null {
+function imageInputToDataUrl(input: string): string | undefined {
+  if (!input) return undefined;
+  if (input.startsWith("data:")) return input;
+  return `data:image/png;base64,${input}`;
+}
+
+function appendContentParts(
+  target: OpenAIChatContentPart[],
+  content: readonly unknown[] | undefined,
+  role: RunMessage["role"],
+  options: { includeImages?: boolean } = {},
+): void {
+  for (const rawPart of content ?? []) {
+    if (!rawPart || typeof rawPart !== "object" || !("type" in rawPart)) {
+      continue;
+    }
+    const part = rawPart as {
+      type?: string;
+      text?: unknown;
+      image?: unknown;
+    };
+    if (part.type === "text" && typeof part.text === "string") {
+      const text =
+        role === "assistant"
+          ? part.text.replace(
+              /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+              "[audio]",
+            )
+          : part.text;
+      if (text) target.push({ type: "text", text });
+      continue;
+    }
+    if (
+      options.includeImages !== false &&
+      part.type === "image" &&
+      typeof part.image === "string"
+    ) {
+      const url = imageInputToDataUrl(part.image);
+      if (url) {
+        target.push({
+          type: "image_url",
+          image_url: { url, detail: "auto" },
+        });
+      }
+    }
+  }
+}
+
+function mergeAdjacentTextParts(
+  parts: OpenAIChatContentPart[],
+): OpenAIChatContentPart[] {
+  const merged: OpenAIChatContentPart[] = [];
+  for (const part of parts) {
+    const previous = merged[merged.length - 1];
+    if (part.type === "text" && previous?.type === "text") {
+      previous.text = `${previous.text}\n${part.text}`;
+    } else {
+      merged.push(part);
+    }
+  }
+  return merged;
+}
+
+function messageHasDocumentContext(message: RunMessage): boolean {
+  return collectTextParts(message).some((text) =>
+    /<document(?:\s|>)/i.test(text),
+  );
+}
+
+function toOpenAIMessage(
+  message: RunMessage,
+  options: { includeImages?: boolean } = {},
+): OpenAIChatMessage | null {
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -174,17 +249,31 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  let content = collectTextParts(message).join("\n");
-  // Strip inline audio base64 from prior assistant messages to avoid
-  // inflating token counts (e.g. audio-player responses with embedded WAV).
-  if (message.role === "assistant") {
-    content = content.replace(
-      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
-      "[audio]",
-    );
+  const parts: OpenAIChatContentPart[] = [];
+  appendContentParts(parts, message.content, message.role, options);
+
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const attachment of message.attachments ?? []) {
+      appendContentParts(parts, attachment.content, message.role, options);
+    }
   }
 
+  const hasImage = parts.some((part) => part.type === "image_url");
+  const content = hasImage
+    ? mergeAdjacentTextParts(parts)
+    : collectTextParts(message).join("\n").replace(
+        /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+        "[audio]",
+      );
+
   return { role: message.role, content };
+}
+
+function messageHasImageContent(message: OpenAIChatMessage): boolean {
+  return (
+    Array.isArray(message.content) &&
+    message.content.some((part) => part.type === "image_url")
+  );
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -227,6 +316,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
         }
       }
     }
+    return undefined;
   }
 
   return undefined;
@@ -245,6 +335,7 @@ function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
         if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
       }
     }
+    break;
   }
 
   // Check the runtime store (from main composer's audio upload)
@@ -279,7 +370,10 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       if (abortSignal?.aborted) { reject(new Error("Aborted")); return; }
-      if (!useChatRuntimeStore.getState().modelLoading) { resolve(); return; }
+      if (
+        !useChatRuntimeStore.getState().modelLoading &&
+        !isTemporaryOcrModelBusy()
+      ) { resolve(); return; }
       setTimeout(check, 500);
     };
     check();
@@ -562,7 +656,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
 
       // Wait for in-progress model load to finish before inferring
-      if (runtime.modelLoading) {
+      if (runtime.modelLoading || isTemporaryOcrModelBusy()) {
         toast.info("Waiting for model to finish loading…");
         await waitForModelReady(abortSignal);
       }
@@ -595,21 +689,41 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         codeToolsEnabled,
       } = runtime;
 
+      let latestUserIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        if (messages[i]?.role === "user") {
+          latestUserIndex = i;
+          break;
+        }
+      }
+      const hasDocumentContext = messages.some(messageHasDocumentContext);
       const outboundMessages = messages
-        .map(toOpenAIMessage)
+        .map((message, index) =>
+          toOpenAIMessage(message, {
+            includeImages: message.role === "user" || index === latestUserIndex,
+          }),
+        )
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+      const systemPrompt = [
+        safeSystemPrompt.trim(),
+        hasDocumentContext ? DOCUMENT_TRUST_BOUNDARY : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (systemPrompt) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: systemPrompt,
         });
       }
-      const imageBase64 = findLatestUserImageBase64(messages);
+      const imageBase64 = outboundMessages.some(messageHasImageContent)
+        ? undefined
+        : findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
       // Clear pending audio from store after extracting (consumed on send)
       if (audioBase64) {

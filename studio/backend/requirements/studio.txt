@@ -15,3 +15,13 @@ huggingface-hub==0.36.2
 structlog>=24.1.0
 diceware
 ddgs
+pypdf>=6.0.0,<7
+python-multipart>=0.0.26
+# Document extraction relies on pymupdf4llm 1.27+ (installed via
+# data-designer-deps.txt), which pulls pymupdf-layout. The bundled ONNX
+# models work fine on modern onnxruntime; we require >=1.19 because
+# earlier wheels (e.g. 1.17.x) were built against NumPy 1.x and crash
+# on import in venvs that have NumPy 2.x installed (pymupdf.layout ->
+# onnxruntime -> numpy._multiarray_umath ABI mismatch). Verified
+# end-to-end with onnxruntime 1.25.0 + numpy 2.4.x.
+onnxruntime>=1.19

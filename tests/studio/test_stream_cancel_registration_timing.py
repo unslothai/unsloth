@@ -121,11 +121,19 @@ def test_no_tracker_enter_inside_async_generators():
 
 
 def test_tracker_enter_exists_in_sync_body_of_chat_completions():
+    # The handler `openai_chat_completions` is a thin wrapper around
+    # `_openai_chat_completions_impl`, where the streaming bodies (and
+    # therefore the tracker registration) live after the document-
+    # extractor refactor. Accept tracker-__enter__ calls that appear in
+    # either function so the structural guarantee survives the wrapper.
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
+        if isinstance(n, ast.AsyncFunctionDef) and n.name in {
+            "openai_chat_completions",
+            "_openai_chat_completions_impl",
+        }:
+            if top is None or n.name == "_openai_chat_completions_impl":
+                top = n
     assert top is not None, "openai_chat_completions handler missing"
     count = 0
     for sub in ast.walk(top):
@@ -171,11 +179,17 @@ def test_async_generators_cleanup_tracker_in_finally():
 
 
 def test_streaming_responses_have_no_background_task():
+    # The streaming bodies live in `_openai_chat_completions_impl` after
+    # the document-extractor refactor; the public handler is a thin
+    # wrapper. Walk the impl so this guard does not vacuously pass.
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
+        if isinstance(n, ast.AsyncFunctionDef) and n.name in {
+            "openai_chat_completions",
+            "_openai_chat_completions_impl",
+        }:
+            if top is None or n.name == "_openai_chat_completions_impl":
+                top = n
     assert top is not None
     for sub in ast.walk(top):
         if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
@@ -482,12 +496,19 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     # internal cancel path does not do this, so a cancel-via-POST that
     # only broke the loop would leave the subprocess in a dirty state
     # for the next request.
+    # `stream_chunks` is now nested inside `_openai_chat_completions_impl`
+    # (the implementation function the thin `openai_chat_completions`
+    # wrapper delegates to). Search either function so the test survives
+    # the document-extractor refactor.
     fn = None
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
+        if isinstance(n, ast.AsyncFunctionDef) and n.name in {
+            "openai_chat_completions",
+            "_openai_chat_completions_impl",
+        }:
+            if top is None or n.name == "_openai_chat_completions_impl":
+                top = n
     assert top is not None
     for n in ast.walk(top):
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "stream_chunks":

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import {
   AssistantRuntimeProvider,
   type AttachmentAdapter,
@@ -22,7 +23,6 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
@@ -31,28 +31,55 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
-import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
+import { getCachedDocumentSupport, getDocumentSupport } from "./api/chat-api";
 import { db } from "./db";
+import { createDocumentExtractionRunner } from "./hooks/use-document-extraction";
+import type { DocumentExtractionRunner } from "./hooks/use-document-extraction";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import type { MessageRecord, ModelType } from "./types";
+import {
+  DocumentExtractionLostError,
+  isDocumentAttachment,
+  type DocumentPendingAttachment,
+  type MessageRecord,
+  type ModelType,
+} from "./types";
 import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
+import {
+  DOC_ACCEPT,
+  MAX_DOC_SIZE,
+  TEXT_ONLY_DOCUMENT_VISUAL_POLICY,
+  buildDocumentMessageParts,
+  classifyDocumentExtractionError,
+  documentExtractionRetryCount,
+  documentParserUnavailableReason,
+  documentVisualPayloads,
+  documentVisualPolicyFromSupport,
+  normalizeExtractedDocument,
+  type DocumentVisualPolicy,
+} from "./utils/document-extraction";
 
 const DEFAULT_SUGGESTIONS = [
+  {
+    title: "Summarize a PDF and list the key takeaways",
+    label: "Summarize a PDF",
+    prompt: "Summarize this PDF and list the key takeaways.",
+  },
   {
     title: "How do you fine-tune an audio model with Unsloth?",
     label: "Audio fine-tuning",
     prompt: "How do you fine-tune an audio model with Unsloth?",
   },
   {
-    title: "Create a live weather dashboard in HTML using no API key. Show me the code",
+    title:
+      "Create a live weather dashboard in HTML using no API key. Show me the code",
     label: "Weather dashboard",
-    prompt: "Create a live weather dashboard in HTML using no API key. Show me the code",
+    prompt:
+      "Create a live weather dashboard in HTML using no API key. Show me the code",
   },
   {
     title: "Solve the integral of x·sin(x), and verify it",
@@ -65,6 +92,14 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "Draw an SVG of a cute sloth & show the code",
   },
 ];
+
+async function resolveCurrentDocumentVisualPolicy(): Promise<DocumentVisualPolicy> {
+  try {
+    return documentVisualPolicyFromSupport(await getDocumentSupport());
+  } catch {
+    return TEXT_ONLY_DOCUMENT_VISUAL_POLICY;
+  }
+}
 
 type TitleResponse = {
   choices?: Array<{
@@ -123,139 +158,243 @@ class VisionImageAdapter implements AttachmentAdapter {
   }
 }
 
-class PDFAttachmentAdapter implements AttachmentAdapter {
-  accept = "application/pdf";
+class DocumentExtractionAttachmentAdapter implements AttachmentAdapter {
+  accept = DOC_ACCEPT;
+  private runners = new Map<string, DocumentExtractionRunner>();
 
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    return Promise.resolve({
-      id: crypto.randomUUID(),
+  async *add({
+    file,
+  }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    if (file.size > MAX_DOC_SIZE) {
+      throw new Error("Document size exceeds 100MB limit");
+    }
+    const initial = useChatRuntimeStore.getState().docExtract;
+    if (!initial.enabled) {
+      throw new Error("Document extraction is disabled in Chat settings");
+    }
+    let unavailableReason: string | null = null;
+    try {
+      unavailableReason = documentParserUnavailableReason(
+        file,
+        await getCachedDocumentSupport(),
+      );
+    } catch {
+      // Let the extraction request surface the authoritative backend error.
+    }
+    if (unavailableReason) {
+      throw new Error(unavailableReason);
+    }
+
+    const id = crypto.randomUUID();
+    const base: Omit<DocumentPendingAttachment, "status"> = {
+      id,
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
+      sizeBytes: file.size,
+      extractedAt: Date.now(),
+    };
+
+    const retryCount = documentExtractionRetryCount(file);
+
+    // Yield initial running state. The NDJSON endpoint reports server-side
+    // parse/caption progress, not browser upload progress.
+    const initial0: DocumentPendingAttachment = {
+      ...base,
+      retryCount,
+      status: { type: "running", reason: "uploading", progress: Number.NaN },
+    };
+    yield initial0;
+
+    const runner = createDocumentExtractionRunner();
+    this.runners.set(id, runner);
+
+    let lastProgress = 0;
+
+    // Drive progress through stream events: parsing → 0.10, captioning
+    // → 0.20–1.00 mapped from `current/total`. Older "upload progress"
+    // is no longer reported (the endpoint now streams NDJSON).
+    type ProgressResolver = { resolve: (v: number) => void };
+    const progressQueue: number[] = [];
+    let progressResolver: ProgressResolver | null = null;
+
+    function publishProgress(value: number): void {
+      if (value <= lastProgress) return;
+      lastProgress = value;
+      if (progressResolver) {
+        const r = progressResolver;
+        progressResolver = null;
+        r.resolve(value);
+      } else {
+        progressQueue.push(value);
+      }
+    }
+
+    function onParseStart(): void {
+      publishProgress(0.1);
+    }
+
+    function onCaptionProgress({
+      current,
+      total,
+    }: {
+      current: number;
+      total: number;
+    }): void {
+      if (total <= 0) return;
+      const fraction = Math.max(0, Math.min(1, current / total));
+      publishProgress(0.2 + fraction * 0.8);
+    }
+
+    // Start extraction in background; we'll race it with progress yields
+    let extractionDone = false;
+    let extractionError: unknown = null;
+    let extractionResult: Awaited<
+      ReturnType<DocumentExtractionRunner["run"]>
+    > | null = null;
+
+    const extractionPromise = runner
+      .run(file, { onParseStart, onCaptionProgress })
+      .then((doc) => {
+        extractionResult = doc;
+      })
+      .catch((err) => {
+        extractionError = err;
+      })
+      .finally(() => {
+        extractionDone = true;
+        // Unblock any pending progress waiter
+        if (progressResolver) {
+          progressResolver.resolve(lastProgress);
+          progressResolver = null;
+        }
+      });
+
+    // Yield progress updates until extraction finishes
+    while (!extractionDone) {
+      let nextProgress: number;
+      if (progressQueue.length > 0) {
+        nextProgress = progressQueue.shift()!;
+      } else {
+        // Wait for either a progress event or extraction completion
+        nextProgress = await new Promise<number>((resolve) => {
+          progressResolver = { resolve };
+        });
+      }
+      if (nextProgress > lastProgress || nextProgress === lastProgress) {
+        lastProgress = nextProgress;
+      }
+      if (!extractionDone) {
+        const mid: DocumentPendingAttachment = {
+          ...base,
+          retryCount,
+          status: {
+            type: "running",
+            reason: "uploading",
+            progress: lastProgress,
+          },
+        };
+        yield mid;
+      }
+    }
+
+    // Await the promise to ensure microtasks have settled
+    await extractionPromise;
+
+    // Handle abort silently
+    if (
+      extractionError instanceof DOMException &&
+      extractionError.name === "AbortError"
+    ) {
+      this.runners.delete(id);
+      return;
+    }
+
+    // Keep failed documents visible in the composer instead of letting
+    // assistant-ui discard the pending attachment after an exception.
+    if (extractionError !== null) {
+      this.runners.delete(id);
+      const { code, message } = classifyDocumentExtractionError(extractionError);
+      const failedAttachment: DocumentPendingAttachment = {
+        ...base,
+        retryCount,
+        errorCode: code,
+        errorMessage: message,
+        status: { type: "incomplete", reason: "error" },
+      };
+      yield failedAttachment;
+      return;
+    }
+
+    const document = normalizeExtractedDocument(extractionResult!);
+    const filename = document.filename || file.name;
+    const current = useChatRuntimeStore.getState().docExtract;
+    const visualPolicy = await resolveCurrentDocumentVisualPolicy();
+    const { parts, truncated } = buildDocumentMessageParts(
+      { filename, document },
+      current.tokenBudget,
+      visualPolicy,
+      current.maxVisualPayloads,
+    );
+    const sentImageIndexes = documentVisualPayloads(
+      document,
+      current.maxVisualPayloads,
+      visualPolicy,
+    ).map((payload) => payload.index);
+
+    this.runners.delete(id);
+
+    const complete: DocumentPendingAttachment = {
+      ...base,
+      id,
+      name: filename,
+      content: parts,
+      document,
+      sizeBytes: file.size,
+      extractedAt: Date.now(),
+      truncated,
+      sentImageIndexes,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
+    yield complete;
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
-    const pdf = await getDocumentProxy(buffer);
-    const { text } = await extractText(pdf, { mergePages: true });
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
-      status: { type: "complete" },
-    };
+    if (isDocumentAttachment(attachment) && attachment.document) {
+      const document = normalizeExtractedDocument(attachment.document);
+      const filename = document.filename || attachment.name;
+      const current = useChatRuntimeStore.getState().docExtract;
+      const visualPolicy = await resolveCurrentDocumentVisualPolicy();
+      const { parts, truncated } = buildDocumentMessageParts(
+        { filename, document },
+        current.tokenBudget,
+        visualPolicy,
+        current.maxVisualPayloads,
+      );
+      const sentImageIndexes = documentVisualPayloads(
+        document,
+        current.maxVisualPayloads,
+        visualPolicy,
+      ).map((payload) => payload.index);
+      return {
+        ...attachment,
+        name: filename,
+        content: parts,
+        document,
+        truncated,
+        sentImageIndexes,
+        status: { type: "complete" },
+      } as CompleteAttachment;
+    }
+    // Content missing — extraction was lost; do not re-extract
+    throw new DocumentExtractionLostError();
   }
 
-  remove(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-class TextAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
-
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    return {
-      id: crypto.randomUUID(),
-      type: "document",
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action", reason: "composer-send" },
-    };
-  }
-
-  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await attachment.file.text();
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        { type: "text", text: `<attachment name=${attachment.name}>\n${text}\n</attachment>` },
-      ],
-      status: { type: "complete" },
-    };
-  }
-
-  remove(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-class HtmlAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/html";
-
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    return {
-      id: crypto.randomUUID(),
-      type: "document",
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action", reason: "composer-send" },
-    };
-  }
-
-  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const html = await attachment.file.text();
-    // Strip HTML tags to extract readable text
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    // Remove script and style elements
-    for (const el of doc.querySelectorAll("script, style")) el.remove();
-    const text = (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        { type: "text", text: `[HTML: ${attachment.name}]\n${text}` },
-      ],
-      status: { type: "complete" },
-    };
-  }
-
-  remove(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-class DocxAttachmentAdapter implements AttachmentAdapter {
-  accept =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    return Promise.resolve({
-      id: crypto.randomUUID(),
-      type: "document",
-      name: file.name,
-      contentType: file.type,
-      file,
-      status: { type: "requires-action", reason: "composer-send" },
-    });
-  }
-
-  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const arrayBuffer = await attachment.file.arrayBuffer();
-    const { value } = await mammoth.extractRawText({ arrayBuffer });
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [{ type: "text", text: `[DOCX: ${attachment.name}]\n${value}` }],
-      status: { type: "complete" },
-    };
-  }
-
-  remove(): Promise<void> {
+  remove(attachment: CompleteAttachment | PendingAttachment): Promise<void> {
+    const runner = this.runners.get(attachment.id);
+    runner?.abort();
+    this.runners.delete(attachment.id);
     return Promise.resolve();
   }
 }
@@ -326,7 +465,9 @@ async function generateTitleWithModel(payload: {
     }),
   });
 
-  const body = (await response.json().catch(() => null)) as TitleResponse | null;
+  const body = (await response
+    .json()
+    .catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
   const raw: string | undefined = body?.choices?.[0]?.message?.content;
   if (!raw) return null;
@@ -343,13 +484,46 @@ function fallbackTitleFromUserText(userText: string): string {
   return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
 }
 
-function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+function cloneContent(
+  content: ThreadMessage["content"],
+): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
   return Array.isArray(content)
-    ? JSON.parse(JSON.stringify(content))
+    ? sanitizePersistedContent(JSON.parse(JSON.stringify(content)))
     : [];
+}
+
+function sanitizePersistedContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+  if (!Array.isArray(content)) {
+    return content;
+  }
+  const sanitized: typeof content = [];
+  let skipNextDocumentImage = false;
+  for (const part of content) {
+    if (
+      part.type === "text" &&
+      /^Visual inputs attached below:/i.test(part.text)
+    ) {
+      skipNextDocumentImage = false;
+      continue;
+    }
+    if (
+      part.type === "text" &&
+      /^Visual input \[Image #\d+\] from /i.test(part.text)
+    ) {
+      skipNextDocumentImage = true;
+      continue;
+    }
+    if (skipNextDocumentImage && part.type === "image") {
+      skipNextDocumentImage = false;
+      continue;
+    }
+    skipNextDocumentImage = false;
+    sanitized.push(part);
+  }
+  return sanitized;
 }
 
 function cloneAttachments(
@@ -358,7 +532,48 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  const cloned = JSON.parse(JSON.stringify(attachments)) as CompleteAttachment[];
+  return cloned.map(sanitizePersistedAttachment);
+}
+
+function stripDocumentVisualData(
+  document: NonNullable<DocumentPendingAttachment["document"]>,
+): NonNullable<DocumentPendingAttachment["document"]> {
+  const normalized = normalizeExtractedDocument(document);
+  return {
+    ...normalized,
+    image_input_available: false,
+    figures: normalized.figures.map((figure) => ({
+      ...figure,
+      image_base64: null,
+    })),
+  };
+}
+
+function sanitizePersistedAttachment(
+  attachment: CompleteAttachment,
+): CompleteAttachment {
+  if (!isDocumentAttachment(attachment) || !attachment.document) {
+    return attachment;
+  }
+
+  const document = stripDocumentVisualData(attachment.document);
+  const filename = document.filename || attachment.name;
+  const { parts, truncated } = buildDocumentMessageParts(
+    { filename, document },
+    Number.MAX_SAFE_INTEGER,
+    TEXT_ONLY_DOCUMENT_VISUAL_POLICY,
+    0,
+  );
+  const sanitized = {
+    ...attachment,
+    name: filename,
+    document,
+    content: parts,
+    truncated: attachment.truncated ?? truncated,
+  } as CompleteAttachment & { file?: unknown };
+  delete sanitized.file;
+  return sanitized;
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -378,12 +593,17 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     };
   }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
-  const savedTiming = custom.timing as import("@assistant-ui/react").MessageTiming | undefined;
+  const savedTiming = custom.timing as
+    | import("@assistant-ui/react").MessageTiming
+    | undefined;
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
     role: "assistant" as const,
-    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: content as Extract<
+      ThreadMessage,
+      { role: "assistant" }
+    >["content"],
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
       custom,
@@ -559,7 +779,10 @@ function createDexieAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createDexieAdapter(modelType, pairId).generateTitle(remoteId, messages);
+              void createDexieAdapter(modelType, pairId).generateTitle(
+                remoteId,
+                messages,
+              );
             }, 600);
             return streamTitle(thread.title || defaultTitle);
           }
@@ -571,8 +794,7 @@ function createDexieAdapter(
         const title =
           (await generateTitleWithModel({
             userText,
-          })) ||
-          fallbackTitleFromUserText(userText);
+          })) || fallbackTitleFromUserText(userText);
 
         await persistTitle(title);
         return streamTitle(title);
@@ -600,7 +822,10 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           user: 1,
           assistant: 2,
         };
-        const msgs = await db.messages.where("threadId").equals(remoteId).toArray();
+        const msgs = await db.messages
+          .where("threadId")
+          .equals(remoteId)
+          .toArray();
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;
@@ -610,16 +835,26 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         });
 
         // Restore context usage from last assistant message if model matches
-        const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
-        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)?.contextUsage as
-          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number; modelId?: string }
+        const lastAssistant = [...msgs]
+          .reverse()
+          .find((m) => m.role === "assistant");
+        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
+          ?.contextUsage as
+          | {
+              promptTokens: number;
+              completionTokens: number;
+              totalTokens: number;
+              cachedTokens: number;
+              modelId?: string;
+            }
           | undefined;
         const store = useChatRuntimeStore.getState();
         if (
           savedUsage &&
           store.ggufContextLength &&
           savedUsage.totalTokens <= store.ggufContextLength &&
-          (!savedUsage.modelId || savedUsage.modelId === store.params.checkpoint)
+          (!savedUsage.modelId ||
+            savedUsage.modelId === store.params.checkpoint)
         ) {
           store.setContextUsage(savedUsage);
         }
@@ -635,9 +870,8 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           let previousId: string | null = null;
           return {
             messages: msgs.map((m) => {
-              const parentId = "parentId" in m
-                ? (m.parentId ?? null)
-                : previousId;
+              const parentId =
+                "parentId" in m ? (m.parentId ?? null) : previousId;
               previousId = m.id;
               return {
                 parentId,
@@ -670,9 +904,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const custom = message.metadata?.custom;
         const existing = await db.messages.get(message.id);
         const createdAt =
-          existing?.createdAt ??
-          message.createdAt?.getTime?.() ??
-          Date.now();
+          existing?.createdAt ?? message.createdAt?.getTime?.() ?? Date.now();
         await db.messages.put({
           id: message.id,
           threadId: remoteId,
@@ -699,10 +931,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
-        new TextAttachmentAdapter(),
-        new HtmlAttachmentAdapter(),
-        new PDFAttachmentAdapter(),
-        new DocxAttachmentAdapter(),
+        new DocumentExtractionAttachmentAdapter(),
       ]),
     [],
   );
@@ -735,7 +964,10 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
-      if (switchResult && typeof (switchResult as Promise<void>).catch === "function") {
+      if (
+        switchResult &&
+        typeof (switchResult as Promise<void>).catch === "function"
+      ) {
         void (switchResult as Promise<void>).catch(() => {
           if (syncActiveThreadId) {
             useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -778,7 +1010,9 @@ function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const setActiveThreadId = useChatRuntimeStore((state) => state.setActiveThreadId);
+  const setActiveThreadId = useChatRuntimeStore(
+    (state) => state.setActiveThreadId,
+  );
 
   useEffect(() => {
     if (!enabled) {
@@ -905,7 +1139,9 @@ export function ChatRuntimeProvider({
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
       <ActiveThreadSync
-        enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
+        enabled={
+          modelType === "base" && !pairId && !newThreadNonce && !initialThreadId
+        }
       />
       <ThreadDexieAutosave modelType={modelType} pairId={pairId} />
       <CancelRegistrar />

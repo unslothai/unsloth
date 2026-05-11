@@ -336,6 +336,14 @@ MODEL_NAME_MAPPING = {
     "unsloth_PaddleOCR-VL.yaml": [
         "unsloth/PaddleOCR-VL",
     ],
+    "deepseek-ai_DeepSeek-OCR.yaml": [
+        "deepseek-ai/DeepSeek-OCR",
+        "deepseek-ai/deepseek-ocr",
+    ],
+    "zai-org_GLM-OCR.yaml": [
+        "zai-org/GLM-OCR",
+        "zai-org/glm-ocr",
+    ],
     "unsloth_Phi-3-medium-4k-instruct.yaml": [
         "unsloth/Phi-3-medium-4k-instruct-bnb-4bit",
         "microsoft/Phi-3-medium-4k-instruct",
@@ -457,7 +465,7 @@ def load_model_config(
     model_name: str,
     use_auth: bool = False,
     token: Optional[str] = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
 ):
     """
     Load model config with optional authentication control.
@@ -496,6 +504,10 @@ _VLM_MODEL_TYPES = {
     "internvl_chat",
     "cogvlm2",
     "minicpmv",
+    # OCR vision models used by Studio chat for scanned-PDF extraction.
+    "deepseek_vl_v2",
+    "glm_ocr",
+    "paddleocr_vl",
 }
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
@@ -516,14 +528,21 @@ venv_t5 = sys.argv[1]
 backend_dir = sys.argv[2]
 model_name = sys.argv[3]
 token = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "" else None
+trust_remote_code = (
+    len(sys.argv) > 5 and sys.argv[5].strip().lower() in {"1", "true", "yes"}
+)
+# argv[6] is the JSON-encoded VLM model_type allow-list (sourced from
+# _VLM_MODEL_TYPES in the parent process so subprocess and main agree).
+vlm_types_json = sys.argv[6] if len(sys.argv) > 6 else "[]"
 
-sys.path.insert(0, venv_t5)
+if os.path.isdir(venv_t5):
+    sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 try:
     from transformers import AutoConfig
-    kwargs = {"trust_remote_code": True}
+    kwargs = {"trust_remote_code": trust_remote_code}
     if token:
         kwargs["token"] = token
     config = AutoConfig.from_pretrained(model_name, **kwargs)
@@ -541,8 +560,7 @@ try:
     if not is_vlm and hasattr(config, "image_token_index"):
         is_vlm = True
     if not is_vlm and hasattr(config, "model_type"):
-        vlm_types = {"phi3_v","llava","llava_next","llava_onevision",
-                      "internvl_chat","cogvlm2","minicpmv"}
+        vlm_types = set(json.loads(vlm_types_json))
         if config.model_type in vlm_types:
             is_vlm = True
 
@@ -557,7 +575,9 @@ except Exception as exc:
 
 
 def _is_vision_model_subprocess(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
 ) -> Optional[bool]:
     """Run is_vision_model check in a subprocess with transformers 5.x.
 
@@ -582,6 +602,8 @@ def _is_vision_model_subprocess(
                 _BACKEND_DIR,
                 model_name,
                 token_arg,
+                "true" if trust_remote_code else "false",
+                json.dumps(sorted(_VLM_MODEL_TYPES)),
             ],
             capture_output = True,
             text = True,
@@ -638,14 +660,19 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
 
 
 # Cache vision detection results per session to avoid repeated subprocess spawns.
-# Keyed by (normalized_model_name, token_fingerprint) to handle gated models correctly.
+# Keyed by (normalized_model_name, token_fingerprint, trust_remote_code)
+# to handle gated and custom-code models correctly.
 # Only definitive results (True/False from successful detection) are cached;
 # transient failures (network errors, timeouts) are NOT cached so they can be retried.
-_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+_vision_detection_cache: Dict[Tuple[str, Optional[str], bool], bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
+def is_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
+) -> bool:
     """
     Detect vision-language models (VLMs) by checking architecture in config.
     Works for fine-tuned models since they inherit the base architecture.
@@ -676,7 +703,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             exc,
         )
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    cache_key = (resolved_name, _token_fingerprint(hf_token), trust_remote_code)
 
     # Lock-free fast path for cache hits. Uses a sentinel to distinguish
     # "key not found" from "value is False" in a single atomic dict.get() call.
@@ -690,7 +717,11 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # The tradeoff: two concurrent calls for the same uncached model may
     # both run detection, but they produce the same result and the second
     # write is a benign no-op.
-    result = _is_vision_model_uncached(resolved_name, hf_token)
+    result = _is_vision_model_uncached(
+        resolved_name,
+        hf_token,
+        trust_remote_code = trust_remote_code,
+    )
     # Only cache definitive results; None means a transient failure occurred
     # and we should retry on the next call instead of locking in a wrong answer.
     if result is not None:
@@ -701,7 +732,9 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 
 def _is_vision_model_uncached(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    trust_remote_code: bool = False,
 ) -> Optional[bool]:
     """Uncached vision model detection -- called by is_vision_model().
 
@@ -721,10 +754,19 @@ def _is_vision_model_uncached(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        return _is_vision_model_subprocess(
+            model_name,
+            hf_token = hf_token,
+            trust_remote_code = trust_remote_code,
+        )
 
     try:
-        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        config = load_model_config(
+            model_name,
+            use_auth = True,
+            token = hf_token,
+            trust_remote_code = trust_remote_code,
+        )
 
         # Exclude audio-only models that share ForConditionalGeneration suffix
         # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
@@ -1886,7 +1928,10 @@ class ModelConfig:
 
     @classmethod
     def from_lora_path(
-        cls, lora_path: str, hf_token: Optional[str] = None
+        cls,
+        lora_path: str,
+        hf_token: Optional[str] = None,
+        trust_remote_code: bool = False,
     ) -> Optional["ModelConfig"]:
         """
         Create ModelConfig from a local LoRA adapter path.
@@ -1914,7 +1959,11 @@ class ModelConfig:
                 return None
 
             # Check if base model is vision
-            is_vision = is_vision_model(base_model, hf_token = hf_token)
+            is_vision = is_vision_model(
+                base_model,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+            )
 
             # Check if base model is audio
             audio_type = detect_audio_type(base_model, hf_token = hf_token)
@@ -1947,6 +1996,7 @@ class ModelConfig:
         hf_token: Optional[str] = None,
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
+        trust_remote_code: bool = False,
     ) -> Optional["ModelConfig"]:
         """
         Create ModelConfig from a clean model identifier.
@@ -1993,6 +2043,15 @@ class ModelConfig:
                 identifier = resolved_identifier
                 path = resolved_identifier
 
+        model_defaults = load_model_defaults(identifier)
+        default_model_config = model_defaults.get("model", {})
+        default_inference_config = model_defaults.get("inference", {})
+        yaml_is_vision = bool(default_model_config.get("is_vision", False))
+        yaml_requires_trust_remote_code = bool(
+            default_model_config.get("trust_remote_code", False)
+            or default_inference_config.get("trust_remote_code", False)
+        )
+
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
             if gguf_variant:
@@ -2015,7 +2074,11 @@ class ModelConfig:
                     try:
                         meta = json.loads(meta_path.read_text())
                         base = meta.get("base_model")
-                        if base and is_vision_model(base, hf_token = hf_token):
+                        if base and is_vision_model(
+                            base,
+                            hf_token = hf_token,
+                            trust_remote_code = trust_remote_code,
+                        ):
                             base_is_vision = True
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:
@@ -2155,7 +2218,14 @@ class ModelConfig:
         else:
             check_model = identifier
 
-        vision = is_vision_model(check_model, hf_token = hf_token)
+        if yaml_is_vision and yaml_requires_trust_remote_code:
+            vision = True
+        else:
+            vision = is_vision_model(
+                check_model,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+            )
         audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
         has_audio_in = is_audio_input_type(audio_type_val)
 
@@ -2183,6 +2253,7 @@ class ModelConfig:
         local_models: list = None,
         hf_token: Optional[str] = None,
         is_lora: bool = False,
+        trust_remote_code: bool = False,
     ) -> Optional["ModelConfig"]:
         """
         Create a universal ModelConfig from UI dropdown/search selections.
@@ -2244,10 +2315,18 @@ class ModelConfig:
                 return None  # Cannot proceed without a base model
 
             # A LoRA's vision capability is determined by its base model.
-            is_vision = is_vision_model(base_model, hf_token = hf_token)
+            is_vision = is_vision_model(
+                base_model,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+            )
         else:
             # For a base model, just check its own vision status.
-            is_vision = is_vision_model(identifier, hf_token = hf_token)
+            is_vision = is_vision_model(
+                identifier,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+            )
 
         from utils.paths import is_model_cached
 

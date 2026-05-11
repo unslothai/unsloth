@@ -108,6 +108,10 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    trust_remote_code: bool = Field(
+        False,
+        description = "Allow validation probes that require custom model code.",
+    )
 
 
 class ValidateModelResponse(BaseModel):
@@ -150,6 +154,14 @@ class GenerateRequest(BaseModel):
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(
         None, description = "Base64 encoded image for vision models"
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Session/thread ID for cancellation scoping.",
+    )
+    cancel_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request cancellation token matched by /inference/cancel.",
     )
 
 
@@ -315,6 +327,10 @@ class InferenceStatusResponse(BaseModel):
     )
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
     )
     context_length: Optional[int] = Field(
         None, description = "Context length of the active model"
@@ -1079,3 +1095,159 @@ class AnthropicMessagesResponse(BaseModel):
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
+
+
+# ---------------------------------------------------------------------- #
+# Chat document extraction (parsed documents + optional VLM captions)    #
+# ---------------------------------------------------------------------- #
+
+
+class ExtractedFigureModel(BaseModel):
+    """A single extracted visual reference, optionally described by a
+    locally-loaded vision model."""
+
+    id: str = Field(..., description = "Stable id (e.g. 'fig-0')")
+    page: Optional[int] = Field(None, description = "1-based page number, if known")
+    caption: Optional[str] = Field(
+        None, description = "Short VLM-generated caption, or null if skipped/failed"
+    )
+    error: Optional[str] = Field(
+        None, description = "Reason the describe call failed, if any"
+    )
+    kind: Literal["figure", "page"] = Field(
+        "figure",
+        description = "Whether this reference is a detected figure or page image",
+    )
+    image_mime: Optional[str] = Field(
+        None, description = "MIME type for image_base64 when a visual payload is present"
+    )
+    image_base64: Optional[str] = Field(
+        None,
+        description = (
+            "Base64-encoded visual payload for this reference. The first visual "
+            "reference is sent to vision-capable chat models as [Image #1]."
+        ),
+    )
+    image_width: Optional[int] = Field(
+        None, ge = 1, description = "Width of image_base64 after resize"
+    )
+    image_height: Optional[int] = Field(
+        None, ge = 1, description = "Height of image_base64 after resize"
+    )
+
+
+class ExtractDocumentResponse(BaseModel):
+    """
+    Returned synchronously from ``POST /chat/extract-document`` for
+    small docs, or as the final SSE event for larger ones.
+    """
+
+    schema_version: int = Field(
+        1, description = "Document extraction payload schema version"
+    )
+    filename: str = Field(..., description = "Original filename uploaded")
+    markdown: str = Field(
+        ..., description = "Layout-aware Markdown extracted from the document"
+    )
+    page_count: int = Field(0, ge = 0, description = "Number of pages in the source")
+    tokens_est: int = Field(
+        0, ge = 0, description = "Rough char/4 token estimate for the markdown"
+    )
+    truncated: bool = Field(
+        False,
+        description = "Whether markdown was clipped to the requested token budget",
+    )
+    figures: List[ExtractedFigureModel] = Field(
+        default_factory = list,
+        description = "Figures discovered in the document (captions optional)",
+    )
+    describe_skipped_reason: Optional[str] = Field(
+        None,
+        description = (
+            "If image description was requested but skipped, the reason "
+            "(e.g. 'loaded GGUF is not vision-capable'). Mirrors the "
+            "``reason`` surfaced by /chat/document-support."
+        ),
+    )
+    vlm_source: Optional[str] = Field(
+        None,
+        description = (
+            "Which inference backend served the describe calls: 'gguf', "
+            "'transformers', 'unsloth', or 'none' when no VLM was used."
+        ),
+    )
+    vlm_model: Optional[str] = Field(
+        None,
+        description = "Identifier of the VLM whose captions appear in this document",
+    )
+    image_input_available: bool = Field(
+        False,
+        description = (
+            "Whether the active model can receive an extracted visual payload "
+            "alongside the markdown."
+        ),
+    )
+    warnings: List[str] = Field(
+        default_factory = list,
+        description = "Non-fatal warnings surfaced to the UI",
+    )
+
+
+class VlmCapabilityModel(BaseModel):
+    """Runtime probe result for the currently-loaded model."""
+
+    is_vlm: bool = Field(
+        ..., description = "Whether the active model accepts image inputs"
+    )
+    endpoint_url: Optional[str] = Field(
+        None,
+        description = "Root URL serving /v1/chat/completions for the active model",
+    )
+    model_name: Optional[str] = Field(
+        None, description = "Identifier of the active model, if any is loaded"
+    )
+    source: Literal["gguf", "transformers", "unsloth", "none"] = Field(
+        ..., description = "Which backend currently owns the active model"
+    )
+    reason: Optional[str] = Field(
+        None,
+        description = "Populated when is_vlm is false; explains why the UI toggle is disabled",
+    )
+
+
+class DocumentSupportResponse(BaseModel):
+    """Returned by GET /chat/document-support.
+
+    Drives the Chat settings-card toggles. ``max_visual_payloads`` is kept
+    for older clients as an informational hint, not a hard request cap.
+    """
+
+    schema_version: int = Field(
+        1, description = "Document support payload schema version"
+    )
+    extraction_available: bool = Field(
+        ...,
+        description = (
+            "Whether the document extraction backend successfully imported "
+            "on the server"
+        ),
+    )
+    max_visual_payloads: int = Field(
+        ...,
+        ge = 0,
+        description = "Legacy visual-payload hint; not a hard request cap",
+    )
+    max_extract_concurrency: int = Field(
+        1,
+        ge = 1,
+        description = "Maximum server-side document extraction workers",
+    )
+    format_support: Dict[str, bool] = Field(
+        default_factory = dict,
+        description = "Per-format parser availability for document extraction",
+    )
+    unavailable_formats: Dict[str, str] = Field(
+        default_factory = dict,
+        description = "Per-format parser unavailability reasons",
+    )
+    vlm: VlmCapabilityModel

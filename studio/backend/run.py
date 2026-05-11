@@ -244,11 +244,15 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     # 5. Kill llama-server subprocess (if loaded)
+    #
+    # Read the module-level singleton directly so we don't instantiate a
+    # fresh backend during shutdown when none was ever loaded.
     try:
-        from routes.inference import _llama_cpp_backend
+        from core.inference import llama_cpp as _llama_cpp_mod
 
-        if _llama_cpp_backend is not None:
-            _llama_cpp_backend._kill_process()
+        backend = getattr(_llama_cpp_mod, "_llama_cpp_backend", None)
+        if backend is not None:
+            backend._kill_process()
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 

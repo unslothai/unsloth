@@ -35,7 +35,9 @@ export function Tabs({
         data-orientation={orientation}
         value={current}
         onValueChange={(v) => {
-          setInternal(v);
+          if (value === undefined) {
+            setInternal(v);
+          }
           onValueChange?.(v);
         }}
         className={cn(
@@ -66,16 +68,78 @@ export const tabsListVariants = cva(
 export function TabsList({
   className,
   variant = "default",
+  children,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.List> &
   VariantProps<typeof tabsListVariants>): React.ReactElement {
+  const ctx = React.useContext(TabsContext);
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const [pill, setPill] = React.useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    ready: boolean;
+  }>({ x: 0, y: 0, width: 0, height: 0, ready: false });
+
+  React.useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const measure = (): void => {
+      const active = list.querySelector<HTMLElement>(
+        '[role="tab"][data-state="active"]',
+      );
+      if (!active) {
+        setPill((prev) => ({ ...prev, ready: false }));
+        return;
+      }
+      setPill({
+        x: active.offsetLeft,
+        y: active.offsetTop,
+        width: active.offsetWidth,
+        height: active.offsetHeight,
+        ready: true,
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    list
+      .querySelectorAll<HTMLElement>('[role="tab"]')
+      .forEach((tab) => observer.observe(tab));
+    return () => observer.disconnect();
+  }, [ctx.value, variant, children]);
+
+  const showPill = variant !== "line";
+
   return (
     <TabsPrimitive.List
+      ref={listRef}
       data-slot="tabs-list"
       data-variant={variant}
-      className={cn(tabsListVariants({ variant }), className)}
+      className={cn(tabsListVariants({ variant }), "relative", className)}
       {...props}
-    />
+    >
+      {showPill && pill.ready ? (
+        <motion.span
+          aria-hidden="true"
+          className="pointer-events-none absolute top-0 left-0 rounded-xl bg-background dark:border dark:border-input dark:bg-input/30"
+          initial={false}
+          animate={{
+            x: pill.x,
+            y: pill.y,
+            width: pill.width,
+            height: pill.height,
+          }}
+          transition={{
+            type: "tween",
+            duration: 0.25,
+            ease: [0.4, 0, 0.2, 1],
+          }}
+        />
+      ) : null}
+      {children}
+    </TabsPrimitive.List>
   );
 }
 
@@ -85,34 +149,19 @@ export function TabsTrigger({
   children,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Trigger>): React.ReactElement {
-  const ctx = React.useContext(TabsContext);
-  const isActive = ctx.value === value;
-
   return (
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
       value={value}
       className={cn(
         "gap-1.5 rounded-xl corner-squircle border border-transparent px-2 py-1 text-sm font-medium group-data-vertical/tabs:px-2.5 group-data-vertical/tabs:py-1.5 [&_svg:not([class*='size-'])]:size-4 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring text-foreground/60 hover:text-foreground dark:text-muted-foreground dark:hover:text-foreground relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center whitespace-nowrap transition-colors group-data-[orientation=vertical]/tabs:w-full group-data-[orientation=vertical]/tabs:justify-start focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
-        "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
-        "data-active:text-foreground dark:data-active:text-foreground",
-        "after:bg-foreground after:absolute after:opacity-0 after:transition-opacity group-data-[orientation=horizontal]/tabs:after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:bottom-[-5px] group-data-[orientation=horizontal]/tabs:after:h-0.5 group-data-[orientation=vertical]/tabs:after:inset-y-0 group-data-[orientation=vertical]/tabs:after:-right-1 group-data-[orientation=vertical]/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-[state=active]:bg-transparent dark:group-data-[variant=line]/tabs-list:data-[state=active]:border-transparent dark:group-data-[variant=line]/tabs-list:data-[state=active]:bg-transparent",
+        "data-[state=active]:text-foreground dark:data-[state=active]:text-foreground",
+        "after:bg-foreground after:absolute after:opacity-0 after:transition-opacity group-data-[orientation=horizontal]/tabs:after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:bottom-[-5px] group-data-[orientation=horizontal]/tabs:after:h-0.5 group-data-[orientation=vertical]/tabs:after:inset-y-0 group-data-[orientation=vertical]/tabs:after:-right-1 group-data-[orientation=vertical]/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-[state=active]:after:opacity-100",
         className,
       )}
       {...props}
     >
-      {isActive && (
-        <motion.span
-          layoutId={`tab-bg-${ctx.id}`}
-          className="absolute inset-0 rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input"
-          transition={{
-            type: "spring",
-            stiffness: 500,
-            damping: 35,
-            mass: 0.5,
-          }}
-        />
-      )}
       <span className="relative z-10">{children}</span>
     </TabsPrimitive.Trigger>
   );

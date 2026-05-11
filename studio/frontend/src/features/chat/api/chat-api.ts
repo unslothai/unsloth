@@ -15,6 +15,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { setExtractionBackendLimit } from "../utils/extraction-queue";
 
 function parseErrorText(status: number, body: unknown): string {
   if (
@@ -49,7 +50,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
+export async function listLoras(
+  outputsDir?: string,
+): Promise<ListLorasResponse> {
   const query = outputsDir
     ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
     : "";
@@ -64,6 +67,7 @@ export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
 
 export async function loadModel(
   payload: LoadModelRequest,
+  signal?: AbortSignal,
 ): Promise<LoadModelResponse> {
   const response = await authFetch("/api/inference/load", {
     method: "POST",
@@ -73,12 +77,14 @@ export async function loadModel(
       native_path_lease: payload.nativePathLease ?? null,
       nativePathLease: undefined,
     }),
+    ...(signal ? { signal } : {}),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
+  signal?: AbortSignal,
 ): Promise<ValidateModelResponse> {
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
@@ -88,16 +94,22 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      trust_remote_code: payload.trust_remote_code ?? false,
     }),
+    ...(signal ? { signal } : {}),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
-export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
+export async function unloadModel(
+  payload: UnloadModelRequest,
+  signal?: AbortSignal,
+): Promise<void> {
   const response = await authFetch("/api/inference/unload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    ...(signal ? { signal } : {}),
   });
   await parseJsonOrThrow<unknown>(response);
 }
@@ -112,13 +124,19 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<{
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+}> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(
+    `/api/models/gguf-download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -213,7 +231,10 @@ export async function listCachedModels(): Promise<CachedModelRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
   const response = await authFetch("/api/models/delete-cached", {
@@ -390,12 +411,17 @@ export async function* streamChatCompletions(
       }
       // Tool status events are custom SSE payloads, not OpenAI chunks
       if ("type" in parsed && parsed.type === "tool_status") {
-        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        yield {
+          _toolStatus: parsed.content ?? "",
+        } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
       // Tool start/end events carry full input/output for the tool outputs panel
-      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+      if (
+        "type" in parsed &&
+        (parsed.type === "tool_start" || parsed.type === "tool_end")
+      ) {
         yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
@@ -423,4 +449,274 @@ export async function generateAudio(
   }
 
   return (await response.json()) as AudioGenerationResponse;
+}
+
+/** Options accepted by {@link extractDocument}. */
+export interface ExtractDocumentOptions {
+  describeImages?: boolean;
+  /** Render full-page visual payloads for scanned PDFs when a vision model is loaded. */
+  useVlmOcr?: boolean;
+  /** Maximum figure/page references to list in extracted document text. */
+  maxFigures?: number;
+  /** Maximum extracted image payloads to keep for vision-capable sends. */
+  maxVisualPayloads?: number;
+  tokenBudget?: number;
+}
+
+/** Streamed progress events emitted by the extraction endpoint. */
+export type ExtractDocumentProgressEvent =
+  | { stage: "parsing" }
+  | { stage: "done" }
+  | {
+      stage: "captioning";
+      current: number;
+      total: number;
+      page: number | null;
+      total_pages: number;
+    };
+
+/**
+ * Upload a document (PDF / DOCX / HTML / MD / TXT) and receive
+ * layout-aware Markdown plus optional figure captions produced by the
+ * currently-loaded vision model. A 501 from the backend means the
+ * extraction extras are not installed server-side.
+ *
+ * The endpoint streams NDJSON: zero or more `{stage, ...}` progress
+ * events followed by a final `{stage:"result", data}` or
+ * `{stage:"error", status_code, detail}` line. Pass `onProgress` to
+ * receive intermediate events (e.g. captioning progress). Pass an
+ * `AbortSignal` to cancel; abortion rejects with
+ * `DOMException("Aborted", "AbortError")`.
+ */
+export function extractDocument(
+  file: File,
+  options: ExtractDocumentOptions = {},
+  signal?: AbortSignal,
+  onProgress?: (event: ExtractDocumentProgressEvent) => void,
+): Promise<import("../types").ExtractedDocument> {
+  const buildForm = (): FormData => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    if (options.describeImages !== undefined) {
+      form.append("describe_images", options.describeImages ? "true" : "false");
+    }
+    if (options.useVlmOcr !== undefined) {
+      form.append("use_vlm_ocr", options.useVlmOcr ? "true" : "false");
+    }
+    if (options.maxFigures !== undefined) {
+      form.append("max_figures", String(options.maxFigures));
+    }
+    if (options.maxVisualPayloads !== undefined) {
+      form.append("max_visual_payloads", String(options.maxVisualPayloads));
+    }
+    if (options.tokenBudget !== undefined) {
+      form.append("token_budget", String(options.tokenBudget));
+    }
+    return form;
+  };
+
+  type StreamOutcome =
+    | {
+        kind: "result";
+        data: import("../types").ExtractedDocument;
+      }
+    | {
+        kind: "error";
+        status: number;
+        detail: string;
+      }
+    | {
+        kind: "http-error";
+        status: number;
+        body: unknown;
+      };
+
+  const sendOnce = async (): Promise<StreamOutcome> => {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const response = await authFetch("/api/inference/chat/extract-document", {
+      method: "POST",
+      headers: {
+        Accept: "application/x-ndjson",
+      },
+      body: buildForm(),
+      signal,
+    });
+
+    if (!response.ok) {
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      return { kind: "http-error", status: response.status, body };
+    }
+
+    if (!response.body) {
+      throw new Error("Response stream unavailable");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const handleLine = (line: string): StreamOutcome | null => {
+      if (!line) return null;
+      let event: { stage?: string; [key: string]: unknown };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return null;
+      }
+      if (event.stage === "result") {
+        return {
+          kind: "result",
+          data: event.data as import("../types").ExtractedDocument,
+        };
+      }
+      if (event.stage === "error") {
+        return {
+          kind: "error",
+          status:
+            typeof event.status_code === "number" ? event.status_code : 500,
+          detail:
+            typeof event.detail === "string" ? event.detail : "Extraction failed",
+        };
+      }
+      onProgress?.(event as ExtractDocumentProgressEvent);
+      return null;
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          const outcome = handleLine(line);
+          if (outcome) return outcome;
+          nl = buffer.indexOf("\n");
+        }
+      }
+      const tail = buffer.trim();
+      if (tail) {
+        const outcome = handleLine(tail);
+        if (outcome) return outcome;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore — already closed
+      }
+    }
+    throw new Error("Extraction stream ended without a result");
+  };
+
+  return (async () => {
+    let outcome: StreamOutcome;
+    try {
+      outcome = await sendOnce();
+    } catch (err) {
+      if (
+        err instanceof DOMException &&
+        (err.name === "AbortError" || err.message === "Aborted")
+      ) {
+        throw err;
+      }
+      throw err;
+    }
+    if (outcome.kind === "result") {
+      return outcome.data;
+    }
+    if (outcome.kind === "error") {
+      throw new Error(outcome.detail);
+    }
+    throw new Error(parseErrorText(outcome.status, outcome.body));
+  })();
+}
+
+/**
+ * Probe the server for document-extraction support and the currently
+ * loaded model's vision capability. Polled by the Chat settings card
+ * to drive the "describe figures" toggle state + tooltip.
+ */
+export async function getDocumentSupport(
+  signal?: AbortSignal,
+): Promise<import("../types").DocumentSupport> {
+  const response = await authFetch("/api/inference/chat/document-support", {
+    signal,
+  });
+  return parseJsonOrThrow<import("../types").DocumentSupport>(response);
+}
+
+const DOCUMENT_SUPPORT_TTL_MS = 30_000;
+let documentSupportCache: {
+  value: import("../types").DocumentSupport;
+  expiresAt: number;
+} | null = null;
+let documentSupportInflight: Promise<
+  import("../types").DocumentSupport
+> | null = null;
+let documentSupportCacheGeneration = 0;
+
+function rememberDocumentSupport(
+  value: import("../types").DocumentSupport,
+  generation: number,
+): void {
+  if (generation === documentSupportCacheGeneration) {
+    documentSupportCache = {
+      value,
+      expiresAt: Date.now() + DOCUMENT_SUPPORT_TTL_MS,
+    };
+    setExtractionBackendLimit(value.max_extract_concurrency);
+  }
+}
+
+export function invalidateDocumentSupportCache(): void {
+  documentSupportCacheGeneration += 1;
+  documentSupportCache = null;
+  documentSupportInflight = null;
+  setExtractionBackendLimit(null);
+}
+
+export async function getCachedDocumentSupport(
+  signal?: AbortSignal,
+): Promise<import("../types").DocumentSupport> {
+  const now = Date.now();
+  if (documentSupportCache && documentSupportCache.expiresAt > now) {
+    setExtractionBackendLimit(documentSupportCache.value.max_extract_concurrency);
+    return documentSupportCache.value;
+  }
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  if (signal) {
+    const generation = documentSupportCacheGeneration;
+    const value = await getDocumentSupport(signal);
+    if (!signal.aborted && generation === documentSupportCacheGeneration) {
+      rememberDocumentSupport(value, generation);
+    }
+    return value;
+  }
+  if (!documentSupportInflight) {
+    const generation = documentSupportCacheGeneration;
+    documentSupportInflight = getDocumentSupport()
+      .then((value) => {
+        rememberDocumentSupport(value, generation);
+        return value;
+      })
+      .finally(() => {
+        if (generation === documentSupportCacheGeneration) {
+          documentSupportInflight = null;
+        }
+      });
+  }
+  return documentSupportInflight;
 }

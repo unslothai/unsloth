@@ -199,7 +199,11 @@ class UnslothTrainer:
 
         # --- Detect VLM ---
         vision = (
-            is_vision_model(model_name, hf_token = hf_token)
+            is_vision_model(
+                model_name,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+            )
             if not self.is_audio
             else False
         )
@@ -572,7 +576,11 @@ class UnslothTrainer:
 
             # VLM: vision model with image dataset (mutually exclusive with audio paths)
             vision = (
-                is_vision_model(model_name, hf_token = hf_token)
+                is_vision_model(
+                    model_name,
+                    hf_token = hf_token,
+                    trust_remote_code = trust_remote_code,
+                )
                 if not self.is_audio
                 else False
             )

@@ -3,6 +3,12 @@
 # Also applies to: unsloth/PaddleOCR-VL
 # added inference parameters from unsloth notebook
 
+model:
+  identifier: unsloth/PaddleOCR-VL
+  display_name: PaddleOCR-VL
+  is_vision: true
+  is_ocr: true
+
 training:
   trust_remote_code: true
   max_seq_length: 2048

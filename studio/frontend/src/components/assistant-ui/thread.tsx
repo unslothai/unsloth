@@ -31,10 +31,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import {
+  AttachmentChipRoot,
+  AttachmentChipTitle,
+  attachmentChipTokens,
+} from "@/features/chat/components/attachment-chip-primitives";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { isDocumentAttachment } from "@/features/chat/types";
 import { isTauri } from "@/lib/api-base";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
@@ -82,27 +88,35 @@ import {
   useRef,
   useState,
 } from "react";
+import { motion } from "motion/react";
 import { toast } from "sonner";
 
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({
-  hideComposer,
-  hideWelcome,
-  targetThreadId,
-}) => {
+}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
   // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
   // to prevent the streaming-mutation race that makes the viewport snap
   // back to the bottom while the user is scrolling up (see the hook for
   // the full explanation).
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
-  const isComposerAttachPending = useAuiState(({ threads }) =>
+  const composerThreadMismatch = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
+  const composerHasBlockingAttachment = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) =>
+        attachment.status.type === "running" ||
+        (isDocumentAttachment(attachment) &&
+          attachment.status.type === "incomplete"),
+    ),
+  );
+  const composerSendDisabled =
+    composerThreadMismatch || composerHasBlockingAttachment;
 
   return (
     <ThreadPrimitive.Root
@@ -126,7 +140,9 @@ export const Thread: FC<{
           )}
         >
           {!hideWelcome && (
-            <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
+            <AuiIf
+              condition={({ thread }) => thread.isEmpty && !thread.isLoading}
+            >
               <ThreadWelcome hideComposer={hideComposer} />
             </AuiIf>
           )}
@@ -171,7 +187,11 @@ export const Thread: FC<{
               />
               <div className="relative px-5 pb-2">
                 <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                  <ComposerAnimated disabled={isComposerAttachPending} />
+                  <ComposerAnimated
+                    threadId={targetThreadId ?? mainThreadId}
+                    inputDisabled={composerThreadMismatch}
+                    sendDisabled={composerSendDisabled}
+                  />
                 </div>
                 <p className="composer-footer-note">
                   LLMs can make mistakes. Double-check responses.
@@ -250,12 +270,23 @@ const GeneratingSpinner: FC = () => {
   );
 };
 
-const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const ComposerAnimated: FC<{
+  threadId?: string;
+  inputDisabled?: boolean;
+  sendDisabled?: boolean;
+}> = ({ threadId, inputDisabled, sendDisabled }) => {
+  const fallbackThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const scopedThreadId = threadId ?? fallbackThreadId ?? "main";
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
-      <div className="relative z-10 w-full">
-        <Composer disabled={disabled} />
-      </div>
+      <motion.div
+        layout={true}
+        layoutId={`composer-${scopedThreadId}`}
+        transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
+        className="relative z-10 w-full"
+      >
+        <Composer inputDisabled={inputDisabled} sendDisabled={sendDisabled} />
+      </motion.div>
     </div>
   );
 };
@@ -268,32 +299,35 @@ const PendingAudioChip: FC = () => {
   }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+      <AttachmentChipRoot className="min-h-11 items-center py-1.5">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-        <span className="max-w-48 truncate">{audioName}</span>
+        <AttachmentChipTitle>{audioName}</AttachmentChipTitle>
         <button
           type="button"
           onClick={clearPendingAudio}
-          className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+          className={attachmentChipTokens.remove}
           aria-label="Remove audio"
         >
-          <XIcon className="size-3" />
+          <XIcon className="size-3" aria-hidden="true" />
         </button>
-      </div>
+      </AttachmentChipRoot>
     </div>
   );
 };
 
-const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+const Composer: FC<{
+  inputDisabled?: boolean;
+  sendDisabled?: boolean;
+}> = ({ inputDisabled, sendDisabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current) {
+      if (sendDisabled || isComposingRef.current) {
         event.preventDefault();
       }
     },
-    [disabled, isComposingRef],
+    [sendDisabled, isComposingRef],
   );
 
   const composerContent = (
@@ -306,13 +340,13 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         className="aui-composer-input composer-input"
         minRows={1}
         maxRows={6}
-        autoFocus={!disabled}
-        disabled={disabled}
+        autoFocus={!inputDisabled}
+        disabled={inputDisabled}
         aria-label="Message input"
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing}
+        disabled={sendDisabled || isComposing}
         blockSend={() => isComposingRef.current}
       />
     </>
@@ -321,7 +355,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
-      aria-disabled={disabled}
+      aria-disabled={sendDisabled}
       onSubmit={handleSubmit}
     >
       {isTauri ? (
@@ -331,7 +365,14 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone group/dropzone chat-composer-surface relative flex w-full flex-col data-[dragging=true]:border-2 data-[dragging=true]:border-dashed data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          <div
+            className="pointer-events-none absolute inset-1 z-10 hidden items-center justify-center rounded-2xl border-2 border-dashed border-ring bg-background/90 text-sm font-medium text-foreground shadow-sm group-data-[dragging=true]/dropzone:flex"
+            role="region"
+            aria-label="Drop to extract document"
+          >
+            Drop to extract document
+          </div>
           {composerContent}
         </ComposerPrimitive.AttachmentDropzone>
       )}
@@ -454,7 +495,6 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -553,7 +593,9 @@ const PreserveThinkingToggle: FC = () => {
             : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
       )}
       aria-label={
-        preserveThinking ? "Disable preserve think" : "Enable preserve think"
+        preserveThinking
+          ? "Disable preserve thinking"
+          : "Enable preserve thinking"
       }
     >
       {preserveThinking && !disabled ? (
@@ -665,7 +707,7 @@ const ToolStatusDisplay: FC = () => {
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
+      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary motion-reduce:animate-none">
         <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
         <span className="tabular-nums opacity-60">{elapsed}s</span>
@@ -707,25 +749,28 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
-              <SquareIcon className="size-3 animate-pulse fill-current" />
+              <SquareIcon className="size-3 animate-pulse fill-current motion-reduce:animate-none" />
             </TooltipIconButton>
           </ComposerPrimitive.StopDictation>
         </ComposerPrimitive.If>
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           <ComposerPrimitive.Send asChild={true}>
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={disabled ? "Waiting for attachment" : "Send message"}
               side="bottom"
               type="submit"
               variant="default"
               size="icon"
-              disabled={disabled}
+              aria-disabled={disabled}
               onClick={(event) => {
-                if (blockSend?.()) {
+                if (disabled || blockSend?.()) {
                   event.preventDefault();
                 }
               }}
-              className="aui-composer-send size-8 rounded-full"
+              className={cn(
+                "aui-composer-send size-8 rounded-full",
+                disabled && "cursor-not-allowed opacity-50",
+              )}
               aria-label="Send message"
             >
               <ArrowUpIcon className="aui-composer-send-icon size-4" />

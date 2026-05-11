@@ -10,7 +10,7 @@ the subprocess and can be imported directly from .inference when needed.
 """
 
 from .orchestrator import InferenceOrchestrator, get_inference_backend
-from .llama_cpp import LlamaCppBackend
+from .llama_cpp import LlamaCppBackend, get_llama_cpp_backend
 
 # Expose InferenceOrchestrator as InferenceBackend for backward compat
 InferenceBackend = InferenceOrchestrator
@@ -19,5 +19,6 @@ __all__ = [
     "InferenceBackend",
     "InferenceOrchestrator",
     "get_inference_backend",
+    "get_llama_cpp_backend",
     "LlamaCppBackend",
 ]

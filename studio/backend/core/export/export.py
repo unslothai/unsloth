@@ -182,7 +182,10 @@ class ExportBackend:
 
             # Detect audio type and vision
             self._audio_type = detect_audio_type(model_id)
-            self.is_vision = not self._audio_type and is_vision_model(model_id)
+            self.is_vision = not self._audio_type and is_vision_model(
+                model_id,
+                trust_remote_code = trust_remote_code,
+            )
 
             # Load model based on type
             if self._audio_type == "csm":
