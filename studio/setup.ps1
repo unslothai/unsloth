@@ -664,6 +664,7 @@ if (-not $HasNvidiaSmi) {
 # ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
 $HasROCm = $false
 $ROCmGpuLabel = $null
+$script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
     # hipinfo: present + output contains gcnArchName → real HIP GPU
     $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
@@ -673,7 +674,8 @@ if (-not $HasNvidiaSmi) {
             if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
                 $HasROCm = $true
                 if ($hipOut -match "(?im)^\s*gcnArchName\s*:\s*(\S+)") {
-                    $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                    $script:ROCmGfxArch = $Matches[1].Trim()
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
                 }
@@ -1855,38 +1857,87 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+# ── GPU arch → newest compatible Windows ROCm wheel release ──
+# Wheels bundle their own ROCm runtime; the installed HIP SDK version does
+# not constrain which release to use.  Always picks the newest release that
+# supports the GPU architecture.
+function Select-ROCmWheelRelease {
+    param([string]$GfxArch)
+
+    # Available releases, newest first.
+    $releases = @(
+        @{
+            Rel     = "rocm-rel-7.2.1"
+            Tag     = "rocm7.2"
+            RocmVer = @(7, 2)
+            Tarball = "rocm-7.2.1.tar.gz"
+            Wheels  = @(
+                "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+                "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
+                "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+                "torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+                "torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
+                "torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
+            )
+        },
+        @{
+            Rel     = "rocm-rel-7.1.1"
+            Tag     = "rocm7.1"
+            RocmVer = @(7, 1)
+            Tarball = "rocm-0.1.dev0.tar.gz"
+            Wheels  = @(
+                "rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
+                "rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
+                "torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+                "torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
+                "torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
+            )
+        }
+    )
+
+    # GPU arch → minimum (major, minor) ROCm release needed.
+    $archMin = @{
+        "gfx1201" = @(7,1); "gfx1200" = @(7,1)   # RDNA 4
+        "gfx1151" = @(7,1); "gfx1150" = @(7,1)   # RDNA 3.5 (Strix Halo/Point)
+        "gfx1103" = @(6,4); "gfx1102" = @(6,4); "gfx1101" = @(6,4); "gfx1100" = @(6,4)  # RDNA 3
+        "gfx1036" = @(6,4); "gfx1035" = @(6,4); "gfx1034" = @(6,4); "gfx1033" = @(6,4)  # RDNA 2
+        "gfx1032" = @(6,4); "gfx1031" = @(6,4); "gfx1030" = @(6,4)
+        "gfx1011" = @(6,4); "gfx1010" = @(6,4)   # RDNA 1
+        "gfx906"  = @(6,4); "gfx908"  = @(6,4); "gfx90a" = @(6,4)   # Vega/MI
+    }
+    $minVer = if ($GfxArch -and $archMin.ContainsKey($GfxArch)) {
+        $archMin[$GfxArch]
+    } else {
+        @(6, 4)  # unknown arch: try the latest (7.2.1 supports all modern GPUs)
+    }
+
+    foreach ($r in $releases) {
+        $rv = $r.RocmVer
+        $ok = ($rv[0] -gt $minVer[0]) -or ($rv[0] -eq $minVer[0] -and $rv[1] -ge $minVer[1])
+        if ($ok) { return $r }
+    }
+    return $null
+}
+
 # ── AMD Windows ROCm torch override ──────────────────────────────────────────
-# When ROCm HIP SDK is present and Python 3.12 is in use, install AMD's direct
-# torch wheels instead of CPU-only PyTorch.
+# Selects the newest wheel release compatible with the GPU arch (HIP SDK
+# version is irrelevant; wheels bundle their own ROCm runtime).
 $ROCmVersion = $script:ROCmVersion
+$ROCmGfxArch = $script:ROCmGfxArch
 $ROCmTorchWheelUrls = $null
 $ROCmTarballUrl     = $null
+$ROCmWheelTag       = $null
 if ($HasROCm -and $CuTag -eq "cpu") {
     $pyVer = (& python --version 2>&1 | Out-String) -replace '[^0-9.]',''
     $pyMajMin = ($pyVer.Trim() -split '\.')[0..1] -join '.'
     $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
-    if ($pyMajMin -eq "3.12" -and $ROCmVersion) {
-        if ($ROCmVersion -match '^7\.2') {
-            $rb = "$amdWheelBase/rocm-rel-7.2.1"
-            $ROCmTarballUrl = "$rb/rocm-7.2.1.tar.gz"  # rocm_sdk namespace
-            $ROCmTorchWheelUrls = @(
-                "$rb/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
-                "$rb/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
-                "$rb/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
-                "$rb/torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
-                "$rb/torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
-                "$rb/torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
-            )
-        } elseif ($ROCmVersion -match '^7\.1') {
-            $rb = "$amdWheelBase/rocm-rel-7.1.1"
-            $ROCmTarballUrl = "$rb/rocm-0.1.dev0.tar.gz"  # rocm_sdk namespace
-            $ROCmTorchWheelUrls = @(
-                "$rb/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
-                "$rb/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
-                "$rb/torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
-                "$rb/torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
-                "$rb/torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
-            )
+    if ($pyMajMin -eq "3.12") {
+        $sel = Select-ROCmWheelRelease -GfxArch $ROCmGfxArch
+        if ($sel) {
+            $rb               = "$amdWheelBase/$($sel.Rel)"
+            $ROCmTarballUrl   = "$rb/$($sel.Tarball)"
+            $ROCmTorchWheelUrls = $sel.Wheels | ForEach-Object { "$rb/$_" }
+            $ROCmWheelTag     = $sel.Tag
         }
     }
 }
@@ -1894,7 +1945,7 @@ if ($HasROCm -and $CuTag -eq "cpu") {
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
 if ($ROCmTorchWheelUrls) {
-    substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
+    substep "installing PyTorch ($ROCmWheelTag)..."
     # Install the rocm namespace tarball first (provides the 'rocm_sdk' Python
     # package that torch/_rocm_init.py imports at startup).
     if ($ROCmTarballUrl) {

@@ -117,6 +117,13 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "download/continuous-release_main/"
         "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
     ),
+    # Windows ROCm wheel — ships libbitsandbytes_rocm72.dll.
+    # BNB_ROCM_VERSION=72 must be set in the environment before importing bnb.
+    "win_amd64": (
+        "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
+        "download/continuous-release_main/"
+        "bitsandbytes-1.33.7.preview-py3-none-win_amd64.whl"
+    ),
 }
 _BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.49.1"
 
@@ -225,6 +232,56 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         if m:
             return int(m.group(1)), int(m.group(2))
 
+    return None
+
+
+# GPU arch → minimum (major, minor) ROCm release that supports it on Windows.
+# Wheels bundle their own ROCm runtime, so the installed HIP SDK version does
+# not constrain selection — only the GPU's architecture minimum matters.
+_GFX_MIN_ROCM_WINDOWS: dict[str, tuple[int, int]] = {
+    "gfx1201": (7, 1), "gfx1200": (7, 1),  # RDNA 4
+    "gfx1151": (7, 1), "gfx1150": (7, 1),  # RDNA 3.5 (Strix Halo/Point)
+    "gfx1103": (6, 4), "gfx1102": (6, 4), "gfx1101": (6, 4), "gfx1100": (6, 4),  # RDNA 3
+    "gfx1036": (6, 4), "gfx1035": (6, 4), "gfx1034": (6, 4), "gfx1033": (6, 4),  # RDNA 2
+    "gfx1032": (6, 4), "gfx1031": (6, 4), "gfx1030": (6, 4),
+    "gfx1011": (6, 4), "gfx1010": (6, 4),  # RDNA 1
+    "gfx906": (6, 4), "gfx908": (6, 4), "gfx90a": (6, 4),  # Vega/MI
+}
+
+
+def _detect_windows_gfx_arch() -> str | None:
+    """Return the gcnArchName from hipinfo on Windows (e.g. 'gfx1200'), or None."""
+    import re
+
+    hipinfo = shutil.which("hipinfo")
+    if not hipinfo:
+        return None
+    try:
+        result = subprocess.run(
+            [hipinfo],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 10,
+        )
+        if result.returncode != 0:
+            return None
+        text = result.stdout.decode(errors = "replace")
+        m = re.search(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
+
+
+def _select_windows_rocm_release(gfx_arch: str | None) -> tuple[str, list[str]] | None:
+    """Pick the best available Windows ROCm release for the given GPU arch.
+
+    Always selects the newest available release whose ROCm version meets the
+    GPU's minimum requirement.  Returns None when no release qualifies.
+    """
+    min_ver = _GFX_MIN_ROCM_WINDOWS.get(gfx_arch or "", (6, 4))
+    for (maj, mn), entry in sorted(_ROCM_WINDOWS_RELEASES.items(), reverse = True):
+        if (maj, mn) >= min_ver:
+            return entry
     return None
 
 
@@ -344,8 +401,9 @@ def _ensure_rocm_torch() -> None:
             return
         if _has_usable_nvidia_gpu():
             return
-        if not _has_rocm_gpu():
-            return
+        gfx_arch = _detect_windows_gfx_arch()
+        if not gfx_arch:
+            return  # no AMD GPU visible via hipinfo
         try:
             probe = subprocess.run(
                 [
@@ -367,34 +425,44 @@ def _ensure_rocm_torch() -> None:
                 return  # already ROCm torch
         except (OSError, subprocess.TimeoutExpired):
             pass
-        ver = _detect_rocm_version()
-        if ver is None:
-            print("   ROCm detected but version unreadable -- skipping torch reinstall")
-            return
-        entry = next(
-            (
-                v
-                for (maj, mn), v in sorted(_ROCM_WINDOWS_RELEASES.items(), reverse = True)
-                if ver >= (maj, mn)
-            ),
-            None,
-        )
+        entry = _select_windows_rocm_release(gfx_arch)
         if entry is None:
-            print(
-                f"   No AMD Windows torch wheel for ROCm {ver[0]}.{ver[1]} -- skipping"
-            )
+            print(f"   No AMD Windows torch wheel for GPU arch {gfx_arch} -- skipping")
             return
         rel_tag, wheel_files = entry
         base = f"{_ROCM_WINDOWS_WHEEL_BASE}/{rel_tag}"
         wheel_urls = [f"{base}/{fn}" for fn in wheel_files]
-        print(f"   ROCm {ver[0]}.{ver[1]} (Windows) -- installing torch from {base}/")
+        print(f"   {gfx_arch} (Windows) -- installing torch from {base}/")
+        # Install rocm namespace tarball first (torch/_rocm_init.py imports it)
+        tarball_url = next((u for u in wheel_urls if u.endswith(".tar.gz")), None)
+        whl_urls = [u for u in wheel_urls if not u.endswith(".tar.gz")]
+        if tarball_url:
+            pip_install(
+                f"ROCm namespace ({rel_tag})",
+                "--force-reinstall",
+                "--no-deps",
+                tarball_url,
+                constrain = False,
+            )
         pip_install(
             f"ROCm torch (Windows, {rel_tag})",
             "--force-reinstall",
             "--no-deps",
-            *wheel_urls,
+            *whl_urls,
             constrain = False,
         )
+        # bitsandbytes Windows ROCm wheel (ships libbitsandbytes_rocm72.dll).
+        # BNB_ROCM_VERSION=72 is set in worker.py before the bnb import.
+        _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
+        if _bnb_win_url is not None:
+            pip_install_try(
+                "bitsandbytes (AMD Windows, pre-release main)",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                _bnb_win_url,
+                constrain = False,
+            )
         _rocm_windows_torch_installed = True
         return
 

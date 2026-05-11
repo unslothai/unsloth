@@ -1182,6 +1182,12 @@ def run_training_process(
         except Exception:
             pass
 
+    # ── 1e. Point bitsandbytes at the ROCm 7.2 DLL on Windows ──
+    # The AMD continuous-release wheel ships libbitsandbytes_rocm72.dll.
+    # BNB_ROCM_VERSION overrides the version string bnb uses to locate the DLL.
+    if sys.platform == "win32" and os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
+        os.environ.setdefault("BNB_ROCM_VERSION", "72")
+
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
         _send_status(event_queue, "Importing Unsloth...")
