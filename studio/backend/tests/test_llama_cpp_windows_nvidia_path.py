@@ -189,3 +189,87 @@ class TestWindowsPipNvidiaDllDirs:
             "/this/path/does/not/exist/anywhere"
         )
         assert result == []
+
+    def test_picks_up_cu13_bin_x86_64_layout(self, tmp_path):
+        # Current ``nvidia-cuda-runtime`` 13.x and ``nvidia-cublas``
+        # 13.x Windows wheels ship DLLs under
+        # ``nvidia/cu13/bin/x86_64/`` instead of ``nvidia/<pkg>/bin/``.
+        # Without this, users on the new CUDA 13 wheel generation hit
+        # the original #5106 failure mode.
+        dll_dir = (
+            tmp_path
+            / "Lib"
+            / "site-packages"
+            / "nvidia"
+            / "cu13"
+            / "bin"
+            / "x86_64"
+        )
+        dll_dir.mkdir(parents = True)
+        for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
+            (dll_dir / name).write_bytes(b"")
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        assert str(dll_dir) in result, f"cu13 bin/x86_64 not in {result}"
+
+    def test_picks_up_bin_x64_layout(self, tmp_path):
+        # Some repackaged wheels use ``bin/x64`` (Windows-x64 convention)
+        # instead of ``bin/x86_64`` (NVIDIA-internal convention).
+        dll_dir = (
+            tmp_path
+            / "Lib"
+            / "site-packages"
+            / "nvidia"
+            / "cu13"
+            / "bin"
+            / "x64"
+        )
+        dll_dir.mkdir(parents = True)
+        (dll_dir / "cudart64_13.dll").write_bytes(b"")
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        assert str(dll_dir) in result
+
+    def test_mixed_cu12_and_cu13_layouts(self, tmp_path):
+        # A venv could have both the modular cu12 wheels (legacy) and
+        # the unsuffixed cu13 wheel installed side by side. Both must
+        # be reachable.
+        site = tmp_path / "Lib" / "site-packages"
+        cu12_bin = site / "nvidia" / "cuda_runtime" / "bin"
+        cu13_arch = site / "nvidia" / "cu13" / "bin" / "x86_64"
+        cu12_bin.mkdir(parents = True)
+        cu13_arch.mkdir(parents = True)
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        result_set = {Path(p) for p in result}
+        assert cu12_bin in result_set
+        assert cu13_arch in result_set
+
+    def test_glob_meta_in_prefix_is_safe(self, tmp_path):
+        # Windows usernames / install paths can contain ``[`` or ``]``.
+        # A glob-based resolver would interpret these as a character
+        # class and silently return [] even when DLL dirs exist. The
+        # iterdir-based implementation must work on such paths.
+        prefix = tmp_path / "studio_[gpu]_install"
+        dll_dir = prefix / "Lib" / "site-packages" / "nvidia" / "cuda_runtime" / "bin"
+        dll_dir.mkdir(parents = True)
+        (dll_dir / "cudart64_12.dll").write_bytes(b"")
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(prefix))
+        assert str(dll_dir) in result, (
+            f"bracket-prefixed path returned empty: {result}"
+        )
+
+    def test_arch_subdir_listed_before_parent_bin(self, tmp_path):
+        # When both ``nvidia/<pkg>/bin/`` and
+        # ``nvidia/<pkg>/bin/x86_64/`` exist, the arch-specific subdir
+        # must be listed first so Windows DLL search picks up the
+        # cudart64_X.dll location even if the parent ``bin`` is empty.
+        site = tmp_path / "Lib" / "site-packages"
+        outer_bin = site / "nvidia" / "cu13" / "bin"
+        arch_bin = outer_bin / "x86_64"
+        arch_bin.mkdir(parents = True)
+        (arch_bin / "cudart64_13.dll").write_bytes(b"")
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        # outer_bin exists as a directory (it contains arch_bin); the
+        # arch-specific subdir should come first in the list.
+        result_paths = [Path(p) for p in result]
+        assert arch_bin in result_paths
+        assert outer_bin in result_paths
+        assert result_paths.index(arch_bin) < result_paths.index(outer_bin)
