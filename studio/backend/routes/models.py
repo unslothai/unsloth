@@ -2721,7 +2721,7 @@ async def get_gguf_variants(
                     updates_dict[path_info.path] = remote_blob_id not in cached_blob_ids
             return updates_dict
 
-        updates_dict: dict[str, bool] = _check_available_updates()
+        updates_dict: dict[str, bool] = await asyncio.to_thread(_check_available_updates)
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -3172,6 +3172,7 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
     try:
+        from huggingface_hub import list_repo_commits
         cache_scans = _all_hf_cache_scans()
 
         seen_lower: dict[str, dict] = {}
@@ -3209,11 +3210,8 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     if existing is None or total_size > existing["size_bytes"]:
-                        from huggingface_hub import list_repo_commits
-
-                        latest_remote_commit = list_repo_commits(repo_id = repo_id)[
-                            0
-                        ].commit_id
+                        commits = await asyncio.to_thread(list_repo_commits, repo_id)
+                        latest_remote_commit = commits[0].commit_id
                         local_commit_list = [i.commit_hash for i in repo_info.revisions]
                         row = {
                             "repo_id": repo_id,
@@ -3250,7 +3248,7 @@ async def update_hf_model(
 ):
     """Update a cached model repo (or a specific GGUF variant) from the HF cache."""
     try:
-        from studio.backend.routes.inference import get_llama_cpp_backend
+        from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         config = ModelConfig.from_identifier(
