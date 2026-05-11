@@ -304,7 +304,7 @@ async fn check_watchdog_health(
         return false;
     };
     matches!(
-        crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), true).await,
+        crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
     )
 }
