@@ -134,6 +134,11 @@ import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.native_path_leases import native_path_leases_supported
+from utils.update_status import (
+    get_studio_install_source_status,
+    get_studio_update_status,
+)
+from utils.studio_version import get_studio_version
 
 
 def get_unsloth_version() -> str:
@@ -155,6 +160,7 @@ def get_unsloth_version() -> str:
 
 
 UNSLOTH_VERSION = get_unsloth_version()
+STUDIO_VERSION = get_studio_version()
 
 
 @asynccontextmanager
@@ -296,6 +302,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "version": UNSLOTH_VERSION,
+        "studio_version": STUDIO_VERSION,
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
@@ -306,6 +313,18 @@ async def health_check():
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
     }
+
+
+@app.get("/api/studio/install-source")
+def studio_install_source(_current_subject: str = Depends(get_current_subject)):
+    """Return source-aware install metadata without remote update checks."""
+    return get_studio_install_source_status(UNSLOTH_VERSION)
+
+
+@app.get("/api/studio/update-status")
+def studio_update_status(_current_subject: str = Depends(get_current_subject)):
+    """Return source-aware manual update status for browser-served Studio."""
+    return get_studio_update_status(UNSLOTH_VERSION)
 
 
 @app.post("/api/shutdown")
@@ -337,8 +356,17 @@ async def shutdown_server(
 
 
 @app.get("/api/system")
-async def get_system_info():
-    """Get system information"""
+async def get_system_info(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Get system information.
+
+    Gated behind auth: the response includes platform, Python version,
+    GPU name, memory total, and ML package set -- enough to fingerprint
+    a host. Studio's chat-only-mode design assumes only the local user
+    reaches /api/system; in -H 0.0.0.0 / Colab / Tauri-relayed setups
+    that assumption breaks unless we require a bearer.
+    """
     import platform
     import psutil
     from utils.hardware import get_device
@@ -378,8 +406,14 @@ async def get_gpu_visibility(
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info():
-    """Return GPU name, total VRAM, and key ML package versions."""
+async def get_hardware_info(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return GPU name, total VRAM, and key ML package versions.
+
+    Gated behind auth alongside /api/system -- same fingerprinting
+    concern. /api/system/gpu-visibility is also auth-gated already.
+    """
     from utils.hardware import get_gpu_summary, get_package_versions
 
     return {
