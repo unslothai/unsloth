@@ -133,6 +133,26 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
+def _stream_for_subprocess(stream):
+    """Return *stream* if it has a real OS file descriptor, else None.
+
+    subprocess.run on Windows refuses to inherit std handles unless
+    they're passed explicitly (otherwise close_fds=True forces
+    bInheritHandles=False, and a CREATE_NO_WINDOW child ends up with
+    no stdio at all). When sys.stdout / sys.stderr is a real fd-backed
+    stream we want to hand it through; when it's been captured by a
+    test harness (pytest's capsys, an in-memory wrapper, etc) we fall
+    back to None so subprocess uses its default.
+    """
+    if stream is None:
+        return None
+    try:
+        stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    return stream
+
+
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
@@ -998,10 +1018,43 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             powershell_args.extend(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
             )
-        powershell_args.extend(["-ExecutionPolicy", "Bypass", "-File", str(script)])
+        # Use -Command + `*>&1` instead of -File so setup.ps1's
+        # Write-Host output (PowerShell Information stream / #6) is
+        # merged into the success stream and reaches the parent's
+        # stdout. With -File, Information stream output is dropped
+        # whenever stdout is a pipe, which is exactly the situation
+        # CI hits with `unsloth studio update --local 2>&1 | tee
+        # logs/update.log`. Single-quote escaping handles paths that
+        # contain apostrophes.
+        script_pwsh_literal = str(script).replace("'", "''")
+        powershell_args.extend(
+            [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"& '{script_pwsh_literal}' *>&1",
+            ]
+        )
+        # Explicitly hand stdin/stdout/stderr to the child so the
+        # CI tee actually sees setup.ps1's output. Without this,
+        # subprocess.run on Windows uses close_fds=True (default,
+        # since Python 3.7) which sets bInheritHandles=False on
+        # CreateProcess. With CREATE_NO_WINDOW also set (via
+        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
+        # child has neither a console nor any inherited std
+        # handles, so PowerShell's Write-Host -- and even
+        # [Console]::Out.WriteLine -- writes to nothing. Passing
+        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
+        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
+        # explicitly inheritable, which works alongside
+        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
+        # CI was the smoking gun (run 25533694490 and 25534292239).
         result = subprocess.run(
             powershell_args,
             env = env,
+            stdin = _stream_for_subprocess(sys.stdin),
+            stdout = _stream_for_subprocess(sys.stdout),
+            stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
     else:

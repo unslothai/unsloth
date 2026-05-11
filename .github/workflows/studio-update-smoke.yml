@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Verifies that `unsloth studio update --local` is idempotent: a fresh
+# install via install.sh, followed by `unsloth studio update --local`,
+# succeeds and is a no-op for the llama.cpp prebuilt (it should report
+# "prebuilt up to date and validated", not re-run the source build).
+#
+# This catches regressions in setup.sh's update path that the existing
+# GGUF / wheel jobs would miss because they only invoke install.sh once.
+
+name: Studio Update CI
+
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'studio/setup.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/backend/requirements/**'
+      - 'unsloth_cli/commands/studio.py'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-update-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-idempotency:
+    name: Studio Updating Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          # Don't cache pip: this job runs `bash install.sh` and
+          # `unsloth studio update --local` which both go through
+          # `uv` and never populate ~/.cache/pip. setup-python's
+          # post-step then fatal-errors with "Cache folder path is
+          # retrieved for pip but doesn't exist on disk".
+
+      - name: Install Studio (--local, --no-torch)
+        # Pass the workflow token so the llama.cpp prebuilt installer's
+        # GitHub-API call to list releases isn't rate-limited (60/hr
+        # unauthenticated). Without this, three consecutive install +
+        # update + update calls in this job exceed the limit and the
+        # prebuilt path falls back to source build.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: First update should be a no-op (prebuilt already validated)
+        # `unsloth studio update --local` runs studio/setup.sh against
+        # the local repo. Right after install.sh the llama.cpp prebuilt
+        # has just been installed and validated, so the second run must
+        # take the "prebuilt up to date and validated" code path. Any
+        # source-build fallback or re-download here means setup.sh's
+        # idempotency regressed.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update.log
+          if grep -q "falling back to source build" logs/update.log; then
+            echo "::error::studio update fell back to source-build llama.cpp on a fresh install. setup.sh idempotency regressed."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update.log; then
+            echo "::error::no prebuilt up-to-date marker in update.log. Did setup.sh skip the prebuilt path on update?"
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          echo "update path took the prebuilt fast path"
+
+      - name: Second update must also be a no-op
+        # Two consecutive `update`s back-to-back is the usual desktop
+        # flow (auto-update, then user-triggered update). Asserting the
+        # second run is also clean rules out hidden state changes from
+        # the first one.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update2.log
+          grep -q "falling back to source build" logs/update2.log && {
+              echo "::error::second update fell back to source build"
+              tail -60 logs/update2.log; exit 1; } || true
+          grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
+          echo "second update was clean"
+
+      - name: Boot Studio briefly to confirm the install is still usable
+        # If `update --local` accidentally broke the venv or wiped the
+        # llama-server binary, the server would fail to start here.
+        run: |
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
+            > logs/studio.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18891/api/health > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json
+              break
+            fi
+            sleep 1
+          done
+          if ! jq -e '.status == "healthy"' /tmp/health.json 2>/dev/null; then
+            echo "Studio failed to come up after `update`"
+            tail -200 logs/studio.log
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$PID" 2>/dev/null || true
+          echo "post-update Studio /api/health OK"
+
+      - name: Upload update logs
+        # Always upload so a green run still leaves the install + two
+        # update logs reviewable.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-update-log
+          path: |
+            logs/install.log
+            logs/update.log
+            logs/update2.log
+            logs/studio.log
+          retention-days: 7

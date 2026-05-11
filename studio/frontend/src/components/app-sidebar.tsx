@@ -527,6 +527,9 @@ export function AppSidebar() {
                 {chatItems.map((item) => (
                   <SidebarMenuItem key={item.id} className="group/recent-item relative">
                     <SidebarMenuButton
+                      data-testid="recent-thread"
+                      data-thread-type={item.type}
+                      data-thread-id={item.id}
                       isActive={activeThreadId === item.id}
                       className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium"
                       onClick={() => {

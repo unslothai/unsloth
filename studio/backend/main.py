@@ -337,8 +337,17 @@ async def shutdown_server(
 
 
 @app.get("/api/system")
-async def get_system_info():
-    """Get system information"""
+async def get_system_info(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Get system information.
+
+    Gated behind auth: the response includes platform, Python version,
+    GPU name, memory total, and ML package set -- enough to fingerprint
+    a host. Studio's chat-only-mode design assumes only the local user
+    reaches /api/system; in -H 0.0.0.0 / Colab / Tauri-relayed setups
+    that assumption breaks unless we require a bearer.
+    """
     import platform
     import psutil
     from utils.hardware import get_device
@@ -378,8 +387,14 @@ async def get_gpu_visibility(
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info():
-    """Return GPU name, total VRAM, and key ML package versions."""
+async def get_hardware_info(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return GPU name, total VRAM, and key ML package versions.
+
+    Gated behind auth alongside /api/system -- same fingerprinting
+    concern. /api/system/gpu-visibility is also auth-gated already.
+    """
     from utils.hardware import get_gpu_summary, get_package_versions
 
     return {
