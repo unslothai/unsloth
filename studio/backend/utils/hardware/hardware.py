@@ -516,12 +516,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
         if result is not None:
             result["backend"] = _backend_label(device)
             if IS_ROCM:
-                # Mirror the unified-memory reconciliation done in the
-                # visible-GPU path. amd-smi on AMD iGPUs (Strix Halo etc.)
-                # reports only the dedicated VRAM slice; torch.mem_get_info
-                # sees the full GTT pool. Without this the /api/train/hardware
-                # endpoint and the live GPU monitor still display the wrong
-                # VRAM total even after auto-selection has been corrected.
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
                 _reconcile_primary_rocm_unified_memory(
                     result, _get_parent_visible_gpu_spec()
                 )
@@ -621,14 +616,11 @@ def _apply_unified_memory_correction(
 def _reconcile_rocm_unified_memory(
     utilization: Dict[str, Any], device_indices: list[int]
 ) -> None:
-    """Cross-check amd-smi VRAM data against torch mem_get_info for ROCm.
+    """Fix amd-smi VRAM for ROCm unified-memory GPUs (e.g. Strix Halo).
 
-    On AMD iGPUs with unified/shared memory (e.g. Strix Halo / Radeon 8060S),
-    amd-smi reports only the dedicated VRAM slice (typically 512 MB) in its
-    metric output, while torch.cuda.mem_get_info() surfaces the full GTT /
-    unified pool (~128 GB). When torch reports a larger total than amd-smi,
-    replace the per-device VRAM fields so auto_select_gpu_ids sees the real
-    usable memory instead of the tiny dedicated slice.
+    amd-smi reports only the dedicated slice (~512 MB); torch sees the full
+    GTT pool (~128 GB). When torch total > smi total, overwrite per-device
+    VRAM fields so GPU selection uses the real available memory.
     """
     torch_devices = _torch_get_per_device_info(device_indices)
     if not torch_devices:
@@ -644,14 +636,7 @@ def _reconcile_rocm_unified_memory(
 def _reconcile_primary_rocm_unified_memory(
     utilization: Dict[str, Any], parent_visible_spec: Dict[str, Any]
 ) -> None:
-    """Primary-GPU variant of the unified-memory reconciliation.
-
-    ``get_primary_gpu_utilization`` returns a flat metrics dict (no nested
-    ``devices`` list) for the first visible AMD GPU. Run the same correction
-    against torch.mem_get_info for that single device so the live training
-    hardware endpoint and the GPU monitor surface the real unified-memory
-    pool on Strix Halo and similar iGPUs.
-    """
+    """Same fix as _reconcile_rocm_unified_memory for the flat primary-GPU dict."""
     numeric_ids = parent_visible_spec.get("numeric_ids")
     if numeric_ids:
         primary_idx = [int(numeric_ids[0])]
@@ -678,10 +663,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         if result is not None:
             result["backend"] = _backend_label(device)
             if IS_ROCM:
-                # amd-smi on iGPUs with unified memory (e.g. Strix Halo)
-                # reports only the dedicated VRAM slice; torch mem_get_info
-                # sees the full unified pool. Reconcile so downstream GPU
-                # selection uses the real available memory.
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
                 _reconcile_rocm_unified_memory(
                     result, parent_visible_spec["numeric_ids"]
                 )

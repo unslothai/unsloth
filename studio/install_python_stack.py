@@ -78,8 +78,6 @@ _ROCM_WINDOWS_WHEEL_BASE = (
     or "https://repo.radeon.com/rocm/windows"
 ).rstrip("/")
 # Maps (major, minor) → (release_folder, [wheel_filename, ...])
-# Includes rocm_sdk_core and rocm_sdk_libraries_custom because the torch
-# wheels declare them as hard dependencies (rocm[libraries]==<ver>).
 _ROCM_WINDOWS_RELEASES: dict[tuple[int, int], tuple[str, list[str]]] = {
     (7, 2): (
         "rocm-rel-7.2.1",
@@ -334,9 +332,7 @@ def _ensure_rocm_torch() -> None:
     Uses pip_install() to respect uv, constraints, and --python targeting.
     """
     global _rocm_windows_torch_installed
-    # setup.ps1 sets this env var when it successfully installs AMD wheels
-    # before calling install_python_stack.py, so we can skip the subprocess
-    # probe and avoid reinstalling what was just installed.
+    # setup.ps1 sets this when it already installed AMD wheels; skip the probe.
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _rocm_windows_torch_installed = True
         return

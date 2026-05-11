@@ -1085,18 +1085,12 @@ def run_training_process(
             )
 
     # ── 1d. Ensure torch.distributed is importable before ML libs load ──
-    # The Windows ROCm wheel ships without torch._C._distributed_c10d (the C
-    # backend for the distributed package).  This causes two distinct failure
-    # modes that must both be handled:
-    #
-    #   (a) `import torch.distributed` raises ImportError immediately, OR
-    #   (b) the import SUCCEEDS (the symbol is lazily resolved) but the first
-    #       actual call by transformers/trl triggers the missing-module error.
-    #
-    # Strategy: on Windows, unconditionally pre-stub torch._C._distributed_c10d
-    # in sys.modules AND as an attribute on the torch._C extension module BEFORE
-    # attempting the import.  That covers both (a) and (b).  Then do the import
-    # and backfill any missing helper attributes on torch.distributed itself.
+    # The Windows ROCm wheel ships without torch._C._distributed_c10d.
+    # Two failure modes: (a) ImportError on `import torch.distributed`, or
+    # (b) the import succeeds (lazy load) but the first call by trl/transformers
+    # crashes. Pre-stubbing before the import covers both.
+    # Guard with `not in sys.modules` so we never overwrite a real CUDA/NVIDIA
+    # implementation that was already loaded.
     import types as _types
 
     _td_stubs = {
@@ -1109,19 +1103,17 @@ def run_training_process(
     }
 
     if sys.platform == "win32":
-        # Pre-stub the missing C extension so both the module-import path and
-        # the attribute-access path (`from torch._C import _distributed_c10d`)
-        # return a harmless no-op object instead of raising ImportError.
         _c10d_key = "torch._C._distributed_c10d"
-        _c10d_stub = _types.ModuleType(_c10d_key)
-        sys.modules[_c10d_key] = _c10d_stub
-        try:
-            import torch._C as _torch_C_mod  # C ext — always importable
+        if _c10d_key not in sys.modules:
+            _c10d_stub = _types.ModuleType(_c10d_key)
+            sys.modules[_c10d_key] = _c10d_stub
+            try:
+                import torch._C as _torch_C_mod  # C ext — always importable
 
-            if not hasattr(_torch_C_mod, "_distributed_c10d"):
-                _torch_C_mod._distributed_c10d = _c10d_stub
-        except Exception:
-            pass
+                if not hasattr(_torch_C_mod, "_distributed_c10d"):
+                    _torch_C_mod._distributed_c10d = _c10d_stub
+            except Exception:
+                pass
 
     try:
         import torch.distributed as _td
@@ -1134,7 +1126,6 @@ def run_training_process(
         for _name, _stub in _td_stubs.items():
             setattr(_td_mock, _name, _stub)
         sys.modules["torch.distributed"] = _td_mock
-        # Ensure C extension stub survives (may have been wiped by a failed import)
         if "torch._C._distributed_c10d" not in sys.modules:
             sys.modules["torch._C._distributed_c10d"] = _types.ModuleType(
                 "torch._C._distributed_c10d"

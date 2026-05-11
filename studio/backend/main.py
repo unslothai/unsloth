@@ -13,13 +13,9 @@ from pathlib import Path as _Path
 os.environ["PYTHONWARNINGS"] = "ignore"
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
-# On Windows, Python 3.8+ uses a secure DLL search that ignores PATH for
-# extension modules. torch's HIP backend (amdhip64.dll etc.) won't be found
-# even if F:\ROCm\...\bin is in PATH unless we explicitly register the
-# directory with os.add_dll_directory(). Do this before any torch import.
+# Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
+# os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
 if sys.platform == "win32":
-    import ctypes as _ctypes
-
     def _add_rocm_dll_dirs() -> None:
         candidates = []
         # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer
@@ -48,7 +44,7 @@ if sys.platform == "win32":
                     pass
 
     _add_rocm_dll_dirs()
-    del _add_rocm_dll_dirs, _ctypes
+    del _add_rocm_dll_dirs
 
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).

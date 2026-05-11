@@ -1371,9 +1371,7 @@ shell.Run cmd, 0, False
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ── AMD Windows ROCm wheel override ──
-    # AMD publishes direct torch wheels for Windows (cp312 only) at repo.radeon.com.
-    # When the HIP SDK is present and Python 3.12 is in use, swap in the AMD wheel
-    # URL and clear $TorchIndexUrl so the standard --index-url path is skipped.
+    # When the HIP SDK is present and Python 3.12, use repo.radeon.com direct wheels.
     $ROCmTorchWheelUrl = $null
     $ROCmTarballUrl    = $null
     if ($HasROCm -and -not $SkipTorch) {
@@ -1382,9 +1380,7 @@ shell.Run cmd, 0, False
             $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
             if ($ROCmVersion -and $ROCmVersion -match '^7\.2') {
                 $amdRelBase = "$amdWheelBase/rocm-rel-7.2.1"
-                # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
-                # torch/_rocm_init.py imports at startup.
-                $ROCmTarballUrl = "$amdRelBase/rocm-7.2.1.tar.gz"
+                $ROCmTarballUrl = "$amdRelBase/rocm-7.2.1.tar.gz"  # rocm_sdk namespace
                 $ROCmAllWheelUrls = @(
                     "$amdRelBase/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
                     "$amdRelBase/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
@@ -1397,9 +1393,7 @@ shell.Run cmd, 0, False
                 $TorchIndexUrl = $null
             } elseif ($ROCmVersion -and $ROCmVersion -match '^7\.1') {
                 $amdRelBase = "$amdWheelBase/rocm-rel-7.1.1"
-                # rocm tarball (14 KB) provides the 'rocm_sdk' Python namespace that
-                # torch/_rocm_init.py imports at startup.
-                $ROCmTarballUrl = "$amdRelBase/rocm-0.1.dev0.tar.gz"
+                $ROCmTarballUrl = "$amdRelBase/rocm-0.1.dev0.tar.gz"  # rocm_sdk namespace
                 $ROCmAllWheelUrls = @(
                     "$amdRelBase/rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
                     "$amdRelBase/rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
@@ -1423,7 +1417,11 @@ shell.Run cmd, 0, False
         }
     }
 
-    $TorchIndexFamily = Get-TauriTorchIndexFamily $(if ($ROCmTorchWheelUrl) { "rocm7.2" } else { $TorchIndexUrl })
+    $TorchIndexFamily = Get-TauriTorchIndexFamily $(
+        if ($ROCmTorchWheelUrl) {
+            if ($ROCmVersion -match '^7\.1') { "rocm7.1" } else { "rocm7.2" }
+        } else { $TorchIndexUrl }
+    )
     $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
     Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
@@ -1512,16 +1510,13 @@ shell.Run cmd, 0, False
         } elseif ($ROCmTorchWheelUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch (AMD ROCm $ROCmVersion)..."
-            # Install the rocm namespace tarball first (provides the 'rocm_sdk'
-            # Python package that torch/_rocm_init.py imports at startup).
+            # rocm_sdk namespace tarball (torch/_rocm_init.py imports it at startup)
             if ($ROCmTarballUrl) {
                 $tarballExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps $ROCmTarballUrl }
                 if ($tarballExit -ne 0) {
                     Write-Host "[WARN] ROCm namespace tarball install failed (exit $tarballExit) -- continuing" -ForegroundColor Yellow
                 }
             }
-            # Install remaining SDK + torch wheels.  @array splatting inside a
-            # scriptblock works in PS 5.1 because & $Command runs in-scope.
             $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps @ROCmAllWheelUrls }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red

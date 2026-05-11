@@ -657,8 +657,8 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    def test_rocm_72_selects_71_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
-        """ROCm 7.2 should select rocm7.1 tag (capped, not in mapping)."""
+    def test_rocm_72_selects_72_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+        """ROCm 7.2 should select rocm7.2 tag (now in mapping with torch 2.11.0)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"
@@ -666,7 +666,7 @@ class TestEnsureRocmTorch:
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         torch_call = mock_pip.call_args_list[0]
-        assert "rocm7.1" in str(torch_call)
+        assert "rocm7.2" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -711,9 +711,10 @@ class TestRocmTorchIndex:
         keys = list(_ROCM_TORCH_INDEX.keys())
         assert keys == sorted(keys, reverse = True)
 
-    def test_rocm_72_not_in_mapping(self):
-        """ROCm 7.2 should NOT be in the active mapping (torch 2.11.0 exceeds bound)."""
-        assert (7, 2) not in _ROCM_TORCH_INDEX
+    def test_rocm_72_in_mapping(self):
+        """ROCm 7.2 should be in the active mapping (torch 2.11.0 now supported)."""
+        assert (7, 2) in _ROCM_TORCH_INDEX
+        assert _ROCM_TORCH_INDEX[(7, 2)] == "rocm7.2"
 
     def test_rocm_71_maps_correctly(self):
         assert _ROCM_TORCH_INDEX[(7, 1)] == "rocm7.1"
@@ -731,7 +732,7 @@ class TestRocmTorchIndex:
             assert "radeon" not in tag
 
     def test_newer_rocm_selects_best_match(self):
-        """ROCm 7.2 (not in map) should select rocm7.1 via >= comparison."""
+        """ROCm 7.2 (now in map) should select rocm7.2 directly."""
         ver = (7, 2)
         tag = next(
             (
@@ -741,7 +742,7 @@ class TestRocmTorchIndex:
             ),
             None,
         )
-        assert tag == "rocm7.1"
+        assert tag == "rocm7.2"
 
     def test_rocm_64_selects_64(self):
         ver = (6, 4)
@@ -927,15 +928,16 @@ class TestInstallShStructure:
         source = sh_path.read_text()
         assert "ROCm" in source
 
-    def test_rocm72_capped_to_71(self):
-        """ROCm 7.2+ should fall back to rocm7.1 index."""
+    def test_rocm72_supported_future_capped(self):
+        """ROCm 7.2 should pass through directly; 7.3+ falls back to rocm7.2."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text()
-        assert 'echo "$_base/rocm7.1"' in source  # fallback for unknown versions
+        assert 'echo "$_base/rocm7.2"' in source  # fallback for unknown future versions
         # Allowlisted versions should pass through directly
         assert "rocm6.*" in source
         assert "rocm7.0" in source
         assert "rocm7.1" in source
+        assert "rocm7.2" in source
 
     def test_rocm_tag_validation_guard_exists(self):
         """install.sh should validate _rocm_tag with a case guard."""
