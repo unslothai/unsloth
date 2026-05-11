@@ -5005,9 +5005,7 @@ def write_prebuilt_metadata(
         approved_checksums = approved_checksums,
     )
     if fingerprint is None:
-        raise PrebuiltFallback(
-            f"cannot compute install fingerprint for {choice.name}"
-        )
+        raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
