@@ -1101,8 +1101,23 @@ def run_training_process(
 
     if sys.platform == "win32":
         _c10d_key = "torch._C._distributed_c10d"
-        if _c10d_key not in sys.modules:
+        if _c10d_key not in sys.modules:  # guard: never overwrite real NVIDIA impl
             _c10d_stub = _types.ModuleType(_c10d_key)
+
+            # ROCm Windows wheels omit the _distributed_c10d C extension.
+            # torch._dynamo imports torch.distributed.fsdp at load time which
+            # pulls in FakeProcessGroup (and potentially other symbols) from
+            # this module. PEP-562 module __getattr__ auto-stubs any missing
+            # symbol so every `from torch._C._distributed_c10d import X`
+            # succeeds; each stub is a plain class cached after first access.
+            def _c10d_stub_getattr(_attr):
+                if _attr.startswith("__"):
+                    raise AttributeError(_attr)
+                _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
+                setattr(_c10d_stub, _attr, _cls)  # cache — next access hits __dict__
+                return _cls
+
+            _c10d_stub.__getattr__ = _c10d_stub_getattr
             sys.modules[_c10d_key] = _c10d_stub
             try:
                 import torch._C as _torch_C_mod  # C ext — always importable
@@ -1124,9 +1139,17 @@ def run_training_process(
             setattr(_td_mock, _name, _stub)
         sys.modules["torch.distributed"] = _td_mock
         if "torch._C._distributed_c10d" not in sys.modules:
-            sys.modules["torch._C._distributed_c10d"] = _types.ModuleType(
-                "torch._C._distributed_c10d"
-            )
+            _c10d_fb = _types.ModuleType("torch._C._distributed_c10d")
+
+            def _c10d_fb_getattr(_attr):
+                if _attr.startswith("__"):
+                    raise AttributeError(_attr)
+                _cls = type(_attr, (), {"__init__": lambda self, *a, **kw: None})
+                setattr(_c10d_fb, _attr, _cls)
+                return _cls
+
+            _c10d_fb.__getattr__ = _c10d_fb_getattr
+            sys.modules["torch._C._distributed_c10d"] = _c10d_fb
         try:
             import torch as _torch
 
