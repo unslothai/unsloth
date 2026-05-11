@@ -958,7 +958,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-muted/50 p-3">
+                      <div className="rounded-xl bg-foreground/[0.04] p-3">
                         <p className="text-[11px] text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -968,7 +968,7 @@ export function ExportPage() {
                   </AnimatePresence>
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-muted/50 p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
                       <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1010,7 +1010,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-semibold">
                           {i + 1}
                         </span>
                         {step}

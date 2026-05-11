@@ -32,6 +32,15 @@ export {
   listTrainingRuns,
   getTrainingRun,
   deleteTrainingRun,
+  renameTrainingRun,
 } from "./api/history-api";
+export {
+  onTrainingRunUpdated,
+  onTrainingRunDeleted,
+  onTrainingRunsChanged,
+  emitTrainingRunUpdated,
+  emitTrainingRunDeleted,
+  emitTrainingRunsChanged,
+} from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export { validateTrainingConfig } from "./lib/validation";

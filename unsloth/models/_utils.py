@@ -2483,6 +2483,7 @@ def patch_tokenizer(model, tokenizer):
 
 def patch_fast_lora():
     import peft.tuners.lora.bnb
+    from ..kernels.fast_lora import fast_lora_forward
 
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 

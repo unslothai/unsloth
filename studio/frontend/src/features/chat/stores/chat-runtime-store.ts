@@ -212,9 +212,11 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  loadedIsMultimodal: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
+  loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
@@ -297,9 +299,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   loadedKvCacheDtype: null,
   speculativeType: "default",
   loadedSpeculativeType: null,
+  loadedIsMultimodal: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
+  loadedChatTemplateOverride: null,
   activeThreadId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
@@ -399,9 +403,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       loadedKvCacheDtype: null,
       speculativeType: "default",
       loadedSpeculativeType: null,
+      loadedIsMultimodal: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
+      loadedChatTemplateOverride: null,
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
