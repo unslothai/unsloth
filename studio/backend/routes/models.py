@@ -2623,7 +2623,7 @@ async def get_gguf_variants(
                         quant = v.quant,
                         size_bytes = v.size_bytes,
                         downloaded = True,  # all local variants are downloaded
-                        update_available = False # only HF models can be updated for now
+                        update_available = False,  # only HF models can be updated for now
                     )
                     for v in variants
                 ],
@@ -2676,7 +2676,9 @@ async def get_gguf_variants(
                             cached_revision_ids.append(str(snap.relative_to(snapshots)))
                     blobs = entry / "blobs"
                     if blobs.is_dir():
-                        cached_blob_ids = [str(blob.relative_to(blobs)) for blob in blobs.iterdir()]
+                        cached_blob_ids = [
+                            str(blob.relative_to(blobs)) for blob in blobs.iterdir()
+                        ]
                     break
         except Exception:
             pass
@@ -2705,11 +2707,17 @@ async def get_gguf_variants(
             from huggingface_hub import get_paths_info
 
             updates_dict: dict[str, bool] = {}
-            downloaded_filenames = [v.filename for v in variants if _is_fully_downloaded(v)]
+            downloaded_filenames = [
+                v.filename for v in variants if _is_fully_downloaded(v)
+            ]
             if downloaded_filenames:
-                remote_path_infos = get_paths_info(repo_id = repo_id, paths = downloaded_filenames)
+                remote_path_infos = get_paths_info(
+                    repo_id = repo_id, paths = downloaded_filenames
+                )
                 for path_info in remote_path_infos:
-                    remote_blob_id = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
+                    remote_blob_id = (
+                        path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
+                    )
                     updates_dict[path_info.path] = remote_blob_id not in cached_blob_ids
             return updates_dict
 
@@ -3203,7 +3211,9 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     if existing is None or total_size > existing["size_bytes"]:
                         from huggingface_hub import list_repo_commits
 
-                        latest_remote_commit = list_repo_commits(repo_id = repo_id)[0].commit_id
+                        latest_remote_commit = list_repo_commits(repo_id = repo_id)[
+                            0
+                        ].commit_id
                         local_commit_list = [i.commit_hash for i in repo_info.revisions]
                         row = {
                             "repo_id": repo_id,
@@ -3241,6 +3251,7 @@ async def update_hf_model(
     """Update a cached model repo (or a specific GGUF variant) from the HF cache."""
     try:
         from studio.backend.routes.inference import get_llama_cpp_backend
+
         llama_backend = get_llama_cpp_backend()
         config = ModelConfig.from_identifier(
             model_id = request.repo_id,
@@ -3280,7 +3291,11 @@ async def update_hf_model(
             from huggingface_hub import snapshot_download
 
             if config.is_audio and config.audio_type == "bicodec":
-                hf_repo = config.base_model if config.is_lora and config.base_model else config.path
+                hf_repo = (
+                    config.base_model
+                    if config.is_lora and config.base_model
+                    else config.path
+                )
                 local_path = hf_repo.split("/")[-1]
                 model_path = await asyncio.to_thread(
                     snapshot_download,
