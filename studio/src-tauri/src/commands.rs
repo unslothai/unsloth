@@ -784,7 +784,26 @@ async fn health_watchdog(
                 let _ = app.emit("server-crashed", ());
                 break;
             }
-            info!("Health watchdog: backend has not reported a validated port yet");
+            if !should_count_failure {
+                info!("Health watchdog: backend has not reported a validated port yet");
+                continue;
+            }
+            consecutive_failures += 1;
+            warn!(
+                "Health watchdog: missing validated port failure {}/{}",
+                consecutive_failures, HEALTH_WATCHDOG_MAX_FAILURES
+            );
+            if consecutive_failures >= HEALTH_WATCHDOG_MAX_FAILURES {
+                diagnostics::record_backend_watchdog(
+                    &diagnostics,
+                    generation,
+                    "missing_validated_port",
+                );
+                error!("Health watchdog: backend never reported a validated port, killing and declaring dead");
+                let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                let _ = app.emit("server-crashed", ());
+                break;
+            }
             continue;
         };
 
