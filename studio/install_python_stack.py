@@ -61,8 +61,8 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     # Default for rocm7.1 and earlier: torch 2.x below 2.11
     "_default": (
         "torch>=2.4,<2.11.0",
-        "torchvision<0.26.0",
-        "torchaudio<2.11.0",
+        "torchvision>=0.19,<0.26.0",
+        "torchaudio>=2.4,<2.11.0",
     ),
 }
 _PYTORCH_WHL_BASE = (

@@ -662,11 +662,10 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         )
         if result is not None:
             result["backend"] = _backend_label(device)
-            if IS_ROCM:
+            numeric_ids = parent_visible_spec.get("numeric_ids")
+            if IS_ROCM and numeric_ids is not None:
                 # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
-                _reconcile_rocm_unified_memory(
-                    result, parent_visible_spec["numeric_ids"]
-                )
+                _reconcile_rocm_unified_memory(result, numeric_ids)
             return result
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
