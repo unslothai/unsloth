@@ -25,6 +25,11 @@ These tests pin two properties:
    with the truncation block.
 """
 
+import json
+
+import structlog
+
+from loggers.config import LogConfig
 from loggers.handlers import filter_sensitive_data
 
 
@@ -81,6 +86,34 @@ class TestNoTruncation:
         )
         out = _run({"event": "load", "details": {"path": long_value}})
         assert out["details"]["path"] == long_value
+
+    def test_production_json_logger_preserves_gguf_exception(self, capsys):
+        error_detail = (
+            "Failed to execute GGUF conversion for /home/user/models/example-model, "
+            "stderr showed missing tensor mapping after converter startup "
+            "with many more diagnostic characters that must remain visible."
+        )
+
+        structlog.reset_defaults()
+        try:
+            LogConfig.setup_logging(
+                service_name = "test-studio-logger",
+                env = "production",
+            )
+            logger = structlog.get_logger("test-studio-logger")
+            try:
+                raise RuntimeError(error_detail)
+            except RuntimeError as exc:
+                logger.error(f"Error during GGUF completion: {exc}", exc_info = True)
+
+            rendered = capsys.readouterr().out.strip()
+            payload = json.loads(rendered)
+            assert payload["event"] == f"Error during GGUF completion: {error_detail}"
+            assert error_detail in payload["exception"]
+            assert "Error during GGUF co..." not in payload["event"]
+            assert "Traceback (most rece..." not in payload["exception"]
+        finally:
+            structlog.reset_defaults()
 
 
 class TestNativePathLeaseRedactionStillWorks:
