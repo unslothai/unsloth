@@ -1105,6 +1105,7 @@ def run_training_process(
     # raises "is not a package" because Python checks __path__ before looking
     # in sys.modules for the child.
     import importlib.machinery as _ilm
+    import importlib.abc as _ilabc
 
     def _make_mod_stub(mod_name):
         m = _types.ModuleType(mod_name)
@@ -1114,15 +1115,52 @@ def run_training_process(
         # on a module that's already in sys.modules (our manually-injected
         # stubs).  Give every stub a minimal ModuleSpec so find_spec() returns
         # a spec object (non-None) instead of raising.
+        # loader=None is our sentinel: _StubSubpackageFinder uses it to detect
+        # stub modules and auto-stub their children via the import machinery.
         m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
         def _ga(attr, _m=m, _n=mod_name):
             if attr.startswith("__"):
                 raise AttributeError(attr)
-            child = _make_mod_stub(f"{_n}.{attr}")
+            child_name = f"{_n}.{attr}"
+            child = _make_mod_stub(child_name)
+            sys.modules.setdefault(child_name, child)
             setattr(_m, attr, child)
             return child
         m.__getattr__ = _ga
         return m
+
+    class _StubSubpackageLoader(_ilabc.Loader):
+        """Creates a stub module for any subpackage of a stub package."""
+        def __init__(self, mod_name):
+            self._mod_name = mod_name
+        def create_module(self, spec):
+            return _make_mod_stub(self._mod_name)
+        def exec_module(self, module):
+            pass  # stub is fully initialised in create_module
+
+    class _StubSubpackageFinder(_ilabc.MetaPathFinder):
+        """Auto-stubs any subpackage import whose parent is one of our stubs.
+
+        Identified by parent.__spec__.loader is None (our sentinel).  Real
+        installed packages always have a SourceFileLoader or similar.  This
+        means we never accidentally intercept real subpackage loads.
+        """
+        def find_spec(self, fullname, path, target=None):
+            if "." not in fullname:
+                return None
+            parent_name = fullname.rsplit(".", 1)[0]
+            parent = sys.modules.get(parent_name)
+            if parent is None:
+                return None
+            parent_spec = getattr(parent, "__spec__", None)
+            if not isinstance(parent_spec, _ilm.ModuleSpec):
+                return None
+            if parent_spec.loader is not None:
+                return None  # real module — don't intercept
+            loader = _StubSubpackageLoader(fullname)
+            return _ilm.ModuleSpec(fullname, loader, is_package=True)
+
+    sys.meta_path.append(_StubSubpackageFinder())
 
     # Metaclass for stub *classes* so class-level attribute access works too.
     # e.g. torchao / distributed_c10d does ProcessGroup.BackendType.NCCL —
