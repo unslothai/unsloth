@@ -479,8 +479,14 @@ with sync_playwright() as p:
         'button:has-text("Qwen"), '
         'button:has-text("Llama")'
     ).first
-    if selector_btn.count() > 0:
-        sel_text = (selector_btn.text_content() or "").strip()
+    # Best-effort: the selector re-mounts as /api/models/list resolves,
+    # so use a short timeout and skip the snapshot on miss.
+    sel_text = ""
+    try:
+        sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
+    except Exception as _sel_err:
+        info(f"WARN: model-selector probe skipped: {type(_sel_err).__name__}: {_sel_err}")
+    if sel_text:
         info(f"model selector button text: {sel_text!r}")
         shoot("03b-default-model-button")
 
