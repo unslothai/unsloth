@@ -784,6 +784,7 @@ export function SharedComposer({
               className="size-8 rounded-full"
               onClick={send}
               disabled={!canSend}
+              aria-label="Send message"
             >
               <ArrowUpIcon className="size-4" />
             </TooltipIconButton>

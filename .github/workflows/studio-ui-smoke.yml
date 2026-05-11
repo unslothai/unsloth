@@ -1,0 +1,238 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# End-to-end Studio chat UI smoke via Playwright + Chromium against a
+# headless Linux runner. Boots Studio with the smallest GGUF
+# (gemma-3-270m-it UD-Q4_K_XL, ~254 MiB), drives the actual frontend
+# bundle, and asserts the full bootstrap-password / change-password /
+# send-message / persist-on-reload journey works end to end.
+#
+# This is the only workflow that catches regressions in the wiring
+# between the React frontend and the FastAPI backend, e.g. assistant-ui
+# version drift, /api/auth response shape changes, runtime-provider
+# regressions, or chat-history persistence breaking. Backend-only and
+# frontend-only CI happily pass while the actual user-visible UI is
+# broken (cf. the 2026.5.1 chat-history release).
+
+name: Studio UI CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      # The Playwright test files themselves -- a PR that ONLY edits
+      # the test must still trigger UI CI.
+      - 'tests/studio/**'
+      - '.github/workflows/studio-ui-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ui-smoke:
+    name: Chat UI Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18892'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Cache HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Prime HF_HOME with the GGUF
+        if: steps.cache-hf.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --upgrade huggingface_hub hf_transfer
+          mkdir -p hf-cache
+          HF_HUB_ENABLE_HF_TRANSFER=1 \
+            hf download "$GGUF_REPO" "$GGUF_FILE"
+
+      - name: Install Studio (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install 'playwright>=1.45'
+          # --with-deps installs the OS-level runtime libs Chromium
+          # needs (libnss3, libxkbcommon, etc.). About 30 s on a
+          # warm runner.
+          python -m playwright install --with-deps chromium
+
+      - name: Reset auth + boot Studio
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health
+        # 180 s -- a cold runner with venv warm-up + lazy imports has
+        # been seen to exceed 60 s. Failing the wait is more expensive
+        # than waiting an extra two minutes.
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+
+      - name: Pass bootstrap password to the Playwright step
+        # The Playwright test does its OWN /change-password through the
+        # UI (Setup your account / Choose a new password), then loads
+        # the model via page.evaluate against /api/inference/load with
+        # the JWT it got from change-password. So the only thing we
+        # have to hand it is the bootstrap password (so it can verify
+        # post-rotation that the OLD bootstrap pw now returns 401).
+        #
+        # NEW + NEW2 are generated freshly per CI run via secrets.token_urlsafe
+        # rather than hardcoded. If a workflow gets compromised, the
+        # attacker can't replay a known-good rotated password against
+        # any future / parallel Studio install -- the rotated value
+        # only ever exists for the lifetime of this single job, masked
+        # in the log via ::add-mask::.
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          NEW2="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "::add-mask::$NEW2"
+          echo "STUDIO_OLD_PW=$OLD"   >> "$GITHUB_ENV"
+          echo "STUDIO_NEW_PW=$NEW"   >> "$GITHUB_ENV"
+          echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
+
+      - name: Drive the chat UI with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18892
+          # The test file lives in the repo so it can be run locally
+          # against a freshly-installed Studio (BASE_URL=...; STUDIO_OLD_PW=
+          # $(cat ~/.unsloth/studio/auth/.bootstrap_password); python ...).
+          PW_ART_DIR: logs/playwright
+          # Strict mode: in CI a missing button / nav / dialog must
+          # FAIL the test. Locally the test still runs against partial
+          # Studio installs without STUDIO_UI_STRICT.
+          STUDIO_UI_STRICT: '1'
+        run: |
+          mkdir -p logs/playwright
+          python tests/studio/playwright_chat_ui.py
+
+      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+
+      # The chat UI test ends by clicking the Shutdown menuitem, which
+      # leaves the server dead. The extra UI test (Compare / Recipes /
+      # Export / Studio / Settings) needs a fresh Studio, so we boot a
+      # second one on a different port. Boot is fast (~3-5s on the
+      # warm install we already did) so this adds little wall time.
+      - name: Reset auth + boot Studio for extra UI tests (port 18894)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18894 \
+            > logs/studio_extra.log 2>&1 &
+          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health on 18894
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:18894/api/health" > /tmp/health2.json; then
+              jq -e '.status == "healthy"' /tmp/health2.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health2.json
+
+      - name: Pass bootstrap pw for extra UI test
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
+          echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_extra
+          STUDIO_UI_STRICT: '1'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+        run: |
+          mkdir -p logs/playwright_extra
+          python tests/studio/playwright_extra_ui.py
+
+      - name: Stop second Studio
+        if: always()
+        run: |
+          kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Upload Playwright artifacts
+        # Always upload (not just failure) so a green run's screenshots
+        # are reviewable in the Actions UI -- catches "passed but the
+        # UI is silently broken" regressions that would be invisible
+        # otherwise. Both Studio's logs (chat + extra) and BOTH
+        # Playwright artifact dirs are bundled.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-ui-smoke-artifacts
+          path: |
+            logs/studio.log
+            logs/studio_extra.log
+            logs/install.log
+            logs/playwright
+            logs/playwright_extra
+          retention-days: 7

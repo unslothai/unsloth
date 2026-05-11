@@ -1,0 +1,279 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Windows counterpart to studio-update-smoke.yml /
+# studio-mac-update-smoke.yml. Verifies that on the FREE
+# windows-latest runner:
+#
+#   1. install.ps1 --local --no-torch installs Studio AND auto-fetches
+#      the prebuilt llama.cpp Windows binary (llama-bNNNN-bin-win-cpu-
+#      x64 from ggml-org/llama.cpp). Hitting the source-build fallback
+#      is treated as an Unsloth bug -- Studio must always pick the
+#      prebuilt on Windows.
+#   2. unsloth studio update --local is idempotent. Two consecutive
+#      runs both report "prebuilt up to date and validated", no
+#      source-build fallback. The CLI's _find_setup_script picks
+#      setup.ps1 on Windows automatically.
+#   3. The installed Studio still boots and /api/health returns
+#      healthy after the update path.
+
+name: Windows Studio Update CI
+
+on:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - 'studio/setup.bat'
+      - 'studio/install_python_stack.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/backend/requirements/**'
+      - 'unsloth_cli/commands/studio.py'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-windows-update-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-idempotency:
+    name: Studio Updating Tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Studio CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          # Don't cache pip: install.ps1 + setup.ps1 go through uv
+          # and never populate ~/.cache/pip; setup-python's post-step
+          # then fatal-errors with "Cache folder path is retrieved
+          # for pip but doesn't exist on disk".
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # Two surgical fixes against measured Windows-only install
+        # waste (vs Mac/Linux on the same SHA):
+        #
+        # (1) npm. setup.ps1 line 1109-1145 requires Node 22.12+ (or
+        #     20.19+ / 23+) AND npm >=11 because Vite 8 needs both.
+        #     actions/setup-node@v4 with `node-version: '22'` lands
+        #     Node 22.22.2 + the npm 10.9.7 it bundles, so the npm
+        #     check fails and setup.ps1 falls through to the
+        #     "winget install Node.js LTS" branch -- a ~35 s reinstall
+        #     of Node we don't need. `npm install -g npm@^11` updates
+        #     the bundled npm in-place in ~5 s, which makes setup.ps1
+        #     short-circuit on the existing Node.
+        #
+        # (2) Defender. windows-latest's real-time scan opens / hashes
+        #     every file Studio writes during install (Vite output =
+        #     thousands of small chunks, uv pip = wheel-extraction =
+        #     thousands of small files). The latency dominates the
+        #     200 s frontend build and the 90 s deps install. Adding
+        #     ExclusionPath entries for the directories the install
+        #     writes to drops per-file open latency from ~ms to ~us.
+        #     Add-MpPreference needs admin; the runneradmin user has
+        #     it, but wrap in try/catch so a permission flake leaves
+        #     the install otherwise unaffected.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories before adding the
+          # exclusion -- creating an empty studio/frontend/dist trips
+          # setup.ps1 line 1281-1296's mtime-based "is the frontend
+          # stale?" check into "up to date, skip rebuild", because the
+          # newly-created dist's mtime is younger than every source
+          # file. Studio then boots with an empty dist and 500s on
+          # GET / with FileNotFoundError: dist\index.html. See run
+          # 25546676715 / job 74984469728.
+          # Add-MpPreference accepts paths that do not yet exist; the
+          # exclusion is registered and applies when the path
+          # materialises.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Studio (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem-based check (setup.ps1's stream output isn't
+          # captured back through the parent pipeline).
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Studio shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Patch Studio venv with full typer / pydantic dep trees
+        # install.ps1 runs `uv pip install --no-deps -r
+        # no-torch-runtime.txt` to keep torch out of transitive
+        # resolution from accelerate/peft/trl. That also drops
+        # typer's and pydantic's runtime deps unless they're
+        # explicitly pinned in no-torch-runtime.txt. We pin the
+        # known ones (click, shellingham, annotated-doc, rich,
+        # pydantic-core, annotated-types, typing-inspection, ...)
+        # but typer / pydantic minor versions can introduce new
+        # transitive deps that are NOT in our pin list.
+        #
+        # Belt-and-suspenders: re-install typer + pydantic +
+        # huggingface_hub WITH their deps into the Studio venv.
+        # `pip install --upgrade` only adds missing packages; it
+        # never down-shifts an installed version. Cannot pull
+        # torch (none of typer / pydantic / huggingface_hub depend
+        # on it).
+        run: |
+          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
+          if [ ! -f "$STUDIO_PY" ]; then
+            echo "::error::Studio venv python not at $STUDIO_PY"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
+
+      - name: First update should be a no-op (prebuilt already validated)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update.log
+          if grep -q "falling back to source build" logs/update.log; then
+            echo "::error::studio update fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update.log; then
+            echo "::error::no prebuilt up-to-date marker in update.log."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          echo "update path took the prebuilt fast path"
+
+      - name: Second update must also be a no-op
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update2.log
+          grep -q "falling back to source build" logs/update2.log && {
+              echo "::error::second update fell back to source build on Windows"
+              tail -60 logs/update2.log; exit 1; } || true
+          grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
+          echo "second update was clean"
+
+      - name: Boot Studio briefly to confirm the install is still usable
+        run: |
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
+            > logs/studio.log 2>&1 &
+          PID=$!
+          HEALTHY=""
+          # Use jq (a Git Bash builtin) instead of `python -c
+          # open('/tmp/health.json')` to read the saved health
+          # response. Bash on windows-latest is MSYS Git Bash, which
+          # resolves `/tmp/...` against the MSYS root, while the
+          # python interpreter is Windows-native and resolves it
+          # against the current drive's root. The two paths don't
+          # agree, so python never finds the file curl just wrote.
+          # jq reads through MSYS, so the path matches. Mirrors what
+          # studio-windows-api-smoke.yml and the other Windows smoke
+          # workflows already do.
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18891/api/health > /tmp/health.json; then
+              if jq -e '.status == "healthy"' /tmp/health.json >/dev/null; then
+                HEALTHY=1
+                break
+              fi
+            fi
+            sleep 1
+          done
+          if [ -z "$HEALTHY" ]; then
+            echo "Studio failed to come up after \`update\`"
+            tail -200 logs/studio.log
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$PID" 2>/dev/null || true
+          echo "post-update Studio /api/health OK"
+
+      - name: Upload update logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-studio-update-log
+          path: |
+            logs/install.log
+            logs/update.log
+            logs/update2.log
+            logs/studio.log
+          retention-days: 7

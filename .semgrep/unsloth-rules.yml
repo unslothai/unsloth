@@ -1,0 +1,183 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Custom Semgrep rules for unsloth + studio backend. The off-the-shelf
+# rule packs (p/python, p/javascript, p/supply-chain, p/security-audit)
+# wired into the security-audit workflow already cover the common
+# patterns. These rules add catches for the *specific* shape of recent
+# CVEs in the broader Python ML / dev-tools stack -- so if we ever
+# introduce a similar bug ourselves, CI lights up.
+#
+# Run locally:
+#     pip install 'semgrep>=1.95'
+#     semgrep --config .semgrep/unsloth-rules.yml studio/backend unsloth scripts
+#
+# Wired into CI via .github/workflows/security-audit.yml's Semgrep step.
+
+rules:
+  # ─────────────────────────────────────────────────────────────────
+  # langchain-core CVE-2025-68664 shape:
+  #   `dumps()` / `dumpd()` over a user-controlled dict that may carry
+  #   the `lc` marker key -> deserialization injection on the round
+  #   trip. Catch any json.dumps / pickle.dumps / yaml.dump on data
+  #   that flowed through a Request/WebSocket payload.
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-deserialize-roundtrip
+    message: >-
+      Serializing user-controlled data with langchain-style `dumps`
+      can re-instantiate arbitrary classes when deserialized. See
+      langchain-core CVE-2025-68664. Sanitize / strip `lc` marker keys
+      before dumping, or use a strict schema (Pydantic) instead.
+    severity: WARNING
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: langchain_core.load.dumps($DATA, ...)
+          - pattern: langchain_core.load.dumpd($DATA, ...)
+          - pattern: dumps($DATA)
+          - pattern: dumpd($DATA)
+      - metavariable-pattern:
+          metavariable: $DATA
+          patterns:
+            - pattern-either:
+                - pattern: request.$F
+                - pattern: payload
+                - pattern: body
+                - pattern: data
+                - pattern: input
+
+  # ─────────────────────────────────────────────────────────────────
+  # n8n CVE-2025-68668 shape:
+  #   `_pyodide._base.eval_code(...)` or any private/underscore call
+  #   into pyodide internals that escapes the public sandbox API.
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-pyodide-private-eval
+    message: >-
+      Calling `_pyodide._base.eval_code` (or any `_pyodide.<private>`)
+      bypasses the public Pyodide sandbox -- this is how n8n
+      CVE-2025-68668 (CVSS 9.9) escaped the Code Node's blocklist.
+      Use the documented sandbox API (`pyodide.runPython`) and rely
+      on web-worker isolation for untrusted input.
+    severity: ERROR
+    languages: [python, javascript, typescript]
+    patterns:
+      - pattern-either:
+          - pattern: _pyodide._base.eval_code(...)
+          - pattern: $X._pyodide.$Y(...)
+
+  # ─────────────────────────────────────────────────────────────────
+  # marimo CVE-2026-39987 shape:
+  #   FastAPI / Starlette WebSocket route that accepts connections
+  #   without checking auth -- in marimo this dropped a PTY shell to
+  #   any unauthenticated attacker.
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-websocket-no-auth
+    message: >-
+      WebSocket route accepts connections without an auth check.
+      marimo CVE-2026-39987 was a pre-auth WebSocket on
+      `/terminal/ws` that handed a full PTY shell to any
+      unauthenticated peer. Add a Depends(get_current_user) /
+      `await websocket.headers.get("authorization")` gate before
+      `await websocket.accept()`.
+    severity: WARNING
+    languages: [python]
+    patterns:
+      - pattern: |
+          @$APP.websocket("...")
+          async def $F(websocket: WebSocket, ...):
+              ...
+              await websocket.accept()
+              ...
+      - pattern-not-inside: |
+          @$APP.websocket("...")
+          async def $F(websocket: WebSocket, ..., $USER = Depends(...)):
+              ...
+      - pattern-not-inside: |
+          @$APP.websocket("...")
+          async def $F(websocket: WebSocket, ...):
+              ...
+              if not $AUTH:
+                  ...
+              await websocket.accept()
+
+  # ─────────────────────────────────────────────────────────────────
+  # litellm 1.82.7 shape:
+  #   `subprocess.Popen` of a child Python interpreter that reads
+  #   stdin from a network response (the C2-fetch-then-exec dropper
+  #   pattern). Catches both `Popen([sys.executable, ...], stdin=...)`
+  #   and `Popen("python ...", stdin=...)` variants.
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-popen-network-stdin
+    message: >-
+      Spawning a Python interpreter that reads its program from a
+      network call is the canonical fetch-and-exec dropper (litellm
+      1.82.7 used this exact shape). Almost never legitimate inside a
+      package's import path.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: |
+          subprocess.Popen([..., $PY, ...], stdin=$NET, ...)
+      - pattern: |
+          subprocess.run([..., $PY, ...], input=$NET, ...)
+
+  # ─────────────────────────────────────────────────────────────────
+  # Shai-Hulud / ForceMemo shape:
+  #   programmatic write of a `.github/workflows/*.yml` file from
+  #   inside our own Python source. We never write workflows
+  #   programmatically; if a contributor ever does, they're probably
+  #   re-implementing the worm pattern.
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-write-github-workflow
+    message: >-
+      Code that programmatically writes into `.github/workflows/`
+      from within unsloth itself is the Shai-Hulud / ForceMemo
+      self-propagation pattern. If you legitimately need a workflow
+      template, ship it under examples/ or templates/ instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: open("$P", ...)
+          - pattern: Path("$P").write_text(...)
+          - pattern: open("$P", "w", ...)
+      - metavariable-regex:
+          metavariable: $P
+          regex: \.github/workflows/.*\.ya?ml
+
+  # ─────────────────────────────────────────────────────────────────
+  # Pickle-from-network shape: classic deserialization sink that
+  # several recent ML pipeline CVEs hit (mlflow, pyzmq, ray serve).
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-pickle-from-network
+    message: >-
+      `pickle.loads` on bytes that flowed from a network response is
+      arbitrary code execution. Use `safetensors` or a strict
+      schema (Pydantic / msgspec) instead. ML frameworks have shipped
+      multiple CVEs of this exact shape (mlflow, ray serve, pyzmq).
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: pickle.loads($X.content)
+      - pattern: pickle.loads($X.text.encode(...))
+      - pattern: pickle.loads(requests.get(...).content)
+      - pattern: pickle.load(urllib.request.urlopen(...))
+
+  # ─────────────────────────────────────────────────────────────────
+  # Subprocess shell=True with f-string / format / concat -- command
+  # injection if any interpolated value comes from user input.
+  # ─────────────────────────────────────────────────────────────────
+  - id: unsloth-shell-true-interpolation
+    message: >-
+      `subprocess` call with `shell=True` and an interpolated command
+      string is command injection if any input is user-controlled.
+      Pass argv list instead, or use shlex.quote on each part.
+    severity: WARNING
+    languages: [python]
+    pattern-either:
+      - pattern: subprocess.run(f"...", shell=True, ...)
+      - pattern: subprocess.Popen(f"...", shell=True, ...)
+      - pattern: subprocess.call(f"...", shell=True, ...)
+      - pattern: os.system(f"...")
+      - pattern: subprocess.run("..." + $X, shell=True, ...)
+      - pattern: subprocess.run("...{}...".format(...), shell=True, ...)

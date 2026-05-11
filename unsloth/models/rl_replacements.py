@@ -1783,15 +1783,22 @@ def openenv_vllm_reload_weights():
     # TRL 0.29.1+ ships some openenv helpers as compiled bytecode without
     # accessible source on disk; inspect.getsource raises OSError("could
     # not get source code") in that case. Skip the source-rewrite patch
-    # rather than crashing -- the core unsloth weight-reload path stays
-    # functional, only the wake_up tag rewrite is skipped.
+    # rather than crash. The unmodified TRL openenv path will run, which
+    # means the duplicate `collective_rpc("reload_weights")` is NOT
+    # stripped (line 1800 below) and `wake_up(tags=["kv_cache"])` is NOT
+    # retagged to `wake_up()` (line 1804). Users who do not use openenv
+    # GRPO are unaffected; openenv GRPO users on this TRL build may see
+    # redundant reload_weights calls or partial wake_up behavior.
     try:
         src = inspect.getsource(patch_target)
     except OSError as e:
         logger.warning(
             f"Unsloth: Could not retrieve source for trl openenv "
-            f"{patch_target_name} ({e}); skipping rewrite. "
-            f"Weight reload still functional."
+            f"{patch_target_name} ({e}); skipping rewrite. The unmodified "
+            f"TRL openenv path will run, so the duplicate reload_weights "
+            f"strip and the wake_up tag rewrite are NOT applied. Open an "
+            f"issue if you see redundant reload_weights or partial wake_up "
+            f"on openenv GRPO with this TRL build."
         )
         return
     src = textwrap.dedent(src)
