@@ -958,23 +958,35 @@ class LlamaCppBackend:
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
-        """Return DLL dirs from pip-installed nvidia wheels under
-        ``<prefix>/Lib/site-packages/nvidia/`` so llama-server.exe can
-        load cudart64_X.dll / cublas64_X.dll without a system CUDA
-        toolkit. Mirrors the Linux nvidia/cu*/lib LD_LIBRARY_PATH
-        block. Wheel layouts vary, so we cover the two seen patterns:
-        ``nvidia/<pkg>/bin`` and ``nvidia/<pkg>/Library/bin``."""
+        """Return DLL dirs from pip-installed CUDA wheels under
+        ``<prefix>/Lib/site-packages/`` so llama-server.exe can load
+        ``cudart64_X.dll`` / ``cublas64_X.dll`` without a system CUDA
+        toolkit. Mirrors the Linux ``nvidia/cu*/lib`` LD_LIBRARY_PATH
+        block, with parity for two additional Windows-specific layouts.
+        Covered patterns:
+          * ``nvidia/<pkg>/bin`` -- modular ``nvidia-cuda-runtime-cuXX``,
+            ``nvidia-cublas-cuXX`` wheels.
+          * ``nvidia/<pkg>/Library/bin`` -- conda-style wheel repacks.
+          * ``torch/lib`` -- PyTorch's own CUDA-bundled Windows wheel,
+            which ships ``cudart64_*.dll`` directly under ``torch/lib``
+            instead of as separate ``nvidia-*`` wheels (#5106). The
+            install-side equivalent ``python_runtime_dirs`` in
+            ``install_llama_prebuilt.py`` covers this path for the same
+            reason."""
         import glob as _glob
 
-        nvidia_root = os.path.join(prefix, "Lib", "site-packages", "nvidia")
+        site_packages = os.path.join(prefix, "Lib", "site-packages")
         out: list[str] = []
         for pattern in (
-            os.path.join(nvidia_root, "*", "bin"),
-            os.path.join(nvidia_root, "*", "Library", "bin"),
+            os.path.join(site_packages, "nvidia", "*", "bin"),
+            os.path.join(site_packages, "nvidia", "*", "Library", "bin"),
         ):
             for nv_dir in _glob.glob(pattern):
                 if os.path.isdir(nv_dir):
                     out.append(nv_dir)
+        torch_lib = os.path.join(site_packages, "torch", "lib")
+        if os.path.isdir(torch_lib):
+            out.append(torch_lib)
         return out
 
     @staticmethod

@@ -123,12 +123,53 @@ class TestWindowsPipNvidiaDllDirs:
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert len(result) == 4
 
-    def test_does_not_walk_outside_nvidia(self, tmp_path):
-        # Ensure unrelated site-packages contents are not picked up.
+    def test_does_not_walk_outside_known_paths(self, tmp_path):
+        # Only nvidia/<pkg>/{bin,Library/bin} and torch/lib are picked
+        # up. Unrelated site-packages contents (numpy, scipy, ...) must
+        # be ignored.
         site = tmp_path / "Lib" / "site-packages"
-        (site / "torch" / "lib").mkdir(parents = True)
-        (site / "torch" / "lib" / "stub.dll").write_bytes(b"")
         (site / "numpy").mkdir(parents = True)
+        (site / "scipy" / "linalg").mkdir(parents = True)
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        assert result == []
+
+    def test_picks_up_torch_lib(self, tmp_path):
+        # PyTorch's Windows CUDA wheel bundles cudart64_X.dll /
+        # cublas64_X.dll directly under Lib/site-packages/torch/lib/
+        # instead of as separate nvidia-* wheels. Without this, users
+        # on torch-bundled-CUDA installs still hit #5106.
+        torch_lib = tmp_path / "Lib" / "site-packages" / "torch" / "lib"
+        torch_lib.mkdir(parents = True)
+        (torch_lib / "cudart64_12.dll").write_bytes(b"")
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        assert len(result) == 1
+        assert Path(result[0]) == torch_lib
+
+    def test_torch_lib_combined_with_nvidia_wheels(self, tmp_path):
+        # Both modular nvidia-* wheels and torch/lib are returned when
+        # present together.
+        _make_nvidia_layout(
+            tmp_path,
+            {
+                "cuda_runtime": "bin",
+                "cublas": "bin",
+            },
+        )
+        torch_lib = tmp_path / "Lib" / "site-packages" / "torch" / "lib"
+        torch_lib.mkdir(parents = True)
+        (torch_lib / "cudart64_13.dll").write_bytes(b"")
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
+        assert len(result) == 3
+        names = {Path(p).name for p in result}
+        assert names == {"bin", "lib"}
+        assert any(Path(p) == torch_lib for p in result)
+
+    def test_torch_lib_must_be_a_directory(self, tmp_path):
+        # If torch/lib exists as a file (broken install), it is
+        # ignored, not returned.
+        site = tmp_path / "Lib" / "site-packages" / "torch"
+        site.mkdir(parents = True)
+        (site / "lib").write_bytes(b"not a dir")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert result == []
 
