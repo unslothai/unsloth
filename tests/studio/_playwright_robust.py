@@ -21,7 +21,9 @@ It does NOT depend on pytest -- both consumers run as plain Python.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -404,3 +406,142 @@ def dump_diagnostics(
     except Exception as exc:
         if info is not None:
             info(f"diagnostics: json sidecar {name} failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Bounded in-page fetch.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Playwright's `page.evaluate(...)` has no `timeout=` argument. If the
+# JS body awaits a fetch that never resolves (the renderer's network
+# thread wedges, the server accepts the connection but never replies,
+# the macos-14 free runner under --single-process Chromium loses its
+# IPC pipe), the entire Python script hangs until the runner-level
+# timeout fires. Run 25696797934 / job 75446949358 on PR #5387 showed
+# this exact failure: studio.log went idle after the chat surface
+# mounted, no further requests reached the server, and Playwright
+# burned 27+ minutes on a single page.evaluate(fetch /api/inference/
+# load) before the 30-min runner cancel.
+#
+# `evaluate_fetch` wraps the fetch in an AbortController.signal so the
+# JS side resolves either with a real response or with a synthetic
+# `{status: 0, error: "AbortError..."}` after `timeout_ms` ms. Either
+# way page.evaluate returns and the script proceeds (or fails) with
+# a debuggable signal instead of a silent wedge.
+def evaluate_fetch(
+    page: Any,
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: Any = None,
+    timeout_ms: int = 20_000,
+) -> dict[str, Any]:
+    """Run `fetch(url, opts)` inside the page with an AbortSignal deadline.
+
+    Returns `{"status": int, "body": parsed_or_text, "error": str|None}`.
+    On AbortSignal timeout returns `{"status": 0, "body": None, "error":
+    "AbortError: ..."}`. Callers should treat `status == 0` (or any
+    non-None `error`) as a transport failure rather than an HTTP
+    response.
+
+    `body` may be a `str` (sent verbatim) or a `dict`/`list` (JSON-
+    encoded here). Pass headers explicitly when you need
+    `Content-Type: application/json` or an `Authorization` bearer.
+    """
+    body_arg: str | None
+    if body is None:
+        body_arg = None
+    elif isinstance(body, (str, bytes)):
+        body_arg = body if isinstance(body, str) else body.decode("utf-8")
+    else:
+        body_arg = json.dumps(body)
+    js = """
+        async ({url, method, headers, body, timeoutMs}) => {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), timeoutMs);
+            try {
+                const opts = {method: method, headers: headers, signal: ctrl.signal};
+                if (body !== null) opts.body = body;
+                const r = await fetch(url, opts);
+                clearTimeout(t);
+                let parsed;
+                try {
+                    parsed = await r.json();
+                } catch (_e) {
+                    try {
+                        parsed = await r.text();
+                    } catch (_e2) {
+                        parsed = null;
+                    }
+                }
+                return {status: r.status, body: parsed, error: null};
+            } catch (e) {
+                clearTimeout(t);
+                return {status: 0, body: null, error: String(e)};
+            }
+        }
+    """
+    return page.evaluate(
+        js,
+        {
+            "url": url,
+            "method": method,
+            "headers": headers or {},
+            "body": body_arg,
+            "timeoutMs": int(timeout_ms),
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Wall-clock watchdog.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Even with every action and fetch bounded, a sufficiently strange
+# wedge inside the browser (a CPU-pinned JS infinite loop, a renderer
+# crash that doesn't propagate to Playwright, an asyncio deadlock in
+# the sync wrapper) can still hang the script. The watchdog is a
+# daemon Timer that calls `os._exit(2)` after `deadline_s` seconds,
+# printing the wedge location to stderr so the CI log shows where the
+# script was at force-kill time. The exit code matches "test failure
+# by deadline" so the workflow's `set -e` propagates correctly.
+#
+# Pick `deadline_s` generously enough to cover the slowest healthy
+# run -- macos-14 free runners with cold caches measure ~7-9 min for
+# the comprehensive chat UI test. 12 minutes (720 s) leaves headroom
+# without amplifying every real wedge to the 30-min runner-level cap.
+def install_wall_clock_watchdog(
+    deadline_s: float,
+    *,
+    label: str = "playwright",
+    info: Callable[[str], None] | None = None,
+) -> threading.Timer:
+    """Start a daemon Timer that hard-exits the process at `deadline_s`.
+
+    Returns the Timer so the caller can `.cancel()` it on clean exit.
+    The Timer is daemonised; if the script exits normally before the
+    deadline the Timer dies with the process even without an explicit
+    cancel.
+    """
+
+    def _kaboom() -> None:
+        msg = (
+            f"[{label}] WATCHDOG: hit {deadline_s:.0f}s wall-clock "
+            f"deadline; forcing exit(2). The script wedged somewhere "
+            f"the per-action timeouts could not bound. Inspect the "
+            f"most recent step printed above to localise."
+        )
+        try:
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(2)
+
+    timer = threading.Timer(deadline_s, _kaboom)
+    timer.daemon = True
+    timer.start()
+    if info is not None:
+        info(f"watchdog armed: hard-exit at {deadline_s:.0f}s")
+    return timer
