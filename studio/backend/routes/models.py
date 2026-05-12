@@ -3284,6 +3284,7 @@ async def update_hf_model(
                     status_code = 400,
                     detail = "GGUF update requires a Hugging Face repo.",
                 )
+            llama_backend._cancel_event.clear()
             model_path = await asyncio.to_thread(
                 llama_backend._download_gguf,
                 hf_repo = config.gguf_hf_repo,
