@@ -245,6 +245,27 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
+      # Pre-install lockfile supply-chain audit (npm + cargo).
+      # Catches structural anomalies (non-registry resolved URLs,
+      # missing integrity hashes, known IOC strings) BEFORE `npm
+      # audit` or OSV-Scanner consult the advisory DB. The advisory
+      # path is reactive -- there is a window between a malicious
+      # publication and the GHSA landing. This step fires on the
+      # injection pattern itself so it catches the same class of
+      # attack the moment the lockfile shape becomes wrong.
+      # ─────────────────────────────────────────────────────────────
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: |
+          python3 scripts/lockfile_supply_chain_audit.py
+          {
+            echo "## Lockfile supply-chain audit"
+            echo
+            echo "Scanned: studio/frontend/package-lock.json + studio/src-tauri/Cargo.lock"
+            echo
+            echo "No structural anomalies or known IOC strings."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─────────────────────────────────────────────────────────────
       # npm: Studio frontend
       # ─────────────────────────────────────────────────────────────
       - name: npm audit (Studio frontend)

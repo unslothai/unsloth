@@ -58,6 +58,14 @@ jobs:
           cache: 'npm'
           cache-dependency-path: studio/frontend/package-lock.json
 
+      # Run the structural lockfile scan BEFORE npm ci. A compromised
+      # tarball runs its `prepare` / `postinstall` during `npm ci`,
+      # so any catch has to fire upstream of that. The scanner is
+      # pure-Python read-only; safe to call ahead of every install.
+      - name: Lockfile supply-chain audit (pre-install scan)
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Lockfile must agree with package.json (npm ci is strict)
         run: npm ci --no-fund --no-audit
 
