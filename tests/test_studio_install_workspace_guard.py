@@ -645,7 +645,10 @@ def test_tauri_preflight_scrubs_studio_home_env():
     # future reorgs as long as the scrub calls live somewhere under
     # studio/src-tauri/src/preflight*.
     preflight_root = REPO_ROOT / "studio" / "src-tauri" / "src"
-    preflight_paths = [preflight_root / "preflight.rs", *(preflight_root / "preflight").glob("*.rs")]
+    preflight_paths = [
+        preflight_root / "preflight.rs",
+        *(preflight_root / "preflight").glob("*.rs"),
+    ]
     preflight = "\n".join(p.read_text() for p in preflight_paths if p.exists())
     commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text()
     # Both functions (run_cli_probe + probe_cli_capability) must scrub.
