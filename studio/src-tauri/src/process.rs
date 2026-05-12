@@ -390,7 +390,10 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_studio_dir(test_name: &str) -> PathBuf {
@@ -439,6 +442,62 @@ mod tests {
             backend_args(8888),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
+    }
+
+    fn listening_non_studio_port() -> (u16, mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || loop {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0_u8; 512];
+                    let _ = stream.read(&mut buf);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        });
+        (port, tx, handle)
+    }
+
+    #[test]
+    fn stop_backend_rolls_back_shutdown_flag_when_adopted_stop_fails() {
+        let (port, stop_listener, listener_thread) = listening_non_studio_port();
+        let state = new_backend_state();
+        let shutdown = new_shutdown_flag();
+        let owner = crate::desktop_backend_owner::test_owner_state(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "desktop-owner-token",
+            port,
+        );
+
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = 7;
+            proc.port = Some(port);
+            proc.owned = Some(OwnedBackendHandle::adopted(owner, port, 1234, 3));
+        }
+
+        let error = stop_backend(&state, &shutdown, None)
+            .expect_err("adopted backend should refuse unsafe stop fallback");
+
+        assert!(error.contains("Refusing to stop adopted backend"));
+        assert!(!shutdown.load(Ordering::SeqCst));
+        assert!(state.lock().unwrap().has_adopted_backend());
+
+        let _ = stop_listener.send(());
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+        listener_thread.join().unwrap();
     }
 }
 
@@ -1149,6 +1208,7 @@ fn stop_backend_inner(
     diagnostics_state: Option<&DiagnosticsState>,
     signal_shutdown_before_stop: bool,
 ) -> Result<(), String> {
+    let previous_shutdown = shutdown.load(Ordering::SeqCst);
     if signal_shutdown_before_stop {
         shutdown.store(true, Ordering::SeqCst);
     }
@@ -1260,6 +1320,8 @@ fn stop_backend_inner(
 
     if result.is_ok() && !signal_shutdown_before_stop {
         shutdown.store(true, Ordering::SeqCst);
+    } else if result.is_err() && signal_shutdown_before_stop {
+        shutdown.store(previous_shutdown, Ordering::SeqCst);
     }
 
     result
