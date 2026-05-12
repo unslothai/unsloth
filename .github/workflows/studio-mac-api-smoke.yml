@@ -56,15 +56,17 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Cache HF_HOME for ${{ env.GGUF_REPO }}
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
 
       - name: Prime HF_HOME with the GGUF
-        if: steps.cache-hf.outputs.cache-hit != 'true'
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -72,6 +74,13 @@ jobs:
           mkdir -p hf-cache
           HF_HUB_ENABLE_HF_TRANSFER=1 \
             hf download "$GGUF_REPO" "$GGUF_FILE"
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
 
       - name: Install Studio (--local, --no-torch)
         env:
