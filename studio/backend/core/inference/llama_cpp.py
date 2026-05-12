@@ -957,6 +957,66 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
+    def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
+        """Return DLL dirs from pip-installed CUDA wheels under
+        ``<prefix>/Lib/site-packages/`` so llama-server.exe can load
+        ``cudart64_X.dll`` / ``cublas64_X.dll`` without a system CUDA
+        toolkit. Mirrors the Linux ``nvidia/cu*/lib`` LD_LIBRARY_PATH
+        block, with parity for the Windows-specific wheel layouts seen
+        in the wild. Covered patterns:
+          * ``nvidia/<pkg>/bin`` -- legacy modular wheels
+            (``nvidia-cuda-runtime-cu12``, ``nvidia-cublas-cu12``, etc.).
+          * ``nvidia/<pkg>/bin/x86_64`` and ``.../bin/x64`` -- current
+            CUDA 13 wheel layout used by the unsuffixed
+            ``nvidia-cuda-runtime`` / ``nvidia-cublas`` packages, which
+            ship under ``nvidia/cu13/bin/x86_64/`` (#5106).
+          * ``nvidia/<pkg>/Library/bin`` (and arch subdirs) -- conda-
+            style wheel repacks.
+          * ``torch/lib`` -- PyTorch's own CUDA-bundled Windows wheel,
+            which can ship ``cudart64_*.dll`` directly here instead of
+            as separate ``nvidia-*`` wheels. The install-side helper
+            ``python_runtime_dirs`` in ``install_llama_prebuilt.py``
+            covers this path for the same reason.
+
+        Walks the tree with ``Path.iterdir`` rather than ``glob.glob``
+        so the resolver is safe against Windows paths containing
+        ``[`` or ``]`` (valid in usernames; would otherwise be
+        interpreted as a glob character class and silently miss
+        existing dirs)."""
+        site_packages = Path(prefix) / "Lib" / "site-packages"
+        out: list[str] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            if not path.is_dir():
+                return
+            key = os.path.normcase(os.path.abspath(str(path)))
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(str(path))
+
+        nvidia_root = site_packages / "nvidia"
+        if nvidia_root.is_dir():
+            for pkg_dir in nvidia_root.iterdir():
+                if not pkg_dir.is_dir():
+                    continue
+                # Order matters for PATH search: arch-specific subdirs
+                # first so the explicit cudart64_X.dll location wins
+                # over a sibling ``bin`` that might be empty.
+                for sub in (
+                    pkg_dir / "bin" / "x86_64",
+                    pkg_dir / "bin" / "x64",
+                    pkg_dir / "bin",
+                    pkg_dir / "Library" / "bin" / "x86_64",
+                    pkg_dir / "Library" / "bin" / "x64",
+                    pkg_dir / "Library" / "bin",
+                ):
+                    _add(sub)
+        _add(site_packages / "torch" / "lib")
+        return out
+
+    @staticmethod
     def _select_gpus(
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
@@ -2319,9 +2379,14 @@ class LlamaCppBackend:
             binary_dir = str(Path(binary).parent)
 
             if sys.platform == "win32":
-                # On Windows, CUDA DLLs (cublas64_12.dll, cudart64_12.dll, etc.)
-                # must be on PATH. Add CUDA_PATH\bin if available.
+                # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
+                # be on PATH. Order: binary_dir, torch's pip-installed
+                # nvidia wheels, then a system CUDA toolkit. Pip wheels
+                # are the canonical source per Studio's install design
+                # (mirrors the Linux LD_LIBRARY_PATH block below) and
+                # CUDA_PATH covers users with a system toolkit. #5106.
                 path_dirs = [binary_dir]
+                path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
                 cuda_path = os.environ.get("CUDA_PATH", "")
                 if cuda_path:
                     cuda_bin = os.path.join(cuda_path, "bin")

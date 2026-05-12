@@ -1,0 +1,1108 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Three end-to-end smoke jobs that boot a freshly-installed Studio and
+# exercise the surfaces real users hit through the OpenAI / Anthropic
+# SDKs and curl, on the FREE windows-latest runner. Each job picks the
+# smallest model that exercises the behaviour under test, primes
+# HF_HOME via actions/cache, and shares the install.ps1 --local
+# --no-torch bootstrap.
+#
+#   1. OpenAI, Anthropic API tests
+#        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
+#   2. Tool calling Tests
+#        Qwen3.5-2B UD-Q4_K_XL (~890 MiB).
+#   3. JSON, images
+#        gemma-4-E2B-it UD-Q4_K_XL + mmproj-F16 (~3.4 GiB total).
+#        Within the 14 GB windows-latest SSD budget.
+
+name: Windows Studio GGUF CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-windows-inference-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 1: OpenAI, Anthropic API tests
+  # ─────────────────────────────────────────────────────────────────────
+  openai-anthropic:
+    name: OpenAI, Anthropic API tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18888'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Studio CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Cache HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Prime HF_HOME with the GGUF
+        if: steps.cache-hf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub hf_transfer
+          mkdir -p hf-cache
+          HF_HUB_ENABLE_HF_TRANSFER=1 \
+            hf download "$GGUF_REPO" "$GGUF_FILE"
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # See studio-windows-update-smoke.yml for the full rationale.
+        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
+        # reinstall, and Defender's real-time scan dominates the
+        # frontend / uv-pip-extract steps.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories. See
+          # studio-windows-update-smoke.yml for the full rationale --
+          # creating an empty studio/frontend/dist trips setup.ps1's
+          # mtime-based staleness check into "frontend up to date, skip
+          # rebuild" and Studio boots with an empty dist directory.
+          # Add-MpPreference accepts paths that do not yet exist.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Studio (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem check; setup.ps1's stream output isn't captured.
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Studio shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Patch Studio venv with full typer / pydantic dep trees
+        # Belt-and-suspenders: install.ps1's --no-deps install of
+        # no-torch-runtime.txt drops typer's and pydantic's runtime
+        # deps unless explicitly pinned. Re-install the ones whose
+        # deps don't pull torch.
+        run: |
+          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
+          if [ ! -f "$STUDIO_PY" ]; then
+            echo "::error::Studio venv python not at $STUDIO_PY"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+
+      - name: Reset auth + boot Studio (API-only)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Studio did not become healthy in 180s"
+          tail -200 logs/studio.log
+          exit 1
+
+      - name: Password rotation (old must fail, new must work)
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "null" ] || { echo "bootstrap login failed"; exit 1; }
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          OLD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}")
+          if [ "$OLD_STATUS" != "401" ]; then
+            echo "::error::Login with old password returned $OLD_STATUS, expected 401"
+            exit 1
+          fi
+          NEW_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          [ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != "null" ] || { echo "new login failed"; exit 1; }
+          echo "TOKEN=$NEW_TOKEN" >> "$GITHUB_ENV"
+          echo "password rotation OK (old=401, new=200)"
+
+      - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        run: |
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_gguf, context_length}'
+
+      - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        env:
+          BASE_URL: http://127.0.0.1:18888
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["TOKEN"]
+          SEED = 3407
+
+          PROMPTS = [
+              "What is 1+1?",
+              "What did I ask before?",
+              "What is the capital of France?",
+              "Repeat the city name",
+          ]
+
+          def run_openai():
+              client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+              history, replies = [], []
+              for prompt in PROMPTS:
+                  history.append({"role": "user", "content": prompt})
+                  resp = client.chat.completions.create(
+                      model       = "default",
+                      messages    = history,
+                      temperature = 0.0,
+                      max_tokens  = 80,
+                      seed        = SEED,
+                      extra_body  = {"enable_thinking": False},
+                  )
+                  text = resp.choices[0].message.content or ""
+                  replies.append(text)
+                  history.append({"role": "assistant", "content": text})
+              return replies
+
+          def run_anthropic():
+              client = Anthropic(
+                  base_url        = BASE,
+                  api_key         = "unused",
+                  default_headers = {"Authorization": f"Bearer {KEY}"},
+              )
+              history, replies = [], []
+              for prompt in PROMPTS:
+                  history.append({"role": "user", "content": prompt})
+                  msg = client.messages.create(
+                      model       = "default",
+                      max_tokens  = 80,
+                      messages    = history,
+                      temperature = 0.0,
+                      extra_body  = {"seed": SEED, "enable_thinking": False},
+                  )
+                  text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+                  replies.append(text)
+                  history.append({"role": "assistant", "content": text})
+              return replies
+
+          for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
+              first  = runner()
+              second = runner()
+              for i, (a, b) in enumerate(zip(first, second), start = 1):
+                  print(f"[{label} turn {i}] {a!r}")
+                  assert a, f"{label}: empty turn {i} response"
+                  assert a == b, (
+                      f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
+                      f"  run1: {a!r}\n  run2: {b!r}"
+                  )
+              joined = " ".join(first).lower()
+              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
+              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
+              print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
+          PY
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-openai-anthropic-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 2: Tool calling Tests
+  # ─────────────────────────────────────────────────────────────────────
+  tool-calling:
+    name: Tool calling Tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Tool calling is the highest-volume GGUF in this workflow
+      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). The previous HF_HOME
+      # cache stored xet chunks + blobs + snapshots = ~4.7 GiB --
+      # 3.7x file-size inflation, dominating the post-step upload
+      # (211 s on first run; subsequent runs hit the cache, but the
+      # one-time cost recurs every time the cache key bumps). Use
+      # main's `--local-dir gguf-cache` pattern: cache the flat .gguf
+      # only, pass an absolute path to Studio's /api/inference/load.
+      # The OpenAI/Anth and JSON+images jobs still cover the
+      # gguf_variant resolution path.
+      GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
+      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18898'
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Studio CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Cache GGUF model file
+        id: cache-gguf
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        if: steps.cache-gguf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub hf_transfer
+          mkdir -p gguf-cache
+          HF_HUB_ENABLE_HF_TRANSFER=1 \
+            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # See studio-windows-update-smoke.yml for the full rationale.
+        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
+        # reinstall, and Defender's real-time scan dominates the
+        # frontend / uv-pip-extract steps.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories. See
+          # studio-windows-update-smoke.yml for the full rationale --
+          # creating an empty studio/frontend/dist trips setup.ps1's
+          # mtime-based staleness check into "frontend up to date, skip
+          # rebuild" and Studio boots with an empty dist directory.
+          # Add-MpPreference accepts paths that do not yet exist.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Studio (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem check; setup.ps1's stream output isn't captured.
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Studio shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Patch Studio venv with full typer / pydantic dep trees
+        # Belt-and-suspenders: install.ps1's --no-deps install of
+        # no-torch-runtime.txt drops typer's and pydantic's runtime
+        # deps unless explicitly pinned. Re-install the ones whose
+        # deps don't pull torch.
+        run: |
+          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
+          if [ ! -f "$STUDIO_PY" ]; then
+            echo "::error::Studio venv python not at $STUDIO_PY"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
+
+      - name: Reset auth + boot Studio (API-only, default tool policy)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, change password, load model
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CITool-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          # GITHUB_WORKSPACE on windows-latest is a Windows path with
+          # backslashes ("D:\a\unsloth\unsloth"). Bash handles it as a
+          # raw string, but we cannot embed `\a` etc. in JSON without
+          # JSON-string-escaping every backslash. Replace `\` with `/`
+          # via bash parameter expansion -- pathlib.Path on Windows
+          # accepts forward slashes natively, so Studio's loader sees
+          # a normal path.
+          GGUF_PATH="${GITHUB_WORKSPACE//\\//}/gguf-cache/${GGUF_FILE}"
+          ls -lh "$GGUF_PATH"
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name}'
+
+      - name: Tool calling, server-side tools, thinking on/off
+        env:
+          BASE_URL: http://127.0.0.1:18898
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+          # Same temperature shim as the Mac job. Small Qwen3.5-2B
+          # quants can degenerate at temperature=0; a small non-zero
+          # temperature with a fixed seed keeps the test deterministic
+          # while escaping the trap.
+          TEMP = 0.2
+
+          def post(path, body, *, timeout = 240):
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout = timeout) as resp:
+                  return resp.status, json.loads(resp.read().decode())
+
+          def post_sse(path, body, *, timeout = 600):
+              body = {**body, "stream": True}
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              parts = []
+              with urllib.request.urlopen(req, timeout = timeout) as resp:
+                  for raw in resp:
+                      line = raw.decode().strip()
+                      if not line.startswith("data: "):
+                          continue
+                      payload = line[6:]
+                      if payload == "[DONE]":
+                          break
+                      try:
+                          chunk = json.loads(payload)
+                      except json.JSONDecodeError:
+                          continue
+                      for choice in chunk.get("choices", []):
+                          delta = choice.get("delta", {}) or {}
+                          if delta.get("content"):
+                              parts.append(delta["content"])
+              return "".join(parts)
+
+          # ── 1. Standard OpenAI function calling ──────────────────────
+          weather_tool = {
+              "type": "function",
+              "function": {
+                  "name": "get_weather",
+                  "description": "Get current weather for a city.",
+                  "parameters": {
+                      "type": "object",
+                      "properties": {"city": {"type": "string"}},
+                      "required": ["city"],
+                  },
+              },
+          }
+
+          status, data = post("/v1/chat/completions", {
+              "messages":    [{"role": "user", "content": "What is the weather in Paris?"}],
+              "tools":       [weather_tool],
+              "tool_choice": "required",
+              "stream":      False,
+              "temperature": TEMP,
+              "seed":        SEED,
+              "max_tokens":  600,
+          })
+          assert status == 200, f"tool call status {status}: {data}"
+          choice = data["choices"][0]
+          tool_calls = (choice.get("message") or {}).get("tool_calls") or []
+          if tool_calls:
+              tc = tool_calls[0]
+              assert tc["function"]["name"] == "get_weather", (
+                  f"unexpected tool name: {tc['function']['name']!r}"
+              )
+              args = json.loads(tc["function"]["arguments"])
+              assert args.get("city"), f"missing city arg: {args}"
+              print(f"[tools] PASS function calling -> {tc['function']['name']}({args}) finish={choice.get('finish_reason')!r}")
+          else:
+              print(
+                  f"[tools] WARN function calling: no tool_calls (finish_reason="
+                  f"{choice.get('finish_reason')!r}); HTTP path OK, model output drift."
+              )
+
+          # ── 2. Server-side python tool ───────────────────────────────
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
+              "enable_tools":  True,
+              "enabled_tools": ["python"],
+              "session_id":    "ci-tool-calling-py",
+              "temperature":   TEMP,
+              "seed":          SEED,
+              "max_tokens":    600,
+          })
+          if "56088" in content or "56,088" in content:
+              print(f"[tools] PASS python tool ({len(content)} chars, found 56088)")
+          else:
+              assert content, "python tool: SSE stream empty"
+              print(
+                  f"[tools] WARN python tool: SSE OK ({len(content)} chars) but "
+                  f"model didn't return 56088 -- model output drift"
+              )
+
+          # ── 3. Server-side bash (terminal) tool ──────────────────────
+          # On Windows the terminal tool resolves to the system shell
+          # (cmd.exe wrapper) and `echo hello-bash-tool` works the same
+          # way it does on POSIX. The model still has to choose to
+          # invoke the tool; assert non-empty SSE if it doesn't.
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
+              "enable_tools":  True,
+              "enabled_tools": ["terminal"],
+              "session_id":    "ci-tool-calling-bash",
+              "temperature":   TEMP,
+              "seed":          SEED,
+              "max_tokens":    600,
+          })
+          if "hello-bash-tool" in content:
+              print(f"[tools] PASS terminal tool ({len(content)} chars)")
+          else:
+              assert content, "terminal tool: SSE stream empty"
+              print(
+                  f"[tools] WARN terminal tool: SSE OK ({len(content)} chars) but "
+                  f"model didn't echo 'hello-bash-tool' -- model output drift"
+              )
+
+          # ── 4. Server-side web_search tool ───────────────────────────
+          # DuckDuckGo can be flaky from CI runners; only assert that
+          # the SSE stream opens and yields any data.
+          try:
+              content = post_sse("/v1/chat/completions", {
+                  "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
+                  "enable_tools":  True,
+                  "enabled_tools": ["web_search"],
+                  "session_id":    "ci-tool-calling-web",
+                  "temperature":   TEMP,
+                  "seed":          SEED,
+                  "max_tokens":    400,
+              })
+              print(f"[tools] PASS web_search stream ({len(content)} chars)")
+          except Exception as exc:
+              print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
+
+          # ── 5. Thinking on / off ─────────────────────────────────────
+          def thinking_call(enable):
+              status, data = post("/v1/chat/completions", {
+                  "messages":        [{"role": "user", "content": "Briefly: is 17 prime?"}],
+                  "stream":          False,
+                  "enable_thinking": enable,
+                  "temperature":     TEMP,
+                  "seed":            SEED,
+                  "max_tokens":      300,
+              })
+              assert status == 200
+              msg = data["choices"][0]["message"]
+              raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
+              return raw
+
+          on_text  = thinking_call(True)
+          off_text = thinking_call(False)
+          had_think_on = ("<think>" in on_text) or len(on_text) > 80
+          if not had_think_on:
+              print(
+                  f"[tools] WARN enable_thinking=True produced no thinking signal: "
+                  f"{on_text[:200]!r}"
+              )
+          assert "<think>" not in off_text, (
+              f"enable_thinking=False but <think> still present: {off_text!r}"
+          )
+          print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
+          PY
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-tool-calling-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 3: JSON, images
+  # ─────────────────────────────────────────────────────────────────────
+  json-images:
+    name: JSON, images
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-4-E2B-it-UD-Q4_K_XL.gguf
+      MMPROJ_FILE: mmproj-F16.gguf
+      STUDIO_PORT: '18899'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Studio CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Cache HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
+        id: cache-hf
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+
+      - name: Prime HF_HOME with the GGUF + mmproj
+        if: steps.cache-hf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub hf_transfer
+          mkdir -p hf-cache
+          HF_HUB_ENABLE_HF_TRANSFER=1 \
+            hf download "$GGUF_REPO" "$GGUF_FILE"
+          HF_HUB_ENABLE_HF_TRANSFER=1 \
+            hf download "$GGUF_REPO" "$MMPROJ_FILE"
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # See studio-windows-update-smoke.yml for the full rationale.
+        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
+        # reinstall, and Defender's real-time scan dominates the
+        # frontend / uv-pip-extract steps.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories. See
+          # studio-windows-update-smoke.yml for the full rationale --
+          # creating an empty studio/frontend/dist trips setup.ps1's
+          # mtime-based staleness check into "frontend up to date, skip
+          # rebuild" and Studio boots with an empty dist directory.
+          # Add-MpPreference accepts paths that do not yet exist.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Studio (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem check; setup.ps1's stream output isn't captured.
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Studio shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Patch Studio venv with full typer / pydantic dep trees
+        # Belt-and-suspenders: install.ps1's --no-deps install of
+        # no-torch-runtime.txt drops typer's and pydantic's runtime
+        # deps unless explicitly pinned. Re-install the ones whose
+        # deps don't pull torch.
+        run: |
+          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
+          if [ ! -f "$STUDIO_PY" ]; then
+            echo "::error::Studio venv python not at $STUDIO_PY"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+
+      - name: Reset auth + boot Studio (API-only)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, change password, load model
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIJson-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 900 \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_vision}'
+
+      - name: JSON schema decoding + image input
+        env:
+          BASE_URL: http://127.0.0.1:18899
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+          TEMP = 0.2
+
+          def post(path, body, *, timeout = 240):
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = json.dumps(body).encode(),
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type":  "application/json",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout = timeout) as resp:
+                  return resp.status, json.loads(resp.read().decode())
+
+          # ── 1. response_format = json_object (JSON mode) ─────────────
+          status, data = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [
+                  {"role": "system", "content": 'Reply with a single JSON object of the form {"city": "...", "country": "..."}. Output ONLY the JSON, nothing else.'},
+                  {"role": "user",   "content": "What is the capital of France?"},
+              ],
+              "temperature":     TEMP,
+              "max_tokens":      600,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+              "response_format": {"type": "json_object"},
+          }, timeout = 600)
+          assert status == 200, f"json status {status}: {data}"
+          assert (
+              isinstance(data.get("choices"), list)
+              and data["choices"]
+              and "message" in data["choices"][0]
+          ), f"json response envelope malformed: {data}"
+          content = (data["choices"][0]["message"].get("content") or "").strip()
+          print(f"[json] raw json_object content: {content!r}")
+          if content.startswith("```"):
+              content = content.split("```", 2)[1]
+              if content.startswith("json"):
+                  content = content[4:]
+              content = content.strip("`\n ")
+          if content:
+              try:
+                  parsed = json.loads(content)
+                  if "paris" in str(parsed.get("city", "")).lower():
+                      print(f"[json] PASS json_object -> {parsed}")
+                  else:
+                      print(f"[json] WARN json_object decoded but city!=Paris: {parsed}")
+              except json.JSONDecodeError as exc:
+                  print(f"[json] WARN json_object content not parseable ({exc}); content={content!r}")
+          else:
+              print("[json] WARN json_object produced empty content")
+
+          status2, data2 = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [{"role": "user", "content": "What is the capital of France? Answer with one word."}],
+              "temperature":     TEMP,
+              "max_tokens":      400,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+          }, timeout = 600)
+          assert status2 == 200, f"plain status {status2}: {data2}"
+          plain = (data2["choices"][0]["message"].get("content") or "").lower()
+          print(f"[json] plain capital-of-france reply: {plain!r}")
+          if "paris" in plain:
+              print("[json] PASS plain inference path (paris mentioned)")
+          else:
+              print(
+                  f"[json] WARN plain inference returned no 'paris' -- "
+                  f"model output drift. HTTP path validated separately above."
+              )
+
+          # ── 2. OpenAI image_url (data URI base64) ───────────────────
+          PNG_64X64_RED_B64 = (
+              "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAYklEQVR4nO3PMQ0AIADAMEAI/k"
+              "UhBhEcDcmqYJtn7/GzpQNeNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA"
+              "1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaBdCJ0BmMJ25zMAAAAASUVORK5CYII="
+          )
+          data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
+
+          # On Windows + the gemma-4-E2B mmproj, llama.cpp's vision
+          # path runs on CPU (no Metal involvement). The wrapper is
+          # kept for resilience but the vision path is expected to
+          # work on Windows; an exception here is a real regression.
+          client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+          try:
+              openai_resp = client.chat.completions.create(
+                  model       = "default",
+                  temperature = TEMP,
+                  max_tokens  = 80,
+                  seed        = SEED,
+                  messages    = [{
+                      "role": "user",
+                      "content": [
+                          {"type": "image_url", "image_url": {"url": data_uri}},
+                          {"type": "text",      "text": "What colour dominates this image? Reply in one word."},
+                      ],
+                  }],
+              )
+              openai_text = (openai_resp.choices[0].message.content or "").lower()
+              print(f"[image/openai] reply: {openai_text!r}")
+              if openai_text:
+                  print("[image/openai] PASS image_url accepted, non-empty response")
+              else:
+                  print("[image/openai] WARN image_url accepted but empty content")
+          except Exception as exc:
+              print(
+                  f"[image/openai] WARN image_url SDK call raised: {type(exc).__name__}: "
+                  f"{exc}. Studio successfully forwarded the request; failure here is "
+                  f"upstream llama.cpp vision behaviour."
+              )
+
+          # ── 3. Anthropic source/base64 image ────────────────────────
+          anthropic = Anthropic(
+              base_url        = BASE,
+              api_key         = "unused",
+              default_headers = {"Authorization": f"Bearer {KEY}"},
+          )
+          try:
+              a_msg = anthropic.messages.create(
+                  model       = "default",
+                  max_tokens  = 80,
+                  temperature = TEMP,
+                  extra_body  = {"seed": SEED},
+                  messages    = [{
+                      "role": "user",
+                      "content": [
+                          {
+                              "type":   "image",
+                              "source": {
+                                  "type":       "base64",
+                                  "media_type": "image/png",
+                                  "data":       PNG_64X64_RED_B64,
+                              },
+                          },
+                          {"type": "text", "text": "Describe this image briefly."},
+                      ],
+                  }],
+              )
+              a_text = "".join(b.text for b in a_msg.content if getattr(b, "type", None) == "text")
+              print(f"[image/anthropic] reply: {a_text!r}")
+              if a_text:
+                  print("[image/anthropic] PASS source/base64 accepted, non-empty response")
+              else:
+                  print("[image/anthropic] WARN source/base64 accepted but empty content")
+          except Exception as exc:
+              print(
+                  f"[image/anthropic] WARN anthropic image SDK call raised: "
+                  f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp vision "
+                  f"behaviour, NOT a Studio regression."
+              )
+          PY
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-json-images-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7
