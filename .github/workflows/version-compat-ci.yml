@@ -203,8 +203,22 @@ jobs:
         with: { path: unsloth }
       - name: Clone unsloth-zoo @ main
         run: |
-          git clone --depth=1 https://github.com/unslothai/unsloth-zoo \
-            "$RUNNER_TEMP/unsloth-zoo"
+          # github.com occasionally 500s on the git fetch; retry so a
+          # single upstream blip does not fail CI.
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/unsloth-zoo"
+            if git clone --depth=1 https://github.com/unslothai/unsloth-zoo \
+                "$RUNNER_TEMP/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::git clone unsloth-zoo failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((5 * attempt))
+            echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
+            sleep "$delay"
+          done
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.12'
