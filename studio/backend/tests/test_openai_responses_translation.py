@@ -86,6 +86,8 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
             temperature = 0.5,
             top_p = 0.9,
             max_tokens = 512,
+            enable_thinking = None,
+            reasoning_effort = None,
         ):
             pass
         await client.close()
@@ -142,6 +144,8 @@ def test_responses_translates_image_parts(monkeypatch):
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = None,
+            enable_thinking = None,
+            reasoning_effort = None,
         ):
             pass
         await client.close()
@@ -183,6 +187,8 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
                 temperature = 0.7,
                 top_p = 0.95,
                 max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
             )
         )
         await client.close()
@@ -232,6 +238,8 @@ def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch)
                 temperature = 0.7,
                 top_p = 0.95,
                 max_tokens = 4,
+                enable_thinking = None,
+                reasoning_effort = None,
             )
         )
         await client.close()
@@ -245,3 +253,87 @@ def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch)
         and line[len("data:") :].strip() not in ("", "[DONE]")
     ]
     assert "length" in finish_reasons
+
+
+def test_responses_reasoning_effort_included_when_requested(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = None,
+            enable_thinking = None,
+            reasoning_effort = "high",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning"] == {"effort": "high", "summary": "auto"}
+
+
+def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        events = [
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "plan"}],
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "answer"},
+            {"type": "response.completed", "response": {}},
+        ]
+        return httpx.Response(
+            200,
+            content = _responses_sse(events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    data_lines = [
+        line[len("data:") :].strip()
+        for line in lines
+        if line.startswith("data:")
+        and line[len("data:") :].strip() not in ("", "[DONE]")
+    ]
+    payloads = [json.loads(raw) for raw in data_lines]
+    combined = "".join(
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"]
+    )
+    assert "<think>plan</think>answer" in combined

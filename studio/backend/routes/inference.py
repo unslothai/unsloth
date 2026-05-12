@@ -1593,6 +1593,8 @@ async def _proxy_to_external_provider(
             max_tokens = payload.max_tokens,
             presence_penalty = payload.presence_penalty,
             top_k = payload.top_k,
+            enable_thinking = payload.enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
             stream = payload.stream,
         )
         try:

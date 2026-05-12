@@ -272,6 +272,7 @@ export function SharedComposer({
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const reasoningDisabled = !modelLoaded || !supportsReasoning;
+  const showReasoningControl = supportsReasoning || reasoningAlwaysOn;
   const toolsDisabled = !modelLoaded || !supportsTools;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
@@ -625,7 +626,8 @@ export function SharedComposer({
               </TooltipIconButton>
             </>
           )}
-          {reasoningStyle === "reasoning_effort" ? (
+          {showReasoningControl ? (
+            reasoningStyle === "reasoning_effort" ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <button
@@ -639,22 +641,41 @@ export function SharedComposer({
                   )}
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
-                  <LightbulbIcon className="size-3.5" />
+                  {reasoningEnabled ? (
+                    <LightbulbIcon className="size-3.5" />
+                  ) : (
+                    <LightbulbOffIcon className="size-3.5" />
+                  )}
                   <span>
                     Think:{" "}
-                    {reasoningEffort.charAt(0).toUpperCase() +
-                      reasoningEffort.slice(1)}
+                    {reasoningEnabled
+                      ? reasoningEffort.charAt(0).toUpperCase() +
+                        reasoningEffort.slice(1)
+                      : "Off"}
                   </span>
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setReasoningEnabled(false);
+                    applyQwenThinkingParams(false);
+                  }}
+                >
+                  Off
+                  {!reasoningEnabled ? " \u2713" : ""}
+                </DropdownMenuItem>
                 {(["low", "medium", "high"] as const).map((level) => (
                   <DropdownMenuItem
                     key={level}
-                    onSelect={() => setReasoningEffort(level)}
+                    onSelect={() => {
+                      setReasoningEffort(level);
+                      setReasoningEnabled(true);
+                      applyQwenThinkingParams(true);
+                    }}
                   >
                     {level.charAt(0).toUpperCase() + level.slice(1)}
-                    {reasoningEffort === level ? " \u2713" : ""}
+                    {reasoningEnabled && reasoningEffort === level ? " \u2713" : ""}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -686,7 +707,8 @@ export function SharedComposer({
               )}
               <span>Think</span>
             </button>
-          )}
+            )
+          ) : null}
           {supportsPreserveThinking && (
             <button
               type="button"

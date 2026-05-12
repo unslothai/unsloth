@@ -47,7 +47,10 @@ import {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
-import { getProviderCapabilities } from "./provider-capabilities";
+import {
+  getExternalReasoningCapabilities,
+  getProviderCapabilities,
+} from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
   clearTrainingCompareHandoff,
@@ -629,6 +632,24 @@ export function ChatPage(): ReactElement {
     );
     return getProviderCapabilities(provider?.providerType);
   }, [externalProviders, inferenceParams.checkpoint]);
+  useEffect(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const provider = externalProviders.find((p) => p.id === selection.providerId);
+    const reasoningCaps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+    );
+    useChatRuntimeStore.setState({
+      supportsReasoning: reasoningCaps.supportsReasoning,
+      reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+      reasoningStyle: reasoningCaps.reasoningStyle,
+      reasoningEnabled: reasoningCaps.supportsReasoning
+        ? useChatRuntimeStore.getState().reasoningEnabled
+        : false,
+      supportsPreserveThinking: false,
+    });
+  }, [externalProviders, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -729,9 +750,26 @@ export function ChatPage(): ReactElement {
       )
         return;
       if (meta?.source === "external" || isExternalModelId(value)) {
+        const selectedExternal = parseExternalModelId(value);
+        const selectedProvider = selectedExternal
+          ? externalProviders.find((p) => p.id === selectedExternal.providerId)
+          : null;
+        const reasoningCaps = getExternalReasoningCapabilities(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
         setInferenceParams({
           ...store.params,
           checkpoint: value,
+        });
+        useChatRuntimeStore.setState({
+          supportsReasoning: reasoningCaps.supportsReasoning,
+          reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+          reasoningStyle: reasoningCaps.reasoningStyle,
+          reasoningEnabled: reasoningCaps.supportsReasoning
+            ? useChatRuntimeStore.getState().reasoningEnabled
+            : false,
+          supportsPreserveThinking: false,
         });
         return;
       }
@@ -771,7 +809,14 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [activeThreadId, modelsFromStore, selectModel, setInferenceParams, view],
+    [
+      activeThreadId,
+      externalProviders,
+      modelsFromStore,
+      selectModel,
+      setInferenceParams,
+      view,
+    ],
   );
   const handleEject = useCallback(() => {
     void ejectModel();

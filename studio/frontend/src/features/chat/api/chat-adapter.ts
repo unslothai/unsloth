@@ -28,6 +28,7 @@ import {
 } from "../external-providers";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
+  getExternalReasoningCapabilities,
   getProviderCapabilities,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -906,6 +907,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
+        const externalReasoningCaps =
+          externalSelection && externalProvider
+            ? getExternalReasoningCapabilities(
+                externalProvider.providerType,
+                externalSelection.modelId,
+              )
+            : {
+                supportsReasoning,
+                reasoningStyle,
+                reasoningAlwaysOn: false,
+              };
         const buildRequestPayload = async (forceRefreshPublicKey = false) => {
           if (externalSelection && externalProvider) {
             return {
@@ -940,6 +952,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 forceRefreshPublicKey,
               ),
               provider_base_url: externalProvider.baseUrl || null,
+              ...(externalReasoningCaps.supportsReasoning
+                ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
+                  ? reasoningEnabled
+                    ? { reasoning_effort: reasoningEffort }
+                    : { enable_thinking: false }
+                  : { enable_thinking: reasoningEnabled }
+                : {}),
             };
           }
 
@@ -961,7 +980,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "reasoning_effort"
-                ? { reasoning_effort: reasoningEffort }
+                ? reasoningEnabled
+                  ? { reasoning_effort: reasoningEffort }
+                  : { enable_thinking: false }
                 : { enable_thinking: reasoningEnabled }
               : {}),
             ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
