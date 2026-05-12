@@ -110,13 +110,9 @@ NPM_REGISTRY_PREFIX = "https://registry.npmjs.org/"
 
 # Tarballs are also fetched from this mirror on some GH Actions cached
 # runs (npm rewrites the resolved URL on cache hit). Allow either.
-NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (
-    NPM_REGISTRY_PREFIX,
-)
+NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (NPM_REGISTRY_PREFIX,)
 
-CARGO_REGISTRY_SOURCE = (
-    "registry+https://github.com/rust-lang/crates.io-index"
-)
+CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -194,9 +190,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 path = str(path),
                 package = "<root>",
                 kind = "unsupported-lockfile-version",
-                detail = (
-                    f"only lockfileVersion 2 or 3 audited; got {lockfile_version}"
-                ),
+                detail = (f"only lockfileVersion 2 or 3 audited; got {lockfile_version}"),
             )
         )
 
@@ -239,9 +233,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                     )
                 )
         else:
-            if not any(
-                resolved.startswith(p) for p in NPM_REGISTRY_PREFIXES_ALLOWED
-            ):
+            if not any(resolved.startswith(p) for p in NPM_REGISTRY_PREFIXES_ALLOWED):
                 findings.append(
                     Finding(
                         path = str(path),
@@ -413,12 +405,8 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 # ─────────────────────────────────────────────────────────────────────
 
 
-DEFAULT_NPM_LOCKFILES = (
-    "studio/frontend/package-lock.json",
-)
-DEFAULT_CARGO_LOCKFILES = (
-    "studio/src-tauri/Cargo.lock",
-)
+DEFAULT_NPM_LOCKFILES = ("studio/frontend/package-lock.json",)
+DEFAULT_CARGO_LOCKFILES = ("studio/src-tauri/Cargo.lock",)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -460,9 +448,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).resolve()
     npm_paths = [root / p for p in (args.npm_lockfile or DEFAULT_NPM_LOCKFILES)]
-    cargo_paths = [
-        root / p for p in (args.cargo_lockfile or DEFAULT_CARGO_LOCKFILES)
-    ]
+    cargo_paths = [root / p for p in (args.cargo_lockfile or DEFAULT_CARGO_LOCKFILES)]
 
     all_findings: list[Finding] = []
     for p in npm_paths:
