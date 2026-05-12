@@ -2665,7 +2665,9 @@ async def update_hf_model(
                     status_code = 400,
                     detail = "GGUF update requires a Hugging Face repo.",
                 )
-            llama_backend._cancel_event.clear()
+            is_cancel_event_set_initially = llama_backend._cancel_event.is_set()
+            if is_cancel_event_set_initially:
+                llama_backend._cancel_event.clear()
             model_path = await asyncio.to_thread(
                 llama_backend._download_gguf,
                 hf_repo = config.gguf_hf_repo,
@@ -2678,6 +2680,8 @@ async def update_hf_model(
                     hf_repo = config.gguf_hf_repo,
                     hf_token = request.hf_token,
                 )
+            if is_cancel_event_set_initially:
+                llama_backend._cancel_event.set()
         else:
             from huggingface_hub import snapshot_download
 
