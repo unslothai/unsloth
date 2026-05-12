@@ -195,9 +195,6 @@ class UpdateRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated models"
     )
-    has_vision: Optional[bool] = Field(
-        False, description = "Whether this model has vision capabilities"
-    )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
