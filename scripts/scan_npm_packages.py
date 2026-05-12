@@ -116,26 +116,50 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # cap. Text files (JS/TS/JSON/etc) keep the tight cap because the
 # pattern scanner runs over them and a 9.1 MB typescript.js is the
 # legitimate ceiling.
-HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024    # 256 MiB compressed
-HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024   # 16 MiB per text file
+HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024  # 256 MiB compressed
+HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB per text file
 HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
-HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024      # 512 MiB cumulative
-HARD_MAX_MEMBERS = 50_000                     # entries per tarball
-HARD_HTTP_TIMEOUT_S = 60                      # per request
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
+HARD_MAX_MEMBERS = 50_000  # entries per tarball
+HARD_HTTP_TIMEOUT_S = 60  # per request
 
 # Native-binary / compiled-asset suffixes that bypass the text cap.
 # This is the SUFFIX shortlist; the content-magic check below covers
 # extensionless executables (biome) and versioned shared libraries
 # (libvips-cpp.so.8.17.3) that the suffix list misses.
 _BINARY_SUFFIXES = (
-    ".node", ".wasm",
-    ".so", ".dll", ".dylib", ".exe",
-    ".a", ".lib", ".o", ".obj",
-    ".bin", ".dat",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
-    ".mp3", ".mp4", ".webm",
-    ".zip", ".tar", ".gz", ".tgz", ".xz", ".bz2",
+    ".node",
+    ".wasm",
+    ".so",
+    ".dll",
+    ".dylib",
+    ".exe",
+    ".a",
+    ".lib",
+    ".o",
+    ".obj",
+    ".bin",
+    ".dat",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".mp3",
+    ".mp4",
+    ".webm",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".xz",
+    ".bz2",
 )
 
 # Versioned shared libraries: libfoo.so.1.2.3 / libfoo.dylib.1.2.
@@ -148,27 +172,27 @@ _VERSIONED_LIB = re.compile(
 # We sniff the first ~16 bytes of every member to catch extensionless
 # binaries (eg `package/biome`, `package/bin/foo`).
 _BINARY_MAGICS = (
-    b"\x7fELF",            # ELF (Linux executable / .so)
-    b"MZ",                 # PE / .exe / .dll (DOS header prefix)
-    b"\xfe\xed\xfa\xce",   # Mach-O 32 BE
-    b"\xfe\xed\xfa\xcf",   # Mach-O 64 BE
-    b"\xce\xfa\xed\xfe",   # Mach-O 32 LE
-    b"\xcf\xfa\xed\xfe",   # Mach-O 64 LE
-    b"\xca\xfe\xba\xbe",   # Mach-O fat / Java class (also starts with this)
-    b"\x00asm",            # WASM
-    b"PK\x03\x04",         # ZIP / JAR / nupkg / xpi
-    b"PK\x05\x06",         # ZIP (empty)
-    b"\x1f\x8b",           # gzip
-    b"BZh",                # bzip2
-    b"\xfd7zXZ",           # xz
-    b"7z\xbc\xaf\x27\x1c", # 7zip
-    b"\x89PNG",            # PNG
-    b"\xff\xd8\xff",       # JPEG
-    b"GIF8",               # GIF
-    b"RIFF",               # WAV / WEBP / AVI container
-    b"\x00\x00\x01\x00",   # ICO
-    b"OggS",               # Ogg
-    b"\x1aE\xdf\xa3",      # Matroska / WebM
+    b"\x7fELF",  # ELF (Linux executable / .so)
+    b"MZ",  # PE / .exe / .dll (DOS header prefix)
+    b"\xfe\xed\xfa\xce",  # Mach-O 32 BE
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64 BE
+    b"\xce\xfa\xed\xfe",  # Mach-O 32 LE
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64 LE
+    b"\xca\xfe\xba\xbe",  # Mach-O fat / Java class (also starts with this)
+    b"\x00asm",  # WASM
+    b"PK\x03\x04",  # ZIP / JAR / nupkg / xpi
+    b"PK\x05\x06",  # ZIP (empty)
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ",  # xz
+    b"7z\xbc\xaf\x27\x1c",  # 7zip
+    b"\x89PNG",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF8",  # GIF
+    b"RIFF",  # WAV / WEBP / AVI container
+    b"\x00\x00\x01\x00",  # ICO
+    b"OggS",  # Ogg
+    b"\x1aE\xdf\xa3",  # Matroska / WebM
 )
 
 
@@ -187,6 +211,7 @@ def _looks_binary(name: str, header: bytes) -> bool:
         return True
     return False
 
+
 ALLOWED_DOWNLOAD_HOST = "registry.npmjs.org"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -202,11 +227,11 @@ _SEVERITY_RANK = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3}
 @dataclass
 class Finding:
     severity: str
-    package: str            # name@version
-    filename: str           # relative path inside the tarball
-    pattern: str            # what matched
-    evidence: str = ""      # short surrounding snippet
-    detail: str = ""        # human-readable description
+    package: str  # name@version
+    filename: str  # relative path inside the tarball
+    pattern: str  # what matched
+    evidence: str = ""  # short surrounding snippet
+    detail: str = ""  # human-readable description
 
     def __str__(self) -> str:
         head = f"  [{self.severity}] {self.package} :: {self.filename}"
@@ -279,22 +304,21 @@ KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
 # The dispatch lives in `_scan_cred_surface` below.
 
 CRED_HOST_ALWAYS_BAD: tuple[tuple[str, str], ...] = (
-    ("registry.npmjs.org/-/npm/v1/tokens",
-     "npm publish-token enumeration endpoint"),
-    ("ACTIONS_ID_TOKEN_REQUEST_URL",
-     "GitHub Actions OIDC token-exchange endpoint env"),
-    ("ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-     "GitHub Actions OIDC token-exchange token env"),
+    ("registry.npmjs.org/-/npm/v1/tokens", "npm publish-token enumeration endpoint"),
+    ("ACTIONS_ID_TOKEN_REQUEST_URL", "GitHub Actions OIDC token-exchange endpoint env"),
+    ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "GitHub Actions OIDC token-exchange token env"),
 )
 
 # Hosts that need fetch-verb or URL-scheme context to be malicious.
 CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
     ("169.254.169.254", "AWS / GCP / Azure instance metadata service (IMDS)"),
-    ("169.254.170.2",   "ECS task metadata service"),
+    ("169.254.170.2", "ECS task metadata service"),
     ("metadata.google.internal", "GCE metadata service"),
     ("vault.svc.cluster.local", "in-cluster HashiCorp Vault endpoint"),
-    ("/var/run/secrets/kubernetes.io/serviceaccount",
-     "Kubernetes ServiceAccount token path"),
+    (
+        "/var/run/secrets/kubernetes.io/serviceaccount",
+        "Kubernetes ServiceAccount token path",
+    ),
 )
 
 # Credentials a frontend package should NEVER need to read. Bare
@@ -519,9 +543,7 @@ def download_tarball(
     # accidentally bypass it.
     parsed = urllib.parse.urlparse(entry.resolved)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
-        return dest, (
-            f"refused download from non-allowlisted URL {entry.resolved!r}"
-        )
+        return dest, (f"refused download from non-allowlisted URL {entry.resolved!r}")
 
     decoded = _decode_integrity(entry.integrity or "")
     if decoded is None:
@@ -545,9 +567,7 @@ def download_tarball(
                 try:
                     cl_int = int(cl)
                     if cl_int > max_bytes:
-                        return dest, (
-                            f"Content-Length {cl_int} > cap {max_bytes}"
-                        )
+                        return dest, (f"Content-Length {cl_int} > cap {max_bytes}")
                 except ValueError:
                     pass
             written = 0
@@ -643,7 +663,7 @@ def safe_extract(
                 # Strip leading "package/" -- the npm convention. We do
                 # NOT trust npm to be right, so we explicitly resolve
                 # the destination and refuse anything that escapes.
-                dest = (extract_root / name)
+                dest = extract_root / name
                 if not _is_within(extract_root, dest):
                     return f"refused escape: {name!r} resolved outside root"
                 if member.isdir():
@@ -940,9 +960,7 @@ def scan_text_blob(
                 filename = rel,
                 pattern = "js-env-token",
                 evidence = _evidence(text, _JS_ENV_TOKEN),
-                detail = (
-                    "references credential env vars in package source"
-                ),
+                detail = ("references credential env vars in package source"),
             )
         )
     if _OBFUSC_BLOB.search(text):
@@ -967,11 +985,21 @@ def scan_text_blob(
 # *.cjs/*.mjs/*.ts the same as *.js -- attackers use whichever
 # extension the consumer's bundler / loader resolves.
 _TEXT_SUFFIXES = (
-    ".js", ".mjs", ".cjs", ".ts", ".tsx",
-    ".json", ".html", ".htm",
-    ".sh", ".bash", ".zsh",
-    ".py", ".rb",
-    ".yml", ".yaml",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".json",
+    ".html",
+    ".htm",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".py",
+    ".rb",
+    ".yml",
+    ".yaml",
 )
 
 
@@ -999,7 +1027,7 @@ def scan_extracted_tree(
                     header = fh.read(16)
                 if _looks_binary(rel, header):
                     continue
-                data = header + path.read_bytes()[len(header):]
+                data = header + path.read_bytes()[len(header) :]
             except OSError:
                 continue
             text = data.decode("utf-8", errors = "replace")
@@ -1156,9 +1184,7 @@ def main(argv: list[str] | None = None) -> int:
         "critical": CRITICAL,
     }[args.fail_on]
     threshold_rank = _SEVERITY_RANK[threshold]
-    blocking = [
-        f for f in all_findings if _SEVERITY_RANK[f.severity] <= threshold_rank
-    ]
+    blocking = [f for f in all_findings if _SEVERITY_RANK[f.severity] <= threshold_rank]
     if hard_errors or blocking:
         if blocking:
             print(
