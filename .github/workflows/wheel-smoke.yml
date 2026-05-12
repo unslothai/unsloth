@@ -53,6 +53,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Build frontend
         run: |
           cd studio/frontend

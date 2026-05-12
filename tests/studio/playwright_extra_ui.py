@@ -40,7 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
+    evaluate_fetch,
     install_view_transition_killer,
+    install_wall_clock_watchdog,
     is_benign_page_error,
     recover_or_replace_page,
     wait_for_health,
@@ -59,6 +61,9 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 # turn timeout because gemma-3-270m CPU inference is 3-5x slower than
 # ubuntu-latest's.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
+FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
+LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
 _n = [0]
 _failed: list[str] = []
@@ -94,6 +99,11 @@ def runtime_warn(m: str) -> None:
 
 
 with sync_playwright() as p:
+    _watchdog = install_wall_clock_watchdog(
+        WALL_TIMEOUT_S,
+        label = "ui-extra",
+        info = info,
+    )
     # Health pre-flight (best-effort). Same rationale as in
     # playwright_chat_ui.py: bash-side health wait can succeed before
     # the auth DB has finished migrating on macos-14 free runners.
@@ -261,36 +271,44 @@ with sync_playwright() as p:
     if not token:
         fail("no access token after change-password")
         sys.exit(1)
-    load_resp = page.evaluate(f"""async () => {{
-        const r = await fetch("{BASE}/api/inference/load", {{
-            method: "POST",
-            headers: {{
-                "Authorization": "Bearer {token}",
-                "Content-Type": "application/json",
-            }},
-            body: JSON.stringify({{
-                model_path: "{GGUF_REPO}",
-                gguf_variant: "{GGUF_VARIANT}",
-                is_lora: false,
-                max_seq_length: 2048,
-            }}),
-        }});
-        return {{status: r.status, body: await r.json()}};
-    }}""")
+    load_resp = evaluate_fetch(
+        page,
+        f"{BASE}/api/inference/load",
+        method = "POST",
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        body = {
+            "model_path": GGUF_REPO,
+            "gguf_variant": GGUF_VARIANT,
+            "is_lora": False,
+            "max_seq_length": 2048,
+        },
+        timeout_ms = LOAD_FETCH_TIMEOUT_MS,
+    )
+    if load_resp.get("error"):
+        fail(f"/api/inference/load wedged: {load_resp['error']!r}")
+        sys.exit(1)
     if load_resp["status"] != 200:
         fail(f"/api/inference/load -> {load_resp['status']}: {load_resp.get('body')!r}")
         sys.exit(1)
-    info(f"loaded model: {load_resp['body'].get('display_name')}")
+    info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # Detect chat-only mode: /api/health.chat_only is the source of truth.
     # In chat-only mode, /studio + /export redirect to /chat.
-    health = page.evaluate(f"""async () => {{
-        const r = await fetch("{BASE}/api/health");
-        return await r.json();
-    }}""")
+    health_resp = evaluate_fetch(
+        page,
+        f"{BASE}/api/health",
+        timeout_ms = FETCH_TIMEOUT_MS,
+    )
+    if health_resp.get("error"):
+        fail(f"/api/health wedged: {health_resp['error']!r}")
+        sys.exit(1)
+    health = health_resp.get("body") or {}
     chat_only = bool(health.get("chat_only"))
     info(f"chat_only mode: {chat_only}")
 
@@ -588,4 +606,5 @@ with sync_playwright() as p:
             info(f"  - {m}")
         sys.exit(1)
     info("PASS extra UI flow")
+    _watchdog.cancel()
     browser.close()

@@ -55,7 +55,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
+    evaluate_fetch,
     install_view_transition_killer,
+    install_wall_clock_watchdog,
     is_benign_console_error,
     is_benign_page_error,
     recover_or_replace_page,
@@ -84,6 +86,17 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 # hit the 180 s default exactly. STUDIO_UI_TURN_TIMEOUT_MS lets the Mac
 # CI bump this without hard-coding a Mac branch in the test.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
+
+# Wall-clock cap for the entire script. A healthy comprehensive run is
+# 5-9 min; 12 min leaves headroom. Tunable via STUDIO_UI_WALL_TIMEOUT_S.
+# See _playwright_robust.install_wall_clock_watchdog for rationale.
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
+
+# Per-fetch budget for in-page fetches. The /api/inference/load call is
+# usually the slowest legitimate request: it pulls the model into the
+# llama.cpp worker. Give it ~3 min on a cold cache, less elsewhere.
+FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
+LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
 _n = [0]
 
@@ -132,6 +145,11 @@ def parse_rgb(s):
 
 
 with sync_playwright() as p:
+    _watchdog = install_wall_clock_watchdog(
+        WALL_TIMEOUT_S,
+        label = "ui",
+        info = info,
+    )
     # Pre-flight: bash-side wait_for already gated on /api/health
     # before launching us, but the macos-14 free runner has been
     # observed to surface a 200 /api/health while the auth DB is
@@ -424,18 +442,18 @@ with sync_playwright() as p:
             "() => localStorage.getItem('unsloth_auth_refresh_token')",
         )
         if refresh_token:
-            refresh = page.evaluate(
-                f"""async (rt) => {{
-                const r = await fetch("{BASE}/api/auth/refresh", {{
-                    method: "POST",
-                    headers: {{"Content-Type": "application/json"}},
-                    body: JSON.stringify({{refresh_token: rt}}),
-                }});
-                return await r.json();
-            }}""",
-                refresh_token,
+            refresh_resp = evaluate_fetch(
+                page,
+                f"{BASE}/api/auth/refresh",
+                method = "POST",
+                headers = {"Content-Type": "application/json"},
+                body = {"refresh_token": refresh_token},
+                timeout_ms = FETCH_TIMEOUT_MS,
             )
-            token = refresh.get("access_token")
+            if refresh_resp.get("error"):
+                fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
+            refresh = refresh_resp.get("body") or {}
+            token = (refresh or {}).get("access_token")
     if not token:
         fail("could not obtain auth token after change-password")
 
@@ -450,15 +468,18 @@ with sync_playwright() as p:
         "EXPECTED_DEFAULT_MODEL",
         "unsloth/gemma-4-E2B-it-GGUF",
     )
-    defaults = page.evaluate(
-        f"""async (token) => {{
-        const r = await fetch("{BASE}/api/models/list", {{
-            headers: {{ "Authorization": "Bearer " + token }},
-        }});
-        return await r.json();
-    }}""",
-        token,
+    defaults_resp = evaluate_fetch(
+        page,
+        f"{BASE}/api/models/list",
+        headers = {"Authorization": f"Bearer {token}"},
+        timeout_ms = FETCH_TIMEOUT_MS,
     )
+    if defaults_resp.get("error") or defaults_resp.get("status") != 200:
+        fail(
+            f"/api/models/list failed: status={defaults_resp.get('status')!r} "
+            f"error={defaults_resp.get('error')!r}"
+        )
+    defaults = defaults_resp["body"] or {}
     if not defaults.get("default_models"):
         fail(f"/api/models/list returned no default_models: {defaults}")
     if defaults["default_models"][0] != EXPECTED_DEFAULT:
@@ -499,27 +520,35 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("load GGUF via /api/inference/load (uses session cookie)")
     # Token already fetched above; reuse it for the load call.
-    load_resp = page.evaluate(f"""async () => {{
-        const r = await fetch("{BASE}/api/inference/load", {{
-            method: "POST",
-            headers: {{
-                "Authorization": "Bearer {token}",
-                "Content-Type": "application/json",
-            }},
-            body: JSON.stringify({{
-                model_path: "{GGUF_REPO}",
-                gguf_variant: "{GGUF_VARIANT}",
-                is_lora: false,
-                max_seq_length: 2048,
-            }}),
-        }});
-        return {{status: r.status, body: await r.json()}};
-    }}""")
+    # AbortSignal-bounded: the macos-14 --single-process Chromium had been
+    # observed wedging on this exact in-page fetch (run 25696797934 / job
+    # 75446949358) with zero further requests reaching the server. The
+    # 3-min budget is generous for a cold-cache GGUF load; on a wedge we
+    # surface a clean failure instead of a 30-min runner cancel.
+    load_resp = evaluate_fetch(
+        page,
+        f"{BASE}/api/inference/load",
+        method = "POST",
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        body = {
+            "model_path": GGUF_REPO,
+            "gguf_variant": GGUF_VARIANT,
+            "is_lora": False,
+            "max_seq_length": 2048,
+        },
+        timeout_ms = LOAD_FETCH_TIMEOUT_MS,
+    )
+    if load_resp.get("error"):
+        fail(f"/api/inference/load wedged: {load_resp['error']!r}")
     if load_resp["status"] != 200:
         fail(
-            f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}"
+            f"/api/inference/load returned {load_resp['status']}: "
+            f"{load_resp.get('body')!r}"
         )
-    info(f"loaded model: {load_resp['body'].get('display_name')}")
+    info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
     # Studio caches the per-context model state in zustand; reload
     # to make the chat composer pick up the loaded model.
@@ -1185,10 +1214,13 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 14. /api/health stays healthy throughout.
     # ─────────────────────────────────────────────────────
-    health = page.evaluate(f"""async () => {{
-        const r = await fetch("{BASE}/api/health");
-        return {{status: r.status, body: await r.text()}};
-    }}""")
+    health = evaluate_fetch(
+        page,
+        f"{BASE}/api/health",
+        timeout_ms = FETCH_TIMEOUT_MS,
+    )
+    if health.get("error"):
+        fail(f"/api/health wedged: {health['error']!r}")
     if health["status"] != 200:
         fail(f"/api/health returned {health['status']}")
 
@@ -1275,13 +1307,14 @@ with sync_playwright() as p:
     # The browser still has the pre-rotation access token. Refresh
     # tokens were revoked server-side by /change-password (auth.py),
     # so /api/auth/refresh from the browser context must now fail.
-    refresh_after = page.evaluate(f"""async () => {{
-        const r = await fetch("{BASE}/api/auth/refresh", {{
-            method: "POST",
-            credentials: "include",
-        }});
-        return {{status: r.status}};
-    }}""")
+    refresh_after = evaluate_fetch(
+        page,
+        f"{BASE}/api/auth/refresh",
+        method = "POST",
+        timeout_ms = FETCH_TIMEOUT_MS,
+    )
+    if refresh_after.get("error"):
+        fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
     if refresh_after["status"] == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
@@ -1392,4 +1425,5 @@ with sync_playwright() as p:
     )
 
     info("PASS comprehensive UI flow")
+    _watchdog.cancel()
     browser.close()
