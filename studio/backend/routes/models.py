@@ -3219,9 +3219,13 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                             "update_available": False,
                         }
                         try:
-                            commits = await asyncio.to_thread(list_repo_commits, repo_id)
+                            commits = await asyncio.to_thread(
+                                list_repo_commits, repo_id
+                            )
                             latest_remote_commit = commits[0].commit_id
-                            local_commit_list = [i.commit_hash for i in repo_info.revisions]
+                            local_commit_list = [
+                                i.commit_hash for i in repo_info.revisions
+                            ]
                             row["update_available"] = latest_remote_commit not in local_commit_list
                         except Exception:
                             pass
