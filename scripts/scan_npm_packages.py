@@ -101,11 +101,91 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Hard caps (deliberately conservative; npm tarballs in this repo are
 # all well under these limits, so a packaging spike is noticeable).
 # ─────────────────────────────────────────────────────────────────────
-HARD_MAX_TARBALL_BYTES = 64 * 1024 * 1024     # 64 MiB per tarball
-HARD_MAX_FILE_BYTES = 8 * 1024 * 1024         # 8 MiB per file inside
-HARD_MAX_TOTAL_BYTES = 128 * 1024 * 1024      # 128 MiB cumulative
+# Caps calibrated against the real Studio frontend transitive closure:
+#   - typescript.js is 9.1 MB (TS compiler bundled into one file)
+#   - mermaid 11.x dist/mermaid.js.map is ~12 MB (sourcemap)
+#   - lightningcss-linux-x64-{gnu,musl}.node is 10 MB
+#   - rolldown bindings (.node) are 18-26 MB per platform
+#   - @next/swc-*.node is ~137 MB (rust-compiled SWC engine)
+#   - next.js cumulative bundle is ~134 MB (turbopack compiled)
+#
+# Native binaries (.node, .wasm, .so, .dll, .dylib) are GENUINELY
+# huge and not amenable to text pattern scanning -- we extract them
+# only to verify the tarball integrity over the full archive, then
+# skip them in scan_extracted_tree. They get a much higher per-file
+# cap. Text files (JS/TS/JSON/etc) keep the tight cap because the
+# pattern scanner runs over them and a 9.1 MB typescript.js is the
+# legitimate ceiling.
+HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024    # 256 MiB compressed
+HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024   # 16 MiB per text file
+HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024      # 512 MiB cumulative
 HARD_MAX_MEMBERS = 50_000                     # entries per tarball
-HARD_HTTP_TIMEOUT_S = 30                      # per request
+HARD_HTTP_TIMEOUT_S = 60                      # per request
+
+# Native-binary / compiled-asset suffixes that bypass the text cap.
+# This is the SUFFIX shortlist; the content-magic check below covers
+# extensionless executables (biome) and versioned shared libraries
+# (libvips-cpp.so.8.17.3) that the suffix list misses.
+_BINARY_SUFFIXES = (
+    ".node", ".wasm",
+    ".so", ".dll", ".dylib", ".exe",
+    ".a", ".lib", ".o", ".obj",
+    ".bin", ".dat",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
+    ".mp3", ".mp4", ".webm",
+    ".zip", ".tar", ".gz", ".tgz", ".xz", ".bz2",
+)
+
+# Versioned shared libraries: libfoo.so.1.2.3 / libfoo.dylib.1.2.
+_VERSIONED_LIB = re.compile(
+    r"\.(?:so|dylib)(?:\.\d+)+$",
+    re.IGNORECASE,
+)
+
+# Magic numbers at offset 0 that identify common executable formats.
+# We sniff the first ~16 bytes of every member to catch extensionless
+# binaries (eg `package/biome`, `package/bin/foo`).
+_BINARY_MAGICS = (
+    b"\x7fELF",            # ELF (Linux executable / .so)
+    b"MZ",                 # PE / .exe / .dll (DOS header prefix)
+    b"\xfe\xed\xfa\xce",   # Mach-O 32 BE
+    b"\xfe\xed\xfa\xcf",   # Mach-O 64 BE
+    b"\xce\xfa\xed\xfe",   # Mach-O 32 LE
+    b"\xcf\xfa\xed\xfe",   # Mach-O 64 LE
+    b"\xca\xfe\xba\xbe",   # Mach-O fat / Java class (also starts with this)
+    b"\x00asm",            # WASM
+    b"PK\x03\x04",         # ZIP / JAR / nupkg / xpi
+    b"PK\x05\x06",         # ZIP (empty)
+    b"\x1f\x8b",           # gzip
+    b"BZh",                # bzip2
+    b"\xfd7zXZ",           # xz
+    b"7z\xbc\xaf\x27\x1c", # 7zip
+    b"\x89PNG",            # PNG
+    b"\xff\xd8\xff",       # JPEG
+    b"GIF8",               # GIF
+    b"RIFF",               # WAV / WEBP / AVI container
+    b"\x00\x00\x01\x00",   # ICO
+    b"OggS",               # Ogg
+    b"\x1aE\xdf\xa3",      # Matroska / WebM
+)
+
+
+def _looks_binary(name: str, header: bytes) -> bool:
+    """True if `name` or first bytes suggest a non-text file."""
+    lower = name.lower()
+    if lower.endswith(_BINARY_SUFFIXES):
+        return True
+    if _VERSIONED_LIB.search(lower):
+        return True
+    for magic in _BINARY_MAGICS:
+        if header.startswith(magic):
+            return True
+    # Null-byte density: real text files almost never carry NULs.
+    if header and (header.count(b"\x00") / len(header)) > 0.02:
+        return True
+    return False
 
 ALLOWED_DOWNLOAD_HOST = "registry.npmjs.org"
 
@@ -182,25 +262,48 @@ KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
     "getsession.org/file/": (CRITICAL, "exfiltration C2 endpoint"),
 }
 
-# Cloud / k8s / CI credential surfaces. Any tarball that references
-# these in JS source is essentially never legitimate for a frontend
-# library; flag.
-CRED_HOST_SUBSTRINGS: tuple[tuple[str, str], ...] = (
+# Cloud / k8s / CI credential surfaces. A bare substring match here
+# false-positives on DEFENSIVE code -- e.g. langchain ships an SSRF
+# protection module with a literal blocklist of IMDS IPs. We split
+# these into two tiers:
+#
+#   ALWAYS_BAD: substrings with no legitimate use anywhere in a
+#     dependency. A bare match is enough.
+#
+#   NEEDS_CONTEXT: hosts/paths that DO appear legitimately in
+#     defensive code. We only fire when they co-occur with a fetch
+#     verb or appear inside an http URL -- that is the structural
+#     difference between "blocked address constant" and "exfil
+#     target".
+#
+# The dispatch lives in `_scan_cred_surface` below.
+
+CRED_HOST_ALWAYS_BAD: tuple[tuple[str, str], ...] = (
+    ("registry.npmjs.org/-/npm/v1/tokens",
+     "npm publish-token enumeration endpoint"),
+    ("ACTIONS_ID_TOKEN_REQUEST_URL",
+     "GitHub Actions OIDC token-exchange endpoint env"),
+    ("ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+     "GitHub Actions OIDC token-exchange token env"),
+)
+
+# Hosts that need fetch-verb or URL-scheme context to be malicious.
+CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
     ("169.254.169.254", "AWS / GCP / Azure instance metadata service (IMDS)"),
     ("169.254.170.2",   "ECS task metadata service"),
     ("metadata.google.internal", "GCE metadata service"),
     ("vault.svc.cluster.local", "in-cluster HashiCorp Vault endpoint"),
     ("/var/run/secrets/kubernetes.io/serviceaccount",
      "Kubernetes ServiceAccount token path"),
-    ("ACTIONS_ID_TOKEN_REQUEST_URL",
-     "GitHub Actions OIDC token-exchange endpoint env"),
-    ("ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-     "GitHub Actions OIDC token-exchange token env"),
-    ("registry.npmjs.org/-/npm/v1/tokens",
-     "npm publish-token enumeration endpoint"),
 )
 
-# Credentials a frontend package should NEVER need to read.
+# Credentials a frontend package should NEVER need to read. Bare
+# substring match is too noisy (object-treeify ships a `docker` dev
+# script that mounts ~/.npmrc -- legitimate dev tooling, never run
+# at install time). We instead surface these only when they appear
+# inside a LIFECYCLE script (preinstall / install / postinstall /
+# prepare), which is the only path that runs automatically on
+# `npm ci`. See `scan_package_json` below.
 CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.npmrc", "npm credentials file"),
     ("/.aws/credentials", "AWS shared credentials file"),
@@ -208,6 +311,15 @@ CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.ssh/id_ed25519", "SSH private key"),
     ("/.docker/config.json", "Docker registry credentials"),
     ("/.kube/config", "Kubernetes kubeconfig"),
+)
+
+# Fetch verbs whose presence near a metadata host upgrades a bare
+# substring hit into an actionable finding.
+_FETCH_VERBS_PAT = (
+    r"(?:fetch|axios|XMLHttpRequest|got\b|undici|"
+    r"http\.get|https\.get|http\.request|https\.request|"
+    r"new\s+URL|url\.parse|net\.connect|"
+    r"\.request\s*\(|\.get\s*\(\s*['\"]\s*https?://)"
 )
 
 # JS regex patterns (compile lazily).
@@ -485,7 +597,6 @@ def safe_extract(
     tarball_path: Path,
     extract_root: Path,
     *,
-    max_file_bytes: int = HARD_MAX_FILE_BYTES,
     max_total_bytes: int = HARD_MAX_TOTAL_BYTES,
     max_members: int = HARD_MAX_MEMBERS,
 ) -> str | None:
@@ -515,16 +626,18 @@ def safe_extract(
                     return f"refused link member {name!r} (sym/lnk)"
                 if member.isdev() or member.isfifo():
                     return f"refused special member {name!r}"
-                # Per-file size cap.
-                if member.size > max_file_bytes:
+                # Cumulative cap is checked against DECLARED size up
+                # front to short-circuit obvious bombs without reading
+                # the body.
+                declared = max(member.size, 0)
+                if declared > HARD_MAX_BINARY_FILE_BYTES:
                     return (
-                        f"member {name!r} size {member.size} > cap "
-                        f"{max_file_bytes}"
+                        f"member {name!r} declared size {declared} > "
+                        f"absolute cap {HARD_MAX_BINARY_FILE_BYTES}"
                     )
-                total += max(member.size, 0)
-                if total > max_total_bytes:
+                if total + declared > max_total_bytes:
                     return (
-                        f"cumulative bytes {total} > cap "
+                        f"cumulative bytes {total + declared} > cap "
                         f"{max_total_bytes} at {name!r}"
                     )
                 # Strip leading "package/" -- the npm convention. We do
@@ -543,14 +656,32 @@ def safe_extract(
                 src = tf.extractfile(member)
                 if src is None:
                     continue
-                # Bounded read; tar member size was already capped, so
-                # this is belt-and-suspenders against a tar that
-                # lied about its declared size.
-                data = src.read(max_file_bytes + 1)
-                if len(data) > max_file_bytes:
+                # Sniff first 16 bytes to classify text vs binary.
+                # Text-cap members get the tight 16 MiB limit; binary
+                # members (executables, .node, .wasm, native libs)
+                # get the generous binary cap. We bound BOTH cases.
+                header = src.read(16)
+                is_binary = _looks_binary(name, header)
+                file_cap = (
+                    HARD_MAX_BINARY_FILE_BYTES
+                    if is_binary
+                    else HARD_MAX_TEXT_FILE_BYTES
+                )
+                if declared > file_cap:
                     return (
-                        f"member {name!r} body exceeded declared size cap"
+                        f"member {name!r} declared size {declared} > "
+                        f"cap {file_cap} ({'binary' if is_binary else 'text'})"
                     )
+                # Read remainder, bounded.
+                remainder_cap = file_cap - len(header)
+                rest = src.read(remainder_cap + 1)
+                data = header + rest
+                if len(data) > file_cap:
+                    return (
+                        f"member {name!r} body exceeded declared size cap "
+                        f"({'binary' if is_binary else 'text'})"
+                    )
+                total += len(data)
                 # Write with restrictive mode (rw-r--r--) so even if
                 # someone runs the extract dir nothing is executable.
                 with open(dest, "wb") as out:
@@ -580,6 +711,9 @@ def _evidence(text: str, pat: re.Pattern, max_chars: int = 200) -> str:
     return snippet
 
 
+LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
+
+
 def scan_package_json(
     pkg: PackageEntry,
     rel: str,
@@ -595,7 +729,7 @@ def scan_package_json(
     scripts = meta.get("scripts") or {}
     if not isinstance(scripts, dict):
         return findings
-    for hook in ("preinstall", "install", "postinstall", "prepare"):
+    for hook in LIFECYCLE_HOOKS:
         body = scripts.get(hook)
         if not isinstance(body, str):
             continue
@@ -612,6 +746,43 @@ def scan_package_json(
                         "resource and pipes/chains it to an "
                         "interpreter; this is the install-time RCE "
                         "vector. Refusing to install."
+                    ),
+                )
+            )
+        # Credential file paths inside a lifecycle script are
+        # exfiltration prep -- npm runs these scripts automatically
+        # on `npm ci`. Manual `scripts.*` entries (like a `docker`
+        # dev script) are out of scope: npm does not run them.
+        for path_substr, why in CRED_PATH_SUBSTRINGS:
+            if path_substr in body:
+                findings.append(
+                    Finding(
+                        severity = HIGH,
+                        package = pkg.display,
+                        filename = rel,
+                        pattern = f"cred-path-in-lifecycle ({hook})",
+                        evidence = body,
+                        detail = (
+                            f"`scripts.{hook}` references {why} "
+                            f"({path_substr!r}); install-time access "
+                            "to local credential files is the "
+                            "exfiltration prep step"
+                        ),
+                    )
+                )
+        if _JS_ENV_TOKEN.search(body):
+            findings.append(
+                Finding(
+                    severity = HIGH,
+                    package = pkg.display,
+                    filename = rel,
+                    pattern = f"cred-env-in-lifecycle ({hook})",
+                    evidence = _evidence(body, _JS_ENV_TOKEN),
+                    detail = (
+                        f"`scripts.{hook}` references a credential "
+                        "env var (GITHUB_TOKEN / NPM_TOKEN / AWS_* "
+                        "/ etc); install-time access to runner "
+                        "secrets is the exfiltration prep step"
                     ),
                 )
             )
@@ -642,6 +813,46 @@ def scan_package_json(
     return findings
 
 
+def _host_in_outbound_context(text: str, host: str) -> bool:
+    """True if `host` appears in a way consistent with an outbound call.
+
+    A bare `"169.254.169.254"` array literal (defensive blocklist) is
+    safe; a `fetch("http://169.254.169.254/...")` is not. The signal
+    is co-occurrence with either an HTTP URL scheme or a fetch verb
+    within a short window.
+
+    A defensive blocklist looks like:
+        const CLOUD_METADATA_IPS = ["169.254.169.254", "169.254.170.2"];
+    An exfil call looks like:
+        fetch("http://169.254.169.254/latest/meta-data/...")
+        http.request({ host: "169.254.169.254", path: "/..." })
+    """
+    # Esc for use in a regex (IPs contain dots).
+    host_re = re.escape(host)
+    # 1. URL form: http://host or https://host or //host/ or //host"
+    url_form = re.compile(
+        rf"(?:https?:)?//{host_re}(?:[:/\"'?#]|$)",
+    )
+    if url_form.search(text):
+        return True
+    # 2. host appears within 200 chars of a fetch verb (either side).
+    fetch_context = re.compile(
+        rf"(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}{host_re}"
+        rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})",
+        re.IGNORECASE,
+    )
+    if fetch_context.search(text):
+        return True
+    # 3. `host:` / `hostname:` config field referencing the IP.
+    cfg_form = re.compile(
+        rf"(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`]",
+        re.IGNORECASE,
+    )
+    if cfg_form.search(text):
+        return True
+    return False
+
+
 def scan_text_blob(
     pkg: PackageEntry,
     rel: str,
@@ -663,36 +874,48 @@ def scan_text_blob(
                 )
             )
 
-    # Credential surfaces. Hosts.
-    for needle, why in CRED_HOST_SUBSTRINGS:
+    # Credential surfaces. Tier 1: hosts with no legitimate use,
+    # bare substring is enough.
+    for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(
                 Finding(
                     severity = HIGH,
                     package = pkg.display,
                     filename = rel,
-                    pattern = "cred-surface-host",
+                    pattern = "cred-surface-host (always-bad)",
                     evidence = needle,
                     detail = (
-                        f"references {why} ({needle!r}); a frontend "
-                        "library should not need this surface"
+                        f"references {why} ({needle!r}); no legitimate "
+                        "frontend use of this surface"
                     ),
                 )
             )
 
-    # Credential surfaces. Paths.
-    for needle, why in CRED_PATH_SUBSTRINGS:
-        if needle in text:
+    # Credential surfaces. Tier 2: hosts that do appear in defensive
+    # code; require co-occurrence with a fetch verb or URL prefix.
+    for needle, why in CRED_HOST_NEEDS_CONTEXT:
+        if needle in text and _host_in_outbound_context(text, needle):
             findings.append(
                 Finding(
                     severity = HIGH,
                     package = pkg.display,
                     filename = rel,
-                    pattern = "cred-surface-path",
+                    pattern = "cred-surface-host (outbound)",
                     evidence = needle,
-                    detail = f"references {why} ({needle!r})",
+                    detail = (
+                        f"references {why} ({needle!r}) in an outbound "
+                        "call / URL / host config; a defensive blocklist "
+                        "literal would not match this rule"
+                    ),
                 )
             )
+
+    # Credential PATHS are deliberately not scanned here; they have
+    # too high a false-positive rate at file scope (defensive code,
+    # docker mounts, AWS SDK docs strings). `scan_package_json`
+    # catches the malicious case -- credential paths inside a
+    # lifecycle script run automatically on `npm ci`.
 
     # JS-specific regex.
     if _JS_FETCH_EVAL.search(text):
@@ -763,13 +986,20 @@ def scan_extracted_tree(
         rel = path.relative_to(root).as_posix()
         lower = rel.lower()
         if not lower.endswith(_TEXT_SUFFIXES):
-            # We still apply the IOC string-grep to unknown-suffix
-            # files so an attacker can't dodge by renaming. But the
-            # JS-specific regex passes are skipped.
+            # Skip native binaries entirely -- regex over compiled
+            # machine code is just noise (false positives in WASM
+            # opcodes, .node BSS segments, image pixel data). Use
+            # content-magic detection so extensionless executables
+            # (eg `package/biome`) and versioned shared libraries
+            # are also skipped.
             try:
-                if path.stat().st_size > HARD_MAX_FILE_BYTES:
+                if path.stat().st_size > HARD_MAX_TEXT_FILE_BYTES:
                     continue
-                data = path.read_bytes()
+                with open(path, "rb") as fh:
+                    header = fh.read(16)
+                if _looks_binary(rel, header):
+                    continue
+                data = header + path.read_bytes()[len(header):]
             except OSError:
                 continue
             text = data.decode("utf-8", errors = "replace")
