@@ -626,8 +626,13 @@ class ExternalProviderClient:
 
                         elif event_type == "response.output_item.done":
                             item = event.get("item", {})
-                            if isinstance(item, dict) and item.get("type") == "reasoning":
-                                summary_text = _extract_reasoning_text(item.get("summary"))
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "reasoning"
+                            ):
+                                summary_text = _extract_reasoning_text(
+                                    item.get("summary")
+                                )
                                 if summary_text:
                                     if not reasoning_open:
                                         summary_text = f"<think>{summary_text}"
