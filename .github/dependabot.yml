@@ -8,6 +8,9 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "bun"
     directory: "/studio/frontend"
@@ -16,6 +19,9 @@ updates:
     groups:
       bun-frontend:
         patterns: ["*"]
+      bun-frontend-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/studio/backend/core/data_recipe/oxc-validator"
@@ -23,5 +29,47 @@ updates:
       interval: "weekly"
     groups:
       npm-oxc-validator:
+        patterns: ["*"]
+      npm-oxc-validator-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # pip + cargo grouped weekly; the *-security siblings batch
+  # advisories that would otherwise each open their own PR.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "cargo"
+    directory: "/studio/src-tauri"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo-tauri:
+        patterns: ["*"]
+      cargo-tauri-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # bun owns version updates for /studio/frontend (above); GitHub
+  # fires npm-package advisories under npm_and_yarn, so this entry
+  # catches and groups them. limit: 0 suppresses version-update
+  # PRs, security updates flow through regardless.
+  - package-ecosystem: "npm"
+    directory: "/studio/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      npm-frontend-security:
+        applies-to: security-updates
         patterns: ["*"]
 ...

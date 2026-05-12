@@ -9,6 +9,7 @@ import {
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { WebUpdateBanner } from "@/components/web/update-banner";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -154,6 +155,13 @@ const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
   "/signup",
 ]);
 
+const WEB_UPDATE_HIDDEN_ROUTES = new Set([
+  "/onboarding",
+  "/login",
+  "/change-password",
+  "/signup",
+]);
+
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
@@ -234,7 +242,14 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => { disposed = true; };
   }, [status, desktopAuthRetry]);
 
-  if (!isTauri) return <>{children}</>;
+  if (!isTauri) {
+    return (
+      <>
+        {children}
+        <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
+      </>
+    );
+  }
 
   const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
