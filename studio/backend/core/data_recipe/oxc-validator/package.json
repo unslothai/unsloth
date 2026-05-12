@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "dependencies": {
-    "oxc-parser": "^0.123.0",
+    "oxc-parser": "^0.129.0",
     "oxlint": "^1.51.0"
   }
 }
