@@ -3213,14 +3213,18 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     if existing is None or total_size > existing["size_bytes"]:
-                        commits = await asyncio.to_thread(list_repo_commits, repo_id)
-                        latest_remote_commit = commits[0].commit_id
-                        local_commit_list = [i.commit_hash for i in repo_info.revisions]
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
-                            "update_available": latest_remote_commit not in local_commit_list,
+                            "update_available": False,
                         }
+                        try:
+                            commits = await asyncio.to_thread(list_repo_commits, repo_id)
+                            latest_remote_commit = commits[0].commit_id
+                            local_commit_list = [i.commit_hash for i in repo_info.revisions]
+                            row["update_available"] = latest_remote_commit not in local_commit_list
+                        except Exception:
+                            pass
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
