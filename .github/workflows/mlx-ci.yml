@@ -153,7 +153,20 @@ jobs:
             'httpx==0.28.1'
           pip install --index-url https://download.pytorch.org/whl/cpu \
             'torch==2.10.0'
-          pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"
+          # github.com occasionally 500s on the git fetch; retry the
+          # zoo install so a single upstream blip does not fail CI.
+          for attempt in 1 2 3; do
+            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::pip install unsloth_zoo failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((5 * attempt))
+            echo "::warning::unsloth_zoo install failed (attempt $attempt/3), retrying in ${delay}s..."
+            sleep "$delay"
+          done
           pip install -e . --no-deps
 
       # Real Apple Silicon sanity: confirm _IS_MLX activates on real
