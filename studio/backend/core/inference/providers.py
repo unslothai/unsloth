@@ -125,11 +125,17 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "kimi": {
         "display_name": "Kimi",
         "base_url": "https://api.moonshot.ai/v1",
+        # Current Kimi model lineup per the official docs:
+        #   https://platform.kimi.ai/docs/models
+        # Listing/overview endpoints used to enumerate them:
+        #   https://platform.kimi.ai/docs/api/list-models
+        #   https://platform.kimi.ai/docs/api/overview
+        # kimi-k2.6 and kimi-k2.5 are the two SoTA multimodal models we
+        # surface in the picker; everything else (moonshot-v1-*, dated
+        # k2 previews) is filtered out by model_id_allowlist below.
         "default_models": [
-            "kimi-k2-0711-preview",
-            "moonshot-v1-8k",
-            "moonshot-v1-32k",
-            "moonshot-v1-128k",
+            "kimi-k2.6",
+            "kimi-k2.5",
         ],
         "supports_streaming": True,
         "supports_vision": True,
@@ -137,6 +143,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
+        "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
     },
     "qwen": {
         "display_name": "Qwen",

@@ -1100,6 +1100,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
 
               cumulativeText += delta;
+              // Mistral's magistral occasionally emits a trailing
+              // template-literal artifact (e.g. "${response}") at the end of
+              // an otherwise complete answer. It is never part of a real
+              // reply, so strip a trailing `${...}` token from external
+              // provider streams. The regex anchors to end-of-string and is
+              // idempotent — fragments mid-stream (e.g. "${re") leave the
+              // string untouched and only collapse once the closing brace
+              // arrives. Local-model output is left alone.
+              if (isExternalRequest) {
+                cumulativeText = cumulativeText.replace(
+                  /\s*\$\{[^}]*\}\s*$/,
+                  "",
+                );
+              }
               const parts = parseAssistantContent(cumulativeText);
 
               if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
