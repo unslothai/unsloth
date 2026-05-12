@@ -2602,16 +2602,18 @@ async def list_cached_models(
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     if existing is None or total_size > existing["size_bytes"]:
-                        commits = await asyncio.to_thread(list_repo_commits, repo_id)
-                        latest_remote_commit = commits[0].commit_id
-                        local_commit_list = [i.commit_hash for i in repo_info.revisions]
                         seen_lower[key] = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
-                            "update_available": True
-                            if latest_remote_commit not in local_commit_list
-                            else False,
+                            "update_available": False
                         }
+                        try:
+                            commits = await asyncio.to_thread(list_repo_commits, repo_id)
+                            latest_remote_commit = commits[0].commit_id
+                            local_commit_list = [i.commit_hash for i in repo_info.revisions]
+                            seen_lower[key]["update_available"] = True if latest_remote_commit not in local_commit_list else False
+                        except Exception as e:
+                            pass
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
