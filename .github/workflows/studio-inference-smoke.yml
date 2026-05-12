@@ -94,6 +94,8 @@ jobs:
 
       - name: Prime HF_HOME with the GGUF
         if: steps.cache-hf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
           mkdir -p hf-cache
@@ -331,6 +333,8 @@ jobs:
 
       - name: Download GGUF if cache miss
         if: steps.cache-gguf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
           mkdir -p gguf-cache
@@ -637,6 +641,8 @@ jobs:
 
       - name: Prime HF_HOME with the GGUF + mmproj
         if: steps.cache-hf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
           mkdir -p hf-cache

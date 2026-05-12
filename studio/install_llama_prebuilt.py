@@ -205,8 +205,12 @@ class AssetChoice:
     name: str
     url: str
     source_label: str
+    # Paired runtime archive (Windows CUDA cudart bundle). When set,
+    # install_from_archives also downloads it and overlays its DLLs on
+    # top of the main install. See unslothai/unsloth#5106.
     runtime_name: str | None = None
     runtime_url: str | None = None
+    runtime_sha256: str | None = None
     is_ready_bundle: bool = False
     install_kind: str = ""
     bundle_profile: str | None = None
@@ -2922,6 +2926,30 @@ def windows_cuda_attempts(
                 + ",".join(windows_cuda_upstream_asset_names(llama_tag, runtime))
             )
             continue
+        # Pair the cudart bundle when upstream ships it. Without this
+        # the binary needs a system CUDA toolkit on PATH at runtime
+        # (#5106). Only pair when the selected main archive is the
+        # binary archive, not the cudart archive itself.
+        runtime_archive_name: str | None = None
+        runtime_archive_url: str | None = None
+        if selected_name.startswith(f"llama-"):
+            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+            cudart_url = upstream_assets.get(cudart_name)
+            if cudart_url and cudart_url != asset_url:
+                runtime_archive_name = cudart_name
+                runtime_archive_url = cudart_url
+        attempt_log = list(selection_log) + [
+            f"windows_cuda_selection: selected {selected_name} runtime={runtime}"
+        ]
+        if runtime_archive_name:
+            attempt_log.append(
+                f"windows_cuda_selection: paired runtime archive {runtime_archive_name}"
+            )
+        else:
+            attempt_log.append(
+                "windows_cuda_selection: no paired runtime archive found; "
+                "binary will rely on a system CUDA toolkit at runtime"
+            )
         attempts.append(
             AssetChoice(
                 repo = UPSTREAM_REPO,
@@ -2931,10 +2959,9 @@ def windows_cuda_attempts(
                 source_label = "upstream",
                 install_kind = "windows-cuda",
                 runtime_line = runtime_line,
-                selection_log = list(selection_log)
-                + [
-                    f"windows_cuda_selection: selected {selected_name} runtime={runtime}"
-                ],
+                runtime_name = runtime_archive_name,
+                runtime_url = runtime_archive_url,
+                selection_log = attempt_log,
             )
         )
     return attempts
@@ -2982,6 +3009,24 @@ def published_windows_cuda_attempts(
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
+            # See windows_cuda_attempts: pair the cudart bundle.
+            runtime_archive_name: str | None = None
+            runtime_archive_url: str | None = None
+            if artifact.asset_name.startswith("llama-"):
+                runtime = runtime_by_line[runtime_line]
+                cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+                cudart_url = release.assets.get(cudart_name)
+                if cudart_url and cudart_url != asset_url:
+                    runtime_archive_name = cudart_name
+                    runtime_archive_url = cudart_url
+            attempt_log = list(ordered_attempt.selection_log or []) + [
+                "windows_cuda_selection: selected published asset "
+                f"{artifact.asset_name} for runtime_line={runtime_line}"
+            ]
+            if runtime_archive_name:
+                attempt_log.append(
+                    f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
+                )
             attempts.append(
                 AssetChoice(
                     repo = release.repo,
@@ -2991,11 +3036,9 @@ def published_windows_cuda_attempts(
                     source_label = "published",
                     install_kind = "windows-cuda",
                     runtime_line = runtime_line,
-                    selection_log = list(ordered_attempt.selection_log or [])
-                    + [
-                        "windows_cuda_selection: selected published asset "
-                        f"{artifact.asset_name} for runtime_line={runtime_line}"
-                    ],
+                    runtime_name = runtime_archive_name,
+                    runtime_url = runtime_archive_url,
+                    selection_log = attempt_log,
                 )
             )
             break
@@ -3701,6 +3744,17 @@ def overlay_directory_for_choice(
     return path
 
 
+def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
+    """Filename patterns the paired runtime archive is allowed to drop
+    into the install. Used for the second copy_globs pass in
+    install_from_archives, narrower than runtime_patterns_for_choice so
+    the runtime archive cannot overwrite main-archive payload like
+    llama-server.exe. Only Windows CUDA has paired runtimes today."""
+    if choice.install_kind == "windows-cuda":
+        return ["cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll"]
+    return []
+
+
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
         return [
@@ -4020,14 +4074,52 @@ def install_from_archives(
 
     install_dir.mkdir(parents = True, exist_ok = True)
     extract_dir = Path(tempfile.mkdtemp(prefix = "extract-", dir = work_dir))
+    runtime_extract_dir: Path | None = None
 
     try:
         extract_archive(main_archive, extract_dir)
+        # Download the paired runtime archive into its own temp dir to
+        # avoid copy_globs's ambiguous-layout guard on shared names
+        # like LICENSE.txt. Two passes of copy_globs land both archives
+        # in the same overlay dir. Fixes #5106.
+        if choice.runtime_url and choice.runtime_name:
+            runtime_archive = work_dir / choice.runtime_name
+            log(
+                f"downloading paired runtime archive {choice.runtime_name} "
+                f"from {choice.source_label} release"
+            )
+            download_file_verified(
+                choice.runtime_url,
+                runtime_archive,
+                expected_sha256 = choice.runtime_sha256,
+                label = f"prebuilt runtime archive {choice.runtime_name}",
+            )
+            runtime_extract_dir = Path(
+                tempfile.mkdtemp(prefix = "extract-runtime-", dir = work_dir)
+            )
+            extract_archive(runtime_archive, runtime_extract_dir)
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
         copy_globs(
             source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
         )
+        if runtime_extract_dir is not None:
+            # The runtime archive only contributes the CUDA DLLs.
+            # Restrict the overlay to the cudart bundle's known
+            # filenames (cudart64_X.dll / cublas64_X.dll /
+            # cublasLt64_X.dll) rather than the broad ``*.exe`` /
+            # ``*.dll`` set from runtime_patterns_for_choice, so a
+            # malformed runtime archive can never overwrite
+            # llama-server.exe or other main-archive payload. The
+            # upstream cudart-llama-bin-win-cuda-X.Y-x64.zip currently
+            # ships exactly these three DLLs (verified against b9103
+            # cuda-12.4 and cuda-13.1 bundles).
+            copy_globs(
+                runtime_extract_dir,
+                overlay_dir,
+                paired_runtime_dll_patterns(choice),
+                required = False,
+            )
         copy_globs(
             source_dir,
             install_dir,
@@ -4036,6 +4128,8 @@ def install_from_archives(
         )
     finally:
         remove_tree(extract_dir)
+        if runtime_extract_dir is not None:
+            remove_tree(runtime_extract_dir)
 
     if host.is_windows:
         exec_dir = install_dir / "build" / "bin" / "Release"
@@ -4239,8 +4333,27 @@ def python_runtime_dirs() -> list[str]:
     for root in search_roots:
         if not root.is_dir():
             continue
+        # ``nvidia/<pkg>/lib`` -- Linux convention; harmless on Windows
+        # where the directory simply does not exist on real wheels.
         candidates.extend(root.glob("nvidia/*/lib"))
+        # ``nvidia/<pkg>/bin`` -- legacy modular Windows wheels
+        # (``nvidia-cuda-runtime-cu12``, ``nvidia-cublas-cu12``).
         candidates.extend(root.glob("nvidia/*/bin"))
+        # ``nvidia/<pkg>/bin/x86_64`` and ``.../bin/x64`` -- current
+        # CUDA 13 Windows wheel layout (the unsuffixed
+        # ``nvidia-cuda-runtime`` 13.x and ``nvidia-cublas`` 13.x
+        # packages ship under ``nvidia/cu13/bin/x86_64/cudart64_13.dll``).
+        # Without these, Windows preflight CUDA detection misses cu13
+        # installs and falls back to the upstream cudart bundle path
+        # even when usable DLLs are already on disk (#5106). Kept in
+        # sync with the backend resolver
+        # ``llama_cpp.LlamaCppBackend._windows_pip_nvidia_dll_dirs``.
+        candidates.extend(root.glob("nvidia/*/bin/x86_64"))
+        candidates.extend(root.glob("nvidia/*/bin/x64"))
+        # ``nvidia/<pkg>/Library/bin`` -- conda-style wheel repacks.
+        candidates.extend(root.glob("nvidia/*/Library/bin"))
+        candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
+        candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
     return dedupe_existing_dirs(candidates)
 
@@ -4743,6 +4856,17 @@ def apply_approved_hashes(
             missing_assets.append(attempt.name)
             continue
         attempt.expected_sha256 = approved.sha256
+        # Resolve the paired runtime archive's hash too. Drop the pair
+        # if the manifest does not list it -- never install an
+        # unverified archive.
+        if attempt.runtime_name and attempt.runtime_url:
+            runtime_approved = checksums.artifacts.get(attempt.runtime_name)
+            if runtime_approved is None:
+                attempt.runtime_name = None
+                attempt.runtime_url = None
+                attempt.runtime_sha256 = None
+            else:
+                attempt.runtime_sha256 = runtime_approved.sha256
         approved_attempts.append(attempt)
     if not approved_attempts:
         missing_text = ", ".join(missing_assets) if missing_assets else "none"
@@ -4906,24 +5030,19 @@ def write_prebuilt_metadata(
         approved_checksums,
         llama_tag,
     )
-    fingerprint_payload = {
-        "published_repo": approved_checksums.repo,
-        "release_tag": release_tag,
-        "upstream_tag": llama_tag,
-        "asset": choice.name,
-        "asset_sha256": choice.expected_sha256,
-        "source": choice.source_label,
-        "source_asset": source_asset_name,
-        "source_sha256": source_sha256,
-        "runtime_line": choice.runtime_line,
-        "bundle_profile": choice.bundle_profile,
-        "coverage_class": choice.coverage_class,
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_payload, sort_keys = True, separators = (",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    # expected_install_fingerprint is the source of truth for what the
+    # fingerprint must contain. Calling it here -- instead of inlining a
+    # parallel payload -- prevents drift where new keys (e.g. the cudart
+    # pair fields added for #5106) are added to one side but not the
+    # other, which would cause every install to look stale.
+    fingerprint = expected_install_fingerprint(
+        llama_tag = llama_tag,
+        release_tag = release_tag,
+        choice = choice,
+        approved_checksums = approved_checksums,
+    )
+    if fingerprint is None:
+        raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
     metadata = {
         "requested_tag": requested_tag,
         "tag": llama_tag,
@@ -4974,6 +5093,14 @@ def expected_install_fingerprint(
         "source_asset": source_asset_name,
         "source_sha256": source_sha256,
         "runtime_line": choice.runtime_line,
+        # Including the paired runtime archive (Windows cudart bundle)
+        # in the fingerprint is what forces existing #5106 installs to
+        # refresh: pre-PR installs hashed nothing in this slot, post-PR
+        # paired installs hash the cudart sha. Without these two keys
+        # an existing cudart-less install would keep matching the new
+        # choice and never re-overlay the cudart DLLs.
+        "runtime_asset": choice.runtime_name,
+        "runtime_sha256": choice.runtime_sha256,
         "bundle_profile": choice.bundle_profile,
         "coverage_class": choice.coverage_class,
     }
@@ -5034,7 +5161,20 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind == "windows-cpu":
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
-        return [["llama.dll"], ["ggml-cuda.dll"]]
+        groups = [["llama.dll"], ["ggml-cuda.dll"]]
+        # When the cudart bundle was paired in (#5106) require all
+        # three of its DLLs alongside the main archive's payload.
+        # install_kind alone is not enough -- legacy installs without
+        # the cudart pair must still pass the health check on the
+        # no-pair fallback path, otherwise pair-less builds would loop
+        # on reinstall forever. The upstream cudart bundle ships
+        # cudart64_X.dll + cublas64_X.dll + cublasLt64_X.dll; missing
+        # any one of them still breaks GPU initialisation.
+        if choice.runtime_name:
+            groups.append(["cudart64_*.dll"])
+            groups.append(["cublas64_*.dll"])
+            groups.append(["cublasLt64_*.dll"])
+        return groups
     if choice.install_kind == "windows-hip":
         return [["llama.dll"], ["*hip*.dll"]]
     return []

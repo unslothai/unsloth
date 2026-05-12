@@ -88,6 +88,8 @@ jobs:
 
       - name: Prime HF_HOME with the GGUF
         if: steps.cache-hf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
           mkdir -p hf-cache
@@ -325,6 +327,8 @@ jobs:
 
       - name: Download GGUF if cache miss
         if: steps.cache-gguf.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
           mkdir -p gguf-cache
@@ -679,13 +683,24 @@ jobs:
 
       - name: Prime HF_HOME with the GGUF + mmproj
         if: steps.cache-hf.outputs.cache-hit != 'true'
+        # Authenticated + parallel: shared macos-14 NAT egress stalls
+        # multi-GB anonymous downloads.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
           mkdir -p hf-cache
           HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE"
+            hf download "$GGUF_REPO" "$GGUF_FILE" &
+          MODEL_PID=$!
           HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$MMPROJ_FILE"
+            hf download "$GGUF_REPO" "$MMPROJ_FILE" &
+          MMPROJ_PID=$!
+          wait "$MODEL_PID"
+          wait "$MMPROJ_PID"
+          # Fail loud on a partial download instead of in the next step.
+          find hf-cache -name "$GGUF_FILE" -o -name "$MMPROJ_FILE" \
+            | xargs -I{} ls -lhL {}
 
       - name: Install Studio (--local, --no-torch)
         env:

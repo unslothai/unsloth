@@ -57,6 +57,7 @@ on:
       - 'studio/src-tauri/Cargo.lock'
       - 'pyproject.toml'
       - 'scripts/scan_packages.py'
+      - 'scripts/scan_npm_packages.py'
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main, pip]
@@ -242,6 +243,27 @@ jobs:
             echo '```'
             cat logs-pip-audit.txt
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─────────────────────────────────────────────────────────────
+      # Pre-install lockfile supply-chain audit (npm + cargo).
+      # Catches structural anomalies (non-registry resolved URLs,
+      # missing integrity hashes, known IOC strings) BEFORE `npm
+      # audit` or OSV-Scanner consult the advisory DB. The advisory
+      # path is reactive -- there is a window between a malicious
+      # publication and the GHSA landing. This step fires on the
+      # injection pattern itself so it catches the same class of
+      # attack the moment the lockfile shape becomes wrong.
+      # ─────────────────────────────────────────────────────────────
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: |
+          python3 scripts/lockfile_supply_chain_audit.py
+          {
+            echo "## Lockfile supply-chain audit"
+            echo
+            echo "Scanned: studio/frontend/package-lock.json + studio/src-tauri/Cargo.lock"
+            echo
+            echo "No structural anomalies or known IOC strings."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
@@ -793,4 +815,83 @@ jobs:
           path: |
             logs-scan-packages-${{ matrix.shard.id }}.txt
             audit-reqs/
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────
+  # npm: pre-install tarball content scan.
+  # ─────────────────────────────────────────────────────────────────────
+  npm-scan-packages:
+    # Counterpart to pip-scan-packages for the npm side. Reads
+    # studio/frontend/package-lock.json, downloads each resolved
+    # tarball DIRECTLY from registry.npmjs.org (never via `npm
+    # install` -- no lifecycle scripts ever run), verifies the
+    # lockfile integrity hash, unpacks each tarball into a sandboxed
+    # temp dir behind size / count / path-escape / symlink guards,
+    # and pattern-scans the extracted file contents for the
+    # signatures common to npm supply-chain attacks:
+    #
+    #   - lifecycle (preinstall / install / postinstall / prepare)
+    #     scripts in any package.json that fetch + execute external
+    #     code,
+    #   - C2 / exfiltration hosts (getsession.org, AWS IMDS,
+    #     Kubernetes ServiceAccount token paths, GitHub Actions OIDC,
+    #     HashiCorp Vault endpoints),
+    #   - credential-stealing references (.npmrc, .aws/credentials,
+    #     GITHUB_TOKEN / NPM_TOKEN in JS sources),
+    #   - known IOC filenames (router_init.js, tanstack_runner.js,
+    #     router_runtime.js),
+    #   - obfuscation shapes (Function/eval against base64 blobs).
+    #
+    # Threat model: every tarball is hostile. Safety guarantees are
+    # documented at scripts/scan_npm_packages.py top-of-file. The
+    # script is stdlib-only so adding it does not increase the
+    # transitive supply-chain surface.
+    name: npm scan-packages (Studio frontend tarballs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: []
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check scan_npm_packages.py
+        run: |
+          test -f scripts/scan_npm_packages.py
+          python3 -c "import ast; ast.parse(open('scripts/scan_npm_packages.py').read())"
+
+      - name: Scan npm tarballs (declared + transitive, no install)
+        # The script exits 1 on HIGH/CRITICAL findings; we capture the
+        # full log and surface it in the step summary either way. It
+        # never runs `npm install`, never executes anything from a
+        # downloaded tarball, and only fetches from registry.npmjs.org.
+        # Initially non-blocking so the baseline can settle; drop
+        # continue-on-error once the baseline is clean for a week.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          LOG=logs-scan-npm.txt
+          python3 scripts/scan_npm_packages.py 2>&1 | tee "$LOG"
+          {
+            echo "## scan_npm_packages"
+            echo
+            echo '### Findings (tail)'
+            echo '```'
+            tail -300 "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: scan-npm-packages-log
+          path: logs-scan-npm.txt
           retention-days: 30

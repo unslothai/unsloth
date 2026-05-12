@@ -234,9 +234,23 @@ jobs:
         # tests/conftest.py spoof which handles that.
         run: |
           set -euxo pipefail
-          git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
-            https://github.com/unslothai/unsloth-zoo \
-            "$RUNNER_TEMP/unsloth-zoo"
+          # github.com occasionally 500s on the git fetch; retry so a
+          # single upstream blip does not fail CI.
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/unsloth-zoo"
+            if git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
+                https://github.com/unslothai/unsloth-zoo \
+                "$RUNNER_TEMP/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::git clone unsloth-zoo failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((5 * attempt))
+            echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
+            sleep "$delay"
+          done
           pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
           pip show unsloth_zoo
 
@@ -2040,9 +2054,23 @@ jobs:
         # main-branch fixes flow into the smoke without a release).
         run: |
           set -euxo pipefail
-          git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
-            https://github.com/unslothai/unsloth-zoo \
-            "$RUNNER_TEMP/unsloth-zoo"
+          # github.com occasionally 500s on the git fetch; retry so a
+          # single upstream blip does not fail CI.
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/unsloth-zoo"
+            if git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
+                https://github.com/unslothai/unsloth-zoo \
+                "$RUNNER_TEMP/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::git clone unsloth-zoo failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((5 * attempt))
+            echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
+            sleep "$delay"
+          done
           pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
           pip show unsloth_zoo
 
