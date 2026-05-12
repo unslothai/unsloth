@@ -48,7 +48,6 @@ export interface LoadModelRequest {
 export interface UpdateModelRequest {
   repo_id: string;
   hf_token?: string | null;
-  has_vision?: boolean | null;
   gguf_variant?: string | null;
 }
 

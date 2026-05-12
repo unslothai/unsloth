@@ -225,7 +225,6 @@ export async function updateModel(
     body: JSON.stringify({
       repo_id: payload.repo_id,
       hf_token: payload.hf_token ?? null,
-      has_vision: payload.has_vision ?? false,
       gguf_variant: payload.gguf_variant ?? null,
     }),
   });
