@@ -67,7 +67,11 @@ def _install_httpcore_asyncgen_silencer() -> None:
         if (
             isinstance(exc_value, RuntimeError)
             and "HTTP11ConnectionByteStream" in obj_repr
-            and ("cancel scope" in str(exc_value) or "GeneratorExit" in str(exc_value))
+            and (
+                "cancel scope" in str(exc_value)
+                or "GeneratorExit" in str(exc_value)
+                or "no running event loop" in str(exc_value)
+            )
         ):
             return
         prior_hook(unraisable)
@@ -3378,6 +3382,27 @@ async def openai_responses(
 # =====================================================================
 
 
+_STUDIO_ANTHROPIC_TOOL_ALIASES = {
+    "web_search": "web_search",
+    "web_search_20250305": "web_search",
+    "web_fetch": "web_search",
+    "web_fetch_20250910": "web_search",
+    "web_fetch_20260209": "web_search",
+    "python": "python",
+    "terminal": "terminal",
+}
+
+
+def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
+    requested: set[str] = set()
+    for tool in tools or []:
+        td = tool if isinstance(tool, dict) else tool.model_dump()
+        for key in (td.get("name"), td.get("type")):
+            if isinstance(key, str) and key in _STUDIO_ANTHROPIC_TOOL_ALIASES:
+                requested.add(_STUDIO_ANTHROPIC_TOOL_ALIASES[key])
+    return requested
+
+
 def _normalize_anthropic_openai_images(
     openai_messages: list[dict], is_vision: bool
 ) -> bool:
@@ -3500,21 +3525,26 @@ async def anthropic_messages(
     # 3. neither           → plain chat
     # Server-side agentic loop doesn't support multimodal input — matches
     # the `not image_b64` gate in /v1/chat/completions.
+    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    openai_client_tools = [
+        tool
+        for tool in anthropic_tools_to_openai(payload.tools or [])
+        if tool.get("function", {}).get("name") not in requested_studio_tools
+    ]
     server_tools = (
-        _effective_enable_tools(payload)
+        (_effective_enable_tools(payload) or bool(requested_studio_tools))
         and llama_backend.supports_tools
         and not _has_image
     )
     client_tools = (
         not server_tools
-        and payload.tools
-        and len(payload.tools) > 0
+        and len(openai_client_tools) > 0
         and llama_backend.supports_tools
     )
 
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
-        openai_tools = anthropic_tools_to_openai(payload.tools)
+        openai_tools = openai_client_tools
 
         if payload.stream:
             return await _anthropic_passthrough_stream(
@@ -3557,7 +3587,11 @@ async def anthropic_messages(
     if server_tools:
         from core.inference.tools import ALL_TOOLS
 
-        if payload.enabled_tools is not None:
+        if requested_studio_tools:
+            openai_tools = [
+                t for t in ALL_TOOLS if t["function"]["name"] in requested_studio_tools
+            ]
+        elif payload.enabled_tools is not None:
             openai_tools = [
                 t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
             ]

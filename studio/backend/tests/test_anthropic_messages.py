@@ -78,6 +78,17 @@ class TestAnthropicModels:
         assert len(req.tools) == 1
         assert req.tools[0].name == "web_search"
 
+    def test_server_tool_field_parses(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            tools = [{"type": "web_fetch_20250910", "name": "web_fetch"}],
+        )
+        assert len(req.tools) == 1
+        assert req.tools[0].type == "web_fetch_20250910"
+        assert req.tools[0].name == "web_fetch"
+        assert req.tools[0].input_schema is None
+
     def test_extra_fields_accepted(self):
         req = AnthropicMessagesRequest(
             max_tokens = 100,
@@ -423,6 +434,13 @@ class TestAnthropicToolsToOpenAI:
 
     def test_empty_list(self):
         assert anthropic_tools_to_openai([]) == []
+
+    def test_server_tools_are_not_converted_to_openai_functions(self):
+        tools = [
+            {"type": "web_fetch_20250910", "name": "web_fetch"},
+            {"type": "web_search_20250305", "name": "web_search"},
+        ]
+        assert anthropic_tools_to_openai(tools) == []
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(
