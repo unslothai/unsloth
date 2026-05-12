@@ -146,7 +146,9 @@ def parse_rgb(s):
 
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
-        WALL_TIMEOUT_S, label = "ui", info = info,
+        WALL_TIMEOUT_S,
+        label = "ui",
+        info = info,
     )
     # Pre-flight: bash-side wait_for already gated on /api/health
     # before launching us, but the macos-14 free runner has been
@@ -1213,7 +1215,9 @@ with sync_playwright() as p:
     # 14. /api/health stays healthy throughout.
     # ─────────────────────────────────────────────────────
     health = evaluate_fetch(
-        page, f"{BASE}/api/health", timeout_ms = FETCH_TIMEOUT_MS,
+        page,
+        f"{BASE}/api/health",
+        timeout_ms = FETCH_TIMEOUT_MS,
     )
     if health.get("error"):
         fail(f"/api/health wedged: {health['error']!r}")

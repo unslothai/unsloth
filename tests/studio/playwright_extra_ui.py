@@ -100,7 +100,9 @@ def runtime_warn(m: str) -> None:
 
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
-        WALL_TIMEOUT_S, label = "ui-extra", info = info,
+        WALL_TIMEOUT_S,
+        label = "ui-extra",
+        info = info,
     )
     # Health pre-flight (best-effort). Same rationale as in
     # playwright_chat_ui.py: bash-side health wait can succeed before
@@ -299,7 +301,9 @@ with sync_playwright() as p:
     # Detect chat-only mode: /api/health.chat_only is the source of truth.
     # In chat-only mode, /studio + /export redirect to /chat.
     health_resp = evaluate_fetch(
-        page, f"{BASE}/api/health", timeout_ms = FETCH_TIMEOUT_MS,
+        page,
+        f"{BASE}/api/health",
+        timeout_ms = FETCH_TIMEOUT_MS,
     )
     if health_resp.get("error"):
         fail(f"/api/health wedged: {health_resp['error']!r}")
