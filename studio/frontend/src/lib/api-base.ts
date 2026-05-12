@@ -7,8 +7,7 @@ function detectTauri(): boolean {
   return (
     '__TAURI__' in window ||
     '__TAURI_INTERNALS__' in window ||
-    window.location.protocol === 'tauri:' ||
-    window.location.hostname === 'tauri.localhost'
+    window.location.protocol === 'tauri:'
   )
 }
 
