@@ -307,7 +307,6 @@ def run_server(
 
     import asyncio
     from threading import Thread, Event
-    import time
     import uvicorn
 
     from main import app, setup_frontend
@@ -336,10 +335,6 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Output port for Tauri to parse when in api-only mode
-    if api_only:
-        print(f"TAURI_PORT={port}", flush = True)
-
     # Setup frontend if path provided (skip in api-only mode)
     if frontend_path and not api_only:
         if setup_frontend(app, frontend_path):
@@ -349,11 +344,21 @@ def run_server(
             if not silent:
                 print(f"[WARNING] Frontend not found at {frontend_path}")
 
+    ready_event = Event()
+    startup_failed = Event()
+    startup_errors = []
+
+    class _ReadyServer(uvicorn.Server):
+        async def startup(self, *args, **kwargs):
+            await super().startup(*args, **kwargs)
+            if getattr(self, "started", False) and not self.should_exit:
+                ready_event.set()
+
     # Create the uvicorn server and expose it for signal handlers
     config = uvicorn.Config(
         app, host = host, port = port, log_level = "info", access_log = False
     )
-    _server = uvicorn.Server(config)
+    _server = _ReadyServer(config)
     _shutdown_event = Event()
 
     # Expose the actual bound port so request-handling code can build
@@ -365,27 +370,55 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     app.state.llama_parallel_slots = llama_parallel_slots
 
-    # Run server in a daemon thread
-    def _run():
-        asyncio.run(_server.serve())
-
-    thread = Thread(target = _run, daemon = True)
-    thread.start()
-    time.sleep(3)
-
-    _write_pid_file()
-    import atexit
-
-    atexit.register(_remove_pid_file)
-
-    # Expose a shutdown callable via app.state so the /api/shutdown endpoint
-    # can trigger graceful shutdown without circular imports.
+    # Expose a shutdown callable via app.state before the server can accept
+    # requests so /api/shutdown is available as soon as readiness is published.
     def _trigger_shutdown():
         _graceful_shutdown(_server)
         if _shutdown_event is not None:
             _shutdown_event.set()
 
     app.state.trigger_shutdown = _trigger_shutdown
+
+    # Run server in a daemon thread
+    def _run():
+        try:
+            asyncio.run(_server.serve())
+        except BaseException as exc:
+            startup_errors.append(exc)
+            startup_failed.set()
+        finally:
+            if not ready_event.is_set():
+                startup_failed.set()
+
+    thread = Thread(target = _run, daemon = True)
+    thread.start()
+
+    # Wait until uvicorn has completed lifespan startup and bound sockets, or
+    # until the server exits/fails before startup. This intentionally has no
+    # correctness deadline: a slow but live startup should remain in progress.
+    try:
+        while not ready_event.is_set():
+            if startup_failed.is_set() or not thread.is_alive():
+                if startup_errors:
+                    raise RuntimeError(
+                        "Uvicorn server failed before startup completed"
+                    ) from startup_errors[0]
+                raise RuntimeError("Uvicorn server exited before startup completed")
+            ready_event.wait(timeout = 0.1)
+    except KeyboardInterrupt:
+        _graceful_shutdown(_server)
+        _shutdown_event.set()
+        raise
+
+    _write_pid_file()
+    import atexit
+
+    atexit.register(_remove_pid_file)
+
+    # Output port for Tauri to parse when in api-only mode. Emit only after
+    # uvicorn sockets are bound and FastAPI lifespan/startup has completed.
+    if api_only:
+        print(f"TAURI_PORT={port}", flush = True)
 
     if not silent:
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host

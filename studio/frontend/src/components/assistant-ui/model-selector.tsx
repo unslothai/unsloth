@@ -154,7 +154,7 @@ function ModelSelectorTrigger({
               <HugeiconsIcon
                 icon={CloudIcon}
                 strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-1.5 size-3.5 shrink-0 text-muted-foreground"
+                className="relative top-[0.15625rem] ml-1.5 mr-[0.36rem] size-3.5 shrink-0 text-muted-foreground"
               />
             ) : null}
           </span>
