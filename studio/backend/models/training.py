@@ -324,6 +324,16 @@ class TrainingStartRequest(BaseModel):
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
     )
 
+    @model_validator(mode = "after")
+    def _check_steps_or_epochs(self) -> "TrainingStartRequest":
+        # num_epochs and max_steps each accept 0 as a "use the other one"
+        # sentinel. If both resolve to 0 there's nothing to train against.
+        if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
+            raise ValueError(
+                "Either num_epochs or max_steps must be > 0; both cannot be 0."
+            )
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
