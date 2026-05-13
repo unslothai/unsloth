@@ -492,10 +492,18 @@ const ReasoningToggle: FC = () => {
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
   const disabled = !(modelLoaded && supportsReasoning);
-  const effortLabel =
-    reasoningEffort === "xhigh"
-      ? "Extra High"
-      : reasoningEffort.charAt(0).toUpperCase() + reasoningEffort.slice(1);
+  const formatEffortLabel = (level: typeof reasoningEffort): string => {
+    if (level !== "xhigh") return level.charAt(0).toUpperCase() + level.slice(1);
+    const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
+    if (
+      normalized.startsWith("claude-opus-4-6") ||
+      normalized.startsWith("claude-sonnet-4-6")
+    ) {
+      return "Max";
+    }
+    return "Extra High";
+  };
+  const effortLabel = formatEffortLabel(reasoningEffort);
 
   if (reasoningStyle === "reasoning_effort") {
     return (
@@ -547,9 +555,7 @@ const ReasoningToggle: FC = () => {
                 applyQwenThinkingParams(true);
               }}
             >
-              {level === "xhigh"
-                ? "Extra High"
-                : level.charAt(0).toUpperCase() + level.slice(1)}
+              {formatEffortLabel(level)}
               {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
             </DropdownMenuItem>
           ))}

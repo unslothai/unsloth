@@ -72,8 +72,17 @@ function fileToBase64DataURL(file: File): Promise<string> {
   });
 }
 
-function formatReasoningEffortLabel(level: ReasoningEffort): string {
-  if (level === "xhigh") return "Extra High";
+function formatReasoningEffortLabel(level: ReasoningEffort, modelId?: string): string {
+  if (level === "xhigh") {
+    const normalized = modelId?.trim().toLowerCase() ?? "";
+    if (
+      normalized.startsWith("claude-opus-4-6") ||
+      normalized.startsWith("claude-sonnet-4-6")
+    ) {
+      return "Max";
+    }
+    return "Extra High";
+  }
   return level.charAt(0).toUpperCase() + level.slice(1);
 }
 
@@ -695,7 +704,10 @@ export function SharedComposer({
                   <span>
                     Think:{" "}
                     {effectiveReasoningVisualEnabled
-                      ? formatReasoningEffortLabel(reasoningEffort)
+                      ? formatReasoningEffortLabel(
+                          reasoningEffort,
+                          externalSelection?.modelId,
+                        )
                       : formatReasoningDisabledLabel(
                           effectiveSupportsReasoningOff,
                           isExternalOpenAIReasoning,
@@ -726,7 +738,7 @@ export function SharedComposer({
                       applyQwenThinkingParams(true);
                     }}
                   >
-                    {formatReasoningEffortLabel(level)}
+                    {formatReasoningEffortLabel(level, externalSelection?.modelId)}
                     {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
                   </DropdownMenuItem>
                 ))}

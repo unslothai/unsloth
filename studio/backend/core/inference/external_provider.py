@@ -26,6 +26,7 @@ _ANTHROPIC_ADAPTIVE_THINKING = re.compile(
 )
 _ANTHROPIC_MANUAL_THINKING = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-5(?:[-.]|$)")
 _ANTHROPIC_XHIGH_EFFORT = re.compile(r"^claude-opus-4-7(?:[-.]|$)")
+_ANTHROPIC_MAX_EFFORT = re.compile(r"^claude-(?:opus-4-6|sonnet-4-6)(?:[-.]|$)")
 
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
@@ -330,10 +331,12 @@ class ExternalProviderClient:
             body["system"] = system
         allowed_efforts = (
             ("none", "low", "medium", "high", "xhigh")
-            if _ANTHROPIC_XHIGH_EFFORT.match(model)
+            if (_ANTHROPIC_XHIGH_EFFORT.match(model) or _ANTHROPIC_MAX_EFFORT.match(model))
             else ("none", "low", "medium", "high")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
+        if effort == "xhigh" and _ANTHROPIC_MAX_EFFORT.match(model):
+            effort = "max"
         if effort is None:
             if enable_thinking is False:
                 effort = "none"
@@ -342,6 +345,10 @@ class ExternalProviderClient:
         # Normalize one semantic Thinking control into Anthropic's two model-era
         # APIs: adaptive effort on Claude 4.6/4.7, manual budget_tokens on 4.5.
         if effort and effort != "none":
+            # Anthropic rejects top_k whenever thinking is enabled.
+            body.pop("top_k", None)
+            # Anthropic requires temperature=1 whenever thinking is enabled.
+            body["temperature"] = 1
             if _ANTHROPIC_ADAPTIVE_THINKING.match(model):
                 body["thinking"] = {"type": "adaptive"}
                 body["output_config"] = {"effort": effort}

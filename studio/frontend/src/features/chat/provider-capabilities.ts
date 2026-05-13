@@ -170,12 +170,20 @@ function resolveAnthropicReasoningEffortCapabilities(modelId: string): {
       reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"],
     };
   }
+  if (
+    normalized.startsWith("claude-opus-4-6") ||
+    normalized.startsWith("claude-sonnet-4-6")
+  ) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"],
+    };
+  }
   // Claude 4.7 and 4.6 use adaptive thinking with effort controls.
   if (
     normalized.startsWith("claude-sonnet-4-7") ||
     normalized.startsWith("claude-haiku-4-7") ||
-    normalized.startsWith("claude-opus-4-6") ||
-    normalized.startsWith("claude-sonnet-4-6") ||
     normalized.startsWith("claude-haiku-4-6")
   ) {
     return {
