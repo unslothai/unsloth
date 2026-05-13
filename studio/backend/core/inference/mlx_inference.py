@@ -78,6 +78,28 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
 
+        # GGUF guard. GGUF models are served via llama-server in the
+        # parent process, NOT via mlx-lm in this MLX subprocess. The
+        # route at studio/backend/routes/inference.py:592 (`if config.
+        # is_gguf:`) is responsible for sending GGUF traffic to the
+        # llama-server backend before reaching the MLX orchestrator.
+        # If we end up here with is_gguf=True, the route's
+        # `detect_gguf_model_remote` returned None on its first call
+        # (transient HF Hub flake) but the subprocess re-detection
+        # succeeded. The subprocess cannot reach into the parent's
+        # llama-server, so all we can do is raise loudly so the caller
+        # gets a clear error instead of a cryptic
+        # "config.json does not exist" from mlx_lm.utils.load_model.
+        if getattr(config, "is_gguf", False):
+            raise RuntimeError(
+                f"MLXInferenceBackend cannot load GGUF model '{model_name}': "
+                f"GGUF models must be served by llama-server in the parent "
+                f"process. The /api/inference/load route should have "
+                f"detected this repo as GGUF before dispatching to the MLX "
+                f"orchestrator -- this fallback indicates a transient HF "
+                f"Hub failure during initial detection. Retry the request."
+            )
+
         if hf_token:
             import os
 
