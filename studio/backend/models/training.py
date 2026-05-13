@@ -140,7 +140,7 @@ class TrainingStartRequest(BaseModel):
 
     @field_validator("max_steps")
     @classmethod
-    def _check_max_steps(cls, v):
+    def _check_max_steps(cls, v: Optional[int]) -> Optional[int]:
         # 0 is the frontend's sentinel for "use num_epochs instead".
         if v is None:
             return v
@@ -161,7 +161,7 @@ class TrainingStartRequest(BaseModel):
 
     @field_validator("warmup_steps")
     @classmethod
-    def _check_warmup_steps(cls, v):
+    def _check_warmup_steps(cls, v: Optional[int]) -> Optional[int]:
         if v is None:
             return v
         if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
