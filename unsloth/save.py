@@ -1552,19 +1552,33 @@ def save_to_gguf(
                             f"Error: {e}"
                         )
         print("Unsloth: Model files cleanup...")
+        want_full_precision = first_conversion in quantization_method
         if quants_created:
-            all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink(missing_ok = True)
+            # convert_to_gguf may return multiple base shards plus an mmproj entry,
+            # so treat every initial file that is not an mmproj as part of the base set.
+            base_files = [
+                f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()
+            ]
+            if not want_full_precision:
+                for f in base_files:
+                    if f in all_saved_locations:
+                        all_saved_locations.remove(f)
+                    Path(f).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
+
+            # When the base format is preserved, move base files (incl. shards) away from
+            # list boundaries so example commands ([0]=model, [-1]=mmproj) stay correct.
+            if want_full_precision and len(all_saved_locations) > len(base_files) + 1:
+                for f in base_files:
+                    if f in all_saved_locations:
+                        all_saved_locations.remove(f)
+                for i, f in enumerate(base_files):
+                    all_saved_locations.insert(1 + i, f)
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
-
-    if is_gpt_oss:
         want_full_precision = True
-    else:
-        want_full_precision = first_conversion in frozenset(quantization_method)
 
     print(f"Unsloth: All GGUF conversions completed successfully!")
     print(f"Generated files: {all_saved_locations}")

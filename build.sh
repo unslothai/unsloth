@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# PyPI/Studio release publishing must use `./build.sh publish` (or an
+# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Studio
+# artifacts include the display-only Studio release version.
+
 # 1. Build frontend (Vite outputs to dist/)
 cd studio/frontend
 
@@ -70,10 +74,33 @@ cd ../..
 # 2. Clean old artifacts
 rm -rf build dist *.egg-info
 
-# 3. Build wheel
+# 3. Stamp display-only Studio release metadata for packaged builds.
+_STUDIO_BUILD_INFO="studio/backend/utils/_studio_release_build.py"
+_STUDIO_BUILD_INFO_BACKUP="$(mktemp)"
+cp "$_STUDIO_BUILD_INFO" "$_STUDIO_BUILD_INFO_BACKUP"
+_restore_studio_build_info() {
+    cp "$_STUDIO_BUILD_INFO_BACKUP" "$_STUDIO_BUILD_INFO" 2>/dev/null || true
+    rm -f "$_STUDIO_BUILD_INFO_BACKUP"
+}
+trap _restore_studio_build_info EXIT
+
+if [ "${1:-}" = "publish" ]; then
+    STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py --require-release)"
+else
+    STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
+fi
+
+# 4. Build wheel/sdist
 python -m build
 
-# 4. Optionally publish
+if [ "${1:-}" = "publish" ]; then
+    python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO_STAMPED_VERSION"
+fi
+
+_restore_studio_build_info
+trap - EXIT
+
+# 5. Optionally publish
 if [ "${1:-}" = "publish" ]; then
     python -m twine upload dist/*
 fi

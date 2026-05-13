@@ -17,6 +17,7 @@ import {
 } from "./chat-api";
 import { db } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { isMultimodalResponse } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import {
   hasClosedThinkTag,
@@ -396,6 +397,8 @@ async function autoLoadSmallestModel(): Promise<{
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
+              loadedChatTemplateOverride: null,
+              loadedIsMultimodal: isMultimodalResponse(loadResp),
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, { id: toastId });
             return { loaded: true, blockedByTrustRemoteCode: false };
@@ -455,6 +458,9 @@ async function autoLoadSmallestModel(): Promise<{
           if (!store.models.some((m) => m.id === repo.repo_id)) {
             store.setModels([...store.models, sfModel]);
           }
+          useChatRuntimeStore.setState({
+            loadedIsMultimodal: isMultimodalResponse(sfLoadResp),
+          });
           toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
           return { loaded: true, blockedByTrustRemoteCode: false };
         } catch {
@@ -522,6 +528,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
+        loadedIsMultimodal: isMultimodalResponse(loadResp),
       });
       toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };

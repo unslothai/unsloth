@@ -212,9 +212,11 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  loadedIsMultimodal: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
+  loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
@@ -226,6 +228,7 @@ type ChatRuntimeStore = {
     cachedTokens: number;
   } | null;
   modelLoading: boolean;
+  activeNativePathToken: string | null;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -296,15 +299,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   loadedKvCacheDtype: null,
   speculativeType: "default",
   loadedSpeculativeType: null,
+  loadedIsMultimodal: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
+  loadedChatTemplateOverride: null,
   activeThreadId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
   contextUsage: null,
   modelLoading: false,
+  activeNativePathToken: null,
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
@@ -378,6 +384,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeNativePathToken: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
@@ -396,9 +403,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       loadedKvCacheDtype: null,
       speculativeType: "default",
       loadedSpeculativeType: null,
+      loadedIsMultimodal: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
+      loadedChatTemplateOverride: null,
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),

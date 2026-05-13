@@ -21,6 +21,10 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+_BACKEND_DIR = Path(__file__).resolve().parent / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(1, str(_BACKEND_DIR))
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
