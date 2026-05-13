@@ -13,6 +13,7 @@ import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
+  CloudIcon,
   FolderSearchIcon,
   Logout01Icon,
   Search01Icon,
@@ -103,11 +104,13 @@ interface ModelSelectorProps {
   onOpenChange?: (open: boolean) => void;
   triggerDataTour?: string;
   contentDataTour?: string;
+  showCloudIndicator?: boolean;
 }
 
 function ModelSelectorTrigger({
   currentModel,
   isLoaded,
+  showCloudIndicator = false,
   variant = "outline",
   size = "default",
   className,
@@ -115,6 +118,7 @@ function ModelSelectorTrigger({
 }: {
   currentModel?: ModelOption;
   isLoaded: boolean;
+  showCloudIndicator?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -143,12 +147,24 @@ function ModelSelectorTrigger({
         {currentModel?.icon ? (
           <span className="flex shrink-0 items-center">{currentModel.icon}</span>
         ) : null}
-        <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+        <span className="flex min-w-0 flex-1 items-baseline">
+          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
             {currentModel?.name ?? "Select model"}
+            {showCloudIndicator ? (
+              <HugeiconsIcon
+                icon={CloudIcon}
+                strokeWidth={1.75}
+                className="relative top-[0.15625rem] ml-1.5 mr-1.5 size-3.5 shrink-0 text-muted-foreground"
+              />
+            ) : null}
           </span>
           {currentModel?.description && (
-            <span className="shrink-0 text-xs leading-none text-muted-foreground">
+            <span
+              className={cn(
+                "shrink-0 text-xs leading-none text-muted-foreground",
+                showCloudIndicator ? "" : "ml-2",
+              )}
+            >
               {currentModel.description}
             </span>
           )}
@@ -324,6 +340,7 @@ export function ModelSelector({
   onOpenChange,
   triggerDataTour,
   contentDataTour,
+  showCloudIndicator = false,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -369,7 +386,7 @@ export function ModelSelector({
     for (const externalModel of externalModels) {
       all.set(externalModel.id, {
         ...externalModel,
-        description: `External · ${externalModel.providerName}`,
+        description: externalModel.providerName,
         icon: (
           <ExternalProviderLogo
             providerType={externalModel.providerType}
@@ -416,6 +433,7 @@ export function ModelSelector({
       <ModelSelectorTrigger
         currentModel={currentModel}
         isLoaded={isLoaded}
+        showCloudIndicator={showCloudIndicator}
         variant={variant}
         size={size}
         className={className}

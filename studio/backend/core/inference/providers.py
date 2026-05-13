@@ -178,18 +178,44 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",
+        # Seed the picker with a few popular ids so something is selectable
+        # before the live /v1/models call resolves. The remote listing is
+        # the source of truth — see model_list_mode below.
         "default_models": [
+            "openai/gpt-oss-120b",
+            "deepseek-ai/DeepSeek-V3",
             "meta-llama/Llama-3.3-70B-Instruct",
             "Qwen/Qwen2.5-72B-Instruct",
-            "deepseek-ai/DeepSeek-V3",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "HF token from huggingface.co/settings/tokens. Inference Providers OpenAI-compatible API.",
-        "model_list_mode": "curated",
+        "notes": (
+            "HF token from huggingface.co/settings/tokens. Uses the "
+            "OpenAI-compatible router at /v1/chat/completions; /v1/models "
+            "returns the cross-provider chat catalog. See "
+            "https://huggingface.co/docs/inference-providers/index."
+        ),
+        # /v1/models works on the HF router and returns the full chat-model
+        # catalog (state.org/model[:policy] ids). Switch to remote so users
+        # see live availability — the picker has a search box, and
+        # loadModels() merges defaults so default_models entries remain
+        # visible if the remote call fails.
+        "model_list_mode": "remote",
+        # Scope the catalog to first-party org repos we trust as primary
+        # sources. The HF /v1/models response is otherwise hundreds of
+        # ids long (community fine-tunes, mirrors, fp8 variants, etc.).
+        "model_id_allowlist": re.compile(
+            r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|"
+            r"mistralai|zai-org)/"
+        ),
+        # Cap the post-filter list. /v1/models has no server-side limit
+        # or popularity sort, so this is just "first N matches" — pair it
+        # with the default_models seed so the most useful flagship ids
+        # are always among the top regardless of the API's order.
+        "model_id_limit": 15,
     },
     "openrouter": {
         "display_name": "OpenRouter",
