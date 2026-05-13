@@ -200,10 +200,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         # /v1/models works on the HF router and returns the full chat-model
         # catalog (state.org/model[:policy] ids). Switch to remote so users
-        # see live availability — the picker has a search box for the long
-        # list, and loadModels() merges defaults so anything in default_models
-        # remains visible if the remote call fails.
+        # see live availability — the picker has a search box, and
+        # loadModels() merges defaults so default_models entries remain
+        # visible if the remote call fails.
         "model_list_mode": "remote",
+        # Scope the catalog to first-party org repos we trust as primary
+        # sources. The HF /v1/models response is otherwise hundreds of
+        # ids long (community fine-tunes, mirrors, fp8 variants, etc.).
+        "model_id_allowlist": re.compile(
+            r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|"
+            r"mistralai|zai-org)/"
+        ),
+        # Cap the post-filter list. /v1/models has no server-side limit
+        # or popularity sort, so this is just "first N matches" — pair it
+        # with the default_models seed so the most useful flagship ids
+        # are always among the top regardless of the API's order.
+        "model_id_limit": 15,
     },
     "openrouter": {
         "display_name": "OpenRouter",

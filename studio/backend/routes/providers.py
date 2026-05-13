@@ -301,6 +301,14 @@ async def list_provider_models(
         denylist = info.get("model_id_denylist")
         if denylist is not None:
             models = [m for m in models if not denylist.search(m.get("id", ""))]
+        # Apply an optional cap after filtering so registry entries with a
+        # large remote catalog (e.g. HF Inference Providers) can stay
+        # picker-sized. No popularity sort happens server-side, so this is
+        # "first N matches" — pair with default_models for any must-have
+        # flagship ids.
+        limit = info.get("model_id_limit")
+        if isinstance(limit, int) and limit > 0:
+            models = models[:limit]
         return [
             ProviderModelInfo(
                 id = m.get("id", ""),
