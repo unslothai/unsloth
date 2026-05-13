@@ -130,20 +130,23 @@ class TrainingStartRequest(BaseModel):
     @field_validator("num_epochs")
     @classmethod
     def _check_num_epochs(cls, v: int) -> int:
+        # 0 is a sentinel meaning "use max_steps instead"; the frontend's
+        # steps-vs-epochs toggle sends it.
         if v is None:
             return 1
-        if v < 1 or v > _MAX_EPOCHS:
-            raise ValueError(f"num_epochs must be in [1, {_MAX_EPOCHS}] (got {v!r})")
+        if v < 0 or v > _MAX_EPOCHS:
+            raise ValueError(f"num_epochs must be in [0, {_MAX_EPOCHS}] (got {v!r})")
         return v
 
     @field_validator("max_steps")
     @classmethod
     def _check_max_steps(cls, v):
+        # 0 is the frontend's sentinel for "use num_epochs instead".
         if v is None:
             return v
-        if not isinstance(v, int) or v < 1 or v > _MAX_STEPS:
+        if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
             raise ValueError(
-                f"max_steps must be a positive int <= {_MAX_STEPS} (got {v!r})"
+                f"max_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})"
             )
         return v
 
