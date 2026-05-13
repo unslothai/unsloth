@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import { useCallback, useEffect, useState } from "react";
 
 // ---------------------------------------------------------------------------
@@ -15,8 +16,6 @@ export interface HfSplitEntry {
 
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
-  pending: unknown[];
-  failed: unknown[];
 }
 
 export interface HfDatasetSplitsResult {
@@ -35,8 +34,6 @@ export interface HfDatasetSplitsResult {
   /** Error message if the fetch failed */
   error: string | null;
 }
-
-const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
 
 function normalizeDatasetSplitsError(message: string): string {
   const normalized = message.toLowerCase();
@@ -74,7 +71,9 @@ function normalizeDatasetSplitsError(message: string): string {
 
 /**
  * Fetches the available configs (subsets) and splits for a HuggingFace dataset
- * using the datasets-server API.
+ * via the backend ``/api/datasets/splits`` endpoint.  Routing through the
+ * backend allows the server-side ``HF_TOKEN`` environment variable to be used
+ * as a fallback, which fixes metadata loading for private/gated datasets.
  *
  * @param datasetName - HF dataset id (e.g. "ibm/duorc"), or null to skip.
  * @param selectedSubset - Currently selected subset, used to filter splits.
@@ -101,17 +100,19 @@ export function useHfDatasetSplits(
 
   const fetchSplits = useCallback(
     async (dataset: string, signal: AbortSignal) => {
-      const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(dataset)}`;
-      const headers: Record<string, string> = {};
-      if (accessToken) {
-        headers.Authorization = `Bearer ${accessToken}`;
-      }
-
-      const res = await fetch(url, { headers, signal });
+      const res = await authFetch("/api/datasets/splits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataset,
+          hf_token: accessToken || undefined,
+        }),
+        signal,
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(
-          body?.error || `Failed to fetch splits (${res.status})`,
+          body?.detail || `Failed to fetch splits (${res.status})`,
         );
       }
 
