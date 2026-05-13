@@ -92,9 +92,8 @@ def test_is_mlx_gate_uses_three_required_predicates():
         "from unsloth_zoo.mlx.runtime import is_mlx_available" in helper_src
         and "return is_mlx_available()" in helper_src
     ), "_IS_MLX helper must delegate final detection to the shared zoo MLX runtime gate"
-    assert (
-        helper_src.index("UNSLOTH_FORCE_GPU_PATH")
-        < helper_src.index("from unsloth_zoo.mlx.runtime import is_mlx_available")
+    assert helper_src.index("UNSLOTH_FORCE_GPU_PATH") < helper_src.index(
+        "from unsloth_zoo.mlx.runtime import is_mlx_available"
     ), "_IS_MLX helper must run the local MLX precheck before importing zoo"
 
 
