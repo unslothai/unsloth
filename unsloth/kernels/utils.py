@@ -1009,6 +1009,37 @@ else:
     pass
 
 
+# torch.is_autocast_enabled(device_type) / torch.get_autocast_dtype(device_type)
+# were added in torch 2.4. On older torch, use the legacy CUDA-only API.
+# (XPU support in unsloth already requires torch >= 2.6, so the legacy path is
+# effectively cuda-only.) Branch at module load to avoid try/except in hot paths.
+if Version(torch.__version__) >= Version("2.4.0"):
+    def _get_compute_dtype(X: "torch.Tensor") -> "torch.dtype":
+        """
+        Return the effective compute dtype for LoRA weight casts.
+
+        When torch.autocast is active, eligible matmul ops produce outputs in the
+        autocast dtype (e.g. bfloat16/float16), NOT in X.dtype. In-place ops like
+        addmm_ do not go through autocast, so LoRA operands must be cast to the
+        same dtype as those matmul outputs.
+
+        torch.amp.custom_fwd(cast_inputs=None) - used here - does not cast inputs,
+        so callers must resolve the compute dtype themselves.
+
+        DEVICE_TYPE_TORCH handles the hip -> cuda mapping for AMD devices.
+        """
+        global DEVICE_TYPE_TORCH
+        if torch.is_autocast_enabled(DEVICE_TYPE_TORCH):
+            return torch.get_autocast_dtype(DEVICE_TYPE_TORCH)
+        return X.dtype
+else:
+    def _get_compute_dtype(X: "torch.Tensor") -> "torch.dtype":
+        """torch < 2.4 fallback - cuda-only (xpu requires torch >= 2.6)."""
+        if torch.is_autocast_enabled():
+            return torch.get_autocast_gpu_dtype()
+        return X.dtype
+
+
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
@@ -1028,9 +1059,9 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     # Add in LoRA weights
     if lora_A is not None:
         out_dim = out.shape[2]
-        dtype = X.dtype
+        dtype = _get_compute_dtype(X)
 
-        if not hasattr(lora_A, "_fast_lora"):
+        if not hasattr(lora_A, "_fast_lora") or lora_A._fast_lora.dtype != dtype:
             lora_A._fast_lora = lora_A.to(dtype)
             lora_B._fast_lora = lora_B.to(dtype)
 
@@ -1053,7 +1084,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
-    dtype = X.dtype
+    dtype = _get_compute_dtype(X)
 
     if X.dim() == 3:
         batch, seq_len, d = X.shape
