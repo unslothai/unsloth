@@ -639,18 +639,26 @@ def test_tauri_preflight_scrubs_studio_home_env():
     """All three Tauri CLI-spawn sites that lacked the scrub must now
     env_remove UNSLOTH_STUDIO_HOME and STUDIO_HOME, mirroring
     process.rs / install.rs / desktop_auth.rs / update.rs."""
-    preflight = (
-        REPO_ROOT / "studio" / "src-tauri" / "src" / "preflight.rs"
-    ).read_text()
+    # preflight was originally a single .rs file; PR #5341 split it into
+    # a directory of submodules (backend / managed / types / version).
+    # Read whichever shape is on disk so the guard stays valid through
+    # future reorgs as long as the scrub calls live somewhere under
+    # studio/src-tauri/src/preflight*.
+    preflight_root = REPO_ROOT / "studio" / "src-tauri" / "src"
+    preflight_paths = [
+        preflight_root / "preflight.rs",
+        *(preflight_root / "preflight").glob("*.rs"),
+    ]
+    preflight = "\n".join(p.read_text() for p in preflight_paths if p.exists())
     commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text()
-    # Both functions in preflight.rs (run_cli_probe + probe_cli_capability)
-    # must scrub. Count occurrences -- expect 2 in preflight, 1 in commands.
+    # Both functions (run_cli_probe + probe_cli_capability) must scrub.
+    # Count occurrences -- expect 2 in preflight (one per fn), 1 in commands.
     assert (
         preflight.count('cmd.env_remove("UNSLOTH_STUDIO_HOME")') >= 2
-    ), "preflight.rs must scrub UNSLOTH_STUDIO_HOME in both run_cli_probe and probe_cli_capability"
+    ), "preflight must scrub UNSLOTH_STUDIO_HOME in both run_cli_probe and probe_cli_capability"
     assert (
         preflight.count('cmd.env_remove("STUDIO_HOME")') >= 2
-    ), "preflight.rs must scrub STUDIO_HOME in both run_cli_probe and probe_cli_capability"
+    ), "preflight must scrub STUDIO_HOME in both run_cli_probe and probe_cli_capability"
     assert (
         'cmd.env_remove("UNSLOTH_STUDIO_HOME")' in commands
     ), "commands.rs check_install_status must scrub UNSLOTH_STUDIO_HOME"
