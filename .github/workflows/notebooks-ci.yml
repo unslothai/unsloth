@@ -67,6 +67,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Validate the dispatched ref before it reaches actions/checkout's `ref:`
+      # input. Reading via env (NOT direct ${{ ... }} interpolation in the
+      # regex test) closes the GitHub-Actions-injection class where a
+      # client_payload.ref like `main"; rm -rf / #` would be embedded into the
+      # shell command. NOTEBOOKS_REF defaults to 'main' on non-dispatch
+      # events, but only repository_dispatch can supply attacker-controlled
+      # values, so we gate this check on that event type.
+      - name: Validate client_payload.ref shape
+        if: github.event_name == 'repository_dispatch'
+        env:
+          NOTEBOOKS_REF: ${{ github.event.client_payload.ref }}
+        run: |
+          if ! printf '%s' "$NOTEBOOKS_REF" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "::error::client_payload.ref contains disallowed characters" >&2
+            exit 1
+          fi
+
       - name: Checkout unsloth (this PR)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -166,6 +183,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # See `static.Validate client_payload.ref shape` for rationale. This
+      # job's `if:` excludes repository_dispatch today, so the validation
+      # step is a defence-in-depth no-op until that gate ever relaxes.
+      - name: Validate client_payload.ref shape
+        if: github.event_name == 'repository_dispatch'
+        env:
+          NOTEBOOKS_REF: ${{ github.event.client_payload.ref }}
+        run: |
+          if ! printf '%s' "$NOTEBOOKS_REF" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "::error::client_payload.ref contains disallowed characters" >&2
+            exit 1
+          fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with: { path: unsloth }
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -200,6 +229,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
+      - name: Validate client_payload.ref shape
+        if: github.event_name == 'repository_dispatch'
+        env:
+          NOTEBOOKS_REF: ${{ github.event.client_payload.ref }}
+        run: |
+          if ! printf '%s' "$NOTEBOOKS_REF" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "::error::client_payload.ref contains disallowed characters" >&2
+            exit 1
+          fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with: { path: unsloth }
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -294,6 +332,15 @@ jobs:
           - 'nb/Whisper.ipynb'                         # installation_whisper_content
           - 'nb/Synthetic_Data_Hackathon.ipynb'        # installation_synthetic_data_content
     steps:
+      - name: Validate client_payload.ref shape
+        if: github.event_name == 'repository_dispatch'
+        env:
+          NOTEBOOKS_REF: ${{ github.event.client_payload.ref }}
+        run: |
+          if ! printf '%s' "$NOTEBOOKS_REF" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "::error::client_payload.ref contains disallowed characters" >&2
+            exit 1
+          fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with: { path: unsloth }
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

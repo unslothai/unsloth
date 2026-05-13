@@ -17,7 +17,7 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-desktop-${{ github.repository }}
@@ -293,6 +293,14 @@ jobs:
           PY
 
   build:
+    # TODO: split into a "build (no secrets)" + "publish (secrets)" job pair
+    # with actions/upload-artifact handoff so the matrix build cannot
+    # publish a Release on its own. The current matrix runs across
+    # Linux/macOS/Windows in a single job, so the split needs artefact
+    # collection across the OS matrix and is out of scope for this
+    # hardening pass.
+    permissions:
+      contents: write  # tauri-apps/tauri-action creates / uploads a GitHub Release
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -323,6 +331,17 @@ jobs:
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
 
     steps:
+      # harden-runner in audit mode: surfaces every egress destination in
+      # the runner log so the allowlist for a future `egress-policy: block`
+      # promotion can be derived from observed traffic. Audit mode is
+      # cross-platform (Linux / macOS / Windows runners); blocking mode is
+      # currently Linux-only, so we deliberately stay in audit until the
+      # macOS + Windows codesign paths have been observed.
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       # ── Linux dependencies ──
@@ -339,7 +358,13 @@ jobs:
           node-version: 24
 
       - name: Install pinned Tauri CLI
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI
         shell: bash
@@ -414,11 +439,17 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: studio/frontend
-        run: npm install
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: npm install --no-fund --no-audit
 
       # ── Rust ──
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 

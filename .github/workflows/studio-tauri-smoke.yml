@@ -61,7 +61,13 @@ jobs:
           workspaces: studio/src-tauri -> target
 
       - name: Install pinned Tauri CLI (matches release-desktop.yml)
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI version
         run: |
@@ -74,6 +80,12 @@ jobs:
 
       - name: Frontend build (npm ci, vite)
         working-directory: studio/frontend
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
         run: |
           npm ci --no-fund --no-audit
           npm run build

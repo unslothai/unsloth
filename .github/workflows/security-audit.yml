@@ -98,11 +98,29 @@ jobs:
       # char SHA freezes this action at known-good code; Dependabot's
       # github-actions ecosystem will auto-bump the SHA.
       # v2.19.1 commit:
-      - name: Harden runner (egress audit)
+      # Per-job allowlist: advisory-audit hits PyPI, npm registry,
+      # crates.io advisories, GitHub release artefacts (osv-scanner
+      # binary), Semgrep registry, and TruffleHog's own GitHub action.
+      - name: Harden runner (egress block)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
-          egress-policy: audit
+          egress-policy: block
           disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            registry.npmjs.org:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            static.rust-lang.org:443
+            index.crates.io:443
+            static.crates.io:443
+            crates.io:443
+            semgrep.dev:443
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -684,15 +702,24 @@ jobs:
             id: extras
             files: 'extras'
     steps:
-      # Egress audit on every shard. Each shard pulls hundreds of
+      # Egress block on every shard. Each shard pulls hundreds of
       # PyPI archives -- if a malicious wheel ever phones home from
       # within the scanner sandbox (it shouldn't; we never execute
-      # the archive), harden-runner's audit log records the host.
-      - name: Harden runner (egress audit)
+      # the archive), harden-runner now rejects the connect outright.
+      # Per-job allowlist: pip-scan-packages only fetches PyPI archives
+      # via scan_packages.py + pip download. No npm or cargo traffic.
+      - name: Harden runner (egress block)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
-          egress-policy: audit
+          egress-policy: block
           disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -771,7 +798,6 @@ jobs:
         # transitive set (no point fetching the same transformers
         # wheel five times). Across shards we accept some redundant
         # downloads in exchange for wall-clock parallelism.
-        continue-on-error: true
         env:
           SHARD_FILES: ${{ matrix.shard.files }}
         run: |
@@ -851,11 +877,20 @@ jobs:
     timeout-minutes: 30
     needs: []
     steps:
-      - name: Harden runner (egress audit)
+      # Per-job allowlist: npm-scan-packages only fetches tarballs from
+      # registry.npmjs.org. GitHub endpoints retained for checkout +
+      # setup-python action machinery.
+      - name: Harden runner (egress block)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
         with:
-          egress-policy: audit
+          egress-policy: block
           disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -875,7 +910,6 @@ jobs:
         # downloaded tarball, and only fetches from registry.npmjs.org.
         # Initially non-blocking so the baseline can settle; drop
         # continue-on-error once the baseline is clean for a week.
-        continue-on-error: true
         run: |
           set -o pipefail
           LOG=logs-scan-npm.txt
@@ -894,4 +928,193 @@ jobs:
         with:
           name: scan-npm-packages-log
           path: logs-scan-npm.txt
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Workflow-trigger lint. Refuses two patterns that together powered the
+  # TanStack GHSA-g7cv-rxg3-hmpx supply-chain compromise:
+  #
+  #   1. `pull_request_target` -- runs a fork's workflow YAML against
+  #      the base repository's secrets. There is no safe use of this
+  #      trigger for a public open-source project.
+  #
+  #   2. Shared cache keys between PR-triggered workflows and the
+  #      publish workflow. A fork PR can poison the cache; the publish
+  #      workflow then restores the poisoned cache on next run.
+  #
+  # Cheap pure-Python lint, runs in seconds. Fail-closed.
+  # ─────────────────────────────────────────────────────────────────────
+  workflow-trigger-lint:
+    name: workflow-trigger lint (pull_request_target / cache-poisoning)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Lint workflow triggers + cache keys
+        run: python3 scripts/lint_workflow_triggers.py
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Regression tests: pin scanner IOC tables and pre-install fixtures.
+  # Hard gate (no continue-on-error) so future drift in the IOC tables
+  # or scanner exit semantics fails this PR at review time.
+  # ─────────────────────────────────────────────────────────────────────
+  tests-security:
+    name: pytest tests/security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest + PyYAML
+        # PyYAML is imported by scripts/lint_workflow_triggers.py, which the
+        # `tests/security/test_lint_workflow_triggers.py` regression suite
+        # exercises as a subprocess. Without it the lint script bails with
+        # `ERROR: PyYAML is required` (exit 2) and the 5 lint regression
+        # tests fail. Pinned the same way pytest is pinned.
+        run: pip install pytest==9.0.3 pyyaml==6.0.2
+
+      - name: Run security regression tests
+        run: python3 -m pytest tests/security -v
+
+  # ─────────────────────────────────────────────────────────────────────
+  # npm provenance + new install-script diff. Catches the two npm
+  # supply-chain levers we don't yet gate on:
+  #
+  #   1. `npm audit signatures` validates the registry-signed
+  #      provenance of every tarball laid down in node_modules. Pulled
+  #      from the public npm transparency log; surfaces unsigned or
+  #      mis-signed deps. Informational for now (continue-on-error)
+  #      while the baseline settles.
+  #
+  #   2. `check_new_install_scripts.py` diffs the PR's lockfile
+  #      against the base ref and refuses any newly-added dep that
+  #      ships a postinstall hook. Every recent npm supply-chain
+  #      compromise leveraged a postinstall as the execution lever, so
+  #      blocking new ones at PR time is a small, high-signal gate.
+  # ─────────────────────────────────────────────────────────────────────
+  npm-provenance-and-install-scripts:
+    name: npm provenance + new install-script diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Need the base commit accessible for `git show
+          # <base-sha>:studio/frontend/package-lock.json` below.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Studio frontend deps (--ignore-scripts)
+        # `npm audit signatures` requires node_modules to be populated.
+        # `--ignore-scripts` is mandatory: this is exactly the lever the
+        # new-install-script gate below protects against, and we must
+        # not run any third-party hook to set up the audit.
+        working-directory: studio/frontend
+        run: npm ci --ignore-scripts
+
+      - name: npm audit signatures (informational)
+        # Surfaces unsigned / mis-signed packages from the npm
+        # transparency log. continue-on-error during baseline-build
+        # phase; promote to hard gate once the lockfile is fully
+        # signed (most major maintainers signed by mid-2025).
+        working-directory: studio/frontend
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          LOG=logs-audit-signatures.txt
+          npm audit signatures 2>&1 | tee "$LOG"
+          {
+            echo "## npm audit signatures"
+            echo
+            echo '```'
+            tail -200 "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Extract base-ref lockfile (PR triggers only)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -e
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git show "$BASE_SHA:studio/frontend/package-lock.json" \
+            > /tmp/base-package-lock.json
+
+      - name: Diff for newly-added install-script deps
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/check_new_install_scripts.py \
+            --base /tmp/base-package-lock.json \
+            --head studio/frontend/package-lock.json
+
+      - name: Skip install-script diff (non-PR trigger)
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Not a pull_request event; install-script diff requires a base ref."
+          echo "This step is intentionally a no-op outside PR triggers."
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: npm-audit-signatures-log
+          path: studio/frontend/logs-audit-signatures.txt
+          if-no-files-found: ignore
           retention-days: 30
