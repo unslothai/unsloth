@@ -130,20 +130,23 @@ class TrainingStartRequest(BaseModel):
     @field_validator("num_epochs")
     @classmethod
     def _check_num_epochs(cls, v: int) -> int:
+        # 0 is a sentinel meaning "use max_steps instead"; the frontend's
+        # steps-vs-epochs toggle sends it.
         if v is None:
             return 1
-        if v < 1 or v > _MAX_EPOCHS:
-            raise ValueError(f"num_epochs must be in [1, {_MAX_EPOCHS}] (got {v!r})")
+        if v < 0 or v > _MAX_EPOCHS:
+            raise ValueError(f"num_epochs must be in [0, {_MAX_EPOCHS}] (got {v!r})")
         return v
 
     @field_validator("max_steps")
     @classmethod
-    def _check_max_steps(cls, v):
+    def _check_max_steps(cls, v: Optional[int]) -> Optional[int]:
+        # 0 is the frontend's sentinel for "use num_epochs instead".
         if v is None:
             return v
-        if not isinstance(v, int) or v < 1 or v > _MAX_STEPS:
+        if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
             raise ValueError(
-                f"max_steps must be a positive int <= {_MAX_STEPS} (got {v!r})"
+                f"max_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})"
             )
         return v
 
@@ -158,7 +161,7 @@ class TrainingStartRequest(BaseModel):
 
     @field_validator("warmup_steps")
     @classmethod
-    def _check_warmup_steps(cls, v):
+    def _check_warmup_steps(cls, v: Optional[int]) -> Optional[int]:
         if v is None:
             return v
         if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
@@ -320,6 +323,16 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
     )
+
+    @model_validator(mode = "after")
+    def _check_steps_or_epochs(self) -> "TrainingStartRequest":
+        # num_epochs and max_steps each accept 0 as a "use the other one"
+        # sentinel. If both resolve to 0 there's nothing to train against.
+        if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
+            raise ValueError(
+                "Either num_epochs or max_steps must be > 0; both cannot be 0."
+            )
+        return self
 
 
 class TrainingJobResponse(BaseModel):
