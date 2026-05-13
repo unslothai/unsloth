@@ -523,7 +523,7 @@ class ExternalProviderClient:
         if reasoning_effort in ("low", "medium", "high"):
             body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
         elif enable_thinking is False:
-            body["reasoning"] = {"effort": "low", "summary": "auto"}
+            body["reasoning"] = {"effort": "none"}
         elif enable_thinking is True:
             body["reasoning"] = {"effort": "medium", "summary": "auto"}
         if instructions_parts:
