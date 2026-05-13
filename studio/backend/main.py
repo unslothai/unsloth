@@ -667,15 +667,6 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     import json as _json
     import secrets as _secrets
 
-    # Opt-in: default would leak the bootstrap password to LAN callers.
-    if os.environ.get("UNSLOTH_STUDIO_INJECT_BOOTSTRAP", "").lower() not in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        return html_bytes, None
-
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
         return html_bytes, None
 

@@ -149,14 +149,6 @@ jobs:
         run: |
           unsloth studio reset-password
           mkdir -p logs
-          # UNSLOTH_STUDIO_INJECT_BOOTSTRAP defaults to off in production
-          # (auth/.bootstrap_password is the on-disk source of truth). The
-          # Playwright change-password flow drives the React first-boot form,
-          # which pre-seeds current_password from window.__UNSLOTH_BOOTSTRAP__.
-          # Re-enable injection for this CI-only Studio so the test can
-          # advance past /change-password; production deployments are
-          # unaffected.
-          UNSLOTH_STUDIO_INJECT_BOOTSTRAP=1 \
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
@@ -220,7 +212,6 @@ jobs:
               kill "${STUDIO_PID}" 2>/dev/null || true
               sleep 2
               unsloth studio reset-password
-              UNSLOTH_STUDIO_INJECT_BOOTSTRAP=1 \
               UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
                 > "logs/studio_retry_${attempt}.log" 2>&1 &
               STUDIO_PID=$!
@@ -256,7 +247,6 @@ jobs:
         run: |
           unsloth studio reset-password
           mkdir -p logs
-          UNSLOTH_STUDIO_INJECT_BOOTSTRAP=1 \
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
             > logs/studio_extra.log 2>&1 &
           echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
@@ -311,7 +301,6 @@ jobs:
               kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
               sleep 2
               unsloth studio reset-password
-              UNSLOTH_STUDIO_INJECT_BOOTSTRAP=1 \
               UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
                 > "logs/studio_extra_retry_${attempt}.log" 2>&1 &
               STUDIO_EXTRA_PID=$!
