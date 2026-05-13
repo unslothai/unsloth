@@ -35,6 +35,15 @@ export type ExternalReasoningCapabilities = {
   supportsReasoning: boolean;
   reasoningStyle: "enable_thinking" | "reasoning_effort";
   reasoningAlwaysOn: boolean;
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: readonly (
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+  )[];
 };
 
 /**
@@ -146,13 +155,53 @@ export function getProviderCapabilities(
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }
 
-function isOpenAIReasoningEffortModel(modelId: string): boolean {
+const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+
+function resolveOpenAIReasoningEffortCapabilities(modelId: string): {
+  supportsReasoning: boolean;
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"];
+} {
   const normalized = modelId.trim().toLowerCase();
-  return (
-    normalized.startsWith("o3") ||
-    normalized.startsWith("gpt-5.4") ||
-    normalized.startsWith("gpt-5.5")
-  );
+  if (normalized.startsWith("gpt-5.5") || normalized.startsWith("gpt-5.4")) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"],
+    };
+  }
+  if (normalized.startsWith("gpt-5.3-codex")) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "xhigh"],
+    };
+  }
+  if (
+    normalized === "gpt-5" ||
+    normalized.startsWith("gpt-5.1") ||
+    normalized.startsWith("gpt-5.2") ||
+    normalized.startsWith("gpt-5.3")
+  ) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["minimal", "low", "medium", "high"],
+    };
+  }
+  if (normalized.startsWith("o3")) {
+    // Keep o3 conservative until OpenAI publishes a per-model effort table.
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+    };
+  }
+  return {
+    supportsReasoning: false,
+    supportsReasoningOff: false,
+    reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+  };
 }
 
 /**
@@ -174,6 +223,8 @@ export function getExternalReasoningCapabilities(
       supportsReasoning: false,
       reasoningStyle: "enable_thinking",
       reasoningAlwaysOn: false,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
     };
   }
 
@@ -183,23 +234,14 @@ export function getExternalReasoningCapabilities(
       ? normalizedModel.split("/").at(-1) ?? normalizedModel
       : normalizedModel;
 
-  const isOpenAICompatProvider =
-    normalizedProvider === "openai" ||
-    normalizedProvider === "custom" ||
-    normalizedProvider === "openrouter";
-  if (!isOpenAICompatProvider) {
+  const isOpenAIProvider = normalizedProvider === "openai";
+  if (!isOpenAIProvider) {
     return {
       supportsReasoning: false,
       reasoningStyle: "enable_thinking",
       reasoningAlwaysOn: false,
-    };
-  }
-
-  if (modelForMatching.startsWith("gpt-5.3-codex")) {
-    return {
-      supportsReasoning: true,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
     };
   }
 
@@ -209,14 +251,19 @@ export function getExternalReasoningCapabilities(
       supportsReasoning: false,
       reasoningStyle: "enable_thinking",
       reasoningAlwaysOn: false,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
     };
   }
 
-  if (isOpenAIReasoningEffortModel(modelForMatching)) {
+  const openAICaps = resolveOpenAIReasoningEffortCapabilities(modelForMatching);
+  if (openAICaps.supportsReasoning) {
     return {
       supportsReasoning: true,
       reasoningStyle: "reasoning_effort",
       reasoningAlwaysOn: false,
+      supportsReasoningOff: openAICaps.supportsReasoningOff,
+      reasoningEffortLevels: openAICaps.reasoningEffortLevels,
     };
   }
 
@@ -224,5 +271,7 @@ export function getExternalReasoningCapabilities(
     supportsReasoning: false,
     reasoningStyle: "enable_thinking",
     reasoningAlwaysOn: false,
+    supportsReasoningOff: false,
+    reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
   };
 }

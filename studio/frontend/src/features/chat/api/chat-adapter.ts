@@ -917,7 +917,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 supportsReasoning,
                 reasoningStyle,
                 reasoningAlwaysOn: false,
+                supportsReasoningOff: false,
+                reasoningEffortLevels: ["low", "medium", "high"] as const,
               };
+        const selectedExternalEffort = externalReasoningCaps.reasoningEffortLevels.includes(
+          reasoningEffort,
+        )
+          ? reasoningEffort
+          : externalReasoningCaps.reasoningEffortLevels[0] ?? "low";
+        const localReasoningEffort =
+          reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+            ? reasoningEffort
+            : "low";
+        const externalReasoningEnabled =
+          externalReasoningCaps.reasoningStyle === "reasoning_effort" &&
+          !externalReasoningCaps.supportsReasoningOff
+            ? true
+            : reasoningEnabled;
         const buildRequestPayload = async (forceRefreshPublicKey = false) => {
           if (externalSelection && externalProvider) {
             return {
@@ -954,9 +970,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               provider_base_url: externalProvider.baseUrl || null,
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
-                  ? reasoningEnabled
-                    ? { reasoning_effort: reasoningEffort }
-                    : { enable_thinking: false }
+                  ? externalReasoningEnabled
+                    ? { reasoning_effort: selectedExternalEffort }
+                    : externalReasoningCaps.supportsReasoningOff
+                      ? { reasoning_effort: "none" }
+                      : {
+                          reasoning_effort:
+                            externalReasoningCaps.reasoningEffortLevels[0] ?? "low",
+                        }
                   : { enable_thinking: reasoningEnabled }
                 : {}),
             };
@@ -981,8 +1002,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(supportsReasoning
               ? reasoningStyle === "reasoning_effort"
                 ? reasoningEnabled
-                  ? { reasoning_effort: reasoningEffort }
-                  : { enable_thinking: false }
+                  ? { reasoning_effort: localReasoningEffort }
+                  : {}
                 : { enable_thinking: reasoningEnabled }
               : {}),
             ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),

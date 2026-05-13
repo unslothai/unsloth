@@ -520,8 +520,17 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
-        if reasoning_effort in ("low", "medium", "high"):
-            body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+        if reasoning_effort in (
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ):
+            body["reasoning"] = {"effort": reasoning_effort}
+            if reasoning_effort != "none":
+                body["reasoning"]["summary"] = "auto"
         elif enable_thinking is False:
             body["reasoning"] = {"effort": "none"}
         elif enable_thinking is True:
@@ -562,6 +571,7 @@ class ExternalProviderClient:
                 lines_gen = response.aiter_lines().__aiter__()
                 done_emitted = False
                 reasoning_open = False
+                reasoning_emitted = False
 
                 def _extract_reasoning_text(payload: Any) -> str:
                     if payload is None:
@@ -645,11 +655,12 @@ class ExternalProviderClient:
                                 summary_text = _extract_reasoning_text(
                                     item.get("summary")
                                 )
-                                if summary_text:
+                                if summary_text and not reasoning_emitted:
                                     if not reasoning_open:
                                         summary_text = f"<think>{summary_text}"
                                         reasoning_open = True
                                     yield _chunk_with_text(summary_text)
+                                    reasoning_emitted = True
 
                         elif isinstance(event_type, str) and "reasoning" in event_type:
                             reasoning_delta = _extract_reasoning_text(event)
@@ -658,6 +669,7 @@ class ExternalProviderClient:
                                     reasoning_delta = f"<think>{reasoning_delta}"
                                     reasoning_open = True
                                 yield _chunk_with_text(reasoning_delta)
+                                reasoning_emitted = True
 
                         elif event_type == "response.completed":
                             if reasoning_open:

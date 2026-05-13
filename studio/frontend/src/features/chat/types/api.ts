@@ -202,7 +202,14 @@ export interface OpenAIChatCompletionsRequest {
   audio_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
-  reasoning_effort?: "low" | "medium" | "high" | null;
+  reasoning_effort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | null;
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];

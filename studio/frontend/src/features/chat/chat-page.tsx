@@ -640,12 +640,23 @@ export function ChatPage(): ReactElement {
       provider?.providerType,
       selection.modelId,
     );
+    const state = useChatRuntimeStore.getState();
+    const preferredEffort = state.reasoningEffort;
+    const effortLevels = reasoningCaps.reasoningEffortLevels;
+    const clampedEffort = effortLevels.includes(preferredEffort)
+      ? preferredEffort
+      : effortLevels[0] ?? "low";
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
       reasoningStyle: reasoningCaps.reasoningStyle,
+      supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+      reasoningEffortLevels: effortLevels,
+      reasoningEffort: clampedEffort,
       reasoningEnabled: reasoningCaps.supportsReasoning
-        ? useChatRuntimeStore.getState().reasoningEnabled
+        ? reasoningCaps.supportsReasoningOff
+          ? state.reasoningEnabled
+          : true
         : false,
       supportsPreserveThinking: false,
     });
@@ -758,6 +769,11 @@ export function ChatPage(): ReactElement {
           selectedProvider?.providerType,
           selectedExternal?.modelId,
         );
+        const preferredEffort = store.reasoningEffort;
+        const effortLevels = reasoningCaps.reasoningEffortLevels;
+        const clampedEffort = effortLevels.includes(preferredEffort)
+          ? preferredEffort
+          : effortLevels[0] ?? "low";
         setInferenceParams({
           ...store.params,
           checkpoint: value,
@@ -766,8 +782,13 @@ export function ChatPage(): ReactElement {
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
+          supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+          reasoningEffortLevels: effortLevels,
+          reasoningEffort: clampedEffort,
           reasoningEnabled: reasoningCaps.supportsReasoning
-            ? useChatRuntimeStore.getState().reasoningEnabled
+            ? reasoningCaps.supportsReasoningOff
+              ? store.reasoningEnabled
+              : true
             : false,
           supportsPreserveThinking: false,
         });

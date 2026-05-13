@@ -31,6 +31,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { parseExternalModelId } from "@/features/chat/external-providers";
+import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -459,13 +462,38 @@ const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const externalSelection = parseExternalModelId(checkpoint);
+  const externalReasoningCaps =
+    externalSelection != null
+      ? getExternalReasoningCapabilities(
+          externalProviders.find((p) => p.id === externalSelection.providerId)
+            ?.providerType,
+          externalSelection.modelId,
+        )
+      : null;
+  const effectiveSupportsReasoningOff =
+    externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
+  const effectiveReasoningEffortLevels =
+    externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
+  const effectiveReasoningEnabled =
+    reasoningStyle === "reasoning_effort" && !effectiveSupportsReasoningOff
+      ? true
+      : reasoningEnabled;
   const disabled = !(modelLoaded && supportsReasoning);
+  const effortLabel =
+    reasoningEffort === "xhigh"
+      ? "Extra High"
+      : reasoningEffort.charAt(0).toUpperCase() + reasoningEffort.slice(1);
 
   if (reasoningStyle === "reasoning_effort") {
     return (
@@ -482,22 +510,43 @@ const ReasoningToggle: FC = () => {
             )}
             aria-label={`Reasoning effort: ${reasoningEffort}`}
           >
-            <LightbulbIcon className="size-3.5" />
+            {effectiveReasoningEnabled ? (
+              <LightbulbIcon className="size-3.5" />
+            ) : (
+              <LightbulbOffIcon className="size-3.5" />
+            )}
             <span>
-              Think:{" "}
-              {reasoningEffort.charAt(0).toUpperCase() +
-                reasoningEffort.slice(1)}
+              Think: {effectiveReasoningEnabled ? effortLabel : "None"}
             </span>
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {(["low", "medium", "high"] as const).map((level) => (
+          {effectiveSupportsReasoningOff && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setReasoningEnabled(false);
+                applyQwenThinkingParams(false);
+              }}
+            >
+              None
+              {!effectiveReasoningEnabled ? " \u2713" : ""}
+            </DropdownMenuItem>
+          )}
+          {effectiveReasoningEffortLevels
+            .filter((level) => level !== "none")
+            .map((level) => (
             <DropdownMenuItem
               key={level}
-              onSelect={() => setReasoningEffort(level)}
+              onSelect={() => {
+                setReasoningEffort(level);
+                setReasoningEnabled(true);
+                applyQwenThinkingParams(true);
+              }}
             >
-              {level.charAt(0).toUpperCase() + level.slice(1)}
-              {reasoningEffort === level ? " \u2713" : ""}
+              {level === "xhigh"
+                ? "Extra High"
+                : level.charAt(0).toUpperCase() + level.slice(1)}
+              {effectiveReasoningEnabled && reasoningEffort === level ? " \u2713" : ""}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>

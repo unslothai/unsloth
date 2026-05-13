@@ -18,7 +18,13 @@ import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { loadModel, validateModel } from "./api/chat-api";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { parseExternalModelId } from "./external-providers";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  type ReasoningEffort,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
+import { getExternalReasoningCapabilities } from "./provider-capabilities";
 import {
   type CompositionEvent,
   type KeyboardEvent,
@@ -64,6 +70,18 @@ function fileToBase64DataURL(file: File): Promise<string> {
     reader.onerror = () => reject(new Error("Failed to read image file"));
     reader.readAsDataURL(file);
   });
+}
+
+function formatReasoningEffortLabel(level: ReasoningEffort): string {
+  if (level === "xhigh") return "Extra High";
+  return level.charAt(0).toUpperCase() + level.slice(1);
+}
+
+function formatReasoningDisabledLabel(
+  supportsReasoningOff: boolean,
+  isExternalOpenAIReasoning: boolean,
+): "None" | "Off" {
+  return supportsReasoningOff && isExternalOpenAIReasoning ? "None" : "Off";
 }
 
 function useDictation(
@@ -253,6 +271,8 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -262,6 +282,8 @@ export function SharedComposer({
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
   const supportsPreserveThinking = useChatRuntimeStore((s) => s.supportsPreserveThinking);
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
@@ -271,6 +293,26 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const externalSelection = parseExternalModelId(checkpoint);
+  const externalReasoningCaps =
+    externalSelection != null
+      ? getExternalReasoningCapabilities(
+          externalProviders.find((p) => p.id === externalSelection.providerId)
+            ?.providerType,
+          externalSelection.modelId,
+        )
+      : null;
+  const isExternalOpenAIReasoning =
+    externalReasoningCaps?.supportsReasoning === true &&
+    externalReasoningCaps.reasoningStyle === "reasoning_effort";
+  const effectiveSupportsReasoningOff =
+    externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
+  const effectiveReasoningEffortLevels =
+    externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
+  const effectiveReasoningEnabled =
+    reasoningStyle === "reasoning_effort" && !effectiveSupportsReasoningOff
+      ? true
+      : reasoningEnabled;
   const reasoningDisabled = !modelLoaded || !supportsReasoning;
   const showReasoningControl = supportsReasoning || reasoningAlwaysOn;
   const toolsDisabled = !modelLoaded || !supportsTools;
@@ -641,31 +683,37 @@ export function SharedComposer({
                   )}
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
-                  {reasoningEnabled ? (
+                  {effectiveReasoningEnabled ? (
                     <LightbulbIcon className="size-3.5" />
                   ) : (
                     <LightbulbOffIcon className="size-3.5" />
                   )}
                   <span>
                     Think:{" "}
-                    {reasoningEnabled
-                      ? reasoningEffort.charAt(0).toUpperCase() +
-                        reasoningEffort.slice(1)
-                      : "Off"}
+                    {effectiveReasoningEnabled
+                      ? formatReasoningEffortLabel(reasoningEffort)
+                      : formatReasoningDisabledLabel(
+                          effectiveSupportsReasoningOff,
+                          isExternalOpenAIReasoning,
+                        )}
                   </span>
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setReasoningEnabled(false);
-                    applyQwenThinkingParams(false);
-                  }}
-                >
-                  Off
-                  {!reasoningEnabled ? " \u2713" : ""}
-                </DropdownMenuItem>
-                {(["low", "medium", "high"] as const).map((level) => (
+                {effectiveSupportsReasoningOff && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setReasoningEnabled(false);
+                      applyQwenThinkingParams(false);
+                    }}
+                  >
+                    {isExternalOpenAIReasoning ? "None" : "Off"}
+                    {!effectiveReasoningEnabled ? " \u2713" : ""}
+                  </DropdownMenuItem>
+                )}
+                {effectiveReasoningEffortLevels
+                  .filter((level) => level !== "none")
+                  .map((level) => (
                   <DropdownMenuItem
                     key={level}
                     onSelect={() => {
@@ -674,8 +722,8 @@ export function SharedComposer({
                       applyQwenThinkingParams(true);
                     }}
                   >
-                    {level.charAt(0).toUpperCase() + level.slice(1)}
-                    {reasoningEnabled && reasoningEffort === level ? " \u2713" : ""}
+                    {formatReasoningEffortLabel(level)}
+                    {effectiveReasoningEnabled && reasoningEffort === level ? " \u2713" : ""}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
