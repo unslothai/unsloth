@@ -331,7 +331,10 @@ class ExternalProviderClient:
             body["system"] = system
         allowed_efforts = (
             ("none", "low", "medium", "high", "xhigh")
-            if (_ANTHROPIC_XHIGH_EFFORT.match(model) or _ANTHROPIC_MAX_EFFORT.match(model))
+            if (
+                _ANTHROPIC_XHIGH_EFFORT.match(model)
+                or _ANTHROPIC_MAX_EFFORT.match(model)
+            )
             else ("none", "low", "medium", "high")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
