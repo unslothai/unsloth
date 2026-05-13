@@ -489,6 +489,8 @@ const ReasoningToggle: FC = () => {
     reasoningStyle === "reasoning_effort" && !effectiveSupportsReasoningOff
       ? true
       : reasoningEnabled;
+  const effectiveReasoningVisualEnabled =
+    effectiveReasoningEnabled && reasoningEffort !== "none";
   const disabled = !(modelLoaded && supportsReasoning);
   const effortLabel =
     reasoningEffort === "xhigh"
@@ -506,17 +508,19 @@ const ReasoningToggle: FC = () => {
               "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
               disabled
                 ? "cursor-not-allowed opacity-40"
-                : "bg-primary/10 text-primary hover:bg-primary/20",
+                : effectiveReasoningVisualEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "text-muted-foreground hover:bg-muted-foreground/15",
             )}
             aria-label={`Reasoning effort: ${reasoningEffort}`}
           >
-            {effectiveReasoningEnabled ? (
+            {effectiveReasoningVisualEnabled ? (
               <LightbulbIcon className="size-3.5" />
             ) : (
               <LightbulbOffIcon className="size-3.5" />
             )}
             <span>
-              Think: {effectiveReasoningEnabled ? effortLabel : "None"}
+              Think: {effectiveReasoningVisualEnabled ? effortLabel : "None"}
             </span>
           </button>
         </DropdownMenuTrigger>
@@ -529,7 +533,7 @@ const ReasoningToggle: FC = () => {
               }}
             >
               None
-              {!effectiveReasoningEnabled ? " \u2713" : ""}
+              {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
             </DropdownMenuItem>
           )}
           {effectiveReasoningEffortLevels
@@ -546,7 +550,7 @@ const ReasoningToggle: FC = () => {
               {level === "xhigh"
                 ? "Extra High"
                 : level.charAt(0).toUpperCase() + level.slice(1)}
-              {effectiveReasoningEnabled && reasoningEffort === level ? " \u2713" : ""}
+              {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>

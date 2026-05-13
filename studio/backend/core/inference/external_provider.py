@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # still accept it. Match the 4-7 line specifically so we keep the knob
 # live on every other Claude generation.
 _ANTHROPIC_TOP_K_DEPRECATED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+_ANTHROPIC_ADAPTIVE_THINKING = re.compile(
+    r"^claude-(?:opus|sonnet|haiku)-4-[67](?:[-.]|$)"
+)
+_ANTHROPIC_MANUAL_THINKING = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-5(?:[-.]|$)")
+_ANTHROPIC_XHIGH_EFFORT = re.compile(r"^claude-opus-4-7(?:[-.]|$)")
 
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
@@ -92,7 +97,14 @@ class ExternalProviderClient:
         """
         if not self._is_openai_compatible():
             async for line in self._stream_anthropic(
-                messages, model, temperature, top_p, max_tokens, top_k
+                messages,
+                model,
+                temperature,
+                top_p,
+                max_tokens,
+                top_k,
+                enable_thinking,
+                reasoning_effort,
             ):
                 yield line
             return
@@ -226,6 +238,8 @@ class ExternalProviderClient:
         top_p: float,
         max_tokens: Optional[int],
         top_k: Optional[int] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -314,6 +328,29 @@ class ExternalProviderClient:
             body["top_k"] = top_k
         if system:
             body["system"] = system
+        allowed_efforts = (
+            ("none", "low", "medium", "high", "xhigh")
+            if _ANTHROPIC_XHIGH_EFFORT.match(model)
+            else ("none", "low", "medium", "high")
+        )
+        effort = reasoning_effort if reasoning_effort in allowed_efforts else None
+        if effort is None:
+            if enable_thinking is False:
+                effort = "none"
+            elif enable_thinking is True:
+                effort = "medium"
+        # Normalize one semantic Thinking control into Anthropic's two model-era
+        # APIs: adaptive effort on Claude 4.6/4.7, manual budget_tokens on 4.5.
+        if effort and effort != "none":
+            if _ANTHROPIC_ADAPTIVE_THINKING.match(model):
+                body["thinking"] = {"type": "adaptive"}
+                body["output_config"] = {"effort": effort}
+            elif _ANTHROPIC_MANUAL_THINKING.match(model):
+                budget_tokens = {"low": 1024, "medium": 2048, "high": 4096}[effort]
+                body["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": budget_tokens,
+                }
 
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"

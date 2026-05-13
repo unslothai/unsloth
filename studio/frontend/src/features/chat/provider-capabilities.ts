@@ -157,6 +157,53 @@ export function getProviderCapabilities(
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
 
+function resolveAnthropicReasoningEffortCapabilities(modelId: string): {
+  supportsReasoning: boolean;
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"];
+} {
+  const normalized = modelId.trim().toLowerCase();
+  if (normalized.startsWith("claude-opus-4-7")) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"],
+    };
+  }
+  // Claude 4.7 and 4.6 use adaptive thinking with effort controls.
+  if (
+    normalized.startsWith("claude-sonnet-4-7") ||
+    normalized.startsWith("claude-haiku-4-7") ||
+    normalized.startsWith("claude-opus-4-6") ||
+    normalized.startsWith("claude-sonnet-4-6") ||
+    normalized.startsWith("claude-haiku-4-6")
+  ) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "medium", "high"],
+    };
+  }
+  // Claude 4.5 still uses manual thinking budgets; we keep the same semantic
+  // UI levels and map them server-side.
+  if (
+    normalized.startsWith("claude-opus-4-5") ||
+    normalized.startsWith("claude-sonnet-4-5") ||
+    normalized.startsWith("claude-haiku-4-5")
+  ) {
+    return {
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "medium", "high"],
+    };
+  }
+  return {
+    supportsReasoning: false,
+    supportsReasoningOff: false,
+    reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+  };
+}
+
 function resolveOpenAIReasoningEffortCapabilities(modelId: string): {
   supportsReasoning: boolean;
   supportsReasoningOff: boolean;
@@ -222,12 +269,9 @@ function resolveOpenAIReasoningEffortCapabilities(modelId: string): {
 }
 
 /**
- * Resolve whether an external model should expose the chat "Think" control.
- *
- * OpenAI model families are not uniform:
- * - `o3*`, `gpt-5.4*`, and `gpt-5.5*` support `reasoning.effort`
- * - `gpt-5.3-codex` supports a boolean thinking toggle
- * - other OpenAI families in our picker should not receive reasoning params
+ * resolve external-model thinking capabilities.
+ * provider-specific matching lives in the OpenAI/Anthropic resolvers.
+ * other providers default to no reasoning controls.
  */
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
@@ -252,7 +296,8 @@ export function getExternalReasoningCapabilities(
       : normalizedModel;
 
   const isOpenAIProvider = normalizedProvider === "openai";
-  if (!isOpenAIProvider) {
+  const isAnthropicProvider = normalizedProvider === "anthropic";
+  if (!isOpenAIProvider && !isAnthropicProvider) {
     return {
       supportsReasoning: false,
       reasoningStyle: "enable_thinking",
@@ -262,14 +307,16 @@ export function getExternalReasoningCapabilities(
     };
   }
 
-  const openAICaps = resolveOpenAIReasoningEffortCapabilities(modelForMatching);
-  if (openAICaps.supportsReasoning) {
+  const providerCaps = isOpenAIProvider
+    ? resolveOpenAIReasoningEffortCapabilities(modelForMatching)
+    : resolveAnthropicReasoningEffortCapabilities(modelForMatching);
+  if (providerCaps.supportsReasoning) {
     return {
       supportsReasoning: true,
       reasoningStyle: "reasoning_effort",
       reasoningAlwaysOn: false,
-      supportsReasoningOff: openAICaps.supportsReasoningOff,
-      reasoningEffortLevels: openAICaps.reasoningEffortLevels,
+      supportsReasoningOff: providerCaps.supportsReasoningOff,
+      reasoningEffortLevels: providerCaps.reasoningEffortLevels,
     };
   }
 
