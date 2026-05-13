@@ -65,12 +65,16 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "gemini": {
         "display_name": "Google Gemini",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        # Curated lineup — Google's /v1beta/openai/models returns dozens
+        # of historical / experimental / embedding ids. Cap to the current
+        # 3.x family plus the rolling `*-latest` aliases.
         "default_models": [
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-flash-lite",
             "gemini-3-flash-preview",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
+            "gemini-pro-latest",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
         ],
         "supports_streaming": True,
         "supports_vision": True,
@@ -78,6 +82,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "OpenAI-compatible endpoint. API key from https://aistudio.google.com/apikey.",
+        "model_id_allowlist": re.compile(
+            r"^(gemini-3\.1-flash-lite|gemini-3-flash-preview|"
+            r"gemini-3\.1-pro-preview|gemini-pro-latest|"
+            r"gemini-flash-latest|gemini-flash-lite-latest)$"
+        ),
     },
     "deepseek": {
         "display_name": "DeepSeek",
@@ -144,6 +153,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
+        # Both k2.6 and k2.5 are reasoning-class. The API rejects custom
+        # sampling: "invalid temperature: only 1 is allowed for this model"
+        # (and the same shape for top_p). Strip both fields from the
+        # outbound body so the server falls back to its required defaults.
+        "body_omit": ("temperature", "top_p"),
     },
     "qwen": {
         "display_name": "Qwen",

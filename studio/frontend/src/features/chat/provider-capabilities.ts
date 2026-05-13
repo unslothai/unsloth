@@ -98,6 +98,20 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   mistral: OPENAI_COMPAT_BASE,
   gemini: OPENAI_COMPAT_BASE,
+  // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and
+  // top_p to fixed defaults and 400s on any other value:
+  //   "invalid temperature: only 1 is allowed for this model".
+  // Hide both sliders so the user is not offered knobs the model
+  // silently overrides. Backend additionally strips these fields via
+  // PROVIDER_REGISTRY['kimi']['body_omit'].
+  kimi: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: true,
+  },
   // DeepSeek deprecated presence/frequency penalty in their current docs.
   deepseek: {
     temperature: true,
@@ -107,7 +121,6 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
   },
-  kimi: OPENAI_COMPAT_BASE,
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops params the target model does not support, so we

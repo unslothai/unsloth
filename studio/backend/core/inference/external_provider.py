@@ -130,6 +130,18 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
+        # Strip body fields a provider's registry entry declares unusable —
+        # reasoning-class models that lock these to fixed defaults (e.g.
+        # Kimi k2.5/k2.6 only accept temperature=1, top_p=1) 400 otherwise.
+        # The frontend capability map already hides the matching sliders;
+        # this is the matching guard for the pydantic default that the
+        # route layer would otherwise still fill in.
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        for field in provider_info.get("body_omit", ()):
+            body.pop(field, None)
+
         url = f"{self.base_url}/chat/completions"
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
