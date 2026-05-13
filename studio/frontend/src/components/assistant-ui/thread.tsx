@@ -216,7 +216,7 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
     const hour = new Date().getHours();
     if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
     else if (hour >= 12 && hour < 17) setCurrentEmoji("sloth magnify final.png");
-    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth huglove large.png");
+    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
     else setCurrentEmoji("unsloth-gem.png");
   }, []);
 
