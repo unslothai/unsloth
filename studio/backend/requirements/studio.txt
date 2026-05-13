@@ -3,6 +3,7 @@ typer
 fastapi
 uvicorn
 pydantic
+packaging
 matplotlib
 pandas
 nest_asyncio

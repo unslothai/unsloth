@@ -17,7 +17,9 @@ Pattern follows core/data_recipe/jobs/manager.py.
 import json as _json
 import math
 import multiprocessing as mp
+import os
 import queue
+import shutil
 import threading
 import time
 import structlog
@@ -33,8 +35,53 @@ from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
     run_without_native_path_secret,
 )
+from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+
+def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+    """Remove ``checkpoint-<int>`` subdirs after a cancelled run.
+    Only paths whose realpath is under outputs_root are touched."""
+    out = Path(output_dir)
+    if not out.exists():
+        return
+    try:
+        out_real = out.resolve()
+        out_root_real = Path(outputs_root()).resolve()
+    except OSError:
+        return
+    try:
+        out_real.relative_to(out_root_real)
+    except ValueError:
+        # Refuse to delete anything outside the configured outputs root.
+        logger.warning(
+            "Skipping checkpoint cleanup - %s is not under outputs_root %s",
+            out_real,
+            out_root_real,
+        )
+        return
+    removed = 0
+    for entry in out.iterdir() if out.is_dir() else []:
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if not name.startswith("checkpoint-"):
+            continue
+        tail = name[len("checkpoint-") :]
+        if not tail.isdigit():
+            continue
+        try:
+            shutil.rmtree(entry, ignore_errors = False)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", entry, exc)
+    logger.info(
+        "Cancelled-run cleanup removed %d checkpoint dir(s) under %s",
+        removed,
+        out,
+    )
+
 
 _CTX = mp.get_context("spawn")
 
@@ -316,6 +363,8 @@ class TrainingBackend:
                 )
                 self._proc.terminate()
             proc = self._proc
+            cancelled = self._cancel_requested
+            output_dir = self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -327,6 +376,17 @@ class TrainingBackend:
         # (8s covers SQLite's default 5s lock timeout plus execution overhead)
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
+
+        # Drop checkpoint-* dirs on explicit cancel only; stop-and-save
+        # keeps its artifacts.
+        if cancelled and output_dir:
+            try:
+                _cleanup_cancelled_checkpoints(output_dir)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up cancelled-run checkpoints under %s",
+                    output_dir,
+                )
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
