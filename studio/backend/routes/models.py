@@ -2712,7 +2712,7 @@ async def get_gguf_variants(
             ]
             if downloaded_filenames:
                 remote_path_infos = get_paths_info(
-                    repo_id = repo_id, paths = downloaded_filenames
+                    repo_id = repo_id, paths = downloaded_filenames, token=hf_token
                 )
                 for path_info in remote_path_infos:
                     remote_blob_id = (
