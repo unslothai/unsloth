@@ -21,7 +21,7 @@ def _is_mlx_available():
     # Transitional import barrier: while the paired unsloth-zoo MLX runtime
     # rollout is in flight, keep non-Apple-Silicon imports from touching
     # unsloth_zoo here. After both PRs are released together and
-    # unsloth_zoo.mlx.runtime is guaranteed to be import-safe on GPU hosts,
+    # unsloth_zoo.mlx is guaranteed to be import-safe on GPU hosts,
     # this helper can collapse back to the centralized zoo runtime call below.
     if (
         os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
@@ -31,7 +31,7 @@ def _is_mlx_available():
     ):
         return False
     try:
-        from unsloth_zoo.mlx.runtime import is_mlx_available
+        from unsloth_zoo.mlx import is_mlx_available
     except ImportError:
         return False
     return is_mlx_available()

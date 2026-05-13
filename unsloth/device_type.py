@@ -31,7 +31,7 @@ from unsloth_zoo.utils import Version
 
 def is_mlx_available():
     try:
-        from unsloth_zoo.mlx.runtime import is_mlx_available as _is_mlx_available
+        from unsloth_zoo.mlx import is_mlx_available as _is_mlx_available
     except ImportError:
         return False
     return _is_mlx_available()

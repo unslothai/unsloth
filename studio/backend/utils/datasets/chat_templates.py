@@ -30,7 +30,7 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 
 def _is_mlx_runtime() -> bool:
     try:
-        from unsloth_zoo.mlx.runtime import is_mlx_available
+        from unsloth_zoo.mlx import is_mlx_available
     except ImportError:
         return False
     return is_mlx_available()
