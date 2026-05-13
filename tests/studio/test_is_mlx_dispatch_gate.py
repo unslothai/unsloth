@@ -64,20 +64,26 @@ def test_is_mlx_gate_uses_three_required_predicates():
             target = node.value
             break
     assert target is not None, "_IS_MLX assignment not found in unsloth/__init__.py"
-    assert isinstance(target, ast.BoolOp) and isinstance(
-        target.op, ast.And
-    ), "_IS_MLX must be a BoolOp(And) of platform + mlx checks"
-
     expr_src = ast.unparse(target)
     assert (
-        "platform.system()" in expr_src and "Darwin" in expr_src
-    ), "_IS_MLX must check platform.system() == 'Darwin'"
+        expr_src == "_is_mlx_available()"
+    ), "_IS_MLX must delegate to the shared MLX runtime gate"
+
+    helper = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_is_mlx_available":
+            helper = node
+            break
+    assert helper is not None, "_is_mlx_available helper not found"
+
+    helper_src = ast.unparse(helper)
     assert (
-        "platform.machine()" in expr_src and "arm64" in expr_src
-    ), "_IS_MLX must check platform.machine() == 'arm64'"
-    assert (
-        "find_spec" in expr_src and "'mlx'" in expr_src
-    ), "_IS_MLX must check importlib.util.find_spec('mlx')"
+        "unsloth_zoo" in helper_src
+        and "mlx" in helper_src
+        and "runtime.py" in helper_src
+        and "spec_from_file_location" in helper_src
+        and "is_mlx_available" in helper_src
+    ), "_IS_MLX helper must probe unsloth_zoo/mlx/runtime.py without importing unsloth_zoo"
 
 
 # ---------------------------------------------------------------------------

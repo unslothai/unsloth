@@ -90,10 +90,13 @@ class TrainingStartRequest(BaseModel):
         ge = 0,
         description = "Global gradient norm clipping threshold. Set 0 to disable.",
     )
-    max_grad_value: float = Field(
-        1.0,
+    max_grad_value: Optional[float] = Field(
+        None,
         ge = 0,
-        description = "Elementwise gradient value clipping threshold. Set 0 to disable.",
+        description = (
+            "Elementwise gradient value clipping threshold. Set 0 to disable. "
+            "If omitted, MLX defaults to 1 unless max_grad_norm is set."
+        ),
     )
     random_seed: int = Field(42, description = "Random seed")
     packing: bool = Field(False, description = "Enable sequence packing")

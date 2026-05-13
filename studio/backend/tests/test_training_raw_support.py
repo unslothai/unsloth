@@ -70,6 +70,50 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertTrue(config["load_in_4bit"])
         self.assertEqual(config["embedding_learning_rate"], 1e-5)
 
+    def test_training_backend_forwards_grad_clipping_controls(self):
+        backend = TrainingBackend()
+
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        with (
+            patch(
+                "core.training.training.prepare_gpu_selection",
+                return_value = ([0], {"selection_mode": "auto"}),
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread",
+                return_value = DummyThread(),
+            ),
+        ):
+            backend.start_training(
+                job_id = "test-grad-clip",
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                max_grad_norm = 0.7,
+                max_grad_value = 0.0,
+            )
+
+        config = mock_process.call_args.kwargs["kwargs"]["config"]
+        self.assertEqual(config["max_grad_norm"], 0.7)
+        self.assertEqual(config["max_grad_value"], 0.0)
+
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(
             "training_route_module_raw_support",
