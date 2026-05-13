@@ -23,7 +23,10 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  type ReasoningEffort,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
@@ -142,6 +145,15 @@ function normalizeSpeculativeType(v: string | null | undefined): string | null {
   if (v == null) return null;
   if (v === "default" || v === "off") return v;
   return "default";
+}
+
+type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function clampLocalReasoningEffort(value: ReasoningEffort): LocalReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  return "low";
 }
 
 export function useChatModelRuntime() {
@@ -269,9 +281,9 @@ export function useChatModelRuntime() {
         // Otherwise we'd clobber the values the load path just applied and
         // the UI would appear to revert the user's changes.
         const prevState = useChatRuntimeStore.getState();
-        const clampedReasoningEffort = reasoningEffortLevels.includes(prevState.reasoningEffort)
-          ? prevState.reasoningEffort
-          : "low";
+        const clampedReasoningEffort = clampLocalReasoningEffort(
+          prevState.reasoningEffort,
+        );
         const nextDefaultChatTemplate =
           statusRes.chat_template === undefined
             ? prevState.defaultChatTemplate
@@ -588,11 +600,9 @@ export function useChatModelRuntime() {
                 ? (["low", "medium", "high"] as const)
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
-            const clampedReasoningEffort = reasoningEffortLevels.includes(
+            const clampedReasoningEffort = clampLocalReasoningEffort(
               existingReasoningEffort,
-            )
-              ? existingReasoningEffort
-              : "low";
+            );
             const ggufMaxContextLength = reportedMaxCtx;
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,

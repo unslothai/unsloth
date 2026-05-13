@@ -20,7 +20,10 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 import { db } from "../db";
-import type { OpenAIMessageContent } from "../types/api";
+import type {
+  OpenAIChatCompletionsRequest,
+  OpenAIMessageContent,
+} from "../types/api";
 import {
   getExternalProviderApiKey,
   loadExternalProviders,
@@ -907,7 +910,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
-        const externalReasoningCaps =
+        const externalReasoningCaps: ReturnType<
+          typeof getExternalReasoningCapabilities
+        > =
           externalSelection && externalProvider
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
@@ -920,11 +925,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 supportsReasoningOff: false,
                 reasoningEffortLevels: ["low", "medium", "high"] as const,
               };
-        const selectedExternalEffort = externalReasoningCaps.reasoningEffortLevels.includes(
-          reasoningEffort,
-        )
-          ? reasoningEffort
-          : externalReasoningCaps.reasoningEffortLevels[0] ?? "low";
+        type RequestReasoningEffort = Extract<
+          NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]>,
+          "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+        >;
+        const fallbackExternalEffort =
+          (externalReasoningCaps.reasoningEffortLevels[0] ??
+            "low") as RequestReasoningEffort;
+        const selectedExternalEffort: RequestReasoningEffort =
+          externalReasoningCaps.reasoningEffortLevels.includes(reasoningEffort)
+            ? reasoningEffort
+            : fallbackExternalEffort;
         const localReasoningEffort =
           reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
             ? reasoningEffort
@@ -934,7 +945,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           !externalReasoningCaps.supportsReasoningOff
             ? true
             : reasoningEnabled;
-        const buildRequestPayload = async (forceRefreshPublicKey = false) => {
+        const buildRequestPayload = async (
+          forceRefreshPublicKey = false,
+        ): Promise<OpenAIChatCompletionsRequest> => {
           if (externalSelection && externalProvider) {
             return {
               model: externalSelection.modelId,
@@ -975,8 +988,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     : externalReasoningCaps.supportsReasoningOff
                       ? { reasoning_effort: "none" }
                       : {
-                          reasoning_effort:
-                            externalReasoningCaps.reasoningEffortLevels[0] ?? "low",
+                          reasoning_effort: fallbackExternalEffort,
                         }
                   : { enable_thinking: reasoningEnabled }
                 : {}),

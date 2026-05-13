@@ -656,7 +656,7 @@ export function ChatPage(): ReactElement {
         ? reasoningCaps.supportsReasoningOff
           ? state.reasoningEnabled
           : true
-        : false,
+        : state.reasoningEnabled,
       supportsPreserveThinking: false,
     });
   }, [externalProviders, inferenceParams.checkpoint]);
@@ -788,7 +788,7 @@ export function ChatPage(): ReactElement {
             ? reasoningCaps.supportsReasoningOff
               ? store.reasoningEnabled
               : true
-            : false,
+            : store.reasoningEnabled,
           supportsPreserveThinking: false,
         });
         return;
