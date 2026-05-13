@@ -425,14 +425,6 @@ class ChatMessage(BaseModel):
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
-        # Enforce the per-role OpenAI spec shape at the request boundary.
-        # Without this, malformed messages (e.g. user entries with no
-        # content, tool_calls on a user/system role, role="tool" without
-        # tool_call_id) would be silently forwarded to llama-server via
-        # the passthrough path, surfacing as opaque upstream errors or
-        # broken tool-call reconciliation downstream.
-
-        # Tool-call metadata must appear only on the appropriate role.
         if self.tool_calls is not None and self.role != "assistant":
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
@@ -440,23 +432,20 @@ class ChatMessage(BaseModel):
         if self.name is not None and self.role != "tool":
             raise ValueError('"name" is only valid on role="tool" messages.')
 
-        # Per-role content requirements. OpenAI-compatible clients may send
-        # ``content=""`` for image-only turns when the image travels in a
-        # companion field such as Studio's ``image_base64`` extension, so treat
-        # empty strings as present content for user/system messages.
         if self.role == "tool":
             if not self.tool_call_id:
-                raise ValueError(
-                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
-                )
+                # Frontend's second-round POST drops the streamed id;
+                # synthesise one so the request round-trips.
+                import secrets as _secrets
+
+                self.tool_call_id = f"call_{_secrets.token_hex(8)}"
             if not self.content:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":
-            # Assistant messages may omit content when tool_calls is set.
-            if not self.content and not self.tool_calls:
-                raise ValueError(
-                    'role="assistant" messages require either "content" or "tool_calls".'
-                )
+            # Tolerate the post-Stop empty-assistant sentinel by
+            # collapsing content="" to None.
+            if (self.content == "" or self.content == []) and not self.tool_calls:
+                self.content = None
         else:  # "user" | "system"
             if self.content is None or self.content == []:
                 raise ValueError(f'role="{self.role}" messages require "content".')

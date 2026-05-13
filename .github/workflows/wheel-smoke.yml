@@ -57,6 +57,12 @@ jobs:
         run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Build frontend
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
         run: |
           cd studio/frontend
           npm ci --no-fund --no-audit

@@ -17,10 +17,41 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+type FastApiValidationError = {
+  loc?: unknown[];
+  msg?: string;
+};
+
+function formatDetail(detail: unknown): string | null {
+  if (typeof detail === "string" && detail) return detail;
+  if (!Array.isArray(detail)) return null;
+  const parts = detail
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return "";
+      const { loc, msg } = entry as FastApiValidationError;
+      const path = Array.isArray(loc)
+        ? loc.filter((segment) => segment !== "body").join(".")
+        : "";
+      const message = typeof msg === "string" ? msg : "";
+      if (path && message) return `${path}: ${message}`;
+      return path || message;
+    })
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
 async function readError(response: Response): Promise<string> {
   try {
-    const payload = (await response.json()) as { detail?: string; message?: string };
-    return payload.detail || payload.message || `Request failed (${response.status})`;
+    const payload = (await response.json()) as {
+      detail?: unknown;
+      message?: string;
+    };
+    const formattedDetail = formatDetail(payload.detail);
+    if (formattedDetail) return formattedDetail;
+    if (typeof payload.message === "string" && payload.message) {
+      return payload.message;
+    }
+    return `Request failed (${response.status})`;
   } catch {
     return `Request failed (${response.status})`;
   }

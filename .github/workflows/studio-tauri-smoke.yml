@@ -56,12 +56,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
         with:
           workspaces: studio/src-tauri -> target
 
       - name: Install pinned Tauri CLI (matches release-desktop.yml)
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI version
         run: |
@@ -74,6 +80,12 @@ jobs:
 
       - name: Frontend build (npm ci, vite)
         working-directory: studio/frontend
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
         run: |
           npm ci --no-fund --no-audit
           npm run build
