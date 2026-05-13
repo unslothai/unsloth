@@ -528,6 +528,47 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
 
 class FastSentenceTransformer(FastModel):
     @staticmethod
+    def _save_base_config_for_processor_resume(config, output_path):
+        """
+        sentence-transformers >= 5.4 reloads Transformer modules through
+        AutoProcessor. Tokenizer-only checkpoint roots make AutoProcessor fall
+        back to AutoConfig, so PEFT adapter checkpoints still need the base
+        config.json next to adapter_config.json.
+        """
+        config_path = os.path.join(output_path, "config.json")
+        if os.path.exists(config_path):
+            return
+
+        if config is None or not getattr(config, "model_type", None):
+            return
+        if hasattr(config, "save_pretrained"):
+            config.save_pretrained(output_path)
+        elif hasattr(config, "to_json_file"):
+            config.to_json_file(config_path)
+
+    @staticmethod
+    def _patch_transformer_module_save_config(transformer_module, base_config = None):
+        if base_config is not None and getattr(base_config, "model_type", None):
+            transformer_module._unsloth_base_config = base_config
+
+        if getattr(transformer_module, "_unsloth_save_config_patched", False):
+            return transformer_module
+
+        original_save = transformer_module.save
+
+        def _save_with_base_config(self, output_path, *args, **kwargs):
+            original_save(output_path, *args, **kwargs)
+            FastSentenceTransformer._save_base_config_for_processor_resume(
+                getattr(self, "_unsloth_base_config", None), output_path
+            )
+
+        transformer_module.save = types.MethodType(
+            _save_with_base_config, transformer_module
+        )
+        transformer_module._unsloth_save_config_patched = True
+        return transformer_module
+
+    @staticmethod
     def _read_pooling_mode(model_name, token):
         """
         Read the pooling mode from the modules.json file if it exists, otherwise return "mean".
@@ -1157,6 +1198,9 @@ class FastSentenceTransformer(FastModel):
                 config_keys.append(config_key)
         transformer_module.config_keys = config_keys
         transformer_module.save_in_root = True
+        FastSentenceTransformer._patch_transformer_module_save_config(
+            transformer_module, getattr(model, "config", None)
+        )
 
         if hasattr(model, "config"):
             model.config.tokenizer_class = tokenizer.__class__.__name__
@@ -1644,6 +1688,9 @@ class FastSentenceTransformer(FastModel):
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
             st_model.no_modules = False
+            FastSentenceTransformer._patch_transformer_module_save_config(
+                st_model[0], getattr(st_model[0].auto_model, "config", None)
+            )
 
             # Add save methods
             def _save_pretrained_merged(self, save_directory, **save_kwargs):
@@ -2067,6 +2114,9 @@ class FastSentenceTransformer(FastModel):
                     transformer_module.model = peft_model
                 else:
                     transformer_module.auto_model = peft_model
+                FastSentenceTransformer._patch_transformer_module_save_config(
+                    transformer_module, getattr(inner_model, "config", None)
+                )
 
                 # Store compile info for auto-compile at trainer time
                 # torch.compile is deferred until training starts so we can check max_steps
@@ -2121,6 +2171,9 @@ class FastSentenceTransformer(FastModel):
                 transformer_module.model = peft_model
             else:
                 transformer_module.auto_model = peft_model
+            FastSentenceTransformer._patch_transformer_module_save_config(
+                transformer_module, getattr(inner_model, "config", None)
+            )
             return model
         else:
             return FastModel.get_peft_model(
