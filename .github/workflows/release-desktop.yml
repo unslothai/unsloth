@@ -35,7 +35,7 @@ jobs:
       pypi_version: ${{ steps.prepare.outputs.pypi_version }}
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Validate release versions
         id: prepare
@@ -323,7 +323,7 @@ jobs:
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       # ── Linux dependencies ──
       - name: Install Linux dependencies
@@ -334,7 +334,7 @@ jobs:
 
       # ── Node.js ──
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
 
@@ -490,7 +490,7 @@ jobs:
           git diff -- Cargo.toml Cargo.lock
 
       - name: Rust cache
-        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: 'studio/src-tauri -> target'
 
