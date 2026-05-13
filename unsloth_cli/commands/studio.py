@@ -785,55 +785,9 @@ def _run_setup_script(*, verbose: bool = False) -> None:
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
 
     if platform.system() == "Windows":
-<<<<<<< HEAD
-        powershell_args = ["powershell.exe"]
-        if _should_hide_windows_subprocesses():
-            powershell_args.extend(
-                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
-            )
-        # Use -Command + `*>&1` instead of -File so setup.ps1's
-        # Write-Host output (PowerShell Information stream / #6) is
-        # merged into the success stream and reaches the parent's
-        # stdout. With -File, Information stream output is dropped
-        # whenever stdout is a pipe, which is exactly the situation
-        # CI hits with `unsloth studio update --local 2>&1 | tee
-        # logs/update.log`. Single-quote escaping handles paths that
-        # contain apostrophes.
-        script_pwsh_literal = str(script).replace("'", "''")
-        powershell_args.extend(
-            [
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                f"& '{script_pwsh_literal}' *>&1",
-            ]
-        )
-        # Explicitly hand stdin/stdout/stderr to the child so the
-        # CI tee actually sees setup.ps1's output. Without this,
-        # subprocess.run on Windows uses close_fds=True (default,
-        # since Python 3.7) which sets bInheritHandles=False on
-        # CreateProcess. With CREATE_NO_WINDOW also set (via
-        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
-        # child has neither a console nor any inherited std
-        # handles, so PowerShell's Write-Host -- and even
-        # [Console]::Out.WriteLine -- writes to nothing. Passing
-        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
-        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
-        # explicitly inheritable, which works alongside
-        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
-        # CI was the smoking gun (run 25533694490 and 25534292239).
-=======
->>>>>>> e2252b36 (fix failed to start on docker)
         result = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             env = env,
-<<<<<<< HEAD
-            stdin = _stream_for_subprocess(sys.stdin),
-            stdout = _stream_for_subprocess(sys.stdout),
-            stderr = _stream_for_subprocess(sys.stderr),
-            **_windows_hidden_subprocess_kwargs(),
-=======
->>>>>>> e2252b36 (fix failed to start on docker)
         )
     else:
         result = subprocess.run(["bash", str(script)], env = env)
@@ -889,7 +843,6 @@ def update(
 # ── unsloth studio reset-password ────────────────────────────────────
 
 
-<<<<<<< HEAD
 @studio_app.command("desktop-capabilities", hidden = True)
 def desktop_capabilities(
     json_output: bool = typer.Option(
@@ -930,8 +883,6 @@ def provision_desktop_auth():
     typer.echo("Desktop auth ready.")
 
 
-=======
->>>>>>> e2252b36 (fix failed to start on docker)
 @studio_app.command("reset-password")
 def reset_password():
     """Reset the Studio admin password.
