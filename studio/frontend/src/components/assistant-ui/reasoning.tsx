@@ -19,10 +19,8 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Idea01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon, CheckIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -128,10 +126,7 @@ function ReasoningTrigger({
       )}
       {...props}
     >
-      <HugeiconsIcon
-        icon={Idea01Icon}
-        className="aui-reasoning-trigger-icon size-4 shrink-0"
-      />
+      <LightbulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
