@@ -5,8 +5,41 @@
 Pydantic schemas for Training API
 """
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
+
+
+_MAX_BATCH_SIZE = 4096
+_MAX_GRAD_ACCUM = 4096
+_MAX_STEPS = 1_000_000
+_MAX_EPOCHS = 1000
+# 2M is a sanity cap; host RAM runs out long before this.
+_MAX_SEQ_LENGTH = 2_000_000
+_MAX_LR_VALUE = 1.0
+_MAX_LORA_R = 16_384
+_MAX_LORA_ALPHA = 32_768
+
+
+def _parse_lr(v: Any) -> float:
+    """Parse learning_rate as a positive float strictly below _MAX_LR_VALUE."""
+    if v is None:
+        raise ValueError("learning_rate is required")
+    if isinstance(v, bool):
+        raise ValueError("learning_rate must be a number, not a bool")
+    try:
+        lr = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"learning_rate must be parseable as float (got {v!r})")
+    if not (lr > 0.0):
+        raise ValueError(
+            f"learning_rate must be > 0 (got {lr!r}); " "typical range is 1e-6 .. 1e-3"
+        )
+    if lr >= _MAX_LR_VALUE:
+        raise ValueError(
+            f"learning_rate must be < 1.0 (got {lr!r}); "
+            "values that large always diverge training"
+        )
+    return lr
 
 
 class TrainingStartRequest(BaseModel):
@@ -63,6 +96,150 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    @field_validator("learning_rate", mode = "before")
+    @classmethod
+    def _check_learning_rate(cls, v):
+        # Stringify because downstream call sites float() it themselves.
+        lr = _parse_lr(v)
+        return str(lr)
+
+    @field_validator("batch_size")
+    @classmethod
+    def _check_batch_size(cls, v: int) -> int:
+        if v is None:
+            raise ValueError("batch_size is required")
+        if v < 1 or v > _MAX_BATCH_SIZE:
+            raise ValueError(
+                f"batch_size must be in [1, {_MAX_BATCH_SIZE}] (got {v!r})"
+            )
+        return v
+
+    @field_validator("gradient_accumulation_steps")
+    @classmethod
+    def _check_grad_accum(cls, v: int) -> int:
+        if v is None:
+            return 1
+        if v < 1 or v > _MAX_GRAD_ACCUM:
+            raise ValueError(
+                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] "
+                f"(got {v!r})"
+            )
+        return v
+
+    @field_validator("num_epochs")
+    @classmethod
+    def _check_num_epochs(cls, v: int) -> int:
+        # 0 is a sentinel meaning "use max_steps instead"; the frontend's
+        # steps-vs-epochs toggle sends it.
+        if v is None:
+            return 1
+        if v < 0 or v > _MAX_EPOCHS:
+            raise ValueError(f"num_epochs must be in [0, {_MAX_EPOCHS}] (got {v!r})")
+        return v
+
+    @field_validator("max_steps")
+    @classmethod
+    def _check_max_steps(cls, v: Optional[int]) -> Optional[int]:
+        # 0 is the frontend's sentinel for "use num_epochs instead".
+        if v is None:
+            return v
+        if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
+            raise ValueError(
+                f"max_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})"
+            )
+        return v
+
+    @field_validator("max_seq_length")
+    @classmethod
+    def _check_max_seq_length(cls, v: int) -> int:
+        if v is None or v < 1 or v > _MAX_SEQ_LENGTH:
+            raise ValueError(
+                f"max_seq_length must be in [1, {_MAX_SEQ_LENGTH}] (got {v!r})"
+            )
+        return v
+
+    @field_validator("warmup_steps")
+    @classmethod
+    def _check_warmup_steps(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
+            raise ValueError(
+                f"warmup_steps must be a non-negative int <= {_MAX_STEPS} "
+                f"(got {v!r})"
+            )
+        return v
+
+    @field_validator("warmup_ratio")
+    @classmethod
+    def _check_warmup_ratio(cls, v):
+        if v is None:
+            return v
+        try:
+            r = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"warmup_ratio must be a number (got {v!r})")
+        if not (0.0 <= r <= 1.0):
+            raise ValueError(f"warmup_ratio must be in [0.0, 1.0] (got {r!r})")
+        return r
+
+    @field_validator("save_steps")
+    @classmethod
+    def _check_save_steps(cls, v: int) -> int:
+        if v is None:
+            return 100
+        if v < 0 or v > _MAX_STEPS:
+            raise ValueError(f"save_steps must be in [0, {_MAX_STEPS}] (got {v!r})")
+        return v
+
+    @field_validator("weight_decay")
+    @classmethod
+    def _check_weight_decay(cls, v: float) -> float:
+        if v is None:
+            return 0.0
+        try:
+            wd = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"weight_decay must be a number (got {v!r})")
+        if wd < 0 or wd > 10.0:
+            raise ValueError(
+                f"weight_decay must be in [0, 10] (got {wd!r}); typical 0..0.1"
+            )
+        return wd
+
+    @field_validator("lora_r")
+    @classmethod
+    def _check_lora_r(cls, v: int) -> int:
+        if v is None:
+            return 16
+        if v < 1 or v > _MAX_LORA_R:
+            raise ValueError(f"lora_r must be in [1, {_MAX_LORA_R}] (got {v!r})")
+        return v
+
+    @field_validator("lora_alpha")
+    @classmethod
+    def _check_lora_alpha(cls, v: int) -> int:
+        if v is None:
+            return 16
+        if v < 1 or v > _MAX_LORA_ALPHA:
+            raise ValueError(
+                f"lora_alpha must be in [1, {_MAX_LORA_ALPHA}] (got {v!r})"
+            )
+        return v
+
+    @field_validator("lora_dropout")
+    @classmethod
+    def _check_lora_dropout(cls, v: float) -> float:
+        if v is None:
+            return 0.0
+        try:
+            d = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"lora_dropout must be a number (got {v!r})")
+        if not (0.0 <= d < 1.0):
+            raise ValueError(f"lora_dropout must be in [0.0, 1.0) (got {d!r})")
+        return d
 
     custom_format_mapping: Optional[Dict[str, Any]] = Field(
         None,
@@ -146,6 +323,16 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
     )
+
+    @model_validator(mode = "after")
+    def _check_steps_or_epochs(self) -> "TrainingStartRequest":
+        # num_epochs and max_steps each accept 0 as a "use the other one"
+        # sentinel. If both resolve to 0 there's nothing to train against.
+        if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
+            raise ValueError(
+                "Either num_epochs or max_steps must be > 0; both cannot be 0."
+            )
+        return self
 
 
 class TrainingJobResponse(BaseModel):

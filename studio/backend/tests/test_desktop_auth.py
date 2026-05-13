@@ -227,6 +227,60 @@ def test_desktop_refresh_preserves_desktop_marker():
     assert payload["desktop"] is True
 
 
+def test_consume_refresh_token_second_call_returns_none():
+    """Single-use rotation rejects the same token on a second consume."""
+    seed_user()
+    from datetime import datetime, timedelta, timezone
+
+    raw = secrets.token_urlsafe(48)
+    expires = (datetime.now(timezone.utc) + timedelta(days = 30)).isoformat()
+    storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
+
+    first = storage.consume_refresh_token(raw)
+    assert first == (storage.DEFAULT_ADMIN_USERNAME, False)
+    second = storage.consume_refresh_token(raw)
+    assert second is None
+
+
+def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatch):
+    """64-thread pile-up against one token; DELETE RETURNING permits one winner."""
+    seed_user()
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta, timezone
+
+    raw = secrets.token_urlsafe(48)
+    expires = (datetime.now(timezone.utc) + timedelta(days = 30)).isoformat()
+    storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
+
+    workers = 64
+
+    def attempt(_idx: int):
+        try:
+            return storage.consume_refresh_token(raw)
+        except sqlite3.OperationalError:
+            # "database is locked" under heavy contention; treat as losing the race.
+            return None
+
+    with ThreadPoolExecutor(max_workers = workers) as pool:
+        results = list(pool.map(attempt, range(workers)))
+
+    successes = [r for r in results if r is not None]
+    assert (
+        len(successes) == 1
+    ), f"expected exactly one consumer to win, got {len(successes)}"
+    assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
+
+
+def test_consume_refresh_token_expired_returns_none():
+    seed_user()
+    from datetime import datetime, timedelta, timezone
+
+    raw = secrets.token_urlsafe(48)
+    expires = (datetime.now(timezone.utc) - timedelta(hours = 1)).isoformat()
+    storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
+    assert storage.consume_refresh_token(raw) is None
+
+
 def test_desktop_session_uses_real_admin_identity_for_api_keys():
     seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
@@ -392,7 +446,21 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", False)
 
-    body = asyncio.run(backend_main.health_check())
+    seed_user()
+    from auth.authentication import create_access_token
+
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+
+    app = FastAPI()
+    app.add_api_route("/api/health", backend_main.health_check, methods = ["GET"])
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/health",
+        headers = {"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
 
     assert body["desktop_protocol_version"] == 1
     assert body["supports_desktop_auth"] is True
