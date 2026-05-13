@@ -42,6 +42,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+import hashlib
 import mimetypes
 import re as _re
 import shutil
@@ -161,6 +162,24 @@ def get_unsloth_version() -> str:
 
 UNSLOTH_VERSION = get_unsloth_version()
 STUDIO_VERSION = get_studio_version()
+
+
+def _load_desktop_owner() -> dict[str, str] | None:
+    token = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN", "")
+    kind = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "")
+    if kind != "tauri" or not token:
+        return None
+    return {
+        "kind": "tauri",
+        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+    }
+
+
+_DESKTOP_OWNER = _load_desktop_owner()
+
+
+def _desktop_owner() -> dict[str, str] | None:
+    return _DESKTOP_OWNER
 
 
 @asynccontextmanager
@@ -306,12 +325,15 @@ async def health_check():
         "device_type": device_type,
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
         "supports_desktop_auth": True,
+        "supports_desktop_backend_ownership": True,
         # why: launchers compare against an install-time hash so a sibling
         # Studio on the same port is rejected; hex digest avoids leaking the
         # raw install path on -H 0.0.0.0.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
+        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
 
 
