@@ -5,6 +5,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      # github-actions refs are git tags / SHAs, not semver -- the
+      # `semver-minor-days` / `semver-patch-days` knobs are rejected
+      # by Dependabot's validator for this ecosystem. Only the
+      # `default-days` floor applies.
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -12,21 +18,24 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  - package-ecosystem: "bun"
-    directory: "/studio/frontend"
-    schedule:
-      interval: "weekly"
-    groups:
-      bun-frontend:
-        patterns: ["*"]
-      bun-frontend-security:
-        applies-to: security-updates
-        patterns: ["*"]
+  # Removed a stray `package-ecosystem: "bun"` entry for
+  # /studio/frontend: that path has no bun.lock / bun.lockb, so
+  # Dependabot's bun ecosystem silently no-ops on it. The actual
+  # lockfile committed at /studio/frontend is package-lock.json
+  # (npm), and the npm entry further below already catches
+  # npm_and_yarn security advisories for that directory. Version
+  # updates for /studio/frontend stay suppressed (open-pull-
+  # requests-limit: 0 in that entry) -- security PRs flow through
+  # regardless. Add a real bun entry IF and WHEN bun.lock lands.
 
   - package-ecosystem: "npm"
     directory: "/studio/backend/core/data_recipe/oxc-validator"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 3
     groups:
       npm-oxc-validator:
         patterns: ["*"]
@@ -41,6 +50,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       python:
         patterns: ["*"]
@@ -52,6 +63,10 @@ updates:
     directory: "/studio/src-tauri"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 3
     groups:
       cargo-tauri:
         patterns: ["*"]
@@ -59,15 +74,25 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # bun owns version updates for /studio/frontend (above); GitHub
-  # fires npm-package advisories under npm_and_yarn, so this entry
-  # catches and groups them. limit: 0 suppresses version-update
-  # PRs, security updates flow through regardless.
+  # /studio/frontend npm dependencies. Version-update PRs are
+  # deliberately suppressed (open-pull-requests-limit: 0) -- the
+  # frontend dep tree is large, the lockfile is the authoritative
+  # pin, and `min-release-age=7` in studio/frontend/.npmrc already
+  # blocks fresh tarballs at install time. Security advisories
+  # arrive via GitHub's npm_and_yarn channel and are NOT capped by
+  # `open-pull-requests-limit` per Dependabot's documented
+  # behaviour; they flow through this entry, group together, and
+  # still respect the cooldown below so we never ingest a tarball
+  # that was hot-published less than 3 days ago.
   - package-ecosystem: "npm"
     directory: "/studio/frontend"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 3
     groups:
       npm-frontend-security:
         applies-to: security-updates

@@ -104,7 +104,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -260,6 +260,181 @@ logger = LogConfig.setup_logging(
 
 app.add_middleware(LoggingMiddleware)
 
+
+# Web-search favicons load from *.gstatic.com; everything else is same-origin.
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from starlette.requests import Request as _StarletteRequest  # noqa: E402
+
+
+_CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
+
+
+def _build_csp(script_nonce: "str | None" = None) -> str:
+    script_src = "script-src 'self'"
+    if script_nonce:
+        script_src += f" 'nonce-{script_nonce}'"
+    return (
+        "default-src 'self'; "
+        "img-src 'self' data: blob: https://t0.gstatic.com "
+        "https://t1.gstatic.com https://t2.gstatic.com "
+        "https://t3.gstatic.com; "
+        "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+        "style-src 'self' 'unsafe-inline'; "
+        f"{script_src}; "
+        "font-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'; "
+        "base-uri 'self'"
+    )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Set baseline security headers; splice per-response inline-script nonces into CSP."""
+
+    async def dispatch(self, request: _StarletteRequest, call_next):
+        response = await call_next(request)
+        # Strip the internal nonce hand-off header so it never reaches the client.
+        nonce = response.headers.get(_CSP_SCRIPT_NONCE_HEADER)
+        if nonce is not None:
+            del response.headers[_CSP_SCRIPT_NONCE_HEADER]
+        response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+        )
+        response.headers["server"] = "unsloth-studio"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# Cap upload body on protected POSTs; default 500 MB, env-tunable.
+import json as _json_for_413  # noqa: E402
+
+
+_MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
+_BODY_PROTECTED_PREFIXES = (
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/api/inference",
+    "/api/data-recipe",
+    "/api/datasets",
+    "/api/train",
+    "/api/export",
+)
+
+
+async def _send_413(send, total_bytes: int) -> None:
+    payload = _json_for_413.dumps(
+        {
+            "detail": (
+                f"Request body too large "
+                f"({total_bytes:,} bytes; max {_MAX_BODY_BYTES:,})."
+            )
+        },
+    ).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload, "more_body": False})
+
+
+class MaxBodyMiddleware:
+    """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
+
+    def __init__(self, app, max_bytes: int, protected_prefixes: tuple):
+        self.app = app
+        self.max_bytes = max_bytes
+        self.protected_prefixes = protected_prefixes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "").upper()
+        path = scope.get("path", "")
+        if method not in ("POST", "PUT", "PATCH") or not any(
+            path.startswith(p) for p in self.protected_prefixes
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        declared = None
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    declared = int(value.decode("latin-1"))
+                except (ValueError, UnicodeDecodeError):
+                    declared = None
+                break
+        if declared is not None and declared > self.max_bytes:
+            await _send_413(send, declared)
+            return
+
+        chunks: list = []
+        total = 0
+        while True:
+            msg = await receive()
+            mtype = msg.get("type")
+            if mtype == "http.disconnect":
+                return
+            if mtype != "http.request":
+                # Mid-stream unexpected frame: forwarding would corrupt downstream.
+                return
+            body = msg.get("body", b"") or b""
+            if body:
+                total += len(body)
+                if total > self.max_bytes:
+                    await _send_413(send, total)
+                    return
+                chunks.append(body)
+            if not msg.get("more_body", False):
+                break
+
+        replayed = {"sent": False}
+
+        async def replay_receive():
+            if not replayed["sent"]:
+                replayed["sent"] = True
+                return {
+                    "type": "http.request",
+                    "body": b"".join(chunks),
+                    "more_body": False,
+                }
+            # After replay, fall through so http.disconnect still propagates.
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
+app.add_middleware(
+    MaxBodyMiddleware,
+    max_bytes = _MAX_BODY_BYTES,
+    protected_prefixes = _BODY_PROTECTED_PREFIXES,
+)
+
+
+from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
+
+
+@app.get("/recipes", include_in_schema = False)
+@app.get("/recipes/{rest:path}", include_in_schema = False)
+async def _recipes_redirect(rest: str = ""):
+    target = "/data-recipes" + (("/" + rest) if rest else "")
+    return _RedirectResponse(url = target, status_code = 308)
+
+
 # CORS middleware
 _api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
 _cors_origins = ["*"]
@@ -311,14 +486,35 @@ app.include_router(
 
 
 @app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
-    device_type = platform_map.get(sys.platform, sys.platform)
-
-    return {
+async def health_check(request: Request):
+    """Liveness only; full diagnostic dict gated on a valid bearer."""
+    minimal = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+    }
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return minimal
+    try:
+        from auth.authentication import get_current_subject as _gcs
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        creds = HTTPAuthorizationCredentials(
+            scheme = "Bearer", credentials = auth.split(" ", 1)[1]
+        )
+        # Must await: a bare coroutine is truthy and would skip the auth check.
+        subject = await _gcs(creds)
+    except HTTPException:
+        return minimal
+    except Exception:
+        return minimal
+    if not subject:
+        return minimal
+
+    platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
+    device_type = platform_map.get(sys.platform, sys.platform)
+    return {
+        **minimal,
         "service": "Unsloth UI Backend",
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
@@ -328,9 +524,7 @@ async def health_check():
         "desktop_manageability_version": 1,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
-        # why: launchers compare against an install-time hash so a sibling
-        # Studio on the same port is rejected; hex digest avoids leaking the
-        # raw install path on -H 0.0.0.0.
+        # Hex digest of the install path; launchers reject sibling Studios on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
@@ -463,21 +657,22 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
-def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
-    """Inject bootstrap credentials into HTML when password change is required.
+def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
+    """Inject bootstrap credentials when password change is pending.
 
-    The script tag is only injected while the default admin account still
-    has ``must_change_password=True``.  Once the user changes the password
-    the HTML is served clean — no credentials leak.
+    Returns ``(html_bytes, script_nonce_or_None)``. Callers must forward
+    the nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so the inline script is
+    not blocked by CSP.
     """
     import json as _json
+    import secrets as _secrets
 
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
-        return html_bytes
+        return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)
     if not bootstrap_pw:
-        return html_bytes
+        return html_bytes, None
 
     payload = _json.dumps(
         {
@@ -485,10 +680,11 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI) -> bytes:
             "password": bootstrap_pw,
         }
     )
-    tag = f"<script>window.__UNSLOTH_BOOTSTRAP__={payload}</script>"
+    nonce = _secrets.token_urlsafe(16)
+    tag = f'<script nonce="{nonce}">window.__UNSLOTH_BOOTSTRAP__={payload}</script>'
     html = html_bytes.decode("utf-8")
     html = html.replace("</head>", f"{tag}</head>", 1)
-    return html.encode("utf-8")
+    return html.encode("utf-8"), nonce
 
 
 def setup_frontend(app: FastAPI, build_path: Path):
@@ -501,16 +697,22 @@ def setup_frontend(app: FastAPI, build_path: Path):
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
-    @app.get("/")
-    async def serve_root():
+    def _build_index_response() -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        content = _inject_bootstrap(content, app)
+        content, nonce = _inject_bootstrap(content, app)
+        headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+        if nonce:
+            headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
             content = content,
             media_type = "text/html",
-            headers = {"Cache-Control": "no-cache, no-store, must-revalidate"},
+            headers = headers,
         )
+
+    @app.get("/")
+    async def serve_root():
+        return _build_index_response()
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
@@ -527,13 +729,6 @@ def setup_frontend(app: FastAPI, build_path: Path):
             return FileResponse(file_path)
 
         # Serve index.html as bytes — avoids Content-Length mismatch
-        content = (build_path / "index.html").read_bytes()
-        content = _strip_crossorigin(content)
-        content = _inject_bootstrap(content, app)
-        return Response(
-            content = content,
-            media_type = "text/html",
-            headers = {"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
+        return _build_index_response()
 
     return True

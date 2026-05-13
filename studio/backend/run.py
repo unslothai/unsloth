@@ -354,9 +354,14 @@ def run_server(
             if getattr(self, "started", False) and not self.should_exit:
                 ready_event.set()
 
-    # Create the uvicorn server and expose it for signal handlers
+    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
     config = uvicorn.Config(
-        app, host = host, port = port, log_level = "info", access_log = False
+        app,
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        server_header = False,
     )
     _server = _ReadyServer(config)
     _shutdown_event = Event()
