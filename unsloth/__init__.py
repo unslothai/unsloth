@@ -19,24 +19,10 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 def _is_mlx_available():
     try:
-        spec = importlib.util.find_spec("unsloth_zoo")
-        search_locations = getattr(spec, "submodule_search_locations", None) or ()
-        for root in search_locations:
-            runtime_path = os.path.join(root, "mlx", "runtime.py")
-            if not os.path.isfile(runtime_path):
-                continue
-            runtime_spec = importlib.util.spec_from_file_location(
-                "_unsloth_zoo_mlx_runtime_probe",
-                runtime_path,
-            )
-            if runtime_spec is None or runtime_spec.loader is None:
-                continue
-            runtime = importlib.util.module_from_spec(runtime_spec)
-            runtime_spec.loader.exec_module(runtime)
-            return bool(runtime.is_mlx_available())
-    except Exception:
+        from unsloth_zoo.mlx.runtime import is_mlx_available
+    except ImportError:
         return False
-    return False
+    return is_mlx_available()
 
 
 # Detect Apple Silicon + MLX before any torch/numpy imports

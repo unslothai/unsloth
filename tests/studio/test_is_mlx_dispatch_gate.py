@@ -64,6 +64,7 @@ def test_is_mlx_gate_uses_three_required_predicates():
             target = node.value
             break
     assert target is not None, "_IS_MLX assignment not found in unsloth/__init__.py"
+    assert isinstance(target, ast.Call), "_IS_MLX must call the shared MLX helper"
     expr_src = ast.unparse(target)
     assert (
         expr_src == "_is_mlx_available()"
@@ -78,12 +79,9 @@ def test_is_mlx_gate_uses_three_required_predicates():
 
     helper_src = ast.unparse(helper)
     assert (
-        "unsloth_zoo" in helper_src
-        and "mlx" in helper_src
-        and "runtime.py" in helper_src
-        and "spec_from_file_location" in helper_src
-        and "is_mlx_available" in helper_src
-    ), "_IS_MLX helper must probe unsloth_zoo/mlx/runtime.py without importing unsloth_zoo"
+        "from unsloth_zoo.mlx.runtime import is_mlx_available" in helper_src
+        and "return is_mlx_available()" in helper_src
+    ), "_IS_MLX helper must use the shared zoo MLX runtime gate"
 
 
 # ---------------------------------------------------------------------------
