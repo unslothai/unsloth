@@ -260,7 +260,16 @@ if [ "$NEED_NODE" = true ]; then
         curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
     fi
 
-    export NVM_DIR="$HOME/.nvm"
+    # nvm's installer (nvm_default_install_dir, v0.40.1) picks
+    # NVM_DIR -> $XDG_CONFIG_HOME/nvm -> $HOME/.nvm; mirror that order
+    # so the source path matches the directory the installer wrote to.
+    if [ -n "${NVM_DIR:-}" ]; then
+        export NVM_DIR
+    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        export NVM_DIR="$XDG_CONFIG_HOME/nvm"
+    else
+        export NVM_DIR="$HOME/.nvm"
+    fi
     set +u
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
