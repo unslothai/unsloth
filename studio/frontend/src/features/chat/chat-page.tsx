@@ -15,13 +15,12 @@ import { useChooseNativeModel } from "@/features/native-intents/use-native-dialo
 import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
 import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
 import { useNativeIntentStore } from "@/features/native-intents/store";
-import { useSettingsDialogStore } from "@/features/settings";
 import type { NativeIntent } from "@/features/native-intents/types";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
-import { CloudIcon, CustomizeIcon } from "@hugeicons/core-free-icons";
+import { CustomizeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -1110,6 +1109,7 @@ export function ChatPage(): ReactElement {
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
+                showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
@@ -1162,35 +1162,6 @@ export function ChatPage(): ReactElement {
                 completionTokens={contextUsage.completionTokens}
                 className="h-[34px]"
               />
-            ) : null}
-            {view.mode === "single" ? (
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      useSettingsDialogStore
-                        .getState()
-                        .openDialog("connections")
-                    }
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Open API providers"
-                  >
-                    <HugeiconsIcon
-                      icon={CloudIcon}
-                      strokeWidth={1.75}
-                      className="size-icon"
-                    />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent
-                  side="bottom"
-                  sideOffset={6}
-                  className="tooltip-compact"
-                >
-                  API providers
-                </TooltipContent>
-              </Tooltip>
             ) : null}
             {!settingsOpen && (
               <Tooltip>

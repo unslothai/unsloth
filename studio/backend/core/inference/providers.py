@@ -178,18 +178,32 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",
+        # Seed the picker with a few popular ids so something is selectable
+        # before the live /v1/models call resolves. The remote listing is
+        # the source of truth — see model_list_mode below.
         "default_models": [
+            "openai/gpt-oss-120b",
+            "deepseek-ai/DeepSeek-V3",
             "meta-llama/Llama-3.3-70B-Instruct",
             "Qwen/Qwen2.5-72B-Instruct",
-            "deepseek-ai/DeepSeek-V3",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "HF token from huggingface.co/settings/tokens. Inference Providers OpenAI-compatible API.",
-        "model_list_mode": "curated",
+        "notes": (
+            "HF token from huggingface.co/settings/tokens. Uses the "
+            "OpenAI-compatible router at /v1/chat/completions; /v1/models "
+            "returns the cross-provider chat catalog. See "
+            "https://huggingface.co/docs/inference-providers/index."
+        ),
+        # /v1/models works on the HF router and returns the full chat-model
+        # catalog (state.org/model[:policy] ids). Switch to remote so users
+        # see live availability — the picker has a search box for the long
+        # list, and loadModels() merges defaults so anything in default_models
+        # remains visible if the remote call fails.
+        "model_list_mode": "remote",
     },
     "openrouter": {
         "display_name": "OpenRouter",
