@@ -63,6 +63,69 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
+class _MistralThinkingSpec(NamedTuple):
+    models: tuple[str, ...]
+    style: Literal["prompt_mode", "reasoning_effort", "disabled"]
+    efforts: tuple[str, ...] = ()
+
+
+_MISTRAL_THINKING_SPECS = (
+    _MistralThinkingSpec(
+        models = ("magistral-medium-latest",),
+        style = "prompt_mode",
+    ),
+    _MistralThinkingSpec(
+        models = ("mistral-small-latest", "mistral-vibe-cli-latest"),
+        style = "reasoning_effort",
+        efforts = ("none", "high"),
+    ),
+)
+
+
+def _mistral_thinking_spec(model: str) -> _MistralThinkingSpec:
+    for spec in _MISTRAL_THINKING_SPECS:
+        if model in spec.models:
+            return spec
+    return _MistralThinkingSpec(models = (), style = "disabled")
+
+
+def _apply_mistral_reasoning_controls(
+    body: dict[str, Any],
+    model: str,
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+) -> None:
+    """
+    Translate generic reasoning controls into Mistral's model-specific shape.
+
+    Current contract:
+      - magistral-medium-latest: baseline (no extra field) or
+        `prompt_mode="reasoning"` for the explicit reasoning mode.
+      - mistral-small-latest / mistral-vibe-cli-latest:
+        `reasoning_effort` in {"none", "high"}.
+      - all other tested Mistral models: no reasoning/thinking params.
+    """
+    model_for_matching = model.rsplit("/", 1)[-1].strip().lower()
+    spec = _mistral_thinking_spec(model_for_matching)
+    body.pop("prompt_mode", None)
+    body.pop("reasoning_effort", None)
+
+    if spec.style == "prompt_mode":
+        # Magistral baseline is already reasoning-capable. The explicit
+        # prompt_mode path is only used for the "high" UI selection.
+        if enable_thinking is True or reasoning_effort == "high":
+            body["prompt_mode"] = "reasoning"
+        return
+
+    if spec.style == "reasoning_effort":
+        if reasoning_effort in spec.efforts:
+            body["reasoning_effort"] = reasoning_effort
+        elif enable_thinking is False:
+            body["reasoning_effort"] = "none"
+        elif enable_thinking is True:
+            body["reasoning_effort"] = "high"
+
+
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
 # handles every provider without storing credentials.
@@ -217,6 +280,10 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "enabled", "keep": "all"}
             else:
                 body["thinking"] = {"type": "disabled"}
+        elif self.provider_type == "mistral":
+            _apply_mistral_reasoning_controls(
+                body, model, enable_thinking, reasoning_effort
+            )
 
         # OpenRouter exposes a unified `reasoning` parameter on every
         # chat-completion request — the gateway routes it to whichever

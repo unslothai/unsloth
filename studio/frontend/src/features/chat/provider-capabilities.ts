@@ -187,6 +187,14 @@ type ReasoningCaps = {
   reasoningEffortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"];
 };
 
+const DEFAULT_EXTERNAL_REASONING_CAPABILITIES: ExternalReasoningCapabilities = {
+  supportsReasoning: false,
+  reasoningStyle: "enable_thinking",
+  reasoningAlwaysOn: false,
+  supportsReasoningOff: false,
+  reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+};
+
 const NO_REASONING_CAPS: ReasoningCaps = {
   supportsReasoning: false,
   supportsReasoningOff: false,
@@ -279,6 +287,66 @@ function resolveOpenAIReasoningEffortCapabilities(modelId: string): ReasoningCap
   return NO_REASONING_CAPS;
 }
 
+function withEnableThinkingStyle(
+  overrides?: Partial<ExternalReasoningCapabilities>,
+): ExternalReasoningCapabilities {
+  return {
+    ...DEFAULT_EXTERNAL_REASONING_CAPABILITIES,
+    ...overrides,
+    reasoningStyle: "enable_thinking",
+  };
+}
+
+function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabilities {
+  return {
+    ...DEFAULT_EXTERNAL_REASONING_CAPABILITIES,
+    supportsReasoning: true,
+    reasoningStyle: "reasoning_effort",
+    supportsReasoningOff: caps.supportsReasoningOff,
+    reasoningEffortLevels: caps.reasoningEffortLevels,
+  };
+}
+
+function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+  // Kimi exposes a boolean thinking toggle rather than an effort scale.
+  //   - kimi-k2.6:        thinking enabled by default, toggleable
+  //                       via extra_body: {thinking: {type: enabled|disabled}}
+  //   - kimi-k2-thinking: thinking always on, no off switch
+  //   - kimi-k2.5 (and anything else): no thinking
+  if (modelId === "kimi-k2-thinking") {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: true,
+    });
+  }
+  if (modelId === "kimi-k2.6") {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+    });
+  }
+  return withEnableThinkingStyle();
+}
+
+function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+  if (modelId === "magistral-medium-latest") {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      // Native reasoning model: present baseline as Medium in the UI.
+      reasoningEffortLevels: ["medium", "high"] as const,
+    });
+  }
+  if (modelId === "mistral-small-latest" || modelId === "mistral-vibe-cli-latest") {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "high"] as const,
+    });
+  }
+  return withEnableThinkingStyle();
+}
+
 /**
  * resolve external-model thinking capabilities.
  * provider-specific matching lives in the OpenAI/Anthropic resolvers.
@@ -291,13 +359,7 @@ export function getExternalReasoningCapabilities(
   const normalizedModel = modelId?.trim().toLowerCase() ?? "";
   const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
   if (!normalizedModel) {
-    return {
-      supportsReasoning: false,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: false,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
+    return withEnableThinkingStyle();
   }
 
   // OpenRouter ids are namespaced (e.g. "openai/gpt-5.5").
@@ -309,6 +371,7 @@ export function getExternalReasoningCapabilities(
   const isOpenAIProvider = normalizedProvider === "openai";
   const isAnthropicProvider = normalizedProvider === "anthropic";
   const isKimiProvider = normalizedProvider === "kimi";
+  const isMistralProvider = normalizedProvider === "mistral";
   const isOpenRouterProvider = normalizedProvider === "openrouter";
   if (isOpenRouterProvider) {
     // OpenRouter's unified `reasoning` parameter is accepted on every
@@ -324,66 +387,18 @@ export function getExternalReasoningCapabilities(
       reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
     };
   }
-  if (isKimiProvider) {
-    // Kimi exposes a boolean thinking toggle rather than an effort scale.
-    //   - kimi-k2.6:        thinking enabled by default, toggleable
-    //                       via extra_body: {thinking: {type: enabled|disabled}}
-    //   - kimi-k2-thinking: thinking always on, no off switch
-    //   - kimi-k2.5 (and anything else): no thinking
-    if (modelForMatching === "kimi-k2-thinking") {
-      return {
-        supportsReasoning: true,
-        reasoningStyle: "enable_thinking",
-        reasoningAlwaysOn: true,
-        supportsReasoningOff: false,
-        reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-      };
-    }
-    if (modelForMatching === "kimi-k2.6") {
-      return {
-        supportsReasoning: true,
-        reasoningStyle: "enable_thinking",
-        reasoningAlwaysOn: false,
-        supportsReasoningOff: true,
-        reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-      };
-    }
-    return {
-      supportsReasoning: false,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: false,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
-  }
+  if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
+  if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
   if (!isOpenAIProvider && !isAnthropicProvider) {
-    return {
-      supportsReasoning: false,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: false,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
+    return withEnableThinkingStyle();
   }
 
   const providerCaps = isOpenAIProvider
     ? resolveOpenAIReasoningEffortCapabilities(modelForMatching)
     : resolveAnthropicReasoningEffortCapabilities(modelForMatching);
   if (providerCaps.supportsReasoning) {
-    return {
-      supportsReasoning: true,
-      reasoningStyle: "reasoning_effort",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: providerCaps.supportsReasoningOff,
-      reasoningEffortLevels: providerCaps.reasoningEffortLevels,
-    };
+    return withReasoningEffortStyle(providerCaps);
   }
 
-  return {
-    supportsReasoning: false,
-    reasoningStyle: "enable_thinking",
-    reasoningAlwaysOn: false,
-    supportsReasoningOff: false,
-    reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-  };
+  return withEnableThinkingStyle();
 }

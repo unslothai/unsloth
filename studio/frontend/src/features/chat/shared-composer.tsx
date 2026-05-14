@@ -90,7 +90,12 @@ function formatReasoningEffortLabel(level: ReasoningEffort, modelId?: string): s
 function formatReasoningDisabledLabel(
   supportsReasoningOff: boolean,
   isExternalOpenAIReasoning: boolean,
-): "None" | "Off" {
+  modelId?: string,
+): string {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  // Magistral keeps the "none" wire value, but UX should present this floor
+  // as "Medium" rather than a disabled state label.
+  if (normalized.includes("magistral-medium-latest")) return "Medium";
   return supportsReasoningOff && isExternalOpenAIReasoning ? "None" : "Off";
 }
 
@@ -712,6 +717,7 @@ export function SharedComposer({
                       : formatReasoningDisabledLabel(
                           effectiveSupportsReasoningOff,
                           isExternalOpenAIReasoning,
+                          checkpoint,
                         )}
                   </span>
                 </button>
@@ -724,7 +730,11 @@ export function SharedComposer({
                       applyQwenThinkingParams(false);
                     }}
                   >
-                    {isExternalOpenAIReasoning ? "None" : "Off"}
+                    {formatReasoningDisabledLabel(
+                      effectiveSupportsReasoningOff,
+                      isExternalOpenAIReasoning,
+                      checkpoint,
+                    )}
                     {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
                   </DropdownMenuItem>
                 )}

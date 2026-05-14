@@ -158,6 +158,23 @@ function estimateTokenCount(text: string): number | undefined {
  * stringify an object and pollute the rendered chat with `[object Object]`.
  */
 function extractDeltaText(delta: unknown): string {
+  const extractReasoningText = (payload: unknown): string => {
+    if (typeof payload === "string") return payload;
+    if (Array.isArray(payload)) {
+      return payload.map((item) => extractReasoningText(item)).join("");
+    }
+    if (!payload || typeof payload !== "object") return "";
+
+    const obj = payload as Record<string, unknown>;
+    for (const key of ["thinking", "text", "content", "reasoning", "summary"]) {
+      if (key in obj) {
+        const text = extractReasoningText(obj[key]);
+        if (text) return text;
+      }
+    }
+    return "";
+  };
+
   if (typeof delta === "string") return delta;
   if (!Array.isArray(delta)) return "";
   let out = "";
@@ -177,12 +194,7 @@ function extractDeltaText(delta: unknown): string {
       if (typeof obj.text === "string") out += obj.text;
       else if (typeof obj.content === "string") out += obj.content;
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
-      const thinking =
-        typeof obj.thinking === "string"
-          ? obj.thinking
-          : typeof obj.text === "string"
-            ? obj.text
-            : "";
+      const thinking = extractReasoningText(obj);
       if (thinking) out += `<think>${thinking}</think>`;
     }
   }

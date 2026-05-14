@@ -9,15 +9,23 @@ const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
 function appendTextPart(parts: ContentPart[], text: string): void {
-  if (text) {
-    parts.push({ type: "text", text });
+  if (!text) return;
+  const last = parts.at(-1);
+  if (last?.type === "text") {
+    last.text += text;
+    return;
   }
+  parts.push({ type: "text", text });
 }
 
 function appendReasoningPart(parts: ContentPart[], text: string): void {
-  if (text) {
-    parts.push({ type: "reasoning", text });
+  if (!text) return;
+  const last = parts.at(-1);
+  if (last?.type === "reasoning") {
+    last.text += text;
+    return;
   }
+  parts.push({ type: "reasoning", text });
 }
 
 export function parseAssistantContent(
