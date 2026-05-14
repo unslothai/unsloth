@@ -972,14 +972,26 @@ export function ChatPage(): ReactElement {
           // For OpenRouter's free router we know which underlying free
           // model the gateway actually picked once a stream completes
           // (chat-adapter latches `chunk.model` into the runtime store).
-          // Append it to the chip label so users can tell which model
-          // is replying without digging through logs.
-          const displayName =
+          // Render the chip as `openrouter:<short-chosen>` — drop the
+          // redundant `/free` from the router id and the org prefix
+          // from the chosen id (e.g.
+          //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
+          //     -> openrouter:ring-2.6-1t-20260508:free
+          // ). The `:free` suffix on the chosen id already conveys
+          // 'free model', so the leading `/free` is noise.
+          let displayName = model;
+          if (
             provider.providerType === "openrouter" &&
             model === "openrouter/free" &&
             lastOpenRouterChosenModel
-              ? `${model}:${lastOpenRouterChosenModel}`
-              : model;
+          ) {
+            const lastSlash = lastOpenRouterChosenModel.lastIndexOf("/");
+            const shortChosen =
+              lastSlash >= 0
+                ? lastOpenRouterChosenModel.slice(lastSlash + 1)
+                : lastOpenRouterChosenModel;
+            displayName = `openrouter:${shortChosen}`;
+          }
           return {
             id: buildExternalModelId(provider.id, model),
             name: displayName,
