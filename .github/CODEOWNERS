@@ -53,3 +53,10 @@
 /studio/backend/tests/ @rolandtannous @danielhanchen
 /tests/ @rolandtannous @danielhanchen
 /scripts/ @rolandtannous @danielhanchen
+
+# Snapshot data for the notebook linter / Colab oracle. Drift in these
+# files changes the pin floor for every Unsloth notebook, so refreshes
+# must be reviewed by the notebook owners directly. CODEOWNERS later
+# wins, so this overrides the broader /scripts/ rule above.
+/scripts/data/colab_*.txt  @danielhanchen @shimmyshimmer
+/scripts/data/colab_*.json @danielhanchen @shimmyshimmer

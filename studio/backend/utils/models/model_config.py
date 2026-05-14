@@ -1478,16 +1478,42 @@ def detect_gguf_model_remote(
     Check if a HuggingFace repo contains GGUF files.
 
     Returns the filename of the best GGUF file in the repo, or None.
-    """
-    try:
-        from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(repo_id, token = hf_token)
-        repo_files = [s.rfilename for s in info.siblings]
-        return _pick_best_gguf(repo_files)
-    except Exception as e:
-        logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
-        return None
+    Retries on transient HF Hub failures (network hiccups, 5xx, slow
+    cold-start of the API). Without retry, a single transient failure
+    here returns None silently and the caller treats the repo as
+    non-GGUF -- which on Apple Silicon (Mac UI route) means falling
+    through to the MLX backend, which then fails opening a non-existent
+    config.json on the GGUF-only repo. Three attempts with 1s/2s/4s
+    backoff covers the typical free-runner HF Hub flakiness.
+    """
+    import time
+    from huggingface_hub import model_info as hf_model_info
+
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            info = hf_model_info(repo_id, token = hf_token)
+            repo_files = [s.rfilename for s in info.siblings]
+            return _pick_best_gguf(repo_files)
+        except Exception as e:
+            last_err = e
+            # 404 / RepoNotFound is permanent -- don't waste attempts.
+            err_name = type(e).__name__
+            if err_name in (
+                "RepositoryNotFoundError",
+                "GatedRepoError",
+                "RevisionNotFoundError",
+                "EntryNotFoundError",
+            ):
+                logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+                return None
+            if attempt < 2:
+                time.sleep(2**attempt)
+    logger.warning(
+        f"Could not check GGUF files for '{repo_id}' after 3 attempts: " f"{last_err}"
+    )
+    return None
 
 
 def download_gguf_file(
@@ -1821,20 +1847,21 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
                         )
                         return base_model
 
-        training_args_path = checkpoint_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        "Detected base model from training_args.bin: %s", base_model
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; re-enable via safe_globals or weights_only=False once threat model allows.
+        # training_args_path = checkpoint_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 "Detected base model from training_args.bin: %s", base_model
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         dir_name = checkpoint_path_obj.name
         if dir_name.startswith("unsloth_"):
@@ -1882,20 +1909,21 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
-        training_args_path = lora_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        f"Detected base model from training_args.bin: {base_model}"
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; also an RCE sink for third-party LoRAs via this route, re-enable behind a trust check if needed.
+        # training_args_path = lora_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 f"Detected base model from training_args.bin: {base_model}"
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         # Last resort: parse from directory name
         # Format: unsloth_Meta-Llama-3.1-8B-Instruct-bnb-4bit_timestamp

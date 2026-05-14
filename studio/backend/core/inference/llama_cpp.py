@@ -433,6 +433,8 @@ class LlamaCppBackend:
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         self._healthy = False
+        # Set by _classify_gpu_offload after _wait_for_health.
+        self._gpu_offload_active: Optional[bool] = None
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
@@ -956,6 +958,73 @@ class LlamaCppBackend:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
 
+    # Free-VRAM fraction at which Studio pins the GPU directly instead
+    # of deferring to ``--fit on``. 5% headroom covers CUDA context +
+    # compute buffers; 0.90 was too conservative and dropped 91-94%
+    # fits to CPU offload (#5106). The fork's --fit on still catches
+    # the truly-too-large case.
+    _GPU_PIN_VRAM_FRACTION = 0.95
+
+    @staticmethod
+    def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
+        """Return DLL dirs from pip-installed CUDA wheels under
+        ``<prefix>/Lib/site-packages/`` so llama-server.exe can load
+        ``cudart64_X.dll`` / ``cublas64_X.dll`` without a system CUDA
+        toolkit. Mirrors the Linux ``nvidia/cu*/lib`` LD_LIBRARY_PATH
+        block, with parity for the Windows-specific wheel layouts seen
+        in the wild. Covered patterns:
+          * ``nvidia/<pkg>/bin`` -- legacy modular wheels
+            (``nvidia-cuda-runtime-cu12``, ``nvidia-cublas-cu12``, etc.).
+          * ``nvidia/<pkg>/bin/x86_64`` and ``.../bin/x64`` -- current
+            CUDA 13 wheel layout used by the unsuffixed
+            ``nvidia-cuda-runtime`` / ``nvidia-cublas`` packages, which
+            ship under ``nvidia/cu13/bin/x86_64/`` (#5106).
+          * ``nvidia/<pkg>/Library/bin`` (and arch subdirs) -- conda-
+            style wheel repacks.
+          * ``torch/lib`` -- PyTorch's own CUDA-bundled Windows wheel,
+            which can ship ``cudart64_*.dll`` directly here instead of
+            as separate ``nvidia-*`` wheels. The install-side helper
+            ``python_runtime_dirs`` in ``install_llama_prebuilt.py``
+            covers this path for the same reason.
+
+        Walks the tree with ``Path.iterdir`` rather than ``glob.glob``
+        so the resolver is safe against Windows paths containing
+        ``[`` or ``]`` (valid in usernames; would otherwise be
+        interpreted as a glob character class and silently miss
+        existing dirs)."""
+        site_packages = Path(prefix) / "Lib" / "site-packages"
+        out: list[str] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            if not path.is_dir():
+                return
+            key = os.path.normcase(os.path.abspath(str(path)))
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(str(path))
+
+        nvidia_root = site_packages / "nvidia"
+        if nvidia_root.is_dir():
+            for pkg_dir in nvidia_root.iterdir():
+                if not pkg_dir.is_dir():
+                    continue
+                # Order matters for PATH search: arch-specific subdirs
+                # first so the explicit cudart64_X.dll location wins
+                # over a sibling ``bin`` that might be empty.
+                for sub in (
+                    pkg_dir / "bin" / "x86_64",
+                    pkg_dir / "bin" / "x64",
+                    pkg_dir / "bin",
+                    pkg_dir / "Library" / "bin" / "x86_64",
+                    pkg_dir / "Library" / "bin" / "x64",
+                    pkg_dir / "Library" / "bin",
+                ):
+                    _add(sub)
+        _add(site_packages / "torch" / "lib")
+        return out
+
     @staticmethod
     def _select_gpus(
         model_size_bytes: int,
@@ -964,11 +1033,11 @@ class LlamaCppBackend:
         """Pick GPU(s) for a model based on estimated VRAM and free memory.
 
         ``model_size_bytes`` should include both model weights and estimated
-        KV cache.  The 90% threshold provides headroom for compute buffers,
-        CUDA context, and other runtime overhead.
+        KV cache.  The ``_GPU_PIN_VRAM_FRACTION`` threshold provides headroom
+        for compute buffers, CUDA context, and other runtime overhead.
 
         Returns (gpu_indices, use_fit):
-          - ([1], False)       model fits on 1 GPU at 90% of free
+          - ([1], False)       model fits on 1 GPU at the headroom threshold
           - ([1, 2], False)    model needs 2 GPUs
           - (None, True)       model too large, let --fit handle it
         """
@@ -976,12 +1045,13 @@ class LlamaCppBackend:
             return None, True
 
         model_size_mib = model_size_bytes / (1024 * 1024)
+        usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
         # Sort GPUs by free memory descending
         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
 
-        # Try fitting on 1 GPU (90% of free memory threshold)
-        if ranked[0][1] * 0.90 >= model_size_mib:
+        # Try fitting on 1 GPU at the usable-VRAM threshold.
+        if ranked[0][1] * usable_fraction >= model_size_mib:
             return [ranked[0][0]], False
 
         # Try fitting on N GPUs (accumulate free memory from most-free)
@@ -989,7 +1059,7 @@ class LlamaCppBackend:
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
-            cumulative += free_mib * 0.90
+            cumulative += free_mib * usable_fraction
             if cumulative >= model_size_mib:
                 return sorted(selected), False
 
@@ -1222,10 +1292,11 @@ class LlamaCppBackend:
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
-        Uses 90% of available VRAM as the budget (matching _select_gpus
-        threshold -- 10% reserved for compute buffers, CUDA context,
-        scratch space, flash-attn workspace, etc.).
-        If the model weights alone don't fit, returns min_ctx unchanged.
+        Uses 90% of available VRAM as the ctx-fit budget. Tighter than
+        ``_GPU_PIN_VRAM_FRACTION`` on purpose: over-promising context
+        OOMs at runtime, while pinning conservatively just defers to
+        --fit on. If the weights alone don't fit, returns
+        ``requested_ctx`` unchanged.
 
         ``kv_on_gpu`` mirrors ``--kv-offload`` (default on). When False
         the KV cache lives in CPU RAM and doesn't compete with weights
@@ -1971,6 +2042,7 @@ class LlamaCppBackend:
             # still has valid state to publish.
             effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
             max_available_ctx = self._context_length or effective_ctx
+            gpus: list[tuple[int, int]] = []
             try:
                 model_size = self._get_gguf_size_bytes(model_path)
                 gpus = self._get_gpu_free_memory()
@@ -2054,8 +2126,11 @@ class LlamaCppBackend:
                         gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
                         # No silent shrink: effective_ctx stays == n_ctx.
                     else:
-                        # Auto context: prefer fewer GPUs, cap context to fit.
+                        # Auto context: prefer fewer GPUs, cap context
+                        # to fit. Same headroom threshold as
+                        # _select_gpus (#5106).
                         ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                        pin_fraction = self._GPU_PIN_VRAM_FRACTION
                         for n_gpus in range(1, len(ranked) + 1):
                             subset = ranked[:n_gpus]
                             pool_mib = sum(free for _, free in subset)
@@ -2070,18 +2145,31 @@ class LlamaCppBackend:
                                 capped, cache_type_kv, n_parallel = n_parallel
                             )
                             total_mib = (model_size + kv) / (1024 * 1024)
-                            if total_mib <= pool_mib * 0.90:
+                            if total_mib <= pool_mib * pin_fraction:
                                 effective_ctx = capped
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
                         else:
-                            # No subset can host the weights (weights alone
-                            # exceed 90% of every pool). Per spec, default
-                            # the UI-visible context to 4096 and let
-                            # --fit on flex -ngl so llama-server offloads
-                            # layers to CPU RAM.
+                            # Native ctx doesn't fit. Drop to 4096 and
+                            # re-check before deferring to --fit on:
+                            # a model that overflows at 131k may pin
+                            # comfortably with a 4096 KV cache (#5106).
                             effective_ctx = min(4096, effective_ctx)
+                            if effective_ctx > 0:
+                                for n_gpus in range(1, len(ranked) + 1):
+                                    subset = ranked[:n_gpus]
+                                    pool_mib = sum(free for _, free in subset)
+                                    kv = self._estimate_kv_cache_bytes(
+                                        effective_ctx,
+                                        cache_type_kv,
+                                        n_parallel = n_parallel,
+                                    )
+                                    total_mib = (model_size + kv) / (1024 * 1024)
+                                    if total_mib <= pool_mib * pin_fraction:
+                                        gpu_indices = sorted(idx for idx, _ in subset)
+                                        use_fit = False
+                                        break
 
                 elif gpus:
                     # Can't estimate KV -- fall back to file-size-only check.
@@ -2335,9 +2423,14 @@ class LlamaCppBackend:
             binary_dir = str(Path(binary).parent)
 
             if sys.platform == "win32":
-                # On Windows, CUDA DLLs (cublas64_12.dll, cudart64_12.dll, etc.)
-                # must be on PATH. Add CUDA_PATH\bin if available.
+                # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
+                # be on PATH. Order: binary_dir, torch's pip-installed
+                # nvidia wheels, then a system CUDA toolkit. Pip wheels
+                # are the canonical source per Studio's install design
+                # (mirrors the Linux LD_LIBRARY_PATH block below) and
+                # CUDA_PATH covers users with a system toolkit. #5106.
                 path_dirs = [binary_dir]
+                path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
                 cuda_path = os.environ.get("CUDA_PATH", "")
                 if cuda_path:
                     cuda_bin = os.path.join(cuda_path, "bin")
@@ -2521,11 +2614,53 @@ class LlamaCppBackend:
 
             self._healthy = True
 
+            # Catch silent CPU fallback when GPU was intended (#5106).
+            self._gpu_offload_active = self._classify_gpu_offload(
+                gpu_indices is not None or use_fit, gpus or []
+            )
+            if self._gpu_offload_active is False:
+                logger.warning(
+                    "llama-server appears to have loaded the model entirely "
+                    "on CPU even though Studio detected at least one GPU. "
+                    "This usually means the prebuilt binary's GPU backend "
+                    "failed to load -- on Windows, cudart64_X.dll / "
+                    "cublas64_X.dll could not be resolved. Reinstall the "
+                    "Studio llama.cpp prebuilt or install a matching CUDA "
+                    "toolkit (issue unslothai/unsloth#5106).",
+                )
+
             logger.info(
                 f"llama-server ready on port {self._port} "
                 f"for model '{model_identifier}'"
             )
             return True
+
+    def _classify_gpu_offload(
+        self,
+        expected_gpu: bool,
+        detected_gpus: list[tuple[int, int]],
+    ) -> Optional[bool]:
+        """True if a GPU model buffer was allocated, False if only CPU
+        buffers landed despite GPU intent, None when there's no signal
+        (no GPU detected, no buffer-size lines, etc.)."""
+        if not detected_gpus or not expected_gpu:
+            return None
+        # llama-server logs one ``... model buffer size = N MiB`` line
+        # per backend buffer; CUDA0 / ROCm0 / Metal / Vulkan0 /
+        # OpenCL0 / SYCL0 are GPU, CPU / CPU_Mapped are not.
+        gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
+        saw_buffer_line = False
+        saw_gpu_buffer = False
+        for line in self._stdout_lines:
+            if "model buffer size" not in line:
+                continue
+            saw_buffer_line = True
+            if any(marker in line for marker in gpu_markers):
+                saw_gpu_buffer = True
+                break
+        if not saw_buffer_line:
+            return None
+        return saw_gpu_buffer
 
     def unload_model(self) -> bool:
         """Terminate the llama-server subprocess and cancel any in-flight download."""

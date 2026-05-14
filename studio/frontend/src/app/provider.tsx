@@ -9,6 +9,7 @@ import {
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { WebUpdateBanner } from "@/components/web/update-banner";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -21,10 +22,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 interface AppProviderProps {
   children: ReactNode;
 }
-
-// ---------------------------------------------------------------------------
-// Tauri window helpers (only imported in Tauri mode)
-// ---------------------------------------------------------------------------
 
 type TauriWindowMode = "setup" | "app";
 type WindowLayoutGuard = () => boolean;
@@ -52,19 +49,15 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   let finalH = 600;
 
   if (monitor) {
-    // Convert physical pixels to logical using scale factor
     const scale = monitor.scaleFactor;
     const screenW = monitor.size.width / scale;
     const screenH = monitor.size.height / scale;
 
-    // Target: 75% of screen width, golden ratio height, capped at min 900x600
     finalW = Math.max(900, Math.round(screenW * 0.75));
     const targetH = Math.max(600, Math.round(finalW / 1.618));
-    // Don't exceed screen height
     finalH = Math.min(targetH, Math.round(screenH * 0.85));
   }
 
-  // Apply constraints and finalize without animating through intermediate sizes
   if (!isCurrent()) return;
   await win.setSize(new LogicalSize(finalW, finalH));
   if (!isCurrent()) return;
@@ -107,10 +100,6 @@ function getTauriWindowMode(
   }
 }
 
-// ---------------------------------------------------------------------------
-// TauriWrapper
-// ---------------------------------------------------------------------------
-
 function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
@@ -140,6 +129,8 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
       dismissed={update.dismissed}
       lastFailure={update.lastFailure}
       isExternalServer={isExternalServer}
+      updatePolicyMode={update.updatePolicyMode}
+      manualReleaseUrl={update.manualReleaseUrl}
       onInstall={update.installUpdate}
       onDismiss={update.dismiss}
       onCopyDiagnostics={update.copyDiagnostics}
@@ -148,6 +139,13 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
 }
 
 const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
+  "/onboarding",
+  "/login",
+  "/change-password",
+  "/signup",
+]);
+
+const WEB_UPDATE_HIDDEN_ROUTES = new Set([
   "/onboarding",
   "/login",
   "/change-password",
@@ -176,8 +174,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Keep the Tauri window hidden during preflight, then show it centered in setup
-  // mode or apply the final app layout in one instant step.
+  // Keep the Tauri window hidden until setup or app layout is ready.
   useEffect(() => {
     if (!isTauri) return;
 
@@ -234,7 +231,14 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => { disposed = true; };
   }, [status, desktopAuthRetry]);
 
-  if (!isTauri) return <>{children}</>;
+  if (!isTauri) {
+    return (
+      <>
+        {children}
+        <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
+      </>
+    );
+  }
 
   const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;

@@ -1,0 +1,321 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Whole-repo, multi-language source-lint gate. Runs on every PR
+# (no path filter) because each step is sub-second to a few seconds
+# and together they catch a class of breakage the focused build
+# workflows would miss:
+#
+#   - Python syntax + ruff + leftover debugger calls (across 350+
+#     committed .py files, not just studio/backend).
+#   - Shell `bash -n` parse for every committed *.sh.
+#   - `yaml.safe_load` and `json.loads` round-trip for every
+#     committed YAML / JSON config.
+#
+# TypeScript and Rust are NOT duplicated here on purpose:
+#   - Studio Frontend CI runs `npm run typecheck` (= `tsc --noEmit`)
+#     and `npm run build` (vite/swc) on every studio/frontend/**
+#     change, which is a full TS AST + type check.
+#   - Studio Tauri CI runs `tauri build --debug --no-bundle` on
+#     every studio/src-tauri/** or studio/frontend/** change, which
+#     compiles the Rust crate (= cargo check + cargo build).
+# Each is a stricter check than a parse-only step would be, so a
+# fast-fail duplicate here would only burn cache; the dedicated
+# workflows already block merges on Rust / TS regressions.
+
+name: Lint CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, pip]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source-lint:
+    name: Source lint (Python + shell + YAML + JSON + safety nets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # Pin ruff to match .pre-commit-config.yaml so a CI-only ruff
+      # bump cannot disagree with what pre-commit accepted.
+      # codespell is pinned for the same reason: a reviewer should
+      # never see a typo report appear and disappear depending on
+      # which codespell version the runner happened to install.
+      - run: pip install 'ruff==0.15.12' 'pyyaml>=6' 'codespell>=2.3,<3'
+
+      - name: Linux deps for shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Python AST/syntax check (every committed .py must compile)
+        # python -m compileall uses the same parser the interpreter
+        # uses, so anything broken here would also crash at
+        # `import X` on a user's machine. Sub-second across 350+
+        # files. Hard gate.
+        run: |
+          python -m compileall -q -j 0 \
+            unsloth unsloth_cli studio tests cli.py unsloth-cli.py
+
+      - name: Python ruff check (whole repo)
+        # The narrow rule set in pyproject.toml [tool.ruff.lint]
+        # selects E9 / F63 / F7 / F82 -- syntax errors, broken
+        # comparisons, undefined names. The whole repo passes today,
+        # so this is a hard gate.
+        run: |
+          ruff check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
+
+      - name: No leftover debugger / pdb / breakpoint calls
+        # Catches the "I'll just stick a breakpoint() here" mistake
+        # before it ships. AST-based so commented-out debugger
+        # markers don't false-positive (a bare grep would; there
+        # are three commented `# breakpoint()` markers in
+        # unsloth/models/rl* today). Sub-second.
+        run: |
+          python <<'PY'
+          import ast, pathlib, sys
+
+          SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+                        "unsloth_compiled_cache", "node_modules",
+                        "unsloth.egg-info"}
+
+          bad = []
+          scanned = 0
+          for path in sorted(pathlib.Path(".").rglob("*.py")):
+              if any(part in SKIP_PARTS for part in path.parts):
+                  continue
+              scanned += 1
+              try:
+                  tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+              except SyntaxError:
+                  continue   # compileall step above already failed this
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Call):
+                      continue
+                  fn = node.func
+                  if isinstance(fn, ast.Name) and fn.id == "breakpoint":
+                      bad.append((path, node.lineno, "breakpoint()"))
+                  elif (isinstance(fn, ast.Attribute) and fn.attr == "set_trace"
+                        and isinstance(fn.value, ast.Name)
+                        and fn.value.id in {"pdb", "ipdb"}):
+                      bad.append((path, node.lineno, f"{fn.value.id}.set_trace()"))
+
+          if bad:
+              for path, lineno, what in bad:
+                  print(f"::error file={path},line={lineno}::leftover {what} -- remove before merging")
+              sys.exit(1)
+          print(f"no leftover debugger calls (scanned {scanned} files)")
+          PY
+
+      - name: License-header drift (informational; whole repo)
+        # Three header families are accepted across the repo:
+        #   1. SPDX one-liner: `# SPDX-License-Identifier: ...`
+        #      Used across studio/ (AGPL-3.0-only) and a few new
+        #      files elsewhere.
+        #   2. Apache-2.0 long form, marker phrase
+        #      "Licensed under the Apache License". Used across
+        #      unsloth/ and unsloth_cli/.
+        #   3. GNU long form, marker phrase "General Public License".
+        #      That single substring covers GPL, LGPL ("GNU Lesser
+        #      General Public License") and AGPL ("GNU Affero
+        #      General Public License") preambles, all three of
+        #      which appear in unsloth/kernels/* (LGPL/AGPL) without
+        #      the SPDX line.
+        # Empty files (mainly empty __init__.py) are skipped.
+        # Surfaced as a warning; cleaning up the actual misses is a
+        # follow-up PR, not a CI fix.
+        continue-on-error: true
+        run: |
+          python <<'PY'
+          import pathlib
+
+          ACCEPTED = (
+              "SPDX-License-Identifier",        # any SPDX line
+              "Licensed under the Apache License",  # Apache-2.0 long form
+              "General Public License",         # GPL / LGPL / AGPL long form
+          )
+          SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+                        "unsloth_compiled_cache", "node_modules",
+                        "unsloth.egg-info"}
+
+          studio_missing = []
+          other_missing  = []
+          for path in sorted(pathlib.Path(".").rglob("*.py")):
+              if any(part in SKIP_PARTS for part in path.parts):
+                  continue
+              text = path.read_text(encoding="utf-8", errors="replace")
+              if not text.strip():
+                  continue  # empty __init__.py etc.
+              head = "\n".join(text.splitlines()[:25])
+              if any(marker in head for marker in ACCEPTED):
+                  continue
+              if "studio" in path.parts:
+                  studio_missing.append(path)
+              else:
+                  other_missing.append(path)
+
+          total = len(studio_missing) + len(other_missing)
+          if total == 0:
+              print("every committed .py has a recognised license header")
+          else:
+              print(f"::warning::{total} Python files have no recognised license "
+                    f"header (SPDX / Apache-2.0 / GNU long form): "
+                    f"studio={len(studio_missing)}, other={len(other_missing)}")
+              for path in (studio_missing + other_missing)[:30]:
+                  print(f"  {path}")
+              if total > 30:
+                  print(f"  ... and {total - 30} more")
+          PY
+
+      - name: Shell scripts parse cleanly (`bash -n`)
+        # Same idea as Python's compileall: parse-only check that
+        # every committed *.sh would not blow up at `bash script.sh`
+        # invocation time on a release box. tests/sh/ is the largest
+        # cluster (the install.sh shape tests).
+        run: |
+          shopt -s globstar
+          fail=0
+          for f in $(git ls-files '*.sh'); do
+              if ! bash -n "$f"; then
+                  echo "::error file=$f::shell parse error"
+                  fail=1
+              fi
+          done
+          if [ "$fail" -ne 0 ]; then
+              exit 1
+          fi
+          n=$(git ls-files '*.sh' | wc -l)
+          echo "$n shell scripts parse cleanly"
+
+      - name: YAML files parse cleanly (yaml.safe_load)
+        # Catches truncated workflow files, broken indents in
+        # dependabot.yml / pre-commit configs, etc. Includes
+        # .github/workflows/*.yml so a typo in the file we just
+        # added shows up immediately.
+        run: |
+          python <<'PY'
+          import pathlib, sys, yaml
+
+          SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+                        "node_modules", "unsloth_compiled_cache",
+                        "unsloth.egg-info"}
+
+          bad = []
+          scanned = 0
+          for path in sorted(list(pathlib.Path(".").rglob("*.yml"))
+                             + list(pathlib.Path(".").rglob("*.yaml"))):
+              if any(part in SKIP_PARTS for part in path.parts):
+                  continue
+              scanned += 1
+              try:
+                  with path.open("r", encoding="utf-8") as fh:
+                      list(yaml.safe_load_all(fh))
+              except Exception as exc:
+                  bad.append((path, exc))
+
+          if bad:
+              for path, exc in bad:
+                  print(f"::error file={path}::YAML parse failed: {exc}")
+              sys.exit(1)
+          print(f"{scanned} YAML files parse cleanly")
+          PY
+
+      - name: JSON files parse cleanly (json.loads)
+        # Catches malformed package.json, biome.json, etc. Skips:
+        #   - huge npm/bun lockfiles (machine-generated, slow to
+        #     parse, no value).
+        #   - tsconfig*.json: TypeScript convention is JSONC (JSON
+        #     with `/* ... */` comments), which standard json.loads
+        #     rejects. Strip-and-validate would need json5 or a
+        #     hand-rolled comment scrubber for marginal value, since
+        #     `tsc --noEmit` already validates these in Frontend CI.
+        run: |
+          python <<'PY'
+          import fnmatch, json, pathlib, sys
+
+          SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+                        "node_modules", "unsloth_compiled_cache",
+                        "unsloth.egg-info"}
+          SKIP_NAMES = {"package-lock.json", "bun.lock"}
+          SKIP_PATTERNS = ("tsconfig*.json",)
+
+          bad = []
+          scanned = 0
+          for path in sorted(pathlib.Path(".").rglob("*.json")):
+              if any(part in SKIP_PARTS for part in path.parts):
+                  continue
+              if path.name in SKIP_NAMES:
+                  continue
+              if any(fnmatch.fnmatch(path.name, pat) for pat in SKIP_PATTERNS):
+                  continue
+              scanned += 1
+              try:
+                  json.loads(path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  bad.append((path, exc))
+
+          if bad:
+              for path, exc in bad:
+                  print(f"::error file={path}::JSON parse failed: {exc}")
+              sys.exit(1)
+          print(f"{scanned} JSON files parse cleanly")
+          PY
+
+      - name: codespell typo check (informational)
+        # Catches typos in code, comments, and docs across the repo.
+        # Skips lockfiles, generated assets, binary artefacts, and
+        # the LICENSE files (US/UK spelling drift in legal text is
+        # not ours to second-guess). The ignore-words-list pulls
+        # out short identifiers + valid technical terms that
+        # codespell's default dictionary would otherwise flag
+        # (e.g. `ans` as a math-quiz variable name in
+        # tests/utils/aime_eval.py, `parm`/`parms` in PyTorch
+        # nn.Module idioms). Non-blocking until the surfaced typos
+        # are fixed; drop continue-on-error after the cleanup.
+        continue-on-error: true
+        run: |
+          codespell \
+            --skip='*.lock,*.lockb,*.json,*.svg,*.png,*.jpg,*.jpeg,*.gif,*.ico,*.woff*,*.ttf,*.eot,*.zip,*.gz,*.gguf,*.safetensors,*.bin,node_modules,.git,build,dist,unsloth_compiled_cache,unsloth.egg-info,target,studio/frontend/dist,*.pyc,*-licenses.txt,LICENSE*' \
+            --ignore-words-list='ans,bu,hel,fo,te,ot,hist,ned,sav,recurser,datas,nin,parm,parms,checkin,nd,fr,inout,donot,uint' \
+            --quiet-level=2
+
+      - name: shellcheck on committed *.sh (informational)
+        # Goes beyond `bash -n` (which only parses): catches subtle
+        # shell bugs like unquoted variable expansions, useless
+        # `cat`, command substitutions inside `[[`, etc. The
+        # install/setup scripts are critical-path so the signal is
+        # worth surfacing. Non-blocking until install.sh's
+        # hand-rolled patterns get cleaned up; drop continue-on-error
+        # afterwards.
+        continue-on-error: true
+        run: |
+          # Exclude SC1090 ("source not followable") -- legitimate
+          # for installer scripts that source files at runtime
+          # paths shellcheck cannot resolve statically.
+          # SC2034 ("variable assigned but never used") fires on
+          # the export-only assignment idiom we use in install.sh.
+          shellcheck -e SC1090,SC2034 $(git ls-files '*.sh')
+
+      - name: ruff format drift (informational)
+        # The canonical formatter is scripts/run_ruff_format.py
+        # = ruff format + scripts/enforce_kwargs_spacing.py, so plain
+        # `ruff format --check` reports the kwarg-spacing diff as
+        # drift. Surface the count for visibility but keep
+        # non-blocking until the custom pipeline is wired in here.
+        continue-on-error: true
+        run: |
+          ruff format --check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
