@@ -1298,6 +1298,13 @@ def disable_torchcodec_if_broken():
 
     This function tests if torchcodec can actually load and if not, patches
     transformers to think torchcodec is unavailable so it falls back to librosa.
+
+    Two shapes to cover:
+      * transformers < 5: a module-level ``_torchcodec_available`` flag
+        cached in ``transformers.utils.import_utils``; flip it to False.
+      * transformers >= 5: a public ``is_torchcodec_available()`` callable
+        wrapped with ``functools.lru_cache``; replace it with a stub that
+        returns False and clear the cache so subsequent callers see it.
     """
     try:
         import importlib.util
@@ -1311,10 +1318,24 @@ def disable_torchcodec_if_broken():
         # torchcodec cannot load - disable it in transformers
         try:
             import transformers.utils.import_utils as tf_import_utils
+        except ImportError:
+            return
 
+        # transformers < 5 path: module-level cached flag.
+        try:
             tf_import_utils._torchcodec_available = False
-        except (ImportError, AttributeError):
+        except AttributeError:
             pass
+
+        # transformers >= 5 path: public lru_cache'd function. Clear any
+        # cached True result then rebind to a stub that returns False.
+        is_avail = getattr(tf_import_utils, "is_torchcodec_available", None)
+        if is_avail is not None:
+            try:
+                is_avail.cache_clear()
+            except AttributeError:
+                pass
+            tf_import_utils.is_torchcodec_available = lambda: False
 
 
 def disable_broken_wandb():
