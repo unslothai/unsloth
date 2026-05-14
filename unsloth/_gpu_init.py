@@ -178,14 +178,10 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
-# Must run BEFORE patch_peft_weight_converter_compatibility: on peft 0.19.x
-# + transformers 4.x, ``from peft.utils import transformers_weight_conversion``
-# raises ModuleNotFoundError because peft unconditionally imports
-# ``transformers.conversion_mapping`` and ``transformers.core_model_loading``
-# at module top, but neither exists on transformers <5. Stubbing those two
-# submodules first lets the converter compat patch actually wrap
-# ``build_peft_weight_mapping`` instead of silently no-opping in its bare
-# ``except (ImportError, AttributeError): return``.
+# Must run before patch_peft_weight_converter_compatibility -- stubs the
+# transformers v5 submodules peft 0.19.x imports unconditionally, so the
+# next patch can actually wrap build_peft_weight_mapping instead of being
+# swallowed by its bare ImportError except.
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
 
