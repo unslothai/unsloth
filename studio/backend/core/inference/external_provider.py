@@ -878,8 +878,13 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": True,
         }
+        # `summary: "auto"` is what makes /v1/responses emit reasoning
+        # summary events — without it OpenAI returns no thinking text on
+        # most reasoning models, the SSE handler has no <think>…</think>
+        # to wrap, and the chat reasoning panel stays blank. Always pair
+        # an explicit effort with summary except for the explicit "off"
+        # case (effort: "none"), where summaries are pointless.
         if reasoning_effort in (
-            "none",
             "minimal",
             "low",
             "medium",
@@ -887,11 +892,11 @@ class ExternalProviderClient:
             "max",
             "xhigh",
         ):
-            body["reasoning"] = {"effort": reasoning_effort}
-        elif enable_thinking is False:
+            body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+        elif reasoning_effort == "none" or enable_thinking is False:
             body["reasoning"] = {"effort": "none"}
         elif enable_thinking is True:
-            body["reasoning"] = {"effort": "medium"}
+            body["reasoning"] = {"effort": "medium", "summary": "auto"}
         if instructions_parts:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
