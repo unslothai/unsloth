@@ -315,9 +315,7 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
         code = getattr(init, "__code__", None)
         freevars = set(getattr(code, "co_freevars", ()) or ())
         co_names = set(getattr(code, "co_names", ()) or ())
-        if "_orig_init" in freevars or {"num_ctas", "cluster_dims"}.issubset(
-            co_names
-        ):
+        if "_orig_init" in freevars or {"num_ctas", "cluster_dims"}.issubset(co_names):
             return
 
     pytest.fail(
