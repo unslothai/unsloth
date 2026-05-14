@@ -36,6 +36,8 @@ jobs:
         working-directory: studio/frontend
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       # FIXME: drop this step once @assistant-ui/* and assistant-stream
       # leave 0.x -- on 1.x, caret ranges are conventional. Until then,
