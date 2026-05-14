@@ -1108,14 +1108,17 @@ def run_training_process(
     class _StubTypeMeta(type):
         def __instancecheck__(cls, instance):
             return False
+
         def __subclasscheck__(cls, subclass):
             return False
+
         def __getattr__(cls, attr):
             if attr.startswith("__"):
                 raise AttributeError(attr)
             child = _StubTypeMeta(attr, (), {})
             setattr(cls, attr, child)
             return child
+
         def __call__(cls, *args, **kwargs):
             return None
 
@@ -1128,8 +1131,9 @@ def run_training_process(
         m.__path__ = []
         m.__package__ = mod_name
         m._unsloth_stub = _STUB_SENTINEL
-        m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
-        def _ga(attr, _m=m, _n=mod_name):
+        m.__spec__ = _ilm.ModuleSpec(mod_name, loader = None, is_package = True)
+
+        def _ga(attr, _m = m, _n = mod_name):
             if attr.startswith("__"):
                 raise AttributeError(attr)
             # Return a stub CLASS (not a module) so that isinstance(x, attr)
@@ -1137,19 +1141,22 @@ def run_training_process(
             child = _make_stub_type(f"{_n}.{attr}")
             setattr(_m, attr, child)
             return child
+
         m.__getattr__ = _ga
         return m
 
     class _StubSubpackageLoader(_ilabc.Loader):
         def __init__(self, mod_name):
             self._mod_name = mod_name
+
         def create_module(self, spec):
             return _make_mod_stub(self._mod_name)
+
         def exec_module(self, module):
             pass
 
     class _StubSubpackageFinder(_ilabc.MetaPathFinder):
-        def find_spec(self, fullname, path, target=None):
+        def find_spec(self, fullname, path, target = None):
             if "." not in fullname:
                 return None
             parent = sys.modules.get(fullname.rsplit(".", 1)[0])
@@ -1157,7 +1164,9 @@ def run_training_process(
                 return None
             if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
                 return None
-            return _ilm.ModuleSpec(fullname, _StubSubpackageLoader(fullname), is_package=True)
+            return _ilm.ModuleSpec(
+                fullname, _StubSubpackageLoader(fullname), is_package = True
+            )
 
     sys.meta_path.append(_StubSubpackageFinder())
 
@@ -1198,6 +1207,7 @@ def run_training_process(
         sys.modules["torch.distributed"] = _td_mock
         try:
             import torch as _torch
+
             _torch.distributed = _td_mock
         except Exception:
             pass
@@ -1240,7 +1250,7 @@ def run_training_process(
                 _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
 
                 def _grouped_mm_safe_impl(
-                    self, mat2, offs=None, bias=None, out_dtype=None
+                    self, mat2, offs = None, bias = None, out_dtype = None
                 ):
                     """Safe fallback for _grouped_mm on gfx1200 (null HIP kernel)."""
                     _t = _torch_for_rocm
@@ -1272,13 +1282,13 @@ def run_training_process(
                             )
                             pieces.append(_t.mm(a_tail, b_tail))
                         result = (
-                            _t.cat(pieces, dim=0)
+                            _t.cat(pieces, dim = 0)
                             if pieces
                             else _t.zeros(
                                 0,
                                 mat2.shape[-1],
-                                device=self.device,
-                                dtype=self.dtype,
+                                device = self.device,
+                                dtype = self.dtype,
                             )
                         )
                     if bias is not None:

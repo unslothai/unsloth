@@ -73,18 +73,22 @@ _PYTORCH_WHL_BASE = (
 # Format: https://repo.amd.com/rocm/whl/{arch_family}/
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
-    os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR")
-    or "https://repo.amd.com/rocm/whl"
+    os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR") or "https://repo.amd.com/rocm/whl"
 ).rstrip("/")
 
 # Maps gfx arch → AMD index arch-family suffix.
 # Each family is a separate pip index on repo.amd.com.
 _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
-    "gfx1201": "gfx120X-all", "gfx1200": "gfx120X-all",  # RDNA 4
-    "gfx1151": "gfx1151",     "gfx1150": "gfx1150",       # RDNA 3.5 (Strix Halo/Point)
-    "gfx1103": "gfx110X-all", "gfx1102": "gfx110X-all",   # RDNA 3
-    "gfx1101": "gfx110X-all", "gfx1100": "gfx110X-all",
-    "gfx90a":  "gfx90a",      "gfx908":  "gfx908",        # MI200/MI100
+    "gfx1201": "gfx120X-all",
+    "gfx1200": "gfx120X-all",  # RDNA 4
+    "gfx1151": "gfx1151",
+    "gfx1150": "gfx1150",  # RDNA 3.5 (Strix Halo/Point)
+    "gfx1103": "gfx110X-all",
+    "gfx1102": "gfx110X-all",  # RDNA 3
+    "gfx1101": "gfx110X-all",
+    "gfx1100": "gfx110X-all",
+    "gfx90a": "gfx90a",
+    "gfx908": "gfx908",  # MI200/MI100
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
@@ -421,14 +425,19 @@ def _ensure_rocm_torch() -> None:
         if not _torch_already_rocm:
             index_url = _windows_rocm_index_url(gfx_arch)
             if index_url is None:
-                print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
+                print(
+                    f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping"
+                )
                 return
             print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
             pip_install(
                 f"ROCm torch (Windows, {gfx_arch})",
                 "--force-reinstall",
-                "--index-url", index_url,
-                "torch", "torchvision", "torchaudio",
+                "--index-url",
+                index_url,
+                "torch",
+                "torchvision",
+                "torchaudio",
                 constrain = False,
             )
         # Always install AMD Windows bitsandbytes — the PyPI wheel ships only

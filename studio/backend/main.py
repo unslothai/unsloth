@@ -16,6 +16,7 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
 if sys.platform == "win32":
+
     def _add_rocm_dll_dirs() -> None:
         candidates = []
         # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer

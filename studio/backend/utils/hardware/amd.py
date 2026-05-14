@@ -53,14 +53,18 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         logger.warning("amd-smi query failed: %s", e)
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
-            logger.warning("amd-smi unavailable -- disabling GPU polling to avoid repeated prompts")
+            logger.warning(
+                "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
+            )
             _amd_smi_disabled = True
         return None
     if result.returncode != 0 or not result.stdout.strip():
         logger.warning("amd-smi returned code %d", result.returncode)
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
-            logger.warning("amd-smi unavailable -- disabling GPU polling to avoid repeated prompts")
+            logger.warning(
+                "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
+            )
             _amd_smi_disabled = True
         return None
     _amd_smi_consecutive_failures = 0  # reset on success
