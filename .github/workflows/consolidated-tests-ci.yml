@@ -271,6 +271,39 @@ jobs:
             tests/utils/test_trunc_normal_patch.py
           python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests/"
 
+      - name: import_fixes drift detectors (18 tests, HARD GATE)
+        # One drift detector per fix_* / patch_* function in
+        # unsloth/import_fixes.py. The detectors assert the *healthy*
+        # upstream shape that the fix expects ABSENT the regression;
+        # ANY DRIFT DETECTED -> pytest.fail (NEVER skip) so the
+        # matrix cell goes red and the maintainer triages on the
+        # next PR, not in a downstream user's crash report.
+        #
+        # Pathologies covered by the suite (each maps to one fix
+        # function with the line range cited in the test docstring):
+        #   * protobuf MessageFactory GetPrototype / GetMessageClass
+        #   * datasets 4.4.x recursion range
+        #   * TRL tuple-vs-bool _*_available caching
+        #   * transformers PreTrainedModel.enable_input_require_grads
+        #     source pattern flip
+        #   * transformers torchcodec / causal_conv1d availability
+        #     flags
+        #   * transformers + accelerate is_wandb_available
+        #   * peft.utils.transformers_weight_conversion importability
+        #     + build_peft_weight_mapping signature
+        #   * triton 3.6+ CompiledKernel num_ctas / cluster_dims
+        #   * torch / torchvision pinned compatibility table
+        #   * vllm guided_decoding_params / structured_outputs +
+        #     aimv2 ovis config version
+        #   * huggingface_hub is_offline_mode / HF_HUB_OFFLINE
+        #   * torch.nn.init.trunc_normal_ presence (patch site for
+        #     patch_trunc_normal_precision_issue)
+        #   * xformers post-num_splits-key fix version
+        # HARD GATE: a red cell here is a real upstream regression
+        # without a corresponding zoo / unsloth-side workaround.
+        run: |
+          python -m pytest -v --tb=short tests/test_import_fixes_drift.py
+
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # 16 tests across 5 files. They live inside tests/saving/ and
         # tests/utils/, both of which Repo tests (CPU) excludes via --ignore
