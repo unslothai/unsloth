@@ -1178,6 +1178,23 @@ def run_training_process(
         except Exception:
             pass
 
+    # ── 1f. Disable torch.compile on Windows ROCm ──
+    # torch._grouped_mm crashes on gfx1200 (null HIP kernel pointer, 0xC0000005).
+    # The crash is triggered via torch.compile's JitDecomp dispatch during the
+    # first forward pass (stack: _grouped_mm ← JitDecompRegisterer ← Python).
+    # Disabling dynamo entirely avoids the kernel dispatch.  torch is already
+    # in sys.modules from section 1e's `import torch.distributed`.
+    if sys.platform == "win32" and "TORCHDYNAMO_DISABLE" not in os.environ:
+        _torch_for_rocm_check = sys.modules.get("torch")
+        if _torch_for_rocm_check is not None and getattr(
+            getattr(_torch_for_rocm_check, "version", None), "hip", None
+        ):
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            logger.info(
+                "Windows ROCm detected — torch.compile disabled "
+                "(_grouped_mm kernel crashes on gfx1200 with 0xC0000005)"
+            )
+
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
         _send_status(event_queue, "Importing Unsloth...")

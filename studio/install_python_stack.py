@@ -352,6 +352,19 @@ def _ensure_rocm_torch() -> None:
     # setup.ps1 sets this when it already installed AMD wheels; skip the probe.
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _rocm_windows_torch_installed = True
+        # setup.ps1 already installed ROCm torch, but we still need to install
+        # the AMD Windows BNB wheel here — the PyPI bitsandbytes wheel ships
+        # only CUDA DLLs and will fail to load on ROCm (no libbitsandbytes_rocm72.dll).
+        _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
+        if _bnb_win_url is not None:
+            pip_install_try(
+                "bitsandbytes (AMD Windows, pre-release main)",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                _bnb_win_url,
+                constrain = False,
+            )
         return
     if IS_MACOS:
         return
