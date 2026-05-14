@@ -13,7 +13,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from utils.models.model_config import detect_mmproj_file
+from utils.models.model_config import (
+    _detect_family_token,
+    detect_mmproj_file,
+    mmproj_matches_model_family,
+)
 
 
 def _touch(path: Path) -> Path:
@@ -108,3 +112,127 @@ def test_search_root_walk_still_works(tmp_path: Path):
     mmproj = _touch(snapshot / "Qwen3.5-9B-BF16-mmproj.gguf")
     result = detect_mmproj_file(str(weight), search_root = str(snapshot))
     assert result == str(mmproj.resolve())
+
+
+# -- Family token detection: word-bounded matching ----------------------
+
+
+def test_family_token_phi_does_not_match_sapphire():
+    """``phi`` is a substring of ``sapphire`` but should not tag that
+    filename as the Phi family."""
+    assert _detect_family_token("sapphire-7b-q4_k_m.gguf") is None
+
+
+def test_family_token_yi_does_not_match_tinyish_names():
+    """``yi`` must not match across letter boundaries (e.g. ``yip``)."""
+    assert _detect_family_token("yip-7b.gguf") is None
+    assert _detect_family_token("yi-vl-6b.gguf") == "yi"
+
+
+def test_family_token_mimo_does_not_match_mimosa():
+    """``mimo`` must not tag ``mimosa-rosa-7b.gguf``."""
+    assert _detect_family_token("mimosa-rosa-7b.gguf") is None
+    assert _detect_family_token("MiMo-VL-7B-RL-BF16.gguf") == "mimo"
+
+
+def test_family_token_mistral_does_not_match_ministral():
+    """``mistral`` is not a substring of ``ministral``, but pin the
+    expected family tagging explicitly so a future tokens-list change
+    cannot silently confuse them."""
+    assert _detect_family_token("Ministral-3-8B-Instruct-2512-BF16.gguf") == "ministral"
+    assert _detect_family_token("Mistral-7B-Instruct-v0.3.gguf") == "mistral"
+    assert _detect_family_token("Magistral-Small-2506-BF16.gguf") == "magistral"
+    assert (
+        _detect_family_token("Devstral-Small-2-24B-Instruct-2512-BF16.gguf")
+        == "devstral"
+    )
+
+
+def test_family_token_picks_leftmost_when_multiple_present():
+    """For merge models that contain two family tokens, the leftmost
+    one in the filename wins regardless of tuple order."""
+    # "llama" appears at position 0; "phi" appears later.
+    assert _detect_family_token("llama-phi-merge.gguf") == "llama"
+    # "phi" appears at position 0; "llama" appears later.
+    assert _detect_family_token("phi-llama-merge.gguf") == "phi"
+    # Word-bounded so a name like ``llama3-3b`` still tags ``llama``.
+    assert _detect_family_token("llama3-3b-instruct.gguf") == "llama"
+
+
+def test_family_token_new_families_recognised():
+    """Catalogue-audit additions: Nemotron, Kimi, Nanonets, Cosmos,
+    Apriel, LFM2.5-VL must all tag correctly."""
+    assert _detect_family_token("NVIDIA-Nemotron-3-Nano-Omni-30B.gguf") == "nemotron"
+    assert _detect_family_token("Kimi-K2.6-BF16.gguf") == "kimi"
+    assert _detect_family_token("Nanonets-OCR-s-BF16.gguf") == "nanonets"
+    assert _detect_family_token("Cosmos-Reason1-7B-BF16.gguf") == "cosmos"
+    assert _detect_family_token("Apriel-1.5-15b-Thinker-BF16.gguf") == "apriel"
+    assert _detect_family_token("LFM2.5-VL-1.6B-BF16.gguf") == "lfm"
+
+
+# -- Cross-family rejection with the expanded token list ----------------
+
+
+def test_blocks_cross_family_for_new_token_pair(tmp_path: Path):
+    """A Nemotron weight in a flat dir with only a Gemma projector
+    must return None (was unfixed by the pre-expansion token list)."""
+    model = _touch(
+        tmp_path / "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-MXFP4_MOE.gguf"
+    )
+    _touch(tmp_path / "gemma-4-26B-A4B-it.mmproj-q8_0.gguf")
+    assert detect_mmproj_file(str(model)) is None
+
+
+def test_picks_devstral_mmproj_in_mixed_dir(tmp_path: Path):
+    """Devstral weight + Devstral mmproj + a Qwen mmproj: pick Devstral."""
+    model = _touch(tmp_path / "Devstral-Small-2-24B-Instruct-2512-BF16.gguf")
+    dev_mm = _touch(tmp_path / "Devstral-Small-2-mmproj-bf16.gguf")
+    _touch(tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf")
+    assert detect_mmproj_file(str(model)) == str(dev_mm.resolve())
+
+
+# -- Launcher-level family guard ----------------------------------------
+
+
+def test_mmproj_family_guard_blocks_cross_family():
+    assert (
+        mmproj_matches_model_family(
+            "/models/Qwen3.5-9B-Q4_K_M.gguf",
+            "/models/gemma-4-26B-A4B-it.mmproj-q8_0.gguf",
+        )
+        is False
+    )
+
+
+def test_mmproj_family_guard_allows_same_family():
+    assert (
+        mmproj_matches_model_family(
+            "/models/Qwen3.5-9B-Q4_K_M.gguf",
+            "/models/Qwen3.5-9B-BF16-mmproj.gguf",
+        )
+        is True
+    )
+
+
+def test_mmproj_family_guard_allows_generic_hf_mmproj():
+    """HF-style ``mmproj-F16.gguf`` carries no family token, so the
+    guard treats it as a wildcard match."""
+    assert (
+        mmproj_matches_model_family(
+            "/models/Qwen3.5-9B-Q4_K_M.gguf",
+            "/models/mmproj-F16.gguf",
+        )
+        is True
+    )
+
+
+def test_mmproj_family_guard_allows_unrecognised_model_family():
+    """If the model itself has no recognised family token, the guard
+    cannot prove a mismatch, so it allows the projector through."""
+    assert (
+        mmproj_matches_model_family(
+            "/models/Apriel-1.5-15b-Thinker-BF16.gguf",
+            "/models/mmproj-F16.gguf",
+        )
+        is True
+    )

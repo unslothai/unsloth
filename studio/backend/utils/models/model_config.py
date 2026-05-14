@@ -801,12 +801,15 @@ _AUDIO_TOKEN_PATTERNS = {
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: "<|audio_start|>" in tokens
-    and "<|audio_end|>" in tokens
-    and "<|text_start|>" in tokens
-    and "<|text_end|>" in tokens,
-    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_"))
-    > 10000,
+    "dac": lambda tokens: (
+        "<|audio_start|>" in tokens
+        and "<|audio_end|>" in tokens
+        and "<|text_start|>" in tokens
+        and "<|text_end|>" in tokens
+    ),
+    "snac": lambda tokens: (
+        sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000
+    ),
 }
 
 
@@ -914,13 +917,18 @@ def _is_mmproj(filename: str) -> bool:
 
 
 # Family tokens used to detect mismatched mmproj/model pairings in flat
-# local GGUF directories (#5347). Order matters only for stability — the
-# first token found in a filename wins. Keep lowercase.
+# local GGUF directories (#5347). The tuple is iterated for diagnostics;
+# the actual selection uses word-bounded matching plus leftmost-position
+# tiebreak (see ``_detect_family_token``), so list order does not affect
+# correctness. Keep lowercase. New families should be added here.
 _MODEL_FAMILY_TOKENS: tuple[str, ...] = (
     "qwen",
     "gemma",
     "llama",
     "mistral",
+    "ministral",
+    "magistral",
+    "devstral",
     "phi",
     "deepseek",
     "internvl",
@@ -935,16 +943,63 @@ _MODEL_FAMILY_TOKENS: tuple[str, ...] = (
     "moondream",
     "granite",
     "ovis",
+    "nemotron",
+    "kimi",
+    "nanonets",
+    "cosmos",
+    "mimo",
+    "apriel",
+    "lfm",
 )
 
 
+# Compiled regex cache for word-bounded family token matching. A token
+# matches only when it appears as a discrete component of the filename:
+# any letter on either side disqualifies, so ``phi`` does not match
+# ``sapphire``, ``yi`` does not match ``tiny``, and ``mimo`` does not
+# match ``mimosa``. Hyphens, dots, digits, underscores, and string ends
+# count as boundaries.
+_FAMILY_TOKEN_RE_CACHE: Dict[str, "_re.Pattern[str]"] = {}
+
+
+def _family_token_re(token: str) -> "_re.Pattern[str]":
+    pat = _FAMILY_TOKEN_RE_CACHE.get(token)
+    if pat is None:
+        pat = _re.compile(rf"(?:^|[^a-z])({_re.escape(token)})(?:[^a-z]|$)")
+        _FAMILY_TOKEN_RE_CACHE[token] = pat
+    return pat
+
+
 def _detect_family_token(filename: str) -> Optional[str]:
-    """Return the first known family token found in ``filename``, or None."""
+    """Return the family token whose first match in ``filename`` starts
+    earliest. Ties (same starting position) prefer the longer token, so
+    ``ministral`` beats ``mistral`` on a name like ``ministral-3-8b.gguf``
+    when both happen to match. Returns None when no token matches."""
     name = filename.lower()
+    best: Optional[tuple[int, int, str]] = None  # (start, -len, token)
     for token in _MODEL_FAMILY_TOKENS:
-        if token in name:
-            return token
-    return None
+        m = _family_token_re(token).search(name)
+        if m is None:
+            continue
+        key = (m.start(1), -len(token), token)
+        if best is None or key < best:
+            best = key
+    return None if best is None else best[2]
+
+
+def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
+    """Return True when ``mmproj_path`` is safe to attach to ``model_path``
+    based on family-token agreement. A projector whose family token is
+    unrecognised (e.g. the HF convention ``mmproj-F16.gguf``) is treated
+    as a wildcard and always returns True. Intended as a defense-in-depth
+    check at the llama-server launcher in case ``mmproj_path`` arrives
+    from a path that bypasses :func:`detect_mmproj_file` (config
+    injection, manual override, future routes)."""
+    model_fam = _detect_family_token(Path(model_path).name)
+    mmproj_fam = _detect_family_token(Path(mmproj_path).name)
+    if model_fam is None or mmproj_fam is None:
+        return True
+    return model_fam == mmproj_fam
 
 
 def _shared_prefix_len(a: str, b: str) -> int:

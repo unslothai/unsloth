@@ -2279,8 +2279,24 @@ class LlamaCppBackend:
                 if not Path(mmproj_path).is_file():
                     logger.warning(f"mmproj file not found: {mmproj_path}")
                 else:
-                    cmd.extend(["--mmproj", mmproj_path])
-                    logger.info(f"Using mmproj for vision: {mmproj_path}")
+                    # Defense in depth for #5347: detect_mmproj_file already
+                    # drops cross-family projectors, but mmproj_path can also
+                    # arrive from config injection or future overrides that
+                    # bypass it. Skip mismatched pairings here too so the
+                    # launcher never hands llama-server a known-wrong file.
+                    from utils.models.model_config import (
+                        mmproj_matches_model_family,
+                    )
+
+                    if not mmproj_matches_model_family(model_path, mmproj_path):
+                        logger.warning(
+                            f"Skipping mmproj with mismatched family: "
+                            f"model={Path(model_path).name}, "
+                            f"mmproj={Path(mmproj_path).name}"
+                        )
+                    else:
+                        cmd.extend(["--mmproj", mmproj_path])
+                        logger.info(f"Using mmproj for vision: {mmproj_path}")
 
             # Option C: add --api-key for direct client access when enabled
             import os as _os
@@ -3612,7 +3628,7 @@ class LlamaCppBackend:
 
                                 except json.JSONDecodeError:
                                     logger.debug(
-                                        f"Skipping malformed SSE line: " f"{line[:100]}"
+                                        f"Skipping malformed SSE line: {line[:100]}"
                                     )
                             if _stream_done:
                                 break  # exit outer for
