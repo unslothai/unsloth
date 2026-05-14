@@ -315,7 +315,6 @@ class ExternalProviderClient:
             "messages": filtered,
             "max_tokens": max_tokens or 1024,  # required by Anthropic
             "temperature": temperature,
-            # Anthropic rejects requests that set both temperature and top_p
             "stream": True,
         }
         # top_k is deprecated on Claude 4.7 (Opus/Sonnet/Haiku) — the API
@@ -352,6 +351,8 @@ class ExternalProviderClient:
             body.pop("top_k", None)
             # Anthropic requires temperature=1 whenever thinking is enabled.
             body["temperature"] = 1
+            # Anthropic thinking supports top_p in the 0.95..1.0 range.
+            body["top_p"] = max(0.95, min(float(top_p), 1.0))
             if _ANTHROPIC_ADAPTIVE_THINKING.match(model):
                 body["thinking"] = {"type": "adaptive"}
                 body["output_config"] = {"effort": effort}
@@ -361,6 +362,10 @@ class ExternalProviderClient:
                     "type": "enabled",
                     "budget_tokens": budget_tokens,
                 }
+                # Anthropic requires max_tokens to be strictly greater than
+                # thinking.budget_tokens on the manual-thinking path.
+                if body.get("max_tokens", 0) <= budget_tokens:
+                    body["max_tokens"] = budget_tokens + 1024
 
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"

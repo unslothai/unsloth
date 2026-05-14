@@ -61,6 +61,7 @@ const CUSTOM_PROVIDER_TYPE = "custom";
 const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found, please make sure API key is added and valid for this provider.";
+const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 
 function normalizeUrl(input: string): string {
   return input.trim().replace(/\/+$/, "");
@@ -114,6 +115,11 @@ function parseManualModelIds(text: string): string[] {
     out.push(id);
   }
   return out;
+}
+
+function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
+  if (providerType !== "anthropic") return modelIds;
+  return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
 }
 
 function formatModelSummary(models: string[]): string {
@@ -264,7 +270,10 @@ export function ChatProvidersSettings({
             const updatedAt = Number.isFinite(Date.parse(config.updated_at))
               ? Date.parse(config.updated_at)
               : Date.now();
-            const existingModels = existing?.models ?? [];
+            const existingModels = pruneProviderModelIds(
+              uiProviderType,
+              existing?.models ?? [],
+            );
             return {
               id: config.id,
               providerType: uiProviderType,
@@ -398,14 +407,14 @@ export function ChatProvidersSettings({
       // Union of registry defaults + fetched models, defaults first so any
       // curated picks (e.g. claude-haiku-4-5) always show even when the
       // provider's /models endpoint omits them.
-      const modelIds = [
+      const modelIds = pruneProviderModelIds(providerType, [
         ...new Set(
           [
             ...registryDefaults,
             ...models.map((model) => model.id.trim()),
           ].filter((id) => id.length > 0),
         ),
-      ];
+      ]);
       setAvailableModels(modelIds);
       setSelectedModelIds((prev) =>
         prev.filter((id) => modelIds.includes(id)),
@@ -444,14 +453,17 @@ export function ChatProvidersSettings({
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
     const manualModels = isCustomProvider || curated;
-    const modelsToSave = manualModels
+    const modelsToSave = pruneProviderModelIds(
+      providerType,
+      manualModels
       ? [
           ...new Set([
             ...selectedModelIds,
             ...parseManualModelIds(manualModelIds),
           ]),
         ]
-      : [...selectedModelIds];
+      : [...selectedModelIds],
+    );
     if (manualModels) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
@@ -491,7 +503,9 @@ export function ChatProvidersSettings({
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
-        availableModels: manualModels ? [] : availableModels,
+        availableModels: manualModels
+          ? []
+          : pruneProviderModelIds(providerType, availableModels),
         createdAt,
         updatedAt,
       };
@@ -531,14 +545,17 @@ export function ChatProvidersSettings({
     const entry = registryByType.get(existing.providerType);
     const curated = entry?.model_list_mode === "curated";
     const manualModels = isEditingCustomProvider || curated;
-    const modelsToSave = manualModels
+    const modelsToSave = pruneProviderModelIds(
+      existing.providerType,
+      manualModels
       ? [
           ...new Set([
             ...selectedModelIds,
             ...parseManualModelIds(manualModelIds),
           ]),
         ]
-      : [...selectedModelIds];
+      : [...selectedModelIds],
+    );
     if (manualModels) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
@@ -584,7 +601,9 @@ export function ChatProvidersSettings({
                 name: updated.display_name,
                 baseUrl: updated.base_url ?? "",
                 models: modelsToSave,
-                availableModels: manualModels ? [] : availableModels,
+                availableModels: manualModels
+                  ? []
+                  : pruneProviderModelIds(existing.providerType, availableModels),
                 updatedAt,
               }
             : provider,
@@ -627,15 +646,17 @@ export function ChatProvidersSettings({
     } else {
       const shortlist = entry?.default_models ?? [];
       const cachedCatalog = provider.availableModels ?? [];
-      const mergedModels = [
+      const mergedModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
           [...shortlist, ...cachedCatalog, ...provider.models]
             .map((model) => model.trim())
             .filter((model) => model.length > 0),
         ),
-      ];
+      ]);
       setAvailableModels(mergedModels);
-      setSelectedModelIds([...provider.models]);
+      setSelectedModelIds(
+        provider.models.filter((model) => mergedModels.includes(model)),
+      );
       setManualModelIds("");
     }
   }
