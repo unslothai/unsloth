@@ -13,11 +13,36 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import struct
+
 from utils.models.model_config import (
     _detect_family_token,
     detect_mmproj_file,
     mmproj_matches_model_family,
 )
+
+
+_GGUF_MAGIC = 0x46554747
+
+
+def _gguf_with_general(path: Path, fields: dict) -> Path:
+    """Write a minimal GGUF file containing only ``general.*`` strings.
+
+    Used by the detect_mmproj_file end-to-end tests so the metadata
+    path runs against real on-disk headers rather than the empty files
+    produced by ``_touch``.
+    """
+    body = b""
+    for k, v in fields.items():
+        kb = k.encode("utf-8")
+        vb = v.encode("utf-8")
+        body += struct.pack("<Q", len(kb)) + kb
+        body += struct.pack("<I", 8)  # STRING vtype
+        body += struct.pack("<Q", len(vb)) + vb
+    header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(fields))
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(header + body)
+    return path
 
 
 def _touch(path: Path) -> Path:
@@ -236,3 +261,121 @@ def test_mmproj_family_guard_allows_unrecognised_model_family():
         )
         is True
     )
+
+
+# -- Metadata-primary pairing in detect_mmproj_file ---------------------
+
+
+def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
+    """Two same-family candidates: only the one whose
+    ``general.base_model.0.repo_url`` matches the weight should win,
+    regardless of filename prefix length."""
+    weight = _gguf_with_general(
+        tmp_path / "Qwen3.5-9B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen2vl",
+            "general.type": "model",
+            "general.basename": "Qwen3.5",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    # This candidate's filename prefix matches the weight better, but
+    # its metadata refers to a different upstream repo.
+    _gguf_with_general(
+        tmp_path / "Qwen3.5-9B-mmproj-bf16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Qwen3.5",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-1.5B",
+        },
+    )
+    # This candidate has the matching metadata.
+    correct = _gguf_with_general(
+        tmp_path / "mmproj-BF16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Qwen3.5",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) == str(correct.resolve())
+
+
+def test_metadata_url_mismatch_dropped(tmp_path: Path):
+    """A flat dir holds a Qwen weight and a Gemma mmproj that both
+    happen to pass the filename family check (e.g. someone renamed
+    them). Metadata disagrees on base_model URL, so the candidate
+    must be dropped and the function must return None."""
+    weight = _gguf_with_general(
+        tmp_path / "qwen-9b.gguf",
+        {
+            "general.architecture": "qwen2vl",
+            "general.type": "model",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    _gguf_with_general(
+        tmp_path / "qwen-9b-mmproj.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-3-9B",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) is None
+
+
+def test_metadata_identifies_mmproj_without_filename_hint(tmp_path: Path):
+    """A projector whose filename does not contain ``mmproj`` is still
+    discovered when its header advertises ``general.type=mmproj``."""
+    weight = _gguf_with_general(
+        tmp_path / "Qwen3.5-9B.gguf",
+        {
+            "general.architecture": "qwen2vl",
+            "general.type": "model",
+            "general.basename": "Qwen3.5",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "vision-projector.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Qwen3.5",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) == str(projector.resolve())
+
+
+def test_metadata_score_outranks_filename_prefix(tmp_path: Path):
+    """A candidate with a 100-score URL match must beat a candidate
+    with a longer shared filename prefix but no metadata."""
+    weight = _gguf_with_general(
+        tmp_path / "Qwen3.5-9B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen2vl",
+            "general.type": "model",
+            "general.basename": "Qwen3.5",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    # Headerless: empty file with mmproj in name. Filename prefix is
+    # very strong (long shared stem with the weight).
+    _touch(tmp_path / "Qwen3.5-9B-Q4_K_M-mmproj.gguf")
+    # Headered with the matching base_model URL but a generic name.
+    correct = _gguf_with_general(
+        tmp_path / "mmproj-BF16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        },
+    )
+    # The headerless candidate is treated as a wildcard (no metadata,
+    # no family token mismatch), so it stays in the pool with score 0.
+    # The headered candidate has score 100 and wins.
+    assert detect_mmproj_file(str(weight)) == str(correct.resolve())
