@@ -30,6 +30,8 @@ from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
     chunked_selective_log_softmax,
+    _unsloth_get_mm_token_id,
+    _unsloth_fix_mm_token_type_ids,
 )
 from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
@@ -595,6 +597,23 @@ def grpo_trainer__generate_single_turn(function_name, function):
     ]:
         function = re.sub(pattern, "", function)
 
+    string_to_find = (
+        "            generate_inputs = super()._prepare_inputs(generate_inputs)"
+    )
+    replacement_string = (
+        string_to_find
+        + """
+            if "mm_token_type_ids" in generate_inputs or "image_grid_thw" in generate_inputs:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class,
+                    generate_inputs["input_ids"],
+                    generate_inputs.get("mm_token_type_ids", None),
+                )
+                if mm_token_type_ids is not None:
+                    generate_inputs["mm_token_type_ids"] = mm_token_type_ids"""
+    )
+    function = function.replace(string_to_find, replacement_string)
+
     return function
 
 
@@ -814,36 +833,45 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
         function = patched
 
-    # Transformers 5.x: Extend mm_token_type_ids for completion tokens (Qwen3VL M-RoPE).
-    # TRL handles token_type_ids but not mm_token_type_ids.
-    _tt_search = (
-        'if "token_type_ids" in forward_kwargs:\n'
-        '            token_type_ids = forward_kwargs["token_type_ids"]\n'
-        '            forward_kwargs["token_type_ids"] = torch.cat(\n'
-        "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
-        "            )"
-    )
-    _tt_replace = (
-        _tt_search + "\n"
-        '        if "mm_token_type_ids" in forward_kwargs:\n'
-        '            mm_tti = forward_kwargs["mm_token_type_ids"]\n'
-        '            forward_kwargs["mm_token_type_ids"] = torch.cat(\n'
-        "                [mm_tti, mm_tti.new_zeros(completion_ids.shape)], dim=1\n"
-        "            )"
-    )
-    function = function.replace(_tt_search, _tt_replace)
+    _mm_alignment = """
+        if "mm_token_type_ids" in forward_kwargs or "image_grid_thw" in forward_kwargs:
+            _mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                prompt_completion_ids,
+                forward_kwargs.get("mm_token_type_ids", None),
+                completion_ids = completion_ids,
+            )
+            if _mm_token_type_ids is not None:
+                forward_kwargs["mm_token_type_ids"] = _mm_token_type_ids
+"""
+    _tool_image_marker = "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
+    if _tool_image_marker in function:
+        function = function.replace(
+            _tool_image_marker, _mm_alignment + "\n" + _tool_image_marker
+        )
+    else:
+        _tt_search = (
+            'if "token_type_ids" in forward_kwargs:\n'
+            '            token_type_ids = forward_kwargs["token_type_ids"]\n'
+            '            forward_kwargs["token_type_ids"] = torch.cat(\n'
+            "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
+            "            )"
+        )
+        function = function.replace(
+            _tt_search, _tt_search + "\n" + _mm_alignment.rstrip()
+        )
 
-    # Save mm_token_type_ids to output dict alongside token_type_ids
     _save_search = (
         'if "token_type_ids" in forward_kwargs:\n'
         '            output["token_type_ids"] = forward_kwargs["token_type_ids"]'
     )
-    _save_replace = (
-        _save_search + "\n"
-        '        if "mm_token_type_ids" in forward_kwargs:\n'
-        '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
-    )
-    function = function.replace(_save_search, _save_replace)
+    if 'output["mm_token_type_ids"]' not in function:
+        _save_replace = (
+            _save_search + "\n"
+            '        if "mm_token_type_ids" in forward_kwargs:\n'
+            '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
+        )
+        function = function.replace(_save_search, _save_replace)
 
     return function
 
@@ -1017,9 +1045,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            num_images = kwargs.get("num_images", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
             token_type_ids = kwargs.get("token_type_ids", None)
             mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
+            if mm_token_type_ids is not None or image_grid_thw is not None:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class, input_ids, mm_token_type_ids
+                )
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -1067,64 +1100,136 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
-
-            def chunk_optional(tensor, chunks):
-                if tensor is None:
-                    return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+            def slice_sample_axis(value, start, end):
+                if value is None:
+                    return None
+                return value[start:end]
 
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
+            if isinstance(num_images, torch.Tensor):
+                num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
+                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_sample = torch.split(rows_per_image, num_images)
+                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                # why: cum_rows is indexed via .item() inside the per-chunk loop;
+                # keeping it on CPU avoids per-iteration GPU->CPU sync.
+                cum_rows = torch.cat(
+                    [
+                        torch.tensor([0], device = rows_per_sample.device),
+                        rows_per_sample.cumsum(0),
+                    ]
+                ).cpu()
+                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+            else:
+                cum_rows = None
+                cum_imgs = None
+
+            def _first_dim_len(value):
+                if value is None:
+                    return None
+                if hasattr(value, "shape"):
+                    return value.shape[0]
+                try:
+                    return len(value)
+                except TypeError:
+                    return None
+
+            total_images = sum(num_images) if num_images is not None else None
+            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            image_sizes_chunks = []
+            token_type_ids_chunks = []
+            mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
-                end = start + batch_size
+                end = min(start + batch_size, total_samples)
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    grid_slice = image_grid_thw[start:end]
+                    if num_images is None:
+                        grid_slice = image_grid_thw[start:end]
+                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        start_pixel_idx = current_pixel_idx
+                        end_pixel_idx = current_pixel_idx + batch_pixel_count
+                        current_pixel_idx = end_pixel_idx
+                        img_start = img_end = None
+                    else:
+                        start_pixel_idx = cum_rows[start].item()
+                        end_pixel_idx = cum_rows[end].item()
+                        img_start = cum_imgs[start].item()
+                        img_end = cum_imgs[end].item()
+                        grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
-
-                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-
-                    start_pixel_idx = current_pixel_idx
-                    end_pixel_idx = current_pixel_idx + batch_pixel_count
 
                     pixel_values_chunks.append(
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
-                    if pixel_attention_mask is not None:
+                    if image_sizes is None:
+                        image_sizes_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and _image_sizes_n == total_images
+                        and img_start is not None
+                    ):
+                        image_sizes_chunks.append(image_sizes[img_start:img_end])
+                    else:
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
+
+                    if pixel_attention_mask is None:
+                        pixel_attention_mask_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and img_start is not None
+                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
+                    elif (
+                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
+                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
+                    ):
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
-                        pixel_attention_mask_chunks.append(None)
-
-                    current_pixel_idx = end_pixel_idx
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-
-            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
-            else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
             logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
@@ -1134,10 +1239,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             logit_scale_divide = getattr(model.config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
-
-            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
-            token_type_ids_chunks = chunk_optional(token_type_ids, B)
-            mm_token_type_ids_chunks = chunk_optional(mm_token_type_ids, B)
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -1306,6 +1407,8 @@ grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(
     inspect.getsource(_unsloth_get_final_logit_softcapping)
 )
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -1341,6 +1444,7 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        num_images = inputs.get("num_images", None)
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
         token_type_ids = inputs.get("token_type_ids", None)
         mm_token_type_ids = inputs.get("mm_token_type_ids", None)
@@ -1352,6 +1456,13 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
+        if mm_token_type_ids is not None or image_grid_thw is not None:
+            mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                input_ids,
+                mm_token_type_ids,
+                completion_ids = completion_ids,
+            )
         # attention_mask = None
         logits_to_keep = completion_ids.size(
             1
@@ -1449,6 +1560,35 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
+
+            def _unsloth_requires_multi_image_zoo(value):
+                if value is None:
+                    return False
+                if isinstance(value, torch.Tensor):
+                    counts = value.detach().cpu().reshape(-1).tolist()
+                else:
+                    counts = list(value)
+                return any(int(n) != 1 for n in counts)
+
+            if _unsloth_requires_multi_image_zoo(num_images) and not getattr(
+                self, "_unsloth_grpo_zoo_checked", False
+            ):
+                _supports_num_images = (
+                    "num_images" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_num_images:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_num_images = "num_images" in _zoo_src
+                if not _supports_num_images:
+                    raise RuntimeError(
+                        "Multi-image GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles num_images. Please upgrade "
+                        "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
+                    )
+                self._unsloth_grpo_zoo_checked = True
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -1463,6 +1603,9 @@ def grpo_trainer_compute_loss(function_name, function):
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -1494,6 +1637,11 @@ def grpo_trainer_compute_loss(function_name, function):
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
@@ -1739,7 +1887,27 @@ def openenv_vllm_reload_weights():
         patch_target_name = "generate_rollout_completions"
         patch_target = getattr(openenv_utils, patch_target_name)
 
-    src = inspect.getsource(patch_target)
+    # TRL 0.29.1+ ships some openenv helpers as compiled bytecode without
+    # accessible source on disk; inspect.getsource raises OSError("could
+    # not get source code") in that case. Skip the source-rewrite patch
+    # rather than crash. The unmodified TRL openenv path will run, which
+    # means the duplicate `collective_rpc("reload_weights")` is NOT
+    # stripped (line 1800 below) and `wake_up(tags=["kv_cache"])` is NOT
+    # retagged to `wake_up()` (line 1804). Users who do not use openenv
+    # GRPO are unaffected; openenv GRPO users on this TRL build may see
+    # redundant reload_weights calls or partial wake_up behavior.
+    try:
+        src = inspect.getsource(patch_target)
+    except OSError as e:
+        logger.warning(
+            f"Unsloth: Could not retrieve source for trl openenv "
+            f"{patch_target_name} ({e}); skipping rewrite. The unmodified "
+            f"TRL openenv path will run, so the duplicate reload_weights "
+            f"strip and the wake_up tag rewrite are NOT applied. Open an "
+            f"issue if you see redundant reload_weights or partial wake_up "
+            f"on openenv GRPO with this TRL build."
+        )
+        return
     src = textwrap.dedent(src)
     original_src = src
 

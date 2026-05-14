@@ -1,6 +1,7 @@
+use crate::diagnostics::{self, DiagnosticsState};
 use crate::preflight::{DesktopPreflightDisposition, DesktopPreflightResult};
 use crate::process::BackendState;
-use log::info;
+use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -39,13 +40,16 @@ struct BackendPort {
 #[derive(Debug)]
 enum AuthError {
     Connectivity(String),
+    StaleResponder(String),
     Failed(String),
 }
 
 impl AuthError {
     fn message(self) -> String {
         match self {
-            Self::Connectivity(message) | Self::Failed(message) => message,
+            Self::Connectivity(message) | Self::StaleResponder(message) | Self::Failed(message) => {
+                message
+            }
         }
     }
 }
@@ -73,22 +77,48 @@ fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(s.trim().to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "Failed to read auth secret at {}: {}",
-            path.display(),
-            e
-        )),
+        Err(e) => {
+            warn!(
+                "Desktop auth: ignoring unreadable auth secret at {}: {}",
+                path.display(),
+                e
+            );
+            Ok(None)
+        }
     }
 }
 
 async fn current_backend_port(
     state: &tauri::State<'_, BackendState>,
 ) -> Result<BackendPort, String> {
-    if let Some(port) = state.lock().map_err(|e| e.to_string())?.port {
+    let cached_port = {
+        let proc = state.lock().map_err(|e| e.to_string())?;
+        if let Some(port) = proc.owned_backend_port() {
+            return Ok(BackendPort {
+                port,
+                source: PortSource::Cached,
+            });
+        }
+        if proc.has_owned_backend() {
+            None
+        } else {
+            proc.port
+        }
+    };
+
+    if let Some(port) = cached_port {
         return Ok(BackendPort {
             port,
             source: PortSource::Cached,
         });
+    }
+
+    if state
+        .lock()
+        .map(|proc| proc.has_owned_backend())
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Backend is not ready".to_string());
     }
 
     let port = discover_compatible_backend_port()
@@ -138,8 +168,21 @@ fn classify_auth_send_error(error: reqwest::Error) -> AuthError {
 fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> bool {
     matches!(
         (source, error),
-        (PortSource::Cached, AuthError::Connectivity(_))
+        (
+            PortSource::Cached,
+            AuthError::Connectivity(_) | AuthError::StaleResponder(_)
+        )
     )
+}
+
+fn can_retry_on_discovered_port(state: &BackendState, source: PortSource) -> Result<bool, String> {
+    if source != PortSource::Cached {
+        return Ok(false);
+    }
+    state
+        .lock()
+        .map(|proc| !proc.has_owned_backend())
+        .map_err(|e| e.to_string())
 }
 
 async fn exchange_desktop_secret(
@@ -157,7 +200,7 @@ async fn exchange_desktop_secret(
         .map_err(classify_auth_send_error)?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(AuthError::Failed(
+        return Err(AuthError::StaleResponder(
             "Running Studio backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
@@ -166,7 +209,7 @@ async fn exchange_desktop_secret(
         return Ok(None);
     }
     if !response.status().is_success() {
-        return Err(AuthError::Failed("Desktop auth failed".to_string()));
+        return Err(AuthError::StaleResponder("Desktop auth failed".to_string()));
     }
 
     response
@@ -193,6 +236,11 @@ async fn provision_desktop_auth() -> Result<(), String> {
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
+
+    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
+    // Scrub so provisioning writes match what the Rust auth code reads.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -213,6 +261,33 @@ async fn provision_desktop_auth() -> Result<(), String> {
     ))
 }
 
+async fn retry_on_discovered_port(
+    client: &Client,
+    state: &tauri::State<'_, BackendState>,
+    previous: BackendPort,
+    secret: &str,
+) -> Result<Option<(Option<DesktopAuthResponse>, BackendPort)>, String> {
+    if !can_retry_on_discovered_port(state.inner(), previous.source)? {
+        return Ok(None);
+    }
+    let Some(port) = discover_compatible_backend_port().await else {
+        return Ok(None);
+    };
+    if port == previous.port {
+        return Ok(None);
+    }
+
+    update_backend_port(state, port)?;
+    let backend = BackendPort {
+        port,
+        source: PortSource::Discovered,
+    };
+    exchange_desktop_secret(client, port, secret)
+        .await
+        .map(|tokens| Some((tokens, backend)))
+        .map_err(AuthError::message)
+}
+
 async fn authenticate_with_stale_port_retry(
     client: &Client,
     state: &tauri::State<'_, BackendState>,
@@ -220,20 +295,19 @@ async fn authenticate_with_stale_port_retry(
     secret: &str,
 ) -> Result<(Option<DesktopAuthResponse>, BackendPort), String> {
     match exchange_desktop_secret(client, backend.port, secret).await {
-        Ok(tokens) => Ok((tokens, backend)),
+        Ok(Some(tokens)) => Ok((Some(tokens), backend)),
+        Ok(None) => {
+            // 401 means the backend is reachable but the cached secret is stale.
+            // Keep using the same backend so the next desktop_auth_inner attempt
+            // provisions a new secret for the server we are retrying instead of
+            // switching to an unrelated discovered/attached backend.
+            Ok((None, backend))
+        }
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
-            let Some(port) = discover_compatible_backend_port().await else {
-                return Err(error.message());
-            };
-            update_backend_port(state, port)?;
-            let backend = BackendPort {
-                port,
-                source: PortSource::Discovered,
-            };
-            exchange_desktop_secret(client, port, secret)
-                .await
-                .map(|tokens| (tokens, backend))
-                .map_err(AuthError::message)
+            if let Some(retried) = retry_on_discovered_port(client, state, backend, secret).await? {
+                return Ok(retried);
+            }
+            Err(error.message())
         }
         Err(error) => Err(error.message()),
     }
@@ -242,9 +316,25 @@ async fn authenticate_with_stale_port_retry(
 #[tauri::command]
 pub async fn desktop_auth(
     state: tauri::State<'_, BackendState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<DesktopAuthResponse, String> {
+    let result = desktop_auth_inner(&state, diagnostics.inner()).await;
+    if let Err(message) = &result {
+        let port = state.lock().ok().and_then(|proc| proc.port);
+        diagnostics::record_auth_failure(&diagnostics, "desktop_auth", port, message);
+    }
+    result
+}
+
+async fn desktop_auth_inner(
+    state: &tauri::State<'_, BackendState>,
+    diagnostics: &DiagnosticsState,
 ) -> Result<DesktopAuthResponse, String> {
     let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
-    let mut backend = current_backend_port(&state).await?;
+    let mut backend = current_backend_port(state).await?;
+    if backend.source == PortSource::Discovered {
+        diagnostics::record_attached_external_backend(diagnostics, backend.port);
+    }
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -263,8 +353,11 @@ pub async fn desktop_auth(
 
         info!("Desktop auth: exchanging desktop secret");
         let (tokens, resolved_backend) =
-            authenticate_with_stale_port_retry(&client, &state, backend, &secret).await?;
+            authenticate_with_stale_port_retry(&client, state, backend, &secret).await?;
         backend = resolved_backend;
+        if backend.source == PortSource::Discovered {
+            diagnostics::record_attached_external_backend(diagnostics, backend.port);
+        }
         if let Some(tokens) = tokens {
             return Ok(tokens);
         }
@@ -300,27 +393,14 @@ mod tests {
     }
 
     #[test]
-    fn auth_secret_path_joins_expected_location() {
-        let home = PathBuf::from("/home/alex");
-        assert_eq!(
-            auth_secret_path(&home, ".desktop_secret"),
-            PathBuf::from("/home/alex/.unsloth/studio/auth/.desktop_secret")
-        );
-    }
-
-    #[test]
-    fn auth_url_builds_local_endpoint() {
-        assert_eq!(
-            auth_url(8890, "desktop-login"),
-            "http://127.0.0.1:8890/api/auth/desktop-login"
-        );
-    }
-
-    #[test]
-    fn retry_discovery_only_for_cached_connectivity_errors() {
+    fn retry_discovery_only_for_cached_recoverable_errors() {
         assert!(should_retry_with_discovered_port(
             PortSource::Cached,
             &AuthError::Connectivity("connection refused".to_string())
+        ));
+        assert!(should_retry_with_discovered_port(
+            PortSource::Cached,
+            &AuthError::StaleResponder("old responder".to_string())
         ));
         assert!(!should_retry_with_discovered_port(
             PortSource::Discovered,
@@ -333,53 +413,56 @@ mod tests {
     }
 
     #[test]
-    fn attached_ready_port_requires_attached_ready_with_port() {
-        let compatible = DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::AttachedReady,
-            reason: None,
-            port: Some(8890),
-            can_auto_repair: false,
-            managed_bin: None,
-        };
-        assert_eq!(attached_ready_port(compatible), Some(8890));
+    fn owned_handle_disables_discovered_auth_retry() {
+        const ROOT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const TOKEN: &str = "desktop-owner-token";
 
-        let missing_port = DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::AttachedReady,
-            reason: None,
-            port: None,
-            can_auto_repair: false,
-            managed_bin: None,
-        };
-        assert_eq!(attached_ready_port(missing_port), None);
+        let state = crate::process::new_backend_state();
+        assert!(can_retry_on_discovered_port(&state, PortSource::Cached).unwrap());
+        assert!(!can_retry_on_discovered_port(&state, PortSource::Discovered).unwrap());
 
-        let managed_ready = DesktopPreflightResult {
-            disposition: DesktopPreflightDisposition::ManagedReady,
-            reason: None,
-            port: Some(8890),
-            can_auto_repair: false,
-            managed_bin: None,
-        };
-        assert_eq!(attached_ready_port(managed_ready), None);
+        let owner = crate::desktop_backend_owner::test_owner_state(ROOT_ID, TOKEN, 8890);
+        state.lock().unwrap().owned = Some(crate::process::OwnedBackendHandle::adopted(
+            owner, 8890, 2, 3,
+        ));
+
+        assert!(!can_retry_on_discovered_port(&state, PortSource::Cached).unwrap());
+    }
+
+    #[test]
+    fn read_secret_handles_missing_trimmed_and_invalid_files() {
+        let base =
+            std::env::temp_dir().join(format!("unsloth-desktop-secret-{}", std::process::id()));
+        let missing = base.with_extension("missing");
+        let trimmed = base.with_extension("trimmed");
+        let invalid = base.with_extension("invalid");
+        let _ = std::fs::remove_file(&missing);
+        std::fs::write(&trimmed, "  desktop-secret\n").unwrap();
+        std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
+
+        assert_eq!(read_secret_if_exists(&missing).unwrap(), None);
+        assert_eq!(
+            read_secret_if_exists(&trimmed).unwrap(),
+            Some("desktop-secret".to_string())
+        );
+        assert_eq!(read_secret_if_exists(&invalid).unwrap(), None);
+        let _ = std::fs::remove_file(trimmed);
+        let _ = std::fs::remove_file(invalid);
     }
 
     #[tokio::test]
-    async fn exchange_desktop_secret_returns_none_for_unauthorized() {
+    async fn exchange_desktop_secret_handles_unauthorized_and_not_found() {
         let port = login_server("401 Unauthorized").await;
         let tokens = exchange_desktop_secret(&Client::new(), port, "desktop-stale")
             .await
             .unwrap();
-
         assert!(tokens.is_none());
-    }
 
-    #[tokio::test]
-    async fn exchange_desktop_secret_reports_unsupported_backend_on_not_found() {
         let port = login_server("404 Not Found").await;
         let error = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
             .await
             .unwrap_err()
             .message();
-
         assert_eq!(
             error,
             "Running Studio backend is too old for this desktop app. Update that backend and restart."

@@ -3,6 +3,13 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import { consumeNativePathToken } from "@/features/native-intents/api";
+import {
+  notifyNative,
+  primeNativeNotificationPermission,
+  safeNotificationLabel,
+  sanitizeNotificationBody,
+} from "@/lib/native-notifications";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -16,30 +23,22 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  type ReasoningEffort,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
-import type { InferenceStatusResponse, LoadModelResponse } from "../types/api";
+import {
+  isMultimodalResponse,
+} from "../types/api";
+import { isExternalModelId } from "../external-providers";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
-  InferenceParams,
 } from "../types/runtime";
-
-// The simplified Speculative Decoding control surfaces "default" (which
-// maps to llama.cpp's --spec-default) and "off". A backend status / load
-// response can still report the older manual modes (ngram-mod,
-// ngram-simple) when a model is loaded via the API or carried over from an
-// older Studio version. The Select would render an empty trigger for those
-// values, so coerce them to "default" -- llama.cpp's own --spec-default
-// picks an equivalent strategy and keeps the dropdown coherent.
-function normalizeSpeculativeType(v: string | null | undefined): string | null {
-  if (v == null) return null;
-  if (v === "default" || v === "off") return v;
-  return "default";
-}
 
 type SelectedModelInput = {
   id: string;
@@ -49,6 +48,8 @@ type SelectedModelInput = {
   isDownloaded?: boolean;
   expectedBytes?: number;
   forceReload?: boolean;
+  nativePathToken?: string;
+  throwOnError?: boolean;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -140,6 +141,21 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
 }
 
+function normalizeSpeculativeType(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  if (v === "default" || v === "off") return v;
+  return "default";
+}
+
+type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function clampLocalReasoningEffort(value: ReasoningEffort): LocalReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  return "low";
+}
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
@@ -156,6 +172,7 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
+    nativePathToken?: string | null;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
@@ -166,7 +183,9 @@ export function useChatModelRuntime() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
+  const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
+  const cancelUnloadPendingRef = useRef(false);
 
   const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
     loadToastDismissedRef.current = dismissed;
@@ -180,7 +199,9 @@ export function useChatModelRuntime() {
     loadAbortRef.current = null;
     loadToastIdRef.current = null;
     setLoadToastDismissedState(false);
-    useChatRuntimeStore.getState().setModelLoading(false);
+    if (!cancelUnloadPendingRef.current) {
+      useChatRuntimeStore.getState().setModelLoading(false);
+    }
   }, [setLoadToastDismissedState]);
 
   const renderLoadDescription = useCallback(
@@ -213,33 +234,14 @@ export function useChatModelRuntime() {
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
 
-      if (statusRes.active_model) {
+      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
+      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
+      if (statusRes.active_model && !isExternalSelectionActive) {
         setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
 
         // Apply inference defaults on reconnect (page refresh with model already loaded)
         if (statusRes.inference) {
           const currentParams = useChatRuntimeStore.getState().params;
-          const reconnectResponse: LoadModelResponse = {
-            status: "already_loaded",
-            model: statusRes.active_model,
-            display_name: statusRes.active_model,
-            is_vision: statusRes.is_vision,
-            is_lora: false,
-            is_gguf: statusRes.is_gguf,
-            is_audio: statusRes.is_audio,
-            audio_type: statusRes.audio_type,
-            has_audio_input: statusRes.has_audio_input,
-            inference: statusRes.inference,
-            context_length: statusRes.context_length,
-            max_context_length: statusRes.max_context_length,
-            native_context_length: statusRes.native_context_length,
-            supports_reasoning: statusRes.supports_reasoning,
-            reasoning_style: statusRes.reasoning_style,
-            reasoning_always_on: statusRes.reasoning_always_on,
-            supports_preserve_thinking: statusRes.supports_preserve_thinking,
-            supports_tools: statusRes.supports_tools,
-            speculative_type: statusRes.speculative_type,
-          };
           setParams(
             mergeBackendRecommendedInference({
               current: currentParams,
@@ -254,6 +256,10 @@ export function useChatModelRuntime() {
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
         const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
+        const reasoningEffortLevels =
+          reasoningStyle === "reasoning_effort"
+            ? (["low", "medium", "high"] as const)
+            : (["low", "medium", "high"] as const);
         const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         const currentGgufContextLength = statusRes.is_gguf
@@ -265,25 +271,69 @@ export function useChatModelRuntime() {
         const ggufNativeContextLength = statusRes.is_gguf
           ? (statusRes.native_context_length ?? null)
           : null;
-        const currentSpecType = normalizeSpeculativeType(statusRes.speculative_type);
+        const currentSpecType = normalizeSpeculativeType(
+          statusRes.speculative_type,
+        );
+        // Refresh runs both on F5 (fresh store needs hydration) AND right
+        // after a fresh load (store was already set by the load path). For
+        // the user-configurable model params we only hydrate when the shadow
+        // `loaded*` field is still null -- that signals "not yet hydrated".
+        // Otherwise we'd clobber the values the load path just applied and
+        // the UI would appear to revert the user's changes.
+        const prevState = useChatRuntimeStore.getState();
+        const clampedReasoningEffort = clampLocalReasoningEffort(
+          prevState.reasoningEffort,
+        );
+        const nextDefaultChatTemplate =
+          statusRes.chat_template === undefined
+            ? prevState.defaultChatTemplate
+            : statusRes.chat_template;
         useChatRuntimeStore.setState({
           supportsReasoning,
           reasoningAlwaysOn,
           reasoningStyle,
+          supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+          reasoningEffortLevels,
+          reasoningEffort: clampedReasoningEffort,
           supportsPreserveThinking,
           supportsTools,
-          // Reset per-turn reasoning flag so models that do not support
-          // reasoning do not inherit a stale off state from a prior model.
+          // Reset per-turn reasoning flag so:
+          //   1. models that do not support reasoning do not inherit a stale
+          //      off state from a prior model, and
+          //   2. local reasoning-effort models (where the composer hides
+          //      the Off option via supportsReasoningOff=false) cannot end
+          //      up with reasoningEnabled=false carried over from an
+          //      external model where Off was selected — the composer would
+          //      keep showing "Think: <level>" via effectiveReasoningEnabled,
+          //      but the chat-adapter would omit the kwarg and the Harmony
+          //      template would fall back to its own default effort.
           reasoningEnabled: supportsReasoning
-            ? useChatRuntimeStore.getState().reasoningEnabled
+            ? reasoningStyle === "reasoning_effort"
+              ? true
+              : useChatRuntimeStore.getState().reasoningEnabled
             : true,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,
           modelRequiresTrustRemoteCode:
             statusRes.requires_trust_remote_code ?? false,
-          speculativeType: currentSpecType,
-          loadedSpeculativeType: currentSpecType,
+          defaultChatTemplate: nextDefaultChatTemplate,
+          loadedIsMultimodal: isMultimodalResponse(statusRes),
+          ...(prevState.loadedSpeculativeType === null && {
+            speculativeType: currentSpecType,
+            loadedSpeculativeType: currentSpecType,
+          }),
+          ...(statusRes.cache_type_kv !== undefined &&
+            prevState.loadedKvCacheDtype === null && {
+              kvCacheDtype: statusRes.cache_type_kv,
+              loadedKvCacheDtype: statusRes.cache_type_kv,
+            }),
+          ...(statusRes.chat_template_override !== undefined &&
+            prevState.loadedChatTemplateOverride === null &&
+            prevState.chatTemplateOverride === null && {
+              chatTemplateOverride: statusRes.chat_template_override,
+              loadedChatTemplateOverride: statusRes.chat_template_override,
+            }),
         });
 
         // Set reasoning default for Qwen3.5/3.6 small models
@@ -298,9 +348,10 @@ export function useChatModelRuntime() {
           }
           useChatRuntimeStore.getState().setReasoningEnabled(reasoningDefault);
         }
-      } else {
+      } else if (!statusRes.active_model && !isExternalSelectionActive) {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
+          loadedIsMultimodal: false,
         });
       }
     } catch (error) {
@@ -332,8 +383,18 @@ export function useChatModelRuntime() {
         ? undefined
         : "The current download may still finish in the background.",
     });
-    // Fire-and-forget: tell backend to stop, don't block UI
-    unloadModel({ model_path: model.id }).catch(() => {});
+    cancelUnloadPendingRef.current = true;
+    useChatRuntimeStore.getState().setModelLoading(true);
+    void (async () => {
+      try {
+        await unloadModel({ model_path: model.id }).catch(() => {});
+      } finally {
+        cancelUnloadPendingRef.current = false;
+        if (!loadingModelRef.current) {
+          useChatRuntimeStore.getState().setModelLoading(false);
+        }
+      }
+    })();
   }, [clearCheckpoint, setLoadToastDismissedState]);
 
   const selectModel = useCallback(
@@ -343,12 +404,20 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
         typeof selection === "string" ? false : selection.forceReload ?? false;
+      const nativePathToken =
+        typeof selection === "string" ? undefined : selection.nativePathToken;
+      const throwOnError =
+        typeof selection === "string" ? false : selection.throwOnError ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
       // Prevent duplicate loads if already loading this model
-      if (loadingModelRef.current?.id === modelId) return;
+      if (
+        loadingModelRef.current?.id === modelId &&
+        (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
+      )
+        return;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -362,6 +431,10 @@ export function useChatModelRuntime() {
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
+      const loadAttemptId = ++loadAttemptRef.current;
+      primeNativeNotificationPermission().catch(() => undefined);
+      const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
+      const safeModelName = safeNotificationLabel(displayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -388,7 +461,13 @@ export function useChatModelRuntime() {
         .join(" ");
       setModelsError(null);
       setLoadToastDismissedState(false);
-      const loadInfo = { id: modelId, displayName, isDownloaded, isCachedLora };
+      const loadInfo = {
+        id: modelId,
+        displayName,
+        isDownloaded,
+        isCachedLora,
+        nativePathToken: nativePathToken ?? null,
+      };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
       setLoadProgress(
@@ -418,11 +497,17 @@ export function useChatModelRuntime() {
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
+          const previousActiveNativePathToken =
+            stateBeforeUnload.activeNativePathToken;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
+            const validateNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
+              : undefined;
             const validation = await validateModel({
               model_path: modelId,
+              nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: maxSeqLength,
               load_in_4bit: true,
@@ -432,11 +517,16 @@ export function useChatModelRuntime() {
             if (validation.requires_trust_remote_code && !trustRemoteCode) {
               throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
             }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            const loadNativePathLease = nativePathToken
+              ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
+              : undefined;
 
             if (currentCheckpoint) {
               await unloadModel({ model_path: currentCheckpoint });
               previousWasUnloaded = true;
             }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
             const {
               chatTemplateOverride,
@@ -457,15 +547,18 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: activePresetSource,
             });
+            const effectiveChatTemplateOverride =
+              chatTemplateOverride?.trim() ? chatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
+              nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: effectiveMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
-              chat_template_override: chatTemplateOverride,
+              chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
             });
@@ -495,7 +588,9 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
-            const loadedSpec = normalizeSpeculativeType(loadResponse.speculative_type);
+            const loadedSpec = normalizeSpeculativeType(
+              loadResponse.speculative_type,
+            );
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -509,6 +604,15 @@ export function useChatModelRuntime() {
             // context state and display the backend-reported effective context.
             const keepCustomCtx = null;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
+            const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
+            const reasoningEffortLevels =
+              reasoningStyle === "reasoning_effort"
+                ? (["low", "medium", "high"] as const)
+                : (["low", "medium", "high"] as const);
+            const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
+            const clampedReasoningEffort = clampLocalReasoningEffort(
+              existingReasoningEffort,
+            );
             const ggufMaxContextLength = reportedMaxCtx;
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
@@ -519,7 +623,10 @@ export function useChatModelRuntime() {
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
-              reasoningStyle: loadResponse.reasoning_style ?? "enable_thinking",
+              reasoningStyle,
+              supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+              reasoningEffortLevels,
+              reasoningEffort: clampedReasoningEffort,
               supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: loadResponse.supports_tools ?? false,
@@ -530,10 +637,16 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
-              chatTemplateOverride: null,
+              chatTemplateOverride: effectiveChatTemplateOverride,
+              loadedChatTemplateOverride: effectiveChatTemplateOverride,
+              loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              activeNativePathToken: nativePathToken ?? null,
             });
             // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
-            if (modelId.toLowerCase().includes("qwen3") && (loadResponse.supports_reasoning ?? false)) {
+            if (
+              modelId.toLowerCase().includes("qwen3") &&
+              (loadResponse.supports_reasoning ?? false)
+            ) {
               const store = useChatRuntimeStore.getState();
               if (store.activePresetSource === "builtin-default") {
                 const mid = modelId.toLowerCase();
@@ -567,9 +680,22 @@ export function useChatModelRuntime() {
             if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
+              let rollbackNativePathLease: string | undefined;
+              if (previousActiveNativePathToken) {
+                try {
+                  rollbackNativePathLease = (
+                    await consumeNativePathToken(previousActiveNativePathToken, "load-model")
+                  ).nativePathLease;
+                } catch {
+                  throw new Error(
+                    "Could not reload the previous local model: please re-select the file.",
+                  );
+                }
+              }
               try {
                 await loadModel({
                   model_path: previousCheckpoint,
+                  nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
@@ -578,9 +704,12 @@ export function useChatModelRuntime() {
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
                 });
+                useChatRuntimeStore.setState({
+                  activeNativePathToken: previousActiveNativePathToken ?? null,
+                });
                 await refresh();
               } catch {
-                // If rollback also fails, surface the original error.
+                // Rollback also failed; surface the original load error below.
               }
             }
             throw error;
@@ -771,6 +900,12 @@ export function useChatModelRuntime() {
                   },
                 });
               }
+              notifyNative({
+                key: `model-downloaded:${notificationModelKey}`,
+                title: "Model downloaded",
+                body: `${safeModelName} finished downloading and is loading into memory.`,
+                requestPermission: false,
+              }).catch(() => undefined);
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
@@ -856,6 +991,12 @@ export function useChatModelRuntime() {
               duration: 2000,
             });
           }
+          notifyNative({
+            key: `model-loaded:${notificationModelKey}`,
+            title: "Model ready",
+            body: `${safeModelName} is loaded and ready to chat.`,
+            requestPermission: false,
+          }).catch(() => undefined);
         } catch (err) {
           if (!abortCtrl.signal.aborted) {
             const message =
@@ -870,6 +1011,12 @@ export function useChatModelRuntime() {
                 duration: 5000,
               });
             }
+            notifyNative({
+              key: `model-load-failed:${notificationModelKey}`,
+              title: "Model failed to load",
+              body: sanitizeNotificationBody(message, "The model failed to load."),
+              requestPermission: false,
+            }).catch(() => undefined);
           }
           throw err;
         } finally {
@@ -882,6 +1029,9 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        if (throwOnError) {
+          throw error instanceof Error ? error : new Error(message);
+        }
       }
     },
     [

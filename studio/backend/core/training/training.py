@@ -17,7 +17,9 @@ Pattern follows core/data_recipe/jobs/manager.py.
 import json as _json
 import math
 import multiprocessing as mp
+import os
 import queue
+import shutil
 import threading
 import time
 import structlog
@@ -29,8 +31,57 @@ from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
+from utils.native_path_leases import (
+    native_path_secret_removed_for_child_start,
+    run_without_native_path_secret,
+)
+from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+
+def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+    """Remove ``checkpoint-<int>`` subdirs after a cancelled run.
+    Only paths whose realpath is under outputs_root are touched."""
+    out = Path(output_dir)
+    if not out.exists():
+        return
+    try:
+        out_real = out.resolve()
+        out_root_real = Path(outputs_root()).resolve()
+    except OSError:
+        return
+    try:
+        out_real.relative_to(out_root_real)
+    except ValueError:
+        # Refuse to delete anything outside the configured outputs root.
+        logger.warning(
+            "Skipping checkpoint cleanup - %s is not under outputs_root %s",
+            out_real,
+            out_root_real,
+        )
+        return
+    removed = 0
+    for entry in out.iterdir() if out.is_dir() else []:
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if not name.startswith("checkpoint-"):
+            continue
+        tail = name[len("checkpoint-") :]
+        if not tail.isdigit():
+            continue
+        try:
+            shutil.rmtree(entry, ignore_errors = False)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", entry, exc)
+    logger.info(
+        "Cancelled-run cleanup removed %d checkpoint dir(s) under %s",
+        removed,
+        out,
+    )
+
 
 _CTX = mp.get_context("spawn")
 
@@ -58,6 +109,7 @@ class TrainingProgress:
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
 
 
 class TrainingBackend:
@@ -154,6 +206,7 @@ class TrainingBackend:
             "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
+            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
             "batch_size": kwargs.get("batch_size", 2),
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
@@ -161,6 +214,7 @@ class TrainingBackend:
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),
+            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
@@ -185,47 +239,57 @@ class TrainingBackend:
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "gpu_ids": kwargs.get("gpu_ids"),
         }
 
-        # Derive load_in_4bit from training_type
-        if config["training_type"] != "LoRA/QLoRA":
+        # Full finetuning always runs in 16-bit. LoRA/QLoRA and CPT preserve the
+        # explicit request so 4-bit adapter/raw-text runs remain possible.
+        if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
         # Spawn subprocess — use locals so state is untouched on failure
-        resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-            kwargs.get("gpu_ids"),
-            model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
-            training_type = config["training_type"],
-            load_in_4bit = config["load_in_4bit"],
-            batch_size = config.get("batch_size", 4),
-            max_seq_length = config.get("max_seq_length", 2048),
-            lora_rank = config.get("lora_r", 16),
-            target_modules = config.get("target_modules"),
-            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
-        )
-        config["resolved_gpu_ids"] = resolved_gpu_ids
-        config["gpu_selection"] = gpu_selection
+        from utils.hardware import hardware as _hw
+
+        if _hw.DEVICE == _hw.DeviceType.MLX:
+            config["resolved_gpu_ids"] = None
+            config["gpu_selection"] = None
+        else:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                kwargs.get("gpu_ids"),
+                model_name = config["model_name"],
+                hf_token = config["hf_token"] or None,
+                training_type = config["training_type"],
+                load_in_4bit = config["load_in_4bit"],
+                batch_size = config.get("batch_size", 4),
+                max_seq_length = config.get("max_seq_length", 2048),
+                lora_rank = config.get("lora_r", 16),
+                target_modules = config.get("target_modules"),
+                gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                optimizer = config.get("optim", "adamw_8bit"),
+            )
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
 
         from .worker import run_training_process
 
-        event_queue = _CTX.Queue()
-        stop_queue = _CTX.Queue()
-
-        proc = _CTX.Process(
-            target = run_training_process,
-            kwargs = {
-                "event_queue": event_queue,
-                "stop_queue": stop_queue,
-                "config": config,
-            },
-            daemon = True,
-        )
         try:
-            proc.start()
+            with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
+
+                proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                proc.start()
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
             return False
@@ -300,6 +364,8 @@ class TrainingBackend:
                 )
                 self._proc.terminate()
             proc = self._proc
+            cancelled = self._cancel_requested
+            output_dir = self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -311,6 +377,17 @@ class TrainingBackend:
         # (8s covers SQLite's default 5s lock timeout plus execution overhead)
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
+
+        # Drop checkpoint-* dirs on explicit cancel only; stop-and-save
+        # keeps its artifacts.
+        if cancelled and output_dir:
+            try:
+                _cleanup_cancelled_checkpoints(output_dir)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up cancelled-run checkpoints under %s",
+                    output_dir,
+                )
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
@@ -505,6 +582,12 @@ class TrainingBackend:
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
+                _peak = event.get("peak_memory_gb")
+                if _peak is not None:
+                    try:
+                        self._progress.peak_memory_gb = float(_peak)
+                    except (TypeError, ValueError):
+                        pass
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:

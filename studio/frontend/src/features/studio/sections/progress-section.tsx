@@ -26,6 +26,7 @@ import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
 import { cn } from "@/lib/utils";
@@ -86,6 +87,7 @@ export function ProgressSection({
   configOverride,
 }: ProgressSectionProps): ReactElement {
   const navigate = useNavigate();
+  const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
     useShallow((state) => ({
@@ -272,7 +274,7 @@ export function ProgressSection({
               {data.modelName || "--"}
             </MetricStat>
             <MetricStat label="Method">
-              {data.trainingMethod === "qlora" ? "QLoRA" : data.trainingMethod === "lora" ? "LoRA" : "Full"}
+              {trainingMethodLabel}
             </MetricStat>
           </div>
 

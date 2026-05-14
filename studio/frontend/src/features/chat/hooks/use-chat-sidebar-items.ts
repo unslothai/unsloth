@@ -4,6 +4,7 @@
 import { db, useLiveQuery } from "../db";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
+import { markChatThreadDeleted } from "../utils/chat-thread-tombstones";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -65,6 +66,29 @@ function cancelIfRunning(threadId: string): void {
   cancelByThreadId[threadId]?.();
 }
 
+export async function renameChatItem(
+  item: SidebarItem,
+  nextTitle: string,
+): Promise<void> {
+  const trimmed = nextTitle.trim();
+  if (!trimmed || trimmed === item.title) return;
+
+  if (item.type === "single") {
+    await db.threads.update(item.id, { title: trimmed });
+    return;
+  }
+
+  const pairThreads = await db.threads
+    .where("pairId")
+    .equals(item.id)
+    .toArray();
+  await db.transaction("rw", db.threads, async () => {
+    for (const t of pairThreads) {
+      await db.threads.update(t.id, { title: trimmed });
+    }
+  });
+}
+
 export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,
@@ -80,6 +104,7 @@ export async function deleteChatItem(
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
   for (const id of threadIds) cancelIfRunning(id);
+  for (const id of threadIds) markChatThreadDeleted(id);
 
   await db.transaction("rw", db.threads, db.messages, async () => {
     for (const id of threadIds) {

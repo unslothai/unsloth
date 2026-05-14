@@ -119,9 +119,17 @@ try:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
+    from core.inference.llama_server_args import validate_extra_args
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
+    from utils.native_path_leases import (
+        NativePathLeaseError,
+        display_label_for_native_path,
+        is_registered_native_path_label,
+        redact_native_paths,
+        verify_native_path_lease,
+    )
 except ImportError:
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
@@ -133,9 +141,17 @@ except ImportError:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
+    from core.inference.llama_server_args import validate_extra_args
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
+    from utils.native_path_leases import (
+        NativePathLeaseError,
+        display_label_for_native_path,
+        is_registered_native_path_label,
+        redact_native_paths,
+        verify_native_path_lease,
+    )
 
 from models.inference import (
     LoadRequest,
@@ -188,6 +204,11 @@ from core.inference.anthropic_compat import (
 )
 from auth.authentication import get_current_subject
 
+from core.inference.key_exchange import decrypt_api_key
+from core.inference.providers import get_provider_info, get_base_url
+from core.inference.external_provider import ExternalProviderClient
+from storage import providers_db
+
 import io
 import wave
 import base64
@@ -197,6 +218,18 @@ from datetime import date as _date
 router = APIRouter()
 # Studio-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
+
+
+def _effective_enable_tools(payload) -> Optional[bool]:
+    """Resolve `payload.enable_tools` against the process-level tool policy.
+
+    Returns the policy value when set (CLI hard-override from `unsloth run`),
+    otherwise the per-request value.
+    """
+    from state.tool_policy import get_tool_policy
+
+    policy = get_tool_policy()
+    return policy if policy is not None else payload.enable_tools
 
 
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts
@@ -332,6 +365,65 @@ _TOOL_XML_RE = _re.compile(
 logger = get_logger(__name__)
 
 
+def _validate_native_mmproj_companion(
+    mmproj_path: str | None, gguf_path: str | None
+) -> None:
+    if not mmproj_path or not gguf_path:
+        return
+    import stat as _stat_module
+
+    mm = Path(mmproj_path)
+    gguf = Path(gguf_path)
+    try:
+        mm_lstat = os.lstat(mm)
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion is no longer accessible.",
+        ) from exc
+    if _stat_module.S_ISLNK(mm_lstat.st_mode) or not _stat_module.S_ISREG(
+        mm_lstat.st_mode
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion must be a regular file.",
+        )
+    try:
+        if mm.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Native vision companion must live next to the selected GGUF.",
+            )
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Native vision companion is no longer accessible.",
+        ) from exc
+
+
+def _resolve_model_identifier_for_request(
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+) -> tuple[str, str, bool]:
+    if not request.native_path_lease:
+        return request.model_path, request.model_path, False
+    try:
+        grant = verify_native_path_lease(
+            request.native_path_lease,
+            operation = operation,
+            expected_kind = "model",
+            expected_path_type = "file",
+            allowed_suffixes = (".gguf",),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    display_label = (
+        grant.display_label or Path(request.model_path).name or "Native model"
+    )
+    return str(grant.canonical_path), display_label, True
+
+
 # GGUF inference backend (llama-server)
 _llama_cpp_backend = LlamaCppBackend()
 
@@ -355,7 +447,19 @@ async def load_model(
 
     GGUF models are loaded via llama-server (llama.cpp) instead of Unsloth.
     """
+    native_grant_backed = False
+    model_log_label = request.model_path
     try:
+        # Validate user-supplied llama-server pass-through args up front
+        # so a managed-flag collision returns 400 before any model work.
+        try:
+            extra_llama_args = validate_extra_args(request.llama_extra_args)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc))
+
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "load-model")
+        )
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
 
@@ -369,13 +473,12 @@ async def load_model(
                 and llama_backend.hf_variant
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == request.model_path.lower()
+                and llama_backend.model_identifier.lower() == model_identifier.lower()
             ):
                 logger.info(
-                    f"Model already loaded (GGUF): {request.model_path} variant={request.gguf_variant}, skipping reload"
+                    f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
-                from utils.models import is_audio_input_type
 
                 _gguf_audio = (
                     llama_backend._audio_type
@@ -385,16 +488,18 @@ async def load_model(
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
                 return LoadResponse(
                     status = "already_loaded",
-                    model = llama_backend.model_identifier,
-                    display_name = llama_backend.model_identifier,
+                    model = model_log_label
+                    if native_grant_backed
+                    else llama_backend.model_identifier,
+                    display_name = model_log_label
+                    if native_grant_backed
+                    else llama_backend.model_identifier,
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
-                    has_audio_input = is_audio_input_type(_gguf_audio)
-                    if _gguf_audio
-                    else False,
+                    has_audio_input = False,
                     inference = inference_config,
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
@@ -412,10 +517,10 @@ async def load_model(
         else:
             if (
                 backend.active_model_name
-                and backend.active_model_name.lower() == request.model_path.lower()
+                and backend.active_model_name.lower() == model_identifier.lower()
             ):
                 logger.info(
-                    f"Model already loaded (Unsloth): {request.model_path}, skipping reload"
+                    f"Model already loaded (Unsloth): {model_log_label}, skipping reload"
                 )
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
@@ -444,8 +549,12 @@ async def load_model(
                         pass
                 return LoadResponse(
                     status = "already_loaded",
-                    model = backend.active_model_name,
-                    display_name = backend.active_model_name,
+                    model = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
+                    display_name = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
                     is_vision = _model_info.get("is_vision", False),
                     is_lora = _model_info.get("is_lora", False),
                     is_gguf = False,
@@ -467,7 +576,7 @@ async def load_model(
         # Create config using clean factory method
         # is_lora is auto-detected from adapter_config.json on disk/HF
         config = ModelConfig.from_identifier(
-            model_id = request.model_path,
+            model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
         )
@@ -475,7 +584,7 @@ async def load_model(
         if not config:
             raise HTTPException(
                 status_code = 400,
-                detail = f"Invalid model identifier: {request.model_path}",
+                detail = f"Invalid model identifier: {model_log_label}",
             )
 
         # Normalize gpu_ids: empty list means auto-selection, same as None
@@ -519,9 +628,14 @@ async def load_model(
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
                     n_parallel = _n_parallel,
+                    extra_args = extra_llama_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
+                if native_grant_backed and config.gguf_mmproj_file:
+                    _validate_native_mmproj_companion(
+                        config.gguf_mmproj_file, config.gguf_file
+                    )
                 success = await asyncio.to_thread(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
@@ -533,23 +647,31 @@ async def load_model(
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
                     n_parallel = _n_parallel,
+                    extra_args = extra_llama_args,
                 )
 
             if not success:
                 raise HTTPException(
                     status_code = 500,
-                    detail = f"Failed to load GGUF model: {config.display_name}",
+                    detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
                 )
 
-            logger.info(f"Loaded GGUF model via llama-server: {config.identifier}")
+            logger.info(
+                f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
+            )
 
-            # Detect TTS audio by probing the loaded model's vocabulary
-            from utils.models import is_audio_input_type
-
+            # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
+            # GGUF audio input is not wired through the chat path yet, so do not
+            # advertise has_audio_input for GGUF models until uploaded audio is
+            # actually forwarded to llama-server.
             _gguf_audio = llama_backend.detect_audio_type()
             _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
             llama_backend._audio_type = _gguf_audio
+            llama_backend._native_display_label = (
+                model_log_label if native_grant_backed else None
+            )
+            llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
                 await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
@@ -558,14 +680,16 @@ async def load_model(
 
             return LoadResponse(
                 status = "loaded",
-                model = config.identifier,
-                display_name = config.display_name,
+                model = model_log_label if native_grant_backed else config.identifier,
+                display_name = model_log_label
+                if native_grant_backed
+                else config.display_name,
                 is_vision = config.is_vision,
                 is_lora = False,
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
-                has_audio_input = is_audio_input_type(_gguf_audio),
+                has_audio_input = False,
                 inference = inference_config,
                 requires_trust_remote_code = bool(
                     inference_config.get("trust_remote_code", False)
@@ -682,10 +806,13 @@ async def load_model(
                         ),
                     )
             raise HTTPException(
-                status_code = 500, detail = f"Failed to load model: {config.display_name}"
+                status_code = 500,
+                detail = f"Failed to load model: {model_log_label if native_grant_backed else config.display_name}",
             )
 
-        logger.info(f"Loaded model: {config.identifier}")
+        logger.info(
+            f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
+        )
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
@@ -715,8 +842,10 @@ async def load_model(
 
         return LoadResponse(
             status = "loaded",
-            model = config.identifier,
-            display_name = config.display_name,
+            model = model_log_label if native_grant_backed else config.identifier,
+            display_name = model_log_label
+            if native_grant_backed
+            else config.display_name,
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
@@ -738,11 +867,17 @@ async def load_model(
     except HTTPException:
         raise
     except ValueError as e:
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.warning(
+                "Rejected inference selection for native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = str(e)
         # Surface a friendlier message for models that Unsloth cannot load
         not_supported_hints = [
             "No config file found",
@@ -750,6 +885,22 @@ async def load_model(
             "is not supported",
             "does not support",
         ]
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.error(
+                "Error loading native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            msg = redacted_msg
+            if any(h.lower() in msg.lower() for h in not_supported_hints):
+                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            raise HTTPException(
+                status_code = 500,
+                detail = f"Failed to load native model {model_log_label}: {msg}",
+            )
+        logger.error(f"Error loading model: {e}", exc_info = True)
+        msg = str(e)
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
@@ -766,9 +917,14 @@ async def validate_model(
     This checks that ModelConfig.from_identifier() can resolve the given
     model_path, but it does NOT actually load model weights into GPU memory.
     """
+    native_grant_backed = False
+    model_log_label = request.model_path
     try:
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(request, operation = "validate-model")
+        )
         config = ModelConfig.from_identifier(
-            model_id = request.model_path,
+            model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
         )
@@ -776,14 +932,16 @@ async def validate_model(
         if not config:
             raise HTTPException(
                 status_code = 400,
-                detail = f"Invalid model identifier: {request.model_path}",
+                detail = f"Invalid model identifier: {model_log_label}",
             )
 
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
-            identifier = config.identifier,
-            display_name = getattr(config, "display_name", config.identifier),
+            identifier = model_log_label if native_grant_backed else config.identifier,
+            display_name = model_log_label
+            if native_grant_backed
+            else getattr(config, "display_name", config.identifier),
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
@@ -795,6 +953,26 @@ async def validate_model(
     except HTTPException:
         raise
     except Exception as e:
+        not_supported_hints = [
+            "No config file found",
+            "not yet supported",
+            "is not supported",
+            "does not support",
+        ]
+        if native_grant_backed:
+            redacted_msg = redact_native_paths(str(e))
+            logger.error(
+                "Error validating native model %s: %s",
+                model_log_label,
+                redacted_msg,
+            )
+            msg = redacted_msg
+            if any(h.lower() in msg.lower() for h in not_supported_hints):
+                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid native model {model_log_label}: {msg}",
+            )
         logger.error(
             f"Error validating model identifier '{request.model_path}': {e}",
             exc_info = True,
@@ -819,6 +997,9 @@ async def unload_model(
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
             llama_backend.model_identifier == request.model_path
+            or is_registered_native_path_label(
+                llama_backend.model_identifier, request.model_path
+            )
             or not llama_backend.is_loaded
         ):
             llama_backend.unload_model()
@@ -966,16 +1147,29 @@ async def get_status(
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
+            _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
+            _display_model_id = getattr(
+                llama_backend, "_native_display_label", None
+            ) or display_label_for_native_path(_model_id)
+            if (
+                _native_grant_backed
+                and _model_id
+                and _display_model_id == _model_id
+                and os.path.isabs(_model_id)
+            ):
+                _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
+            _audio_type = getattr(llama_backend, "_audio_type", None)
             return InferenceStatusResponse(
-                active_model = _model_id,
+                active_model = _display_model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
-                audio_type = getattr(llama_backend, "_audio_type", None),
+                audio_type = _audio_type,
+                has_audio_input = False,
                 loading = [],
-                loaded = [_model_id],
+                loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
                 requires_trust_remote_code = bool(
                     (_inference_cfg or {}).get("trust_remote_code", False)
@@ -985,9 +1179,12 @@ async def get_status(
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
+                chat_template = llama_backend.chat_template,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
+                cache_type_kv = llama_backend.cache_type_kv,
+                chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
             )
 
@@ -998,12 +1195,19 @@ async def get_status(
         is_audio = False
         audio_type = None
         has_audio_input = False
+        model_info = {}
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+        chat_template_info = model_info.get("chat_template_info", {})
+        chat_template = (
+            chat_template_info.get("template")
+            if isinstance(chat_template_info, dict)
+            else None
+        )
 
         # Non-GGUF: only gpt-oss Harmony is wired through the transformers
         # generation path. Other template-level reasoning / tool kwargs
@@ -1041,6 +1245,7 @@ async def get_status(
             reasoning_always_on = False,
             supports_preserve_thinking = False,
             supports_tools = False,
+            chat_template = chat_template,
         )
 
     except Exception as e:
@@ -1264,6 +1469,161 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+# ── External provider proxy ──────────────────────────────────────
+
+
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """
+    Convert ChatMessage list to OpenAI-compatible dicts for external providers.
+
+    - Vision providers: preserve multimodal content arrays (image_url parts intact).
+    - Non-vision providers: flatten to text-only (images silently dropped).
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            # Skip assistant messages with empty content (some providers reject them)
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
+            result.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            if supports_vision:
+                parts = []
+                for part in msg.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part.image_url.url},
+                            }
+                        )
+                result.append({"role": msg.role, "content": parts})
+            else:
+                # Non-vision provider — strip images, keep text only
+                text = "\n".join(p.text for p in msg.content if p.type == "text")
+                result.append({"role": msg.role, "content": text})
+    return result
+
+
+async def _proxy_to_external_provider(
+    payload: ChatCompletionRequest,
+    request: Request,
+) -> StreamingResponse:
+    """
+    Proxy a chat completion request to an external LLM provider.
+
+    Resolves provider config (from DB or registry), decrypts the API key,
+    and streams the response back in OpenAI SSE format.
+    """
+    # Resolve provider type and base URL
+    provider_type = payload.provider_type
+    base_url = payload.provider_base_url
+
+    if payload.provider_id:
+        config = providers_db.get_provider(payload.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {payload.provider_id}",
+            )
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        provider_type = provider_type or config["provider_type"]
+        base_url = base_url or config["base_url"]
+
+    if not provider_type:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Either provider_id or provider_type is required for external provider routing.",
+        )
+
+    # Fall back to registry default base URL
+    if not base_url:
+        base_url = get_base_url(provider_type)
+    if not base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {provider_type}",
+        )
+
+    # Decrypt the API key
+    try:
+        api_key = decrypt_api_key(payload.encrypted_api_key)
+    except Exception as exc:
+        logger.warning("external_provider.decrypt_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 400,
+            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+        )
+
+    model = payload.external_model or payload.model
+    if model == "default":
+        raise HTTPException(
+            status_code = 400,
+            detail = "external_model is required when using an external provider.",
+        )
+
+    # Build messages preserving multimodal content for vision-capable providers
+    from core.inference.providers import get_provider_info as _get_provider_info
+
+    _pinfo = _get_provider_info(provider_type) or {}
+    _supports_vision = _pinfo.get("supports_vision", False)
+    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+    async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            top_k = payload.top_k,
+            enable_thinking = payload.enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
+            stream = payload.stream,
+        )
+        try:
+            sent_done = False
+            async for line in gen:
+                yield f"{line}\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("external_provider.stream_error", error = str(exc))
+        finally:
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+            await client.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1283,6 +1643,10 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # ── External provider routing ────────────────────────────────
+    if payload.encrypted_api_key and (payload.provider_id or payload.provider_type):
+        return await _proxy_to_external_provider(payload, request)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
@@ -1468,9 +1832,15 @@ async def openai_chat_completions(
     )
     if (
         using_gguf
-        and not payload.enable_tools
+        and not _effective_enable_tools(payload)
         and (_tools_passthrough or _has_response_format)
     ):
+        if payload.audio_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported for GGUF chat models yet.",
+            )
+
         # Preserve the vision guard that would otherwise run in the
         # non-passthrough path below: text-only tool-capable GGUFs
         # should return a clear 400 here rather than forwarding the
@@ -1518,6 +1888,12 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
+        if payload.audio_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported for GGUF chat models yet.",
+            )
+
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
         if image_b64 and not llama_backend.is_vision:
@@ -1531,7 +1907,7 @@ async def openai_chat_completions(
             try:
                 import base64 as _b64
                 from io import BytesIO as _BytesIO
-                from PIL import Image as _Image
+                from PIL import Image as _Image, UnidentifiedImageError as _UIE
 
                 raw = _b64.b64decode(image_b64)
                 # Normalize to RGB so PNG encoding succeeds regardless of
@@ -1542,9 +1918,15 @@ async def openai_chat_completions(
                 buf = _BytesIO()
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except _UIE:
                 raise HTTPException(
-                    status_code = 400, detail = f"Failed to process image: {e}"
+                    status_code = 400,
+                    detail = "Unsupported or corrupt image format.",
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Failed to process image.",
                 )
 
         # Build message list with system prompt prepended
@@ -1559,8 +1941,13 @@ async def openai_chat_completions(
         created = int(time.time())
 
         # ── Tool-calling path (agentic loop) ──────────────────
+        # `_effective_enable_tools` lets `unsloth run --enable-tools/--disable-tools`
+        # hard-override the per-request value. Without a CLI override, falls
+        # back to `payload.enable_tools` (existing behavior).
         use_tools = (
-            payload.enable_tools and llama_backend.supports_tools and not image_b64
+            _effective_enable_tools(payload)
+            and llama_backend.supports_tools
+            and not image_b64
         )
 
         if use_tools:
@@ -3209,10 +3596,10 @@ def _normalize_anthropic_openai_images(
                 buf = io.BytesIO()
                 img.save(buf, format = "PNG")
                 png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except Exception:
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Failed to process image: {e}",
+                    detail = "Failed to process image.",
                 )
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
@@ -3248,6 +3635,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
+    openai_messages = _drop_empty_assistant_sentinels(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
@@ -3284,7 +3672,9 @@ async def anthropic_messages(
     # Server-side agentic loop doesn't support multimodal input — matches
     # the `not image_b64` gate in /v1/chat/completions.
     server_tools = (
-        payload.enable_tools and llama_backend.supports_tools and not _has_image
+        _effective_enable_tools(payload)
+        and llama_backend.supports_tools
+        and not _has_image
     )
     client_tools = (
         not server_tools
@@ -3971,6 +4361,19 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
+    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            has_content = bool(m.get("content"))
+            has_tool_calls = bool(m.get("tool_calls"))
+            if not has_content and not has_tool_calls:
+                continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -3987,7 +4390,9 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     ``image_url`` content part so vision + function-calling requests work
     transparently.
     """
-    messages = [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
 
     if not payload.image_base64:
         return messages
@@ -4002,10 +4407,10 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         buf = _BytesIO()
         img.save(buf, format = "PNG")
         png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code = 400,
-            detail = f"Failed to process image: {e}",
+            detail = "Failed to process image.",
         )
 
     data_url = f"data:image/png;base64,{png_b64}"

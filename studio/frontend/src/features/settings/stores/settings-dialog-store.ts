@@ -8,6 +8,7 @@ export type SettingsTab =
   | "profile"
   | "appearance"
   | "chat"
+  | "connections"
   | "api-keys"
   | "about";
 
@@ -29,8 +30,18 @@ function loadInitialTab(): SettingsTab {
   } catch {
     return "general";
   }
-  const valid: SettingsTab[] = ["general", "profile", "appearance", "chat", "api-keys", "about"];
-  return valid.includes(stored as SettingsTab) ? (stored as SettingsTab) : "general";
+  const valid: SettingsTab[] = [
+    "general",
+    "profile",
+    "appearance",
+    "chat",
+    "connections",
+    "api-keys",
+    "about",
+  ];
+  return valid.includes(stored as SettingsTab)
+    ? (stored as SettingsTab)
+    : "general";
 }
 
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({

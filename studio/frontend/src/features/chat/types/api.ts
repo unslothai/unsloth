@@ -32,6 +32,7 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
   load_in_4bit: boolean;
@@ -67,6 +68,25 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
+}
+
+export function isMultimodalResponse(
+  response:
+    | {
+        is_vision?: boolean;
+        is_audio?: boolean;
+        audio_type?: string | null;
+        has_audio_input?: boolean;
+      }
+    | null
+    | undefined,
+): boolean {
+  return (
+    Boolean(response?.is_vision) ||
+    Boolean(response?.is_audio) ||
+    Boolean(response?.has_audio_input) ||
+    response?.audio_type === "audio_vlm"
+  );
 }
 
 export interface LoadModelResponse {
@@ -129,9 +149,12 @@ export interface InferenceStatusResponse {
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
+  chat_template?: string | null;
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  cache_type_kv?: string | null;
+  chat_template_override?: string | null;
   speculative_type?: string | null;
 }
 
@@ -151,27 +174,43 @@ export interface AudioGenerationResponse {
   }>;
 }
 
+export type OpenAIMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 }
 
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;
-  temperature: number;
-  top_p: number;
+  /** Reasoning-class OpenAI models reject these — caller may omit. */
+  temperature?: number;
+  top_p?: number;
   max_tokens: number;
-  top_k: number;
-  min_p: number;
-  repetition_penalty: number;
-  presence_penalty: number;
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
+  presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
-  reasoning_effort?: "low" | "medium" | "high" | null;
+  reasoning_effort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "max"
+    | "xhigh"
+    | null;
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
@@ -180,6 +219,11 @@ export interface OpenAIChatCompletionsRequest {
   tool_call_timeout?: number;
   session_id?: string;
   cancel_id?: string;
+  provider_id?: string;
+  provider_type?: string;
+  external_model?: string;
+  encrypted_api_key?: string;
+  provider_base_url?: string | null;
 }
 
 export interface OpenAIChatDelta {

@@ -48,13 +48,31 @@ class ScrapeConfig:
     max_comments_per_item: int
 
 
-def _resolve_token(token: str) -> str:
-    tok = token or os.environ.get("GH_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
-    if not tok:
-        raise ValueError(
-            "GitHub token is required. Set it in the recipe config or the GH_TOKEN / GITHUB_TOKEN env var."
+@dataclass(frozen = True)
+class ResolvedToken:
+    value: str
+    source: str
+
+
+def _resolve_token(token: str) -> ResolvedToken:
+    if token:
+        return ResolvedToken(
+            value = token,
+            source = "explicit token argument (recipe-level field)",
         )
-    return tok
+    if os.environ.get("GH_TOKEN"):
+        return ResolvedToken(
+            value = os.environ["GH_TOKEN"],
+            source = "GH_TOKEN environment variable",
+        )
+    if os.environ.get("GITHUB_TOKEN"):
+        return ResolvedToken(
+            value = os.environ["GITHUB_TOKEN"],
+            source = "GITHUB_TOKEN environment variable",
+        )
+    raise ValueError(
+        "GitHub token is required. Set it in the recipe config or the GH_TOKEN / GITHUB_TOKEN env var."
+    )
 
 
 def _read_jsonl(path: Path, max_rows: int | None = None):
@@ -155,7 +173,7 @@ def _flatten_commit_row(r: dict, repo: str) -> dict:
 def scrape(cfg: ScrapeConfig, base_dir: Path):
     token = _resolve_token(cfg.token)
     GitHubClient, RepoScraper = _load_impl()
-    client = GitHubClient(token = token)
+    client = GitHubClient(token = token.value, token_source = token.source)
     base_dir.mkdir(parents = True, exist_ok = True)
 
     # Per-resource trial limits. limit <= 0 means "all": use a very large cap.

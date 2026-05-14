@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -23,6 +13,7 @@ import {
   type ScanFolderInfo,
   addScanFolder,
   deleteCachedModel,
+  deleteFineTunedModel,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -50,7 +41,8 @@ import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
-import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon, Trash2Icon } from "lucide-react";
+import { ModelDeleteAction } from "./model-delete-action";
+import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -60,6 +52,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
@@ -182,7 +175,10 @@ function ModelRow({
     return (
       <Tooltip>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs break-all">
+        <TooltipContent
+          side="left"
+          className="tooltip-compact max-w-xs break-all"
+        >
           {label}
           <span className="block text-[10px] mt-1">{vramTooltipText}</span>
         </TooltipContent>
@@ -194,7 +190,10 @@ function ModelRow({
     return (
       <Tooltip>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs break-all">
+        <TooltipContent
+          side="left"
+          className="tooltip-compact max-w-xs break-all"
+        >
           {tooltipText}
         </TooltipContent>
       </Tooltip>
@@ -211,12 +210,22 @@ function GgufVariantExpander({
   gpuGb,
   systemRamGb,
   onDeleteVariant,
+  sourceOverride,
+  deleteVariantTitle = "Delete cached model?",
+  renderDeleteVariantDescription,
+  getDeleteVariantSuccessMessage,
+  deleteDisabled = false,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
-  onDeleteVariant?: (quant: string) => void;
+  onDeleteVariant?: (quant: string) => Promise<void> | void;
+  sourceOverride?: ModelSelectorChangeMeta["source"];
+  deleteVariantTitle?: string;
+  renderDeleteVariantDescription?: (quant: string) => ReactNode;
+  getDeleteVariantSuccessMessage?: (quant: string) => string;
+  deleteDisabled?: boolean;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -259,14 +268,14 @@ function GgufVariantExpander({
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
       onSelect(repoId, {
-        source: isLocalPath ? "local" : "hub",
+        source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
       });
     },
-    [repoId, isLocalPath, onSelect],
+    [repoId, isLocalPath, onSelect, sourceOverride],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -408,16 +417,29 @@ function GgufVariantExpander({
               </span>
             </button>
             {v.downloaded && onDeleteVariant && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteVariant(v.quant);
-                }}
-                className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-              >
-                <Trash2Icon className="size-3" />
-              </button>
+              <ModelDeleteAction
+                ariaLabel={`Delete ${repoId} ${v.quant}`}
+                title={deleteVariantTitle}
+                description={
+                  renderDeleteVariantDescription?.(v.quant) ?? (
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">
+                        {repoId} ({v.quant})
+                      </span>{" "}
+                      from disk. You can re-download it later.
+                    </>
+                  )
+                }
+                successMessage={
+                  getDeleteVariantSuccessMessage?.(v.quant) ??
+                  `Deleted ${repoId} ${v.quant}`
+                }
+                buttonClassName="p-1"
+                iconClassName="size-3"
+                disabled={deleteDisabled}
+                onConfirm={() => onDeleteVariant(v.quant)}
+              />
             )}
           </div>
         );
@@ -512,9 +534,6 @@ export function HubModelPicker({
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
-  // Delete confirmation dialog state
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
   const [recommendedCollapsed, setRecommendedCollapsed] = useState(false);
@@ -674,27 +693,6 @@ export function HubModelPicker({
       .catch(() => {})
       .finally(check);
   }, [refreshLocalModelsList, refreshScanFolders]);
-
-  const handleDeleteConfirm = useCallback(async () => {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    try {
-      // deleteTarget is "repo_id" or "repo_id::variant"
-      const sepIdx = deleteTarget.indexOf("::");
-      const repoId = sepIdx >= 0 ? deleteTarget.slice(0, sepIdx) : deleteTarget;
-      const variant = sepIdx >= 0 ? deleteTarget.slice(sepIdx + 2) : undefined;
-      await deleteCachedModel(repoId, variant);
-      toast.success(`Deleted ${variant ? `${repoId} ${variant}` : repoId}`);
-      refreshCachedLists();
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to delete model",
-      );
-    } finally {
-      setDeleting(false);
-      setDeleteTarget(null);
-    }
-  }, [deleteTarget, refreshCachedLists]);
 
   // Deduplicate: don't show downloaded models in the recommended list.
   // Compare case-insensitively since HF cache lowercases repo IDs.
@@ -952,9 +950,10 @@ export function HubModelPicker({
                       systemRamGb={
                         gpu.available ? gpu.systemRamAvailableGb : undefined
                       }
-                      onDeleteVariant={(quant) =>
-                        setDeleteTarget(`${c.repo_id}::${quant}`)
-                      }
+                      onDeleteVariant={async (quant) => {
+                        await deleteCachedModel(c.repo_id, quant);
+                        refreshCachedLists();
+                      }}
                     />
                   )}
                 </div>
@@ -977,16 +976,22 @@ export function HubModelPicker({
                         vramStatus={null}
                       />
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget(c.repo_id);
-                      }}
-                      className="shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </button>
+                    <ModelDeleteAction
+                      ariaLabel={`Delete ${c.repo_id}`}
+                      title="Delete cached model?"
+                      description={
+                        <>
+                          This will remove{" "}
+                          <span className="font-medium text-foreground">
+                            {c.repo_id}
+                          </span>{" "}
+                          from disk. You can re-download it later.
+                        </>
+                      }
+                      successMessage={`Deleted ${c.repo_id}`}
+                      onConfirm={() => deleteCachedModel(c.repo_id)}
+                      onDeleted={refreshCachedLists}
+                    />
                   </div>
                 ))}
             </>
@@ -1409,40 +1414,6 @@ export function HubModelPicker({
         </div>
       </div>
 
-      <AlertDialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !deleting) setDeleteTarget(null);
-        }}
-      >
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove{" "}
-              <span className="font-medium text-foreground">
-                {deleteTarget?.includes("::")
-                  ? `${deleteTarget.split("::")[0]} (${deleteTarget.split("::")[1]})`
-                  : deleteTarget}
-              </span>{" "}
-              from disk. You can re-download it later.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>No</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={deleting}
-              onClick={(e) => {
-                e.preventDefault();
-                handleDeleteConfirm();
-              }}
-            >
-              {deleting ? "Deleting..." : "Yes"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
@@ -1451,10 +1422,14 @@ export function LoraModelPicker({
   loraModels,
   value,
   onSelect,
+  onModelsChange,
+  deleteDisabled = false,
 }: {
   loraModels: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
@@ -1541,6 +1516,8 @@ export function LoraModelPicker({
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
+                  const isExportedGguf = isExported && isGguf;
+                  const canDelete = (isTraining || isExported) && !isExportedGguf;
                   const isTrainingFull = isTraining && isMerged;
                   const isLocalGgufDir =
                     isLocal &&
@@ -1569,38 +1546,69 @@ export function LoraModelPicker({
                       : tag;
                   return (
                     <div key={adapter.id}>
-                      <ModelRow
-                        label={adapter.name}
-                        meta={meta}
-                        selected={value === adapter.id}
-                        onClick={() => {
-                          if (isLocalGgufDir) {
-                            setExpandedGguf((prev) =>
-                              prev === adapter.id ? null : adapter.id,
-                            );
-                          } else {
-                            onSelect(adapter.id, {
-                              source: isLocal
-                                ? "local"
-                                : isExported
-                                  ? "exported"
-                                  : "lora",
-                              isLora: !isLocal && !isMerged && !isGguf,
-                              isDownloaded: true,
-                            });
-                          }
-                        }}
-                        tooltipText={
-                          <>
-                            <span className="block break-words">
-                              {adapter.name}
-                            </span>
-                            <span className="block mt-1 text-[10px] text-muted-foreground break-all">
-                              {adapter.id}
-                            </span>
-                          </>
-                        }
-                      />
+                      <div className="flex items-center gap-0.5">
+                        <div className="min-w-0 flex-1">
+                          <ModelRow
+                            label={adapter.name}
+                            meta={meta}
+                            selected={value === adapter.id}
+                            onClick={() => {
+                              if (isLocalGgufDir || isExportedGguf) {
+                                setExpandedGguf((prev) =>
+                                  prev === adapter.id ? null : adapter.id,
+                                );
+                              } else {
+                                onSelect(adapter.id, {
+                                  source: isLocal
+                                    ? "local"
+                                    : isExported
+                                      ? "exported"
+                                      : "lora",
+                                  isLora: !isLocal && !isMerged && !isGguf,
+                                  isDownloaded: true,
+                                });
+                              }
+                            }}
+                            tooltipText={
+                              <>
+                                <span className="block break-words">
+                                  {adapter.name}
+                                </span>
+                                <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                                  {adapter.id}
+                                </span>
+                              </>
+                            }
+                          />
+                        </div>
+                        {canDelete && (
+                          <ModelDeleteAction
+                            ariaLabel={`Delete ${adapter.name}`}
+                            title="Delete fine-tuned model?"
+                            description={
+                              <>
+                                This will remove{" "}
+                                <span className="font-medium text-foreground">
+                                  {adapter.name}
+                                </span>{" "}
+                                from disk. This cannot be undone.
+                              </>
+                            }
+                            successMessage={`Deleted ${adapter.name}`}
+                            disabled={deleteDisabled}
+                            onConfirm={() =>
+                              deleteFineTunedModel({
+                                modelPath: adapter.id,
+                                source: isExported ? "exported" : "training",
+                                exportType: adapter.exportType,
+                              })
+                            }
+                            onDeleted={() =>
+                              onModelsChange?.({ id: adapter.id })
+                            }
+                          />
+                        )}
+                      </div>
                       {expandedGguf === adapter.id && (
                         <GgufVariantExpander
                           repoId={adapter.id}
@@ -1608,6 +1616,37 @@ export function LoraModelPicker({
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                          sourceOverride={isExportedGguf ? "exported" : undefined}
+                          deleteVariantTitle="Delete exported GGUF variant?"
+                          renderDeleteVariantDescription={(quant) => (
+                            <>
+                              This will remove{" "}
+                              <span className="font-medium text-foreground">
+                                {adapter.name} ({quant})
+                              </span>{" "}
+                              from disk. This cannot be undone.
+                            </>
+                          )}
+                          getDeleteVariantSuccessMessage={(quant) =>
+                            `Deleted ${adapter.name} ${quant}`
+                          }
+                          deleteDisabled={deleteDisabled}
+                          onDeleteVariant={
+                            isExportedGguf
+                              ? async (quant) => {
+                                  await deleteFineTunedModel({
+                                    modelPath: adapter.id,
+                                    source: "exported",
+                                    exportType: "gguf",
+                                    ggufVariant: quant,
+                                  });
+                                  onModelsChange?.({
+                                    id: adapter.id,
+                                    ggufVariant: quant,
+                                  });
+                                }
+                              : undefined
                           }
                         />
                       )}
@@ -1619,6 +1658,7 @@ export function LoraModelPicker({
           )}
         </div>
       </div>
+
     </div>
   );
 }
