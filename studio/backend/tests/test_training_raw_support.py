@@ -107,12 +107,10 @@ class TestTrainingRawSupport(unittest.TestCase):
                 model_name = "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 max_grad_norm = 0.7,
-                max_grad_value = 0.0,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
         self.assertEqual(config["max_grad_norm"], 0.7)
-        self.assertEqual(config["max_grad_value"], 0.0)
 
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(
