@@ -35,6 +35,7 @@ Example:
     git diff --name-only origin/main..HEAD \\
       | xargs python scripts/verify_comment_only_diff.py --base origin/main
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,7 +50,9 @@ import yaml
 
 def _git_show(rev: str, path: str) -> str:
     return subprocess.check_output(
-        ["git", "show", f"{rev}:{path}"], text = True, stderr = subprocess.DEVNULL,
+        ["git", "show", f"{rev}:{path}"],
+        text = True,
+        stderr = subprocess.DEVNULL,
     )
 
 
@@ -145,8 +148,7 @@ def _walk_yaml_diff(b: Any, a: Any, prefix: str = "") -> None:
     elif isinstance(b, list):
         if len(b) != len(a):
             print(
-                f"     list len at {prefix or '/'}: "
-                f"{len(b)} -> {len(a)}",
+                f"     list len at {prefix or '/'}: " f"{len(b)} -> {len(a)}",
             )
         for i, (bi, ai) in enumerate(zip(b, a)):
             _walk_yaml_diff(bi, ai, f"{prefix}[{i}]")
