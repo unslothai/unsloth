@@ -1084,10 +1084,10 @@ def run_training_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 1d. Ensure torch.distributed is importable before ML libs load ──
-    # Windows ROCm wheel lacks torch._C._distributed_c10d. Pre-stub it to handle
-    # both ImportError and lazy-load crashes from trl/transformers. The
-    # `not in sys.modules` guard preserves a real NVIDIA implementation.
+    # ── 1d. Ensure torch.distributed helper attrs are present ──
+    # Single-GPU training never initialises the process group, so these helpers
+    # are never called — but transformers/trl import them unconditionally at the
+    # module level and crash when they're missing.
     import types as _types
 
     _td_stubs = {
@@ -1099,289 +1099,22 @@ def run_training_process(
         "barrier": lambda: None,
     }
 
-    # Helper: build a ModuleType stub whose __getattr__ auto-creates child stubs.
-    # __path__ is set to [] so Python treats the stub as a package — without it,
-    # any attempt to import a submodule (e.g. "torch.distributed.tensor._foo")
-    # raises "is not a package" because Python checks __path__ before looking
-    # in sys.modules for the child.
-    import importlib.machinery as _ilm
-    import importlib.abc as _ilabc
-
-    _STUB_SENTINEL = object()  # identity tag placed on every stub module
-
-    def _make_mod_stub(mod_name):
-        m = _types.ModuleType(mod_name)
-        m.__path__ = []        # marks this as a package to the import system
-        m.__package__ = mod_name
-        # _STUB_SENTINEL survives __spec__ being replaced by the import
-        # machinery (which overwrites __spec__ with the spec returned by
-        # find_spec, breaking the loader=None sentinel we used before).
-        m._unsloth_stub = _STUB_SENTINEL
-        # importlib.util.find_spec() raises ValueError when __spec__ is None.
-        m.__spec__ = _ilm.ModuleSpec(mod_name, loader=None, is_package=True)
-        def _ga(attr, _m=m, _n=mod_name):
-            if attr.startswith("__"):
-                raise AttributeError(attr)
-            child_name = f"{_n}.{attr}"
-            child = _make_mod_stub(child_name)
-            sys.modules.setdefault(child_name, child)
-            setattr(_m, attr, child)
-            return child
-        m.__getattr__ = _ga
-        return m
-
-    class _StubSubpackageLoader(_ilabc.Loader):
-        """Creates a stub module for any subpackage of a stub package."""
-        def __init__(self, mod_name):
-            self._mod_name = mod_name
-        def create_module(self, spec):
-            return _make_mod_stub(self._mod_name)
-        def exec_module(self, module):
-            pass  # stub is fully initialised in create_module
-
-    class _StubSubpackageFinder(_ilabc.MetaPathFinder):
-        """Auto-stubs any subpackage import whose parent is one of our stubs.
-
-        Uses _unsloth_stub sentinel on the module object — NOT __spec__.loader,
-        which the import machinery overwrites with the loader from find_spec,
-        breaking the loader=None check for second-level subpackages.
-        """
-        def find_spec(self, fullname, path, target=None):
-            if "." not in fullname:
-                return None
-            parent_name = fullname.rsplit(".", 1)[0]
-            parent = sys.modules.get(parent_name)
-            if parent is None:
-                return None
-            if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
-                return None  # real installed module — don't intercept
-            loader = _StubSubpackageLoader(fullname)
-            return _ilm.ModuleSpec(fullname, loader, is_package=True)
-
-    sys.meta_path.append(_StubSubpackageFinder())
-
-    # Metaclass for stub *classes* so class-level attribute access works too.
-    # e.g. torchao / distributed_c10d does ProcessGroup.BackendType.NCCL —
-    # plain type() has no __getattr__ on the metaclass, so we need this to
-    # avoid AttributeError on arbitrary class-level attribute access.
-    #
-    # We intentionally do NOT use a real enum.Enum here: the C++ BackendType
-    # enum gains new members across PyTorch versions (XCCL was added in 2.6+)
-    # and hard-coding the list means every new member causes another crash.
-    # Instead _StubClassMeta auto-creates child stubs for any attr access, and
-    # the __members__ safety net satisfies Enum-duck-typing checks in torchao.
-    class _StubClassMeta(type):
-        def __getattr__(cls, attr):
-            if attr == "__members__":
-                # torchao checks ProcessGroup.BackendType.__members__ (Enum
-                # interface).  Return an empty dict — we have no real members
-                # to enumerate and the caller just iterates / checks membership.
-                return {}
-            if attr.startswith("__"):
-                raise AttributeError(attr)
-            # Auto-create a child stub for any member access (BackendType.NCCL,
-            # BackendType.XCCL, BackendType.UNDEFINED, …).  We cache it on the
-            # class so repeated accesses return the same object (identity
-            # comparisons stay consistent).
-            child = _StubClassMeta(attr, (), {"__init__": lambda self, *a, **kw: None})
-            setattr(cls, attr, child)
-            return child
-
-    def _make_stub_class(name):
-        return _StubClassMeta(name, (), {"__init__": lambda self, *a, **kw: None})
-
-    if sys.platform == "win32":
-        # torchao is not supported on ROCm Windows and its import chain
-        # transitively pulls in torch._C._distributed_c10d (absent from the
-        # ROCm Windows wheel), causing cascading AttributeErrors.  We don't
-        # use torchao quantization (unsloth uses bitsandbytes), so stub the
-        # entire package up-front.  transformers falls back gracefully when
-        # torchao is importable but empty.
-        for _tao_name in (
-            "torchao",
-            "torchao.quantization",
-            "torchao.dtypes",
-            "torchao.float8",
-            "torchao.utils",
-        ):
-            if _tao_name not in sys.modules:
-                sys.modules[_tao_name] = _make_mod_stub(_tao_name)
-
-        _c10d_key = "torch._C._distributed_c10d"
-        if _c10d_key not in sys.modules:  # guard: never overwrite real NVIDIA impl
-            _c10d_stub = _types.ModuleType(_c10d_key)
-
-            # ROCm Windows wheels omit this C extension; auto-stub every
-            # missing symbol so torch._dynamo's fsdp imports don't crash.
-            def _c10d_stub_getattr(_attr):
-                if _attr.startswith("__"):
-                    raise AttributeError(_attr)
-                _cls = _make_stub_class(_attr)
-                setattr(_c10d_stub, _attr, _cls)
-                return _cls
-
-            _c10d_stub.__getattr__ = _c10d_stub_getattr
-            sys.modules[_c10d_key] = _c10d_stub
-            try:
-                import torch._C as _torch_C_mod  # C ext — always importable
-                if not hasattr(_torch_C_mod, "_distributed_c10d"):
-                    _torch_C_mod._distributed_c10d = _c10d_stub
-            except Exception:
-                pass
-
-            # Pre-register torch.distributed.fsdp submodules as stubs so
-            # torch._dynamo's module-level fsdp import short-circuits before
-            # the real package loads (it has a circular import on ROCm Windows).
-            for _fsdp_name in (
-                "torch.distributed.fsdp",
-                "torch.distributed.fsdp._flat_param",
-                "torch.distributed.fsdp._fully_shard",
-                "torch.distributed.fsdp._fsdp_param_group",
-                "torch.distributed.fsdp._common_utils",
-            ):
-                if _fsdp_name not in sys.modules:
-                    sys.modules[_fsdp_name] = _make_mod_stub(_fsdp_name)
-
-            # torch._dynamo.trace_rules.get_torch_obj_rule_map() eagerly loads
-            # torch.distributed.tensor, which in turn imports
-            # torch.distributed._functional_collectives.  That module registers
-            # Meta kernels for ops in the _c10d_functional C++ namespace, but
-            # that namespace only exists when torch._C._distributed_c10d (the
-            # C extension absent from ROCm Windows wheels) has been loaded.
-            # Without it the impl() call raises "operator does not exist".
-            # Pre-stubbing these modules short-circuits the real import so
-            # torch._dynamo gets empty stub objects instead of crashing.
-            for _dist_name in (
-                "torch.distributed._functional_collectives",
-                "torch.distributed._functional_collectives_impl",
-                "torch.distributed.tensor",
-                "torch.distributed.tensor._ops",
-                "torch.distributed.tensor._ops._conv_ops",
-                "torch.distributed.tensor._dtensor_spec",
-                "torch.distributed.tensor.placement_types",
-                # torch.distributed._tensor is the canonical private package;
-                # its __init__.py tries to re-export submodules from
-                # torch.distributed.tensor (which we stubbed above), causing
-                # "is not a package" errors.  Stubbing _tensor directly
-                # short-circuits that __init__ so torchao's
-                # `from torch.distributed._tensor import DTensor` gets a stub.
-                "torch.distributed._tensor",
-                "torch.distributed._tensor.placement_types",
-                "torch.distributed._tensor.api",
-            ):
-                if _dist_name not in sys.modules:
-                    sys.modules[_dist_name] = _make_mod_stub(_dist_name)
-
     try:
         import torch.distributed as _td
 
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
-        # Stub C-extension-backed class attrs (Store, ProcessGroup, …) that
-        # the ROCm Windows wheel omits. __getattr__ checks sys.modules first
-        # so it never intercepts real subpackage lookups as plain classes.
-        if not hasattr(_td, "__getattr__"):
-            def _td_getattr(_attr):
-                if _attr.startswith("__"):
-                    raise AttributeError(_attr)
-                _full = f"torch.distributed.{_attr}"
-                if _full in sys.modules:
-                    _mod = sys.modules[_full]
-                    setattr(_td, _attr, _mod)
-                    return _mod
-                _cls = _make_stub_class(_attr)
-                setattr(_td, _attr, _cls)
-                return _cls
-            _td.__getattr__ = _td_getattr
     except Exception:
-        _td_mock = _make_mod_stub("torch.distributed")
+        _td_mock = _types.ModuleType("torch.distributed")
         for _name, _stub in _td_stubs.items():
             setattr(_td_mock, _name, _stub)
         sys.modules["torch.distributed"] = _td_mock
-        if "torch._C._distributed_c10d" not in sys.modules:
-            sys.modules["torch._C._distributed_c10d"] = _make_mod_stub("torch._C._distributed_c10d")
         try:
             import torch as _torch
             _torch.distributed = _td_mock
         except Exception:
             pass
-
-    # ── 1e. Stub torch.ops._c10d_functional (and c10d.scatter_) ──
-    # torchao.dtypes.nf4tensor accesses these at *import time* as dict keys:
-    #   NF4_OPS_TABLE = {
-    #       torch.ops._c10d_functional.all_gather_into_tensor.default: ...,
-    #       torch.ops._c10d_functional.wait_tensor.default: ...,   (decorator)
-    #       torch.ops.c10d.scatter_.default: ...,
-    #   }
-    # The real _c10d_functional ops are registered by torch._C._distributed_c10d
-    # (absent on ROCm Windows).  We replace the whole namespace with a stub
-    # whose op objects are hashable so dict-key usage doesn't crash.
-    try:
-        import torch as _torch_ops
-
-        class _C10dFunctionalOpDefault:
-            """Hashable stub for op.default — used as dict keys."""
-            __slots__ = ("_name",)
-            def __init__(self, name):
-                self._name = name
-            def __hash__(self):
-                return hash(("_c10d_functional_stub", self._name))
-            def __eq__(self, other):
-                return (type(other) is _C10dFunctionalOpDefault
-                        and self._name == other._name)
-            def __call__(self, *a, **kw):
-                return a[0] if a else None
-            def __repr__(self):
-                return f"torch.ops._c10d_functional.{self._name}.default"
-
-        class _C10dFunctionalOp:
-            """Stub for a single _c10d_functional op (has a .default attr)."""
-            __slots__ = ("_name", "default")
-            def __init__(self, name):
-                self._name = name
-                self.default = _C10dFunctionalOpDefault(name)
-            def __call__(self, *a, **kw):
-                return self.default(*a, **kw)
-            def __repr__(self):
-                return f"torch.ops._c10d_functional.{self._name}"
-
-        class _C10dFunctionalNamespace:
-            """Drop-in for torch.ops._c10d_functional; auto-stubs every op."""
-            def __getattr__(self, name):
-                if name.startswith("_"):
-                    raise AttributeError(name)
-                op = _C10dFunctionalOp(name)
-                object.__setattr__(self, name, op)
-                return op
-
-        _torch_ops.ops._c10d_functional = _C10dFunctionalNamespace()
-
-        # Also stub torch.ops.c10d.scatter_ if it's missing (same root cause).
-        try:
-            _ = _torch_ops.ops.c10d.scatter_.default
-        except AttributeError:
-            # c10d namespace exists but scatter_ op isn't registered; inject stub.
-            _c10d_scatter_stub = _C10dFunctionalOp("scatter_")
-            try:
-                setattr(_torch_ops.ops.c10d, "scatter_", _c10d_scatter_stub)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # ── 1g. Point bitsandbytes at the ROCm 7.2 DLL on Windows ──
-    # The AMD continuous-release wheel ships libbitsandbytes_rocm72.dll.
-    # Only set BNB_ROCM_VERSION when that DLL is actually present — setting it
-    # when the DLL is absent makes bnb fail harder than the default detection.
-    if sys.platform == "win32" and os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
-        import importlib.util as _ilu
-        _bnb_spec = _ilu.find_spec("bitsandbytes")
-        if _bnb_spec and _bnb_spec.origin:
-            import pathlib as _pl
-            _bnb_dll = _pl.Path(_bnb_spec.origin).parent / "libbitsandbytes_rocm72.dll"
-            if _bnb_dll.exists():
-                os.environ.setdefault("BNB_ROCM_VERSION", "72")
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:

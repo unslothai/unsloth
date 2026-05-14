@@ -950,71 +950,13 @@ shell.Run cmd, 0, False
         return $null
     }
 
-    # ── Quick AMD GPU probe (before Python selection) ──
-    # Checks hipinfo and WMI now so we can pick Python 3.12 upfront if AMD is
-    # present (ROCm Windows wheels are cp312-only). The full GPU detection with
-    # version strings and display labels runs after venv creation below.
-    $_EarlyAmdDetected = $false
-    try {
-        $hipinfoEarly = Get-Command hipinfo -ErrorAction SilentlyContinue
-        if ($hipinfoEarly) {
-            $hipEarlyOut = & $hipinfoEarly.Source 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and $hipEarlyOut -match "(?i)gcnArchName") {
-                $_EarlyAmdDetected = $true
-            }
-        }
-    } catch {}
-    if (-not $_EarlyAmdDetected) {
-        try {
-            $wmiGpuEarly = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "AMD|Radeon" } | Select-Object -First 1
-            if ($wmiGpuEarly) { $_EarlyAmdDetected = $true }
-        } catch {}
-    }
-
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
     $DetectedPython = Find-CompatiblePython
 
-    # If AMD GPU is present and we didn't land on Python 3.12, find 3.12 now
-    # before creating the venv -- avoids creating the environment twice.
-    if ($_EarlyAmdDetected -and $DetectedPython -and (($DetectedPython.Version -split '\.')[0..1] -join '.') -ne "3.12") {
-        $py312Pre = $null
-        $pyLauncherPre = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-        if ($pyLauncherPre -and $pyLauncherPre.Source -notmatch $script:CondaSkipPattern) {
-            try {
-                $out312 = & $pyLauncherPre.Source "-3.12" --version 2>&1 | Out-String
-                if ($out312 -match "Python 3\.12\.\d+") {
-                    $resolvedExe312 = (& $pyLauncherPre.Source "-3.12" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                    if ($resolvedExe312 -and (Test-Path $resolvedExe312) -and -not (Test-IsCondaPython $resolvedExe312)) {
-                        $py312Pre = @{ Version = "3.12"; Path = $resolvedExe312 }
-                    }
-                }
-            } catch {}
-        }
-        if (-not $py312Pre) {
-            foreach ($name312 in @("python3.12", "python3", "python")) {
-                foreach ($cmd312 in @(Get-Command $name312 -All -ErrorAction SilentlyContinue)) {
-                    if (-not $cmd312.Source -or $cmd312.Source -like "*\WindowsApps\*") { continue }
-                    if (Test-IsCondaPython $cmd312.Source) { continue }
-                    try {
-                        $out312 = & $cmd312.Source --version 2>&1 | Out-String
-                        if ($out312 -match "Python 3\.12\.\d+") { $py312Pre = @{ Version = "3.12"; Path = $cmd312.Source }; break }
-                    } catch {}
-                }
-                if ($py312Pre) { break }
-            }
-        }
-        if ($py312Pre) { $DetectedPython = $py312Pre }
-    }
-
     if ($DetectedPython) {
-        $pyStepLabel = "Python $($DetectedPython.Version) already installed"
-        if ($_EarlyAmdDetected -and (($DetectedPython.Version -split '\.')[0..1] -join '.') -eq "3.12") {
-            $pyStepLabel = "Python 3.12 selected (ROCm wheels are cp312-only)"
-        }
-        step "python" $pyStepLabel
+        step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
         substep "installing Python ${PythonVersion}..."
@@ -1345,14 +1287,6 @@ shell.Run cmd, 0, False
         substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
 
-    # Warn if AMD GPU is present but the venv still isn't Python 3.12.
-    # The early probe above covers the normal case; this fires only when the
-    # full GPU detection reveals AMD that the early probe missed (e.g. hipinfo
-    # not yet on PATH) and 3.12 still wasn't found.
-    if (($HasROCm -or $ROCmGpuLabel) -and $DetectedPython -and (($DetectedPython.Version -split '\.')[0..1] -join '.') -ne "3.12") {
-        substep "AMD GPU requires Python 3.12 for ROCm wheels -- install it from python.org and re-run." "Yellow"
-    }
-
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
@@ -1379,101 +1313,41 @@ shell.Run cmd, 0, False
     # Wheels bundle their own ROCm runtime; the installed HIP SDK version does
     # not constrain which release to use.  Always picks the newest release that
     # supports the GPU architecture.
-    function Select-ROCmWheelRelease {
-        param([string]$GfxArch)
-
-        # Available releases, newest first.
-        $releases = @(
-            @{
-                Rel     = "rocm-rel-7.2.1"
-                Tag     = "rocm7.2"
-                RocmVer = @(7, 2)
-                Tarball = "rocm-7.2.1.tar.gz"
-                Wheels  = @(
-                    "rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
-                    "rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
-                    "rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
-                    "torch-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
-                    "torchvision-0.24.1+rocm7.2.1-cp312-cp312-win_amd64.whl",
-                    "torchaudio-2.9.1+rocm7.2.1-cp312-cp312-win_amd64.whl"
-                )
-            },
-            @{
-                Rel     = "rocm-rel-7.1.1"
-                Tag     = "rocm7.1"
-                RocmVer = @(7, 1)
-                Tarball = "rocm-0.1.dev0.tar.gz"
-                Wheels  = @(
-                    "rocm_sdk_core-0.1.dev0-py3-none-win_amd64.whl",
-                    "rocm_sdk_libraries_custom-0.1.dev0-py3-none-win_amd64.whl",
-                    "torch-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
-                    "torchvision-0.24.0+rocmsdk20251116-cp312-cp312-win_amd64.whl",
-                    "torchaudio-2.9.0+rocmsdk20251116-cp312-cp312-win_amd64.whl"
-                )
-            }
-        )
-
-        # GPU arch → minimum (major, minor) ROCm release needed.
-        $archMin = @{
-            "gfx1201" = @(7,1); "gfx1200" = @(7,1)   # RDNA 4
-            "gfx1151" = @(7,1); "gfx1150" = @(7,1)   # RDNA 3.5 (Strix Halo/Point)
-            "gfx1103" = @(6,4); "gfx1102" = @(6,4); "gfx1101" = @(6,4); "gfx1100" = @(6,4)  # RDNA 3
-            "gfx1036" = @(6,4); "gfx1035" = @(6,4); "gfx1034" = @(6,4); "gfx1033" = @(6,4)  # RDNA 2
-            "gfx1032" = @(6,4); "gfx1031" = @(6,4); "gfx1030" = @(6,4)
-            "gfx1011" = @(6,4); "gfx1010" = @(6,4)   # RDNA 1
-            "gfx906"  = @(6,4); "gfx908"  = @(6,4); "gfx90a" = @(6,4)   # Vega/MI
+    # ── AMD Windows ROCm: arch-aware pip index (repo.amd.com) ──
+    # Wheels bundle their own ROCm runtime and support all Python versions.
+    # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
+    $ROCmIndexUrl = $null
+    if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+        $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
+        $archFamilyMap = @{
+            "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+            "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
+            "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
+            "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+            "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
         }
-        $minVer = if ($GfxArch -and $archMin.ContainsKey($GfxArch)) {
-            $archMin[$GfxArch]
+        $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+        if ($archFamily) {
+            $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+            $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
+            substep "$archLabel -- AMD repo.amd.com index selected" "Cyan"
+        } elseif ($ROCmGfxArch) {
+            substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
         } else {
-            @(6, 4)  # unknown arch: try the latest (7.2.1 supports all modern GPUs)
-        }
-
-        foreach ($r in $releases) {
-            $rv = $r.RocmVer
-            $ok = ($rv[0] -gt $minVer[0]) -or ($rv[0] -eq $minVer[0] -and $rv[1] -ge $minVer[1])
-            if ($ok) { return $r }
-        }
-        return $null
-    }
-
-    # ── AMD Windows ROCm wheel override ──
-    # Selects the newest wheel release compatible with the GPU arch (HIP SDK
-    # version is irrelevant; wheels bundle their own ROCm runtime).
-    $ROCmTorchWheelUrl = $null
-    $ROCmTarballUrl    = $null
-    $ROCmWheelTag      = $null
-    if ($HasROCm -and -not $SkipTorch) {
-        $pyMajMin = if ($DetectedPython) { ($DetectedPython.Version -split '\.')[0..1] -join '.' } else { "" }
-        if ($pyMajMin -eq "3.12") {
-            $amdWheelBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.radeon.com/rocm/windows" }
-            $sel = Select-ROCmWheelRelease -GfxArch $ROCmGfxArch
-            if ($sel) {
-                $rb               = "$amdWheelBase/$($sel.Rel)"
-                $ROCmTarballUrl   = "$rb/$($sel.Tarball)"
-                $ROCmAllWheelUrls = $sel.Wheels | ForEach-Object { "$rb/$_" }
-                $ROCmTorchWheelUrl = ($ROCmAllWheelUrls | Where-Object { $_ -match '/torch-' })[0]
-                $ROCmWheelTag      = $sel.Tag
-                $TorchIndexUrl     = $null
-                $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
-                substep "$archLabel -- Windows torch wheel $($sel.Rel) selected" "Cyan"
-            } else {
-                substep "No AMD Windows torch wheel for GPU arch $ROCmGfxArch -- falling back to CPU-only PyTorch" "Yellow"
-            }
-        } else {
-            substep "AMD Windows ROCm wheels require Python 3.12 (detected: $pyMajMin) -- using CPU-only PyTorch" "Yellow"
-            substep "To enable ROCm training, reinstall with Python 3.12." "Yellow"
+            substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
         }
     }
 
-    $TorchIndexFamily = Get-TauriTorchIndexFamily $(
-        if ($ROCmTorchWheelUrl) { $ROCmWheelTag } else { $TorchIndexUrl }
-    )
+    if ($ROCmIndexUrl) {
+        $TorchIndexFamily = "rocm"
+    } else {
+        $TorchIndexFamily = Get-TauriTorchIndexFamily $TorchIndexUrl
+    }
     $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
     Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
     # ── Print CPU-only hint when no GPU detected ──
-    if (-not $SkipTorch -and -not $ROCmTorchWheelUrl -and $TorchIndexUrl -like "*/cpu") {
+    if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($HasROCm -or $ROCmGpuLabel) {
             substep "Installing CPU-only PyTorch (ROCm wheels require the HIP SDK)." "Yellow"
@@ -1551,20 +1425,13 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
-    } elseif ($TorchIndexUrl -or $ROCmTorchWheelUrl) {
+    } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
-        } elseif ($ROCmTorchWheelUrl) {
+        } elseif ($ROCmIndexUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
-            substep "installing PyTorch ($ROCmWheelTag)..."
-            # rocm_sdk namespace tarball (torch/_rocm_init.py imports it at startup)
-            if ($ROCmTarballUrl) {
-                $tarballExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps $ROCmTarballUrl }
-                if ($tarballExit -ne 0) {
-                    Write-Host "[WARN] ROCm namespace tarball install failed (exit $tarballExit) -- continuing" -ForegroundColor Yellow
-                }
-            }
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --no-deps @ROCmAllWheelUrls }
+            substep "installing PyTorch from $ROCmIndexUrl..."
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl torch torchvision torchaudio }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
