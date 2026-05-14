@@ -70,7 +70,6 @@ parse_arguments() {
     # --local: install from the local repo checkout (overlays unsloth as editable
     # and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
     # path that runs setup.sh directly without going through install.sh.
-	# ${#BASH_ARGV[@]}
     if [ "$#" -gt 0 ]; then
         for _arg in "$@"; do
             case "$_arg" in
@@ -261,45 +260,45 @@ setup_frontend_node_get_installed_version() {
 }
 
 setup_frontend_node_install() {
-        substep "installing nvm..."
-        export NODE_OPTIONS=--dns-result-order=ipv4first
-        if _is_verbose; then
-            curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-        else
-            curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
-        fi
+    substep "installing nvm..."
+    export NODE_OPTIONS=--dns-result-order=ipv4first
+    if _is_verbose; then
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    else
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    fi
 
-        export NVM_DIR="$HOME/.nvm"
-        set +u
-        # shellcheck disable=SC1091
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    export NVM_DIR="$HOME/.nvm"
+    set +u
+    # shellcheck disable=SC1091
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-        if [ -f "$HOME/.npmrc" ]; then
-            if grep -qE '^\s*(prefix|globalconfig)\s*=' "$HOME/.npmrc"; then
-                sed -i.bak '/^\s*\(prefix\|globalconfig\)\s*=/d' "$HOME/.npmrc"
-            fi
+    if [ -f "$HOME/.npmrc" ]; then
+        if grep -qE '^\s*(prefix|globalconfig)\s*=' "$HOME/.npmrc"; then
+            sed -i.bak '/^\s*\(prefix\|globalconfig\)\s*=/d' "$HOME/.npmrc"
         fi
+    fi
 
-        substep "installing Node LTS..."
-        run_quiet "nvm install" nvm install --lts
-        if _is_verbose; then
-            nvm use --lts
-        else
-            nvm use --lts > /dev/null 2>&1
-        fi
-        set -u
+    substep "installing Node LTS..."
+    run_quiet "nvm install" nvm install --lts
+    if _is_verbose; then
+        nvm use --lts
+    else
+        nvm use --lts > /dev/null 2>&1
+    fi
+    set -u
 
-        NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-        NPM_MAJOR=$(npm -v | cut -d. -f1)
+    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    NPM_MAJOR=$(npm -v | cut -d. -f1)
 
-        if [ "$NODE_MAJOR" -lt 20 ]; then
-            step "node" "FAILED -- version must be >= 20 (got $(node -v))" "$C_ERR"
-            exit 1
-        fi
-        if [ "$NPM_MAJOR" -lt 11 ]; then
-            substep "upgrading npm..."
-            run_quiet "npm update" npm install -g npm@latest
-        fi
+    if [ "$NODE_MAJOR" -lt 20 ]; then
+        step "node" "FAILED -- version must be >= 20 (got $(node -v))" "$C_ERR"
+        exit 1
+    fi
+    if [ "$NPM_MAJOR" -lt 11 ]; then
+        substep "upgrading npm..."
+        run_quiet "npm update" npm install -g npm@latest
+    fi
 
 }
 
@@ -326,6 +325,7 @@ setup_frontend_move_gitignores() {
     substep "building frontend..."
     pushd "$SCRIPT_DIR/frontend"
     _HIDDEN_GITIGNORES=()
+    trap _restore_gitignores EXIT
     _dir="$(pwd)"
     while [ "$_dir" != "/" ]; do
         _dir="$(dirname "$_dir")"
@@ -335,8 +335,7 @@ setup_frontend_move_gitignores() {
         fi
     done
 
-	popd # "$SCRIPT_DIR/frontend"
-    trap _restore_gitignores EXIT
+    popd # "$SCRIPT_DIR/frontend"
 }
 
 
@@ -411,9 +410,11 @@ setup_frontend() {
         verbose_substep "frontend dist is newer than source inputs"
         return 0
     fi
+    cd "$SCRIPT_DIR/frontend"
 
     setup_frontend_node
     setup_frontend_move_gitignores
+    local bun_install_failed
     bun_install_failed=true
     if setup_frontend_bun; then
         # Use bun for install if available (faster), fall back to npm.
@@ -506,9 +507,7 @@ setup_unsloth_studio_path() {
             exit 1
         fi
         [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-        pushd -- "$_studio_override"
-        STUDIO_HOME="$(pwd -P)" || exit 1
-        popd # "$_studio_override"
+        STUDIO_HOME=$(cd "$_studio_override" && pwd -P) || exit 1
     else
         STUDIO_HOME="$HOME/.unsloth/studio"
     fi
@@ -858,7 +857,7 @@ setup_llama_cpp_wsl() {
         esac
     done
 
-    if [[ "${_STILL_MISSING[*]}" == "" ]]; then
+    if [[ ${#_STILL_MISSING[@]} -eq 0 ]]; then
         step "gguf deps" "installed"
     elif command -v sudo >/dev/null 2>&1; then
         step "gguf deps" "sudo required for: ${_STILL_MISSING[*]}" "$C_WARN"
@@ -1232,7 +1231,6 @@ build_llama_cpp() {
     run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
 
     # Swap only after build succeeds -- preserves existing install on failure
-    build_llama_cpp_cleanup
     _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     rm -rf "$LLAMA_CPP_DIR"
     mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
@@ -1242,6 +1240,8 @@ build_llama_cpp() {
     if [ -f "$QUANTIZE_BIN" ]; then
         ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
     fi
+
+    build_llama_cpp_cleanup
 }
 
 print_footer() {
