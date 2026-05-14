@@ -480,6 +480,37 @@ def save_refresh_token(
         conn.close()
 
 
+def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
+    """Atomically validate-and-delete a refresh token for single-use rotation.
+
+    DELETE RETURNING fuses validate and delete into one statement so two
+    concurrent refresh requests cannot both consume the same token.
+    """
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM refresh_tokens WHERE expires_at < ?",
+            (now,),
+        )
+        cur = conn.execute(
+            """
+            DELETE FROM refresh_tokens
+            WHERE token_hash = ? AND expires_at >= ?
+            RETURNING username, is_desktop
+            """,
+            (token_hash, now),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if row is None:
+            return None
+        return row["username"], bool(row["is_desktop"])
+    finally:
+        conn.close()
+
+
 def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
     """
     Verify a refresh token and return the username plus desktop marker.

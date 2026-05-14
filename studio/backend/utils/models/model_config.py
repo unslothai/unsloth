@@ -1327,16 +1327,42 @@ def detect_gguf_model_remote(
     Check if a HuggingFace repo contains GGUF files.
 
     Returns the filename of the best GGUF file in the repo, or None.
-    """
-    try:
-        from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(repo_id, token = hf_token)
-        repo_files = [s.rfilename for s in info.siblings]
-        return _pick_best_gguf(repo_files)
-    except Exception as e:
-        logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
-        return None
+    Retries on transient HF Hub failures (network hiccups, 5xx, slow
+    cold-start of the API). Without retry, a single transient failure
+    here returns None silently and the caller treats the repo as
+    non-GGUF -- which on Apple Silicon (Mac UI route) means falling
+    through to the MLX backend, which then fails opening a non-existent
+    config.json on the GGUF-only repo. Three attempts with 1s/2s/4s
+    backoff covers the typical free-runner HF Hub flakiness.
+    """
+    import time
+    from huggingface_hub import model_info as hf_model_info
+
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            info = hf_model_info(repo_id, token = hf_token)
+            repo_files = [s.rfilename for s in info.siblings]
+            return _pick_best_gguf(repo_files)
+        except Exception as e:
+            last_err = e
+            # 404 / RepoNotFound is permanent -- don't waste attempts.
+            err_name = type(e).__name__
+            if err_name in (
+                "RepositoryNotFoundError",
+                "GatedRepoError",
+                "RevisionNotFoundError",
+                "EntryNotFoundError",
+            ):
+                logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+                return None
+            if attempt < 2:
+                time.sleep(2**attempt)
+    logger.warning(
+        f"Could not check GGUF files for '{repo_id}' after 3 attempts: " f"{last_err}"
+    )
+    return None
 
 
 def download_gguf_file(
