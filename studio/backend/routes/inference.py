@@ -204,6 +204,11 @@ from core.inference.anthropic_compat import (
 )
 from auth.authentication import get_current_subject
 
+from core.inference.key_exchange import decrypt_api_key
+from core.inference.providers import get_provider_info, get_base_url
+from core.inference.external_provider import ExternalProviderClient
+from storage import providers_db
+
 import io
 import wave
 import base64
@@ -1483,6 +1488,161 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+# ── External provider proxy ──────────────────────────────────────
+
+
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """
+    Convert ChatMessage list to OpenAI-compatible dicts for external providers.
+
+    - Vision providers: preserve multimodal content arrays (image_url parts intact).
+    - Non-vision providers: flatten to text-only (images silently dropped).
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            # Skip assistant messages with empty content (some providers reject them)
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
+            result.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            if supports_vision:
+                parts = []
+                for part in msg.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part.image_url.url},
+                            }
+                        )
+                result.append({"role": msg.role, "content": parts})
+            else:
+                # Non-vision provider — strip images, keep text only
+                text = "\n".join(p.text for p in msg.content if p.type == "text")
+                result.append({"role": msg.role, "content": text})
+    return result
+
+
+async def _proxy_to_external_provider(
+    payload: ChatCompletionRequest,
+    request: Request,
+) -> StreamingResponse:
+    """
+    Proxy a chat completion request to an external LLM provider.
+
+    Resolves provider config (from DB or registry), decrypts the API key,
+    and streams the response back in OpenAI SSE format.
+    """
+    # Resolve provider type and base URL
+    provider_type = payload.provider_type
+    base_url = payload.provider_base_url
+
+    if payload.provider_id:
+        config = providers_db.get_provider(payload.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {payload.provider_id}",
+            )
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        provider_type = provider_type or config["provider_type"]
+        base_url = base_url or config["base_url"]
+
+    if not provider_type:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Either provider_id or provider_type is required for external provider routing.",
+        )
+
+    # Fall back to registry default base URL
+    if not base_url:
+        base_url = get_base_url(provider_type)
+    if not base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {provider_type}",
+        )
+
+    # Decrypt the API key
+    try:
+        api_key = decrypt_api_key(payload.encrypted_api_key)
+    except Exception as exc:
+        logger.warning("external_provider.decrypt_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 400,
+            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+        )
+
+    model = payload.external_model or payload.model
+    if model == "default":
+        raise HTTPException(
+            status_code = 400,
+            detail = "external_model is required when using an external provider.",
+        )
+
+    # Build messages preserving multimodal content for vision-capable providers
+    from core.inference.providers import get_provider_info as _get_provider_info
+
+    _pinfo = _get_provider_info(provider_type) or {}
+    _supports_vision = _pinfo.get("supports_vision", False)
+    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+    async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            top_k = payload.top_k,
+            enable_thinking = payload.enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
+            stream = payload.stream,
+        )
+        try:
+            sent_done = False
+            async for line in gen:
+                yield f"{line}\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("external_provider.stream_error", error = str(exc))
+        finally:
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+            await client.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1502,6 +1662,10 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # ── External provider routing ────────────────────────────────
+    if payload.encrypted_api_key and (payload.provider_id or payload.provider_type):
+        return await _proxy_to_external_provider(payload, request)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
@@ -1762,7 +1926,7 @@ async def openai_chat_completions(
             try:
                 import base64 as _b64
                 from io import BytesIO as _BytesIO
-                from PIL import Image as _Image
+                from PIL import Image as _Image, UnidentifiedImageError as _UIE
 
                 raw = _b64.b64decode(image_b64)
                 # Normalize to RGB so PNG encoding succeeds regardless of
@@ -1773,9 +1937,15 @@ async def openai_chat_completions(
                 buf = _BytesIO()
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except _UIE:
                 raise HTTPException(
-                    status_code = 400, detail = f"Failed to process image: {e}"
+                    status_code = 400,
+                    detail = "Unsupported or corrupt image format.",
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Failed to process image.",
                 )
 
         # Build message list with system prompt prepended
@@ -3445,10 +3615,10 @@ def _normalize_anthropic_openai_images(
                 buf = io.BytesIO()
                 img.save(buf, format = "PNG")
                 png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except Exception:
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Failed to process image: {e}",
+                    detail = "Failed to process image.",
                 )
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
@@ -3484,6 +3654,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
+    openai_messages = _drop_empty_assistant_sentinels(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
@@ -4209,6 +4380,19 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
+    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            has_content = bool(m.get("content"))
+            has_tool_calls = bool(m.get("tool_calls"))
+            if not has_content and not has_tool_calls:
+                continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -4225,7 +4409,9 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     ``image_url`` content part so vision + function-calling requests work
     transparently.
     """
-    messages = [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
 
     if not payload.image_base64:
         return messages
@@ -4240,10 +4426,10 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         buf = _BytesIO()
         img.save(buf, format = "PNG")
         png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code = 400,
-            detail = f"Failed to process image: {e}",
+            detail = "Failed to process image.",
         )
 
     data_url = f"data:image/png;base64,{png_b64}"

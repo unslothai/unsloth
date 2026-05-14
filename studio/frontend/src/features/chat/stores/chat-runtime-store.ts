@@ -26,13 +26,30 @@ const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
-export type ReasoningEffort = "low" | "medium" | "high";
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "max"
+  | "xhigh";
 
 function loadReasoningEffort(fallback: ReasoningEffort): ReasoningEffort {
   if (!canUseStorage()) return fallback;
   try {
     const raw = localStorage.getItem(REASONING_EFFORT_KEY);
-    if (raw === "low" || raw === "medium" || raw === "high") return raw;
+    if (
+      raw === "none" ||
+      raw === "minimal" ||
+      raw === "low" ||
+      raw === "medium" ||
+      raw === "high" ||
+      raw === "max" ||
+      raw === "xhigh"
+    ) {
+      return raw;
+    }
     return fallback;
   } catch {
     return fallback;
@@ -196,8 +213,19 @@ type ChatRuntimeStore = {
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
+  /**
+   * The model id the OpenRouter router actually picked for the most recent
+   * stream when the active checkpoint is the openrouter/free meta-model.
+   * Updated each time a chunk arrives carrying a non-empty `model` field
+   * that differs from the requested id. Cleared when a non-OpenRouter
+   * model is selected. Used purely for UI display — appended after
+   * `openrouter/free:` in the active model chip.
+   */
+  lastOpenRouterChosenModel: string | null;
   reasoningStyle: ReasoningStyle;
   reasoningEffort: ReasoningEffort;
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: readonly ReasoningEffort[];
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   supportsTools: boolean;
@@ -246,6 +274,7 @@ type ChatRuntimeStore = {
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (enabled: boolean) => void;
+  setLastOpenRouterChosenModel: (chosen: string | null) => void;
   setReasoningStyle: (style: ReasoningStyle) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
@@ -285,6 +314,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   reasoningEnabled: true,
   reasoningStyle: "enable_thinking",
   reasoningEffort: loadReasoningEffort("medium"),
+  supportsReasoningOff: false,
+  reasoningEffortLevels: ["low", "medium", "high"],
+  lastOpenRouterChosenModel: null,
   supportsPreserveThinking: false,
   preserveThinking: loadBool(PRESERVE_THINKING_KEY, false),
   supportsTools: false,
@@ -394,6 +426,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       reasoningAlwaysOn: false,
       reasoningEnabled: true,
       reasoningStyle: "enable_thinking",
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high"],
       supportsPreserveThinking: false,
       supportsTools: false,
       toolsEnabled: false,
@@ -410,6 +444,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       loadedChatTemplateOverride: null,
     })),
   setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
+    set({ lastOpenRouterChosenModel }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
   setReasoningEffort: (reasoningEffort) =>
     set(() => {

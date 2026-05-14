@@ -2641,7 +2641,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         )
 
         readme_path = os.path.join(actual_save_directory, "README.md")
-        with open(readme_path, "w") as f:
+        with open(readme_path, "w", encoding = "utf-8") as f:
             f.write(readme_content)
 
         api.upload_file(

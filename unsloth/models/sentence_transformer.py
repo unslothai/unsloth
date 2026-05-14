@@ -70,7 +70,7 @@ def _save_pretrained_torchao(
     modules_path = os.path.join(save_directory, "modules.json")
     if os.path.exists(modules_path):
         try:
-            with open(modules_path, "r") as f:
+            with open(modules_path, "r", encoding = "utf-8") as f:
                 modules = json.load(f)
             for m in modules:
                 if m.get("type", "").endswith("Transformer"):
@@ -177,7 +177,7 @@ def _save_pretrained_gguf(
     modules_path = os.path.join(save_directory, "modules.json")
     if os.path.exists(modules_path):
         try:
-            with open(modules_path, "r") as f:
+            with open(modules_path, "r", encoding = "utf-8") as f:
                 modules = json.load(f)
             for m in modules:
                 if m.get("type", "").endswith("Transformer"):
@@ -542,7 +542,7 @@ class FastSentenceTransformer(FastModel):
                     model_name, "modules.json", token = token
                 )
 
-            with open(modules_json_path, "r") as f:
+            with open(modules_json_path, "r", encoding = "utf-8") as f:
                 modules_config = json.load(f)
 
             pooling_config_path = None
@@ -566,7 +566,7 @@ class FastSentenceTransformer(FastModel):
                         break
 
             if pooling_config_path:
-                with open(pooling_config_path, "r") as f:
+                with open(pooling_config_path, "r", encoding = "utf-8") as f:
                     pooling_config = json.load(f)
                     # from here:
                     # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Pooling.py#L43

@@ -10,6 +10,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  CloudIcon,
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
@@ -20,11 +21,15 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef } from "react";
-import { useSettingsDialogStore, type SettingsTab } from "./stores/settings-dialog-store";
+import {
+  useSettingsDialogStore,
+  type SettingsTab,
+} from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
+import { ConnectionsTab } from "./tabs/connections-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 
@@ -40,6 +45,7 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "appearance", label: "Appearance", icon: PaintBrush02Icon },
   { id: "chat", label: "Chat", icon: Message01Icon },
+  { id: "connections", label: "Cloud", icon: CloudIcon, badge: "New" },
   { id: "api-keys", label: "API", icon: Globe02Icon, badge: "New" },
   { id: "about", label: "Help", icon: HelpCircleIcon },
 ];
@@ -54,6 +60,8 @@ function renderTab(tab: SettingsTab) {
       return <AppearanceTab />;
     case "chat":
       return <ChatTab />;
+    case "connections":
+      return <ConnectionsTab />;
     case "api-keys":
       return <ApiKeysTab />;
     case "about":
@@ -72,6 +80,7 @@ export function SettingsDialog() {
     profile: null,
     appearance: null,
     chat: null,
+    connections: null,
     "api-keys": null,
     about: null,
   });
@@ -100,9 +109,9 @@ export function SettingsDialog() {
         <DialogDescription className="sr-only">
           Manage your Unsloth Studio preferences.
         </DialogDescription>
-        <div className="flex h-full min-h-0">
-          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2">
-            <nav className="flex flex-col gap-0.5">
+        <div className="flex h-full min-h-0 max-sm:flex-col">
+          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
+            <nav className="flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;
                 return (
@@ -115,6 +124,7 @@ export function SettingsDialog() {
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
                       "relative flex h-[32px] items-center gap-2.5 rounded-[8px] px-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
+                      "max-sm:shrink-0",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"
@@ -142,7 +152,9 @@ export function SettingsDialog() {
                       strokeWidth={1.75}
                       className="relative z-10 size-icon"
                     />
-                    <span className="relative z-10 min-w-0 truncate">{tab.label}</span>
+                    <span className="relative z-10 min-w-0 truncate">
+                      {tab.label}
+                    </span>
                     {tab.badge ? (
                       <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                         {tab.badge}
@@ -154,7 +166,7 @@ export function SettingsDialog() {
             </nav>
           </aside>
 
-          <main className="relative flex min-w-0 flex-1 flex-col">
+          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             <button
               type="button"
               onClick={closeDialog}
@@ -163,7 +175,7 @@ export function SettingsDialog() {
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]">
               {renderTab(activeTab)}
             </div>
           </main>

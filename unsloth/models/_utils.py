@@ -234,6 +234,7 @@ def apply_unsloth_gradient_checkpointing(
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
+_FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -243,8 +244,35 @@ def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
 
 
+def _config_prefers_flex_attention(config):
+    return any(
+        _config_get(attention_config, "model_type", "").lower()
+        in _FLEX_PREFERRED_MODELS
+        for attention_config in _iter_attention_configs(config)
+    )
+
+
 def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
+
+
+def _supports_flex_attention(model_class, config, model_type):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return False
+    if not getattr(model_class, "_supports_flex_attn", False):
+        return False
+    if _is_flex_excluded(model_type):
+        return False
+    for attention_config in _iter_attention_configs(config):
+        attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
+        if attention_dropout != 0:
+            return False
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+
+        return is_torch_flex_attn_available()
+    except Exception:
+        return False
 
 
 def _config_items(config):
@@ -465,8 +493,23 @@ def resolve_attention_implementation(
     if model_class is None:
         attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
     else:
+        supports_flex_attention = _supports_flex_attention(
+            model_class, config, model_type
+        )
+        prefers_flex_attention = _config_prefers_flex_attention(config)
         if _is_eager_only(model_type):
             attn_impl = _set_attn_impl(config, "eager")
+        elif prefers_flex_attention and supports_flex_attention:
+            attn_impl = _set_attn_impl(config, "flex_attention")
+        elif (
+            not prefers_flex_attention
+            and not flash_attention_disabled
+            and HAS_FLASH_ATTENTION
+            and supports_flash_attention
+        ):
+            attn_impl = _set_attn_impl(config, "flash_attention_2")
+        elif supports_flex_attention:
+            attn_impl = _set_attn_impl(config, "flex_attention")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -476,32 +519,10 @@ def resolve_attention_implementation(
                 ),
                 disable_reason = disable_reason,
             )
-        elif HAS_FLASH_ATTENTION and supports_flash_attention:
-            attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
         else:
-            attn_impl = "eager"
-            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0":
-                try:
-                    from transformers.utils.import_utils import (
-                        is_torch_flex_attn_available,
-                    )
-
-                    if (
-                        is_torch_flex_attn_available()
-                        and getattr(model_class, "_supports_flex_attn", False)
-                        and not _is_flex_excluded(model_type)
-                    ):
-                        attention_dropout = (
-                            _config_get(config, "attention_dropout", 0) or 0
-                        )
-                        if attention_dropout == 0:
-                            attn_impl = _set_attn_impl(config, "flex_attention")
-                except Exception:
-                    pass
-            if attn_impl == "eager":
-                attn_impl = _set_attn_impl(config, "eager")
+            attn_impl = _set_attn_impl(config, "eager")
 
     if requested_attn_implementation is None:
         final_attn_impl = attn_impl
