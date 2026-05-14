@@ -142,18 +142,10 @@ if not _has_real_accelerator():
 
 
 # ---------------------------------------------------------------------------
-# Apply unsloth-local upstream-drift fixes that need to run before pytest
-# collects tests that import the affected third-party module directly.
-#
-# Specifically: ``from peft.utils import transformers_weight_conversion``
-# blows up on (peft 0.19.x + transformers 4.x) because peft unconditionally
-# imports two transformers-v5 submodules at module top. The production
-# import path applies the stub-injection workaround via
-# ``unsloth/_gpu_init.py``, but the GPU-free test harness above
-# deliberately avoids triggering the full ``unsloth`` package init (which
-# pulls in the CUDA / torch device chain). Load just the standalone
-# import-fixes module by file path so drift detectors that probe peft
-# see the same patched state a real unsloth install would.
+# Apply the peft + transformers-4.x stub-injection fix before pytest collects
+# tests that import peft.utils.transformers_weight_conversion. Production runs
+# this via unsloth/_gpu_init.py, but the GPU-free harness above skips full
+# package init, so we load just the standalone import-fixes module by path.
 # ---------------------------------------------------------------------------
 
 
@@ -178,11 +170,9 @@ def _apply_unsloth_peft_import_fix_for_tests() -> None:
     if mod_name in sys.modules:
         mod = sys.modules[mod_name]
     else:
-        # Submodule import requires SOME parent ``unsloth`` entry in
-        # sys.modules. Reuse one if a sibling conftest step already
-        # installed it (and don't pop in that case); otherwise install a
-        # bare skeleton and pop on the way out so subsequent
-        # ``import unsloth`` calls hit the real package init.
+        # Submodule import needs SOME parent ``unsloth`` entry; reuse or
+        # install a bare skeleton and pop on exit so later ``import unsloth``
+        # calls hit the real package init.
         if "unsloth" not in sys.modules:
             pkg = types.ModuleType("unsloth")
             pkg.__path__ = list(pkg_spec.submodule_search_locations)
@@ -217,16 +207,11 @@ def _apply_unsloth_peft_import_fix_for_tests() -> None:
     try:
         fix()
     except Exception:
-        # Individual fix is internally guarded; if the entry point itself
-        # blows up, don't take pytest collection down.
+        # Individual fix is internally guarded; don't take pytest down.
         pass
     finally:
-        # Drop our scratch skeleton so subsequent ``import unsloth``
-        # calls hit the real package init rather than our empty
-        # placeholder. The import-fixes module itself stays in
-        # sys.modules under ``unsloth.import_fixes`` -- python's import
-        # machinery is happy to find a submodule without an active
-        # parent entry.
+        # Drop scratch skeleton; import_fixes itself stays cached as
+        # ``unsloth.import_fixes`` without an active parent.
         if _installed_skeleton:
             sys.modules.pop("unsloth", None)
 

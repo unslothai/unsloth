@@ -4,8 +4,8 @@
 # Three end-to-end smoke jobs that boot a freshly-installed Studio and
 # exercise the surfaces real users hit through the OpenAI / Anthropic
 # SDKs and curl. Each job picks the smallest model that exercises the
-# behaviour under test, primes HF_HOME via actions/cache, and shares
-# the install.sh --local --no-torch bootstrap.
+# behaviour under test, primes a model cache via actions/cache, and
+# shares the install.sh --local --no-torch bootstrap.
 #
 #   1. OpenAI, Anthropic API tests
 #        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
@@ -40,7 +40,7 @@ on:
       - '.github/workflows/studio-mac-inference-smoke.yml'
   push:
     branches: [main, pip]
-  # Manual trigger for pre-warming HF_HOME caches on main, or re-running
+  # Manual trigger for pre-warming model caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:
 
@@ -100,8 +100,10 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER=1 \
             hf download "$GGUF_REPO" "$GGUF_FILE"
 
+      # Save partial caches on cancel/timeout -- hf download resumes by
+      # content hash. `outcome != skipped` keeps cache-hit a no-op.
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        if: always() && steps.prime-hf.outcome != 'skipped' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
@@ -350,8 +352,9 @@ jobs:
           HF_HUB_ENABLE_HF_TRANSFER=1 \
             hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache
 
+      # Save partial caches on cancel; next run resumes via content hash.
       - name: Save GGUF model file
-        if: always() && steps.download-gguf.outcome == 'success'
+        if: always() && steps.download-gguf.outcome != 'skipped' && hashFiles('gguf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache
@@ -681,7 +684,6 @@ jobs:
       GGUF_FILE: gemma-4-E2B-it-UD-Q4_K_XL.gguf
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18899'
-      HF_HOME: ${{ github.workspace }}/hf-cache
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -698,42 +700,47 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Restore HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
-        id: cache-hf
+      # Cache flat .gguf + mmproj (Job 2's pattern). HF_HOME inflates
+      # ~3.6x via xet/blobs/snapshots, which made macOS saves never land.
+      # mmproj is auto-detected as a sibling via detect_mmproj_file
+      # (studio/backend/utils/models/model_config.py).
+      - name: Restore GGUF + mmproj files
+        id: cache-gguf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
-          path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v1
 
-      - name: Prime HF_HOME with the GGUF + mmproj
-        id: prime-hf
-        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+      - name: Download GGUF + mmproj if cache miss
+        id: download-gguf
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         # Authenticated + parallel: shared macos-14 NAT egress stalls
         # multi-GB anonymous downloads.
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -m pip install --upgrade huggingface_hub hf_transfer
-          mkdir -p hf-cache
+          mkdir -p gguf-cache
           HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE" &
+            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache &
           MODEL_PID=$!
           HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$MMPROJ_FILE" &
+            hf download "$GGUF_REPO" "$MMPROJ_FILE" --local-dir gguf-cache &
           MMPROJ_PID=$!
           wait "$MODEL_PID"
           wait "$MMPROJ_PID"
           # Fail loud on a partial download instead of in the next step.
-          find hf-cache -name "$GGUF_FILE" -o -name "$MMPROJ_FILE" \
-            | xargs -I{} ls -lhL {}
+          ls -lh "gguf-cache/$GGUF_FILE" "gguf-cache/$MMPROJ_FILE"
 
-      - name: Save HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
-        if: always() && steps.prime-hf.outcome == 'success'
+      # Save partial caches on cancel. hashFiles guard avoids a hard
+      # save failure when the download step exits with no files.
+      - name: Save GGUF + mmproj files
+        if: always() && steps.download-gguf.outcome != 'skipped' && hashFiles('gguf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
-          path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v1
 
       - name: Install Studio (--local, --no-torch)
         env:
@@ -788,12 +795,17 @@ jobs:
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
           echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          # Load the GGUF (mmproj is auto-detected via the HF repo
-          # lookup, the cached file is pulled out of HF_HOME).
+          # Load via local file path; mmproj sibling auto-detected by
+          # detect_mmproj_file (model_config.py). gguf_variant omitted
+          # -- it routes through _find_local_gguf_by_variant which
+          # expects a directory, not a file path.
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}"
+          MMPROJ_PATH="$GITHUB_WORKSPACE/gguf-cache/${MMPROJ_FILE}"
+          ls -lh "$GGUF_PATH" "$MMPROJ_PATH"
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
             --max-time 900 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
             | jq '{status, display_name, is_vision}'
 
       - name: JSON schema decoding + image input
