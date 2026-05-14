@@ -1185,3 +1185,10 @@ ignore = [
 ]
 
 [tool.ruff.format]
+
+[tool.pytest.ini_options]
+# Narrow the default test discovery so `pytest` from the repo root
+# does NOT pick up the GPU-heavy tests under tests/python, tests/qlora,
+# etc. The CI security job runs `pytest tests/security` explicitly.
+testpaths = ["tests/security"]
+pythonpath = ["."]

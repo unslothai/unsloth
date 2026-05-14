@@ -10,6 +10,7 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 import ast
 import http.client
 import os
+import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -58,21 +59,37 @@ _MAX_OUTPUT_CHARS = 8000  # truncate long output
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
-        "sudo",
-        "su",
         "dd",
         "chmod",
         "chown",
         "mkfs",
-        "shutdown",
-        "reboot",
-        "passwd",
         "mount",
         "umount",
         "fdisk",
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
         "kill",
         "killall",
         "pkill",
+        "passwd",
+        "curl",
+        "wget",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "ssh",
+        "scp",
+        "sftp",
+        "rsync",
+        "eval",
+        "source",
     }
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -221,34 +238,66 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
 
 def _sandbox_preexec():
-    """Pre-exec hook: drop privilege escalation ability and set resource limits.
+    """Best-effort sandbox setup for sandboxed subprocesses.
 
-    On Linux, applies PR_SET_NO_NEW_PRIVS so sudo/su/pkexec fail at the
-    kernel level. On Linux and macOS, sets RLIMIT_FSIZE.
-    No-op on Windows (use creationflags instead).
-
-    Note: RLIMIT_NPROC is intentionally NOT set because Linux enforces it
-    per real UID, not per process tree, so it would starve the Studio
-    server and other sessions sharing the same user account.
-
-    All modules and handles are resolved at import time (module level) so
-    this function does not trigger Python imports in the forked child,
-    avoiding potential deadlocks in multi-threaded servers.
+    Modules are resolved at import time so the forked child runs no imports.
     """
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+    try:
+        os.umask(0o077)
+    except OSError:
+        pass
+
     if _libc is not None:
         try:
-            # PR_SET_NO_NEW_PRIVS = 38, arg2 = 1 (enable)
-            _libc.prctl(38, 1, 0, 0, 0)
+            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
         except (OSError, AttributeError):
-            pass  # Not available (container, old kernel, etc.)
+            pass
+
+        try:
+            _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
+        except (OSError, AttributeError):
+            pass
+
+        # CLONE_NEWNET intentionally not applied: where userns is enabled it
+        # blocks all egress, including allowlisted hosts. Network policy is
+        # enforced by the AST host check and the bash blocklist.
 
     if _resource is not None:
+        # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
         try:
-            # Limit file size to 100MB (prevents disk filling)
+            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+        except (ValueError, OSError, AttributeError):
+            pass
+        try:
             _resource.setrlimit(
                 _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
             )
         except (ValueError, OSError):
+            pass
+        try:
+            as_bytes = (
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8"))
+                * 1024
+                * 1024
+                * 1024
+            )
+            _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
+        except (ValueError, OSError, AttributeError):
+            pass
+        try:
+            cpu_s = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600"))
+            _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_s, cpu_s))
+        except (ValueError, OSError, AttributeError):
+            pass
+        try:
+            _resource.setrlimit(_resource.RLIMIT_NOFILE, (1024, 1024))
+        except (ValueError, OSError, AttributeError):
             pass
 
 
@@ -265,25 +314,36 @@ def _get_shell_cmd(command: str) -> list[str]:
 _workdirs: dict[str, str] = {}
 
 
+# Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
+_SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+
+
 def _get_workdir(session_id: str | None = None) -> str:
-    """Return (and lazily create) a persistent working directory for tool execution."""
+    """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or "_default"
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
         sandbox_root = os.path.join(home, "studio_sandbox")
-        if session_id:
-            # Sanitize: strip path separators and parent-dir references
-            safe_id = os.path.basename(session_id.replace("..", ""))
-            if not safe_id:
-                safe_id = "_invalid"
-            workdir = os.path.join(sandbox_root, safe_id)
-            # Verify resolved path stays under sandbox root
-            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root)):
+        if session_id and _SESSION_ID_RE.match(session_id):
+            workdir = os.path.join(sandbox_root, session_id)
+            if not os.path.realpath(workdir).startswith(
+                os.path.realpath(sandbox_root) + os.sep
+            ):
                 workdir = os.path.join(sandbox_root, "_invalid")
+        elif session_id:
+            workdir = os.path.join(sandbox_root, "_invalid")
         else:
             workdir = os.path.join(sandbox_root, "_default")
         os.makedirs(workdir, exist_ok = True)
+        try:
+            os.chmod(sandbox_root, 0o700)
+        except OSError:
+            pass
+        try:
+            os.chmod(workdir, 0o700)
+        except OSError:
+            pass
         _workdirs[key] = workdir
     return _workdirs[key]
 
@@ -932,7 +992,12 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(shell_node, ast.Constant)
                         and shell_node.value is False
                     )
-                    if shell_func in _STRING_SHELL_FUNCS or not shell_safe:
+                    # Dynamic shell-exec args (chr/format/concat bypasses).
+                    if (
+                        shell_func in _STRING_SHELL_FUNCS
+                        or shell_func in _SHELL_EXEC_FUNCS
+                        or not shell_safe
+                    ):
 
                         def _is_safe_literal(n):
                             if _extract_string_from_node(n) is not None:
@@ -1006,15 +1071,418 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
+    # Static host policy: block metadata hosts and any literal host outside
+    # the trusted allowlist; uploads blocked regardless of host. Dynamic hosts
+    # are caught by the bash blocklist instead.
+    network_calls: list[dict] = []
+    sensitive_file_reads: list[dict] = []
+    _NETWORK_FQ_PREFIXES = (
+        "socket.socket",
+        "socket.create_connection",
+        "socket.getaddrinfo",
+        "urllib.request.urlopen",
+        "urllib.request.urlretrieve",
+        "urllib3.",
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.delete",
+        "requests.patch",
+        "requests.head",
+        "requests.request",
+        "requests.Session",
+        "http.client.HTTPConnection",
+        "http.client.HTTPSConnection",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.request",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+    )
+    _UPLOAD_HTTP_METHODS = (
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.request",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.request",
+        "urllib.request.urlopen",
+        "urllib.request.Request",
+    )
+    _UPLOAD_HF_FQ = (
+        "huggingface_hub.upload_file",
+        "huggingface_hub.upload_folder",
+        "huggingface_hub.upload_large_folder",
+        "huggingface_hub.create_commit",
+    )
+    _UPLOAD_HF_METHODS = frozenset(
+        {
+            "upload_file",
+            "upload_folder",
+            "upload_large_folder",
+            "create_commit",
+        }
+    )
+    # Cloud-metadata / link-local hosts.
+    _METADATA_HOST_LITERALS = {
+        "169.254.169.254",
+        "fd00:ec2::254",
+        "metadata.google.internal",
+        "metadata",
+        "metadata.tencentyun.com",
+        "100.100.100.200",
+        "100.100.100.110",
+        "169.254.170.2",
+        "169.254.170.23",
+    }
+    _METADATA_HOST_PREFIXES = (
+        "169.254.",
+        "100.64.",
+    )
+    # Allowlist kept explicit so each entry is auditable.
+    _TRUSTED_PUBLIC_HOST_LITERALS = frozenset(
+        {
+            # search
+            "www.google.com",
+            "google.com",
+            "www.bing.com",
+            "bing.com",
+            "duckduckgo.com",
+            "html.duckduckgo.com",
+            # encyclopedic / reference
+            "wikipedia.org",
+            "www.wikipedia.org",
+            "wikimedia.org",
+            "www.wikimedia.org",
+            "wikidata.org",
+            "www.wikidata.org",
+            "commons.wikimedia.org",
+            "www.britannica.com",
+            "openlibrary.org",
+            "www.openstreetmap.org",
+            # ML / dev / data
+            "huggingface.co",
+            "hf.co",
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "gist.github.com",
+            "docs.github.com",
+            "pypi.org",
+            "files.pythonhosted.org",
+            "www.npmjs.com",
+            "registry.npmjs.org",
+            "crates.io",
+            "static.crates.io",
+            # docs
+            "docs.python.org",
+            "python.org",
+            "www.python.org",
+            "developer.mozilla.org",
+            "developer.apple.com",
+            "learn.microsoft.com",
+            "docs.docker.com",
+            "pytorch.org",
+            "docs.pytorch.org",
+            "tensorflow.org",
+            "www.tensorflow.org",
+            "numpy.org",
+            "pandas.pydata.org",
+            "scipy.org",
+            "scikit-learn.org",
+            "matplotlib.org",
+            "fastapi.tiangolo.com",
+            "starlette.io",
+            # academic
+            "arxiv.org",
+            "export.arxiv.org",
+            "scholar.google.com",
+            "openreview.net",
+            "semanticscholar.org",
+            "www.semanticscholar.org",
+            "biorxiv.org",
+            "www.biorxiv.org",
+            "medrxiv.org",
+            "www.medrxiv.org",
+            "pubmed.ncbi.nlm.nih.gov",
+            "www.ncbi.nlm.nih.gov",
+            # Q&A / community
+            "stackoverflow.com",
+            "stackexchange.com",
+            "askubuntu.com",
+            "superuser.com",
+            "serverfault.com",
+            # standards
+            "www.w3.org",
+            "tools.ietf.org",
+            "datatracker.ietf.org",
+            "www.rfc-editor.org",
+            # reputable news
+            "www.bbc.com",
+            "www.bbc.co.uk",
+            "www.reuters.com",
+            "apnews.com",
+            "www.nature.com",
+            "www.science.org",
+            # government / open data
+            "data.gov",
+            "catalog.data.gov",
+            "www.census.gov",
+            "www.nasa.gov",
+            "data.nasa.gov",
+            "www.cdc.gov",
+            "www.nih.gov",
+            "www.who.int",
+            # weather / time
+            "api.weather.gov",
+            "worldtimeapi.org",
+        }
+    )
+    _TRUSTED_PUBLIC_HOST_SUFFIXES = (
+        ".wikipedia.org",
+        ".wikimedia.org",
+        ".wiktionary.org",
+        ".wikibooks.org",
+        ".wikiquote.org",
+        ".wikisource.org",
+        ".wikiversity.org",
+        ".wikivoyage.org",
+        ".stackexchange.com",
+        ".hf.co",
+        ".huggingface.co",
+        ".githubusercontent.com",
+        ".github.io",
+        ".arxiv.org",
+        ".readthedocs.io",
+        ".readthedocs.org",
+    )
+    _SENSITIVE_FILE_PREFIXES = (
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/etc/ssh/",
+    )
+    _SENSITIVE_FILE_RE = re.compile(
+        r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$"
+    )
+
+    def _normalize_host(host: str) -> str:
+        if not host:
+            return ""
+        h = host.strip().lower().rstrip(".")
+        if "@" in h:
+            h = h.split("@", 1)[1]
+        if h.startswith("[") and "]" in h:
+            h = h[1 : h.index("]")]
+        elif h.count(":") == 1:
+            h = h.split(":", 1)[0]
+        return h
+
+    def _is_metadata_host(host: str) -> bool:
+        h = _normalize_host(host)
+        if not h:
+            return False
+        if h in _METADATA_HOST_LITERALS:
+            return True
+        if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
+            return True
+        return False
+
+    def _is_trusted_host(host: str) -> bool:
+        h = _normalize_host(host)
+        if not h:
+            return False
+        if h in _TRUSTED_PUBLIC_HOST_LITERALS:
+            return True
+        return any(h.endswith(s) for s in _TRUSTED_PUBLIC_HOST_SUFFIXES)
+
+    def _call_is_upload_shape(node: ast.Call, fq: str) -> bool:
+        """True for statically obvious upload shapes (files=, data=open(), bytes literal)."""
+        if fq in _UPLOAD_HF_FQ:
+            return True
+        if fq not in _UPLOAD_HTTP_METHODS:
+            return False
+        for kw in node.keywords or []:
+            if kw.arg == "files":
+                return True
+            if kw.arg == "data":
+                v = kw.value
+                if (
+                    isinstance(v, ast.Call)
+                    and isinstance(v.func, ast.Name)
+                    and v.func.id == "open"
+                ):
+                    return True
+                if isinstance(v, ast.Constant) and isinstance(
+                    v.value, (bytes, bytearray)
+                ):
+                    return True
+        return False
+
+    def _method_call_is_hf_upload(node: ast.Call) -> bool:
+        """True for HfApi upload method names on any receiver."""
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in _UPLOAD_HF_METHODS
+        )
+
+    class NetworkAndIoVisitor(ast.NodeVisitor):
+        def visit_Call(self, node):
+            parts: list[str] = []
+            cur = node.func
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.insert(0, cur.id)
+            fq = ".".join(parts) if parts else ""
+
+            if _method_call_is_hf_upload(node):
+                network_calls.append(
+                    {
+                        "type": "upload_blocked",
+                        "line": getattr(node, "lineno", -1),
+                        "description": ("Blocked: file upload disallowed in sandbox"),
+                    }
+                )
+
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
+                a0 = node.args[0]
+                host_lit = None
+                if isinstance(a0, ast.Tuple) and a0.elts:
+                    e0 = a0.elts[0]
+                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
+                        host_lit = e0.value
+                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    host_lit = a0.value
+                if host_lit:
+                    if _is_metadata_host(host_lit):
+                        network_calls.append(
+                            {
+                                "type": "metadata_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": "Blocked: cloud-metadata host",
+                            }
+                        )
+                    elif not _is_trusted_host(host_lit):
+                        network_calls.append(
+                            {
+                                "type": "untrusted_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    "Blocked: host not in sandbox allowlist; "
+                                    "use an allowed informational source"
+                                ),
+                            }
+                        )
+
+            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+                # 1) Upload-shape check (host-independent).
+                if _call_is_upload_shape(node, fq):
+                    network_calls.append(
+                        {
+                            "type": "upload_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: file upload disallowed in sandbox"
+                            ),
+                        }
+                    )
+
+                # 2) Extract literal host (URL string or (host, port) tuple).
+                host_arg = None
+                url_arg = None
+                if node.args:
+                    a0 = node.args[0]
+                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        url_arg = a0.value
+                    elif isinstance(a0, ast.Tuple) and a0.elts:
+                        e0 = a0.elts[0]
+                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
+                            host_arg = e0.value
+                if url_arg and host_arg is None:
+                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
+                    if m:
+                        host_arg = m.group(1)
+
+                if host_arg:
+                    if _is_metadata_host(host_arg):
+                        network_calls.append(
+                            {
+                                "type": "metadata_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": "Blocked: cloud-metadata host",
+                            }
+                        )
+                    elif not _is_trusted_host(host_arg):
+                        network_calls.append(
+                            {
+                                "type": "untrusted_host_blocked",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    "Blocked: host not in sandbox allowlist; "
+                                    "use an allowed informational source"
+                                ),
+                            }
+                        )
+
+            is_open_call = (
+                (isinstance(node.func, ast.Name) and node.func.id == "open")
+                or fq in ("io.open", "pathlib.Path.open")
+                or fq.endswith(".open")
+            )
+            if is_open_call and node.args:
+                a0 = node.args[0]
+                path_lit = None
+                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                    path_lit = a0.value
+                if path_lit:
+                    flagged = False
+                    if any(path_lit.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
+                        flagged = True
+                    elif _SENSITIVE_FILE_RE.match(path_lit):
+                        flagged = True
+                    if flagged:
+                        sensitive_file_reads.append(
+                            {
+                                "type": "sensitive_file_read",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    f"open({path_lit!r}) targets a host identity / "
+                                    "credential file; sandboxed code may not read it"
+                                ),
+                            }
+                        )
+            self.generic_visit(node)
+
+    NetworkAndIoVisitor().visit(tree)
+
     is_safe = (
         len(signal_tampering) == 0
         and len(exception_catching) == 0
         and len(shell_escapes) == 0
+        and len(network_calls) == 0
+        and len(sensitive_file_reads) == 0
     )
     return is_safe, {
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "network_calls": network_calls,
+        "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
 
@@ -1041,7 +1509,21 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        all_reasons = [r for r in reasons + shell_reasons + exception_reasons if r]
+        network_reasons = [
+            item.get("description", "") for item in info.get("network_calls", [])
+        ]
+        file_reasons = [
+            item.get("description", "") for item in info.get("sensitive_file_reads", [])
+        ]
+        all_reasons = [
+            r
+            for r in reasons
+            + shell_reasons
+            + exception_reasons
+            + network_reasons
+            + file_reasons
+            if r
+        ]
         if all_reasons:
             return (
                 f"Error: unsafe code detected ({'; '.join(all_reasons)}). "
@@ -1051,11 +1533,31 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _kill_process_tree(proc) -> None:
+    """SIGKILL the setsid process group; fall back to single-pid kill."""
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):
     """Daemon thread that kills a process when cancel_event is set."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
-            proc.kill()
+            _kill_process_tree(proc)
             return
         cancel_event.wait(poll_interval) if cancel_event else None
 
@@ -1126,8 +1628,11 @@ def _python_exec(
         try:
             output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            _kill_process_tree(proc)
+            try:
+                proc.communicate(timeout = 5)
+            except subprocess.TimeoutExpired:
+                pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
@@ -1211,8 +1716,11 @@ def _bash_exec(
         try:
             output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            _kill_process_tree(proc)
+            try:
+                proc.communicate(timeout = 5)
+            except subprocess.TimeoutExpired:
+                pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():

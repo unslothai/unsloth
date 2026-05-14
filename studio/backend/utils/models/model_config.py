@@ -1696,20 +1696,21 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
                         )
                         return base_model
 
-        training_args_path = checkpoint_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        "Detected base model from training_args.bin: %s", base_model
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; re-enable via safe_globals or weights_only=False once threat model allows.
+        # training_args_path = checkpoint_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 "Detected base model from training_args.bin: %s", base_model
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         dir_name = checkpoint_path_obj.name
         if dir_name.startswith("unsloth_"):
@@ -1757,20 +1758,21 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
-        training_args_path = lora_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        f"Detected base model from training_args.bin: {base_model}"
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; also an RCE sink for third-party LoRAs via this route, re-enable behind a trust check if needed.
+        # training_args_path = lora_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 f"Detected base model from training_args.bin: {base_model}"
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         # Last resort: parse from directory name
         # Format: unsloth_Meta-Llama-3.1-8B-Instruct-bnb-4bit_timestamp

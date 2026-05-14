@@ -3,6 +3,7 @@
 
 import {
   type DeletedModelRef,
+  type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
@@ -40,6 +41,16 @@ import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
+import {
+  buildExternalModelId,
+  isExternalModelId,
+  parseExternalModelId,
+} from "./external-providers";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  getProviderCapabilities,
+} from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
   clearTrainingCompareHandoff,
@@ -54,6 +65,7 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 
@@ -536,6 +548,7 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
 
   useEffect(() => {
     const threadId = search.thread;
@@ -596,7 +609,9 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
-  const pendingNativeModelIntent = useNativeIntentStore((state) => state.pendingModelIntent);
+  const pendingNativeModelIntent = useNativeIntentStore(
+    (state) => state.pendingModelIntent,
+  );
   const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
@@ -605,9 +620,85 @@ export function ChatPage(): ReactElement {
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  const isExternalModel = useMemo(
+    () => isExternalModelId(inferenceParams.checkpoint),
+    [inferenceParams.checkpoint],
+  );
+  const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
+  const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
+  const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const activeExternalProviderType = useMemo(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return null;
+    const provider = externalProviders.find(
+      (p) => p.id === selection.providerId,
+    );
+    return provider?.providerType ?? null;
+  }, [externalProviders, inferenceParams.checkpoint]);
+  const activeProviderCapabilities = useMemo(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return null;
+    const provider = externalProviders.find(
+      (p) => p.id === selection.providerId,
+    );
+    const baseCapabilities = getProviderCapabilities(provider?.providerType);
+    if (!baseCapabilities) return baseCapabilities;
+    const anthropicThinkingEnabled =
+      provider?.providerType === "anthropic" &&
+      reasoningStyle === "reasoning_effort" &&
+      (supportsReasoningOff ? reasoningEnabled : true) &&
+      reasoningEffort !== "none";
+    if (!anthropicThinkingEnabled) return baseCapabilities;
+    return {
+      ...baseCapabilities,
+      temperature: false,
+      topK: false,
+    };
+  }, [
+    externalProviders,
+    inferenceParams.checkpoint,
+    reasoningEnabled,
+    reasoningStyle,
+    reasoningEffort,
+    supportsReasoningOff,
+  ]);
+  useEffect(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const provider = externalProviders.find((p) => p.id === selection.providerId);
+    const reasoningCaps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+    );
+    const state = useChatRuntimeStore.getState();
+    const preferredEffort = state.reasoningEffort;
+    const effortLevels = reasoningCaps.reasoningEffortLevels;
+    const clampedEffort = clampReasoningEffortToLevels(
+      preferredEffort,
+      effortLevels,
+    );
+    const nextReasoningEffort = reasoningCaps.supportsReasoning
+      ? clampedEffort
+      : state.reasoningEffort;
+    useChatRuntimeStore.setState({
+      supportsReasoning: reasoningCaps.supportsReasoning,
+      reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+      reasoningStyle: reasoningCaps.reasoningStyle,
+      supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+      reasoningEffortLevels: effortLevels,
+      reasoningEffort: nextReasoningEffort,
+      reasoningEnabled: reasoningCaps.supportsReasoning
+        ? reasoningCaps.supportsReasoningOff
+          ? state.reasoningEnabled
+          : true
+        : state.reasoningEnabled,
+      supportsPreserveThinking: false,
+    });
+  }, [externalProviders, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint);
-  }, [inferenceParams.checkpoint]);
+    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
+  }, [inferenceParams.checkpoint, isExternalModel]);
 
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
@@ -632,7 +723,8 @@ export function ChatPage(): ReactElement {
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
-      const label = intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
+      const label =
+        intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
       await selectModel({
         id: label,
         nativePathToken: intent.path.token,
@@ -687,6 +779,7 @@ export function ChatPage(): ReactElement {
     (
       value: string,
       meta?: {
+        source?: string;
         isLora: boolean;
         ggufVariant?: string;
         isDownloaded?: boolean;
@@ -702,6 +795,58 @@ export function ChatPage(): ReactElement {
           (meta?.ggufVariant ?? null) === (currentVariant ?? null))
       )
         return;
+      if (meta?.source === "external" || isExternalModelId(value)) {
+        const selectedExternal = parseExternalModelId(value);
+        const selectedProvider = selectedExternal
+          ? externalProviders.find((p) => p.id === selectedExternal.providerId)
+          : null;
+        const reasoningCaps = getExternalReasoningCapabilities(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
+        const preferredEffort = store.reasoningEffort;
+        const effortLevels = reasoningCaps.reasoningEffortLevels;
+        const clampedEffort = clampReasoningEffortToLevels(
+          preferredEffort,
+          effortLevels,
+        );
+        const nextReasoningEffort = reasoningCaps.supportsReasoning
+          ? clampedEffort
+          : store.reasoningEffort;
+        // Clear any cached router-picked openrouter/free model unless the
+        // user is staying on openrouter/free — otherwise the chip would
+        // keep showing a stale ":<chosen>" suffix from a previous model.
+        const stillOnOpenRouterFree =
+          selectedProvider?.providerType === "openrouter" &&
+          selectedExternal?.modelId === "openrouter/free";
+        setInferenceParams({
+          ...store.params,
+          checkpoint: value,
+        });
+        useChatRuntimeStore.setState({
+          activeGgufVariant: null,
+          ggufContextLength: null,
+          ggufMaxContextLength: null,
+          ggufNativeContextLength: null,
+          activeNativePathToken: null,
+          supportsReasoning: reasoningCaps.supportsReasoning,
+          reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+          reasoningStyle: reasoningCaps.reasoningStyle,
+          supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+          reasoningEffortLevels: effortLevels,
+          reasoningEffort: nextReasoningEffort,
+          reasoningEnabled: reasoningCaps.supportsReasoning
+            ? reasoningCaps.supportsReasoningOff
+              ? store.reasoningEnabled
+              : true
+            : store.reasoningEnabled,
+          supportsPreserveThinking: false,
+          ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
+        });
+        return;
+      }
+      // Local model picked → drop any cached openrouter/free chosen model.
+      useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -738,7 +883,14 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [activeThreadId, modelsFromStore, selectModel, view],
+    [
+      activeThreadId,
+      externalProviders,
+      modelsFromStore,
+      selectModel,
+      setInferenceParams,
+      view,
+    ],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
@@ -813,6 +965,47 @@ export function ChatPage(): ReactElement {
       })),
     [modelsFromStore],
   );
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      externalProviders.flatMap((provider) =>
+        provider.models.map((model) => {
+          // For OpenRouter's free router we know which underlying free
+          // model the gateway actually picked once a stream completes
+          // (chat-adapter latches `chunk.model` into the runtime store).
+          // Render the chip as `openrouter:<short-chosen>` — drop the
+          // redundant `/free` from the router id and the org prefix
+          // from the chosen id (e.g.
+          //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
+          //     -> openrouter:ring-2.6-1t-20260508:free
+          // ). The `:free` suffix on the chosen id already conveys
+          // 'free model', so the leading `/free` is noise.
+          let displayName = model;
+          if (
+            provider.providerType === "openrouter" &&
+            model === "openrouter/free" &&
+            lastOpenRouterChosenModel
+          ) {
+            const lastSlash = lastOpenRouterChosenModel.lastIndexOf("/");
+            const shortChosen =
+              lastSlash >= 0
+                ? lastOpenRouterChosenModel.slice(lastSlash + 1)
+                : lastOpenRouterChosenModel;
+            displayName = `openrouter:${shortChosen}`;
+          }
+          return {
+            id: buildExternalModelId(provider.id, model),
+            name: displayName,
+            providerId: provider.id,
+            providerName: provider.name,
+            providerType: provider.providerType,
+          };
+        }),
+      ),
+    [externalProviders, lastOpenRouterChosenModel],
+  );
 
   const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
 
@@ -847,20 +1040,24 @@ export function ChatPage(): ReactElement {
       .catch(() => {});
   }, [navigate]);
 
-  const refreshModelLists = useCallback((deletedModel?: DeletedModelRef) => {
-    const { checkpoint } = useChatRuntimeStore.getState().params;
-    const activeGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
-    if (
-      modelMatchesDeleted(
-        { id: checkpoint, ggufVariant: activeGgufVariant },
-        deletedModel,
-      )
-    ) {
-      useChatRuntimeStore.getState().clearCheckpoint();
-    }
-    void refresh();
-    refreshLocalModels();
-  }, [refresh, refreshLocalModels]);
+  const refreshModelLists = useCallback(
+    (deletedModel?: DeletedModelRef) => {
+      const { checkpoint } = useChatRuntimeStore.getState().params;
+      const activeGgufVariant =
+        useChatRuntimeStore.getState().activeGgufVariant;
+      if (
+        modelMatchesDeleted(
+          { id: checkpoint, ggufVariant: activeGgufVariant },
+          deletedModel,
+        )
+      ) {
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
+      void refresh();
+      refreshLocalModels();
+    },
+    [refresh, refreshLocalModels],
+  );
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({
@@ -1001,6 +1198,7 @@ export function ChatPage(): ReactElement {
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
+                externalModels={externalModels}
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
@@ -1014,6 +1212,7 @@ export function ChatPage(): ReactElement {
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
+                showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
@@ -1120,6 +1319,9 @@ export function ChatPage(): ReactElement {
         onOpenChange={setSettingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
+        isExternalModel={isExternalModel}
+        providerCapabilities={activeProviderCapabilities}
+        externalProviderType={activeExternalProviderType}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();
           if (state.params.checkpoint) {

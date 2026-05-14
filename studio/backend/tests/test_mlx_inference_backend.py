@@ -56,11 +56,14 @@ def _install_fake_fast_mlx(monkeypatch, calls):
             return _DummyModel(), _DummyTokenizer()
 
     unsloth_zoo_pkg = types.ModuleType("unsloth_zoo")
-    mlx_loader = types.ModuleType("unsloth_zoo.mlx_loader")
+    mlx_pkg = types.ModuleType("unsloth_zoo.mlx")
+    mlx_loader = types.ModuleType("unsloth_zoo.mlx.loader")
     mlx_loader.FastMLXModel = _FastMLXModel
-    unsloth_zoo_pkg.mlx_loader = mlx_loader
+    unsloth_zoo_pkg.mlx = mlx_pkg
+    mlx_pkg.loader = mlx_loader
     monkeypatch.setitem(sys.modules, "unsloth_zoo", unsloth_zoo_pkg)
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx_loader", mlx_loader)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", mlx_pkg)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", mlx_loader)
 
 
 def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):

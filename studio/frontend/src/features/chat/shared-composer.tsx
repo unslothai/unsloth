@@ -18,7 +18,13 @@ import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { loadModel, validateModel } from "./api/chat-api";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { parseExternalModelId } from "./external-providers";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  type ReasoningEffort,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
+import { getExternalReasoningCapabilities } from "./provider-capabilities";
 import {
   type CompositionEvent,
   type KeyboardEvent,
@@ -64,6 +70,33 @@ function fileToBase64DataURL(file: File): Promise<string> {
     reader.onerror = () => reject(new Error("Failed to read image file"));
     reader.readAsDataURL(file);
   });
+}
+
+function formatReasoningEffortLabel(level: ReasoningEffort, modelId?: string): string {
+  if (level === "max") return "Max";
+  if (level === "xhigh") {
+    const normalized = modelId?.trim().toLowerCase() ?? "";
+    if (
+      normalized.startsWith("claude-opus-4-6") ||
+      normalized.startsWith("claude-sonnet-4-6")
+    ) {
+      return "Max";
+    }
+    return "Extra High";
+  }
+  return level.charAt(0).toUpperCase() + level.slice(1);
+}
+
+function formatReasoningDisabledLabel(
+  supportsReasoningOff: boolean,
+  isExternalOpenAIReasoning: boolean,
+  modelId?: string,
+): string {
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  // Magistral keeps the "none" wire value, but UX should present this floor
+  // as "Medium" rather than a disabled state label.
+  if (normalized.includes("magistral-medium-latest")) return "Medium";
+  return supportsReasoningOff && isExternalOpenAIReasoning ? "None" : "Off";
 }
 
 function useDictation(
@@ -253,6 +286,8 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -262,6 +297,8 @@ export function SharedComposer({
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
   const supportsPreserveThinking = useChatRuntimeStore((s) => s.supportsPreserveThinking);
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
@@ -271,7 +308,49 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const reasoningDisabled = !modelLoaded || !supportsReasoning;
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const effectiveExternalModelId =
+    selectedExternalProvider?.providerType === "openrouter" &&
+    externalSelection?.modelId === "openrouter/free" &&
+    lastOpenRouterChosenModel
+      ? lastOpenRouterChosenModel
+      : externalSelection?.modelId;
+  const externalReasoningCaps =
+    externalSelection != null
+      ? getExternalReasoningCapabilities(
+          selectedExternalProvider?.providerType,
+          effectiveExternalModelId,
+        )
+      : null;
+  const isExternalOpenAIReasoning =
+    externalReasoningCaps?.supportsReasoning === true &&
+    externalReasoningCaps.reasoningStyle === "reasoning_effort";
+  const effectiveReasoningStyle =
+    externalReasoningCaps?.reasoningStyle ?? reasoningStyle;
+  const effectiveReasoningAlwaysOn =
+    externalReasoningCaps?.reasoningAlwaysOn ?? reasoningAlwaysOn;
+  const effectiveSupportsReasoningOff =
+    externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
+  const effectiveReasoningEffortLevels =
+    externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
+  const effectiveSupportsReasoning =
+    externalReasoningCaps?.supportsReasoning ?? supportsReasoning;
+  const reasoningLockedOn =
+    effectiveSupportsReasoning &&
+    (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  const effectiveReasoningVisualEnabled =
+    effectiveReasoningEnabled && reasoningEffort !== "none";
+  const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
+  const showReasoningControl =
+    effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
   const toolsDisabled = !modelLoaded || !supportsTools;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
@@ -625,7 +704,8 @@ export function SharedComposer({
               </TooltipIconButton>
             </>
           )}
-          {reasoningStyle === "reasoning_effort" ? (
+          {showReasoningControl ? (
+            effectiveReasoningStyle === "reasoning_effort" ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <button
@@ -635,26 +715,61 @@ export function SharedComposer({
                     "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
                     reasoningDisabled
                       ? "cursor-not-allowed opacity-40"
-                      : "bg-primary/10 text-primary hover:bg-primary/20",
+                      : effectiveReasoningVisualEnabled
+                        ? "bg-primary/10 text-primary hover:bg-primary/20"
+                        : "text-muted-foreground hover:bg-muted-foreground/15",
                   )}
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
-                  <LightbulbIcon className="size-3.5" />
+                  {effectiveReasoningVisualEnabled ? (
+                    <LightbulbIcon className="size-3.5" />
+                  ) : (
+                    <LightbulbOffIcon className="size-3.5" />
+                  )}
                   <span>
                     Think:{" "}
-                    {reasoningEffort.charAt(0).toUpperCase() +
-                      reasoningEffort.slice(1)}
+                    {effectiveReasoningVisualEnabled
+                      ? formatReasoningEffortLabel(
+                          reasoningEffort,
+                          externalSelection?.modelId,
+                        )
+                      : formatReasoningDisabledLabel(
+                          effectiveSupportsReasoningOff,
+                          isExternalOpenAIReasoning,
+                          checkpoint,
+                        )}
                   </span>
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {(["low", "medium", "high"] as const).map((level) => (
+                {effectiveSupportsReasoningOff && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setReasoningEnabled(false);
+                      applyQwenThinkingParams(false);
+                    }}
+                  >
+                    {formatReasoningDisabledLabel(
+                      effectiveSupportsReasoningOff,
+                      isExternalOpenAIReasoning,
+                      checkpoint,
+                    )}
+                    {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
+                  </DropdownMenuItem>
+                )}
+                {effectiveReasoningEffortLevels
+                  .filter((level) => level !== "none")
+                  .map((level) => (
                   <DropdownMenuItem
                     key={level}
-                    onSelect={() => setReasoningEffort(level)}
+                    onSelect={() => {
+                      setReasoningEffort(level);
+                      setReasoningEnabled(true);
+                      applyQwenThinkingParams(true);
+                    }}
                   >
-                    {level.charAt(0).toUpperCase() + level.slice(1)}
-                    {reasoningEffort === level ? " \u2713" : ""}
+                    {formatReasoningEffortLabel(level, externalSelection?.modelId)}
+                    {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -662,31 +777,47 @@ export function SharedComposer({
           ) : (
             <button
               type="button"
-              disabled={reasoningDisabled}
+              disabled={reasoningDisabled || reasoningLockedOn}
+              aria-disabled={reasoningDisabled || reasoningLockedOn}
+              title={
+                reasoningLockedOn
+                  ? "This model requires reasoning to stay on."
+                  : undefined
+              }
               onClick={() => {
-                if (reasoningAlwaysOn) return;
+                if (reasoningLockedOn) return;
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
                 applyQwenThinkingParams(next);
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                reasoningDisabled
-                  ? "cursor-not-allowed opacity-40"
-                  : (reasoningEnabled || reasoningAlwaysOn)
-                    ? "bg-primary/10 text-primary hover:bg-primary/20"
-                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+                reasoningLockedOn
+                  ? "cursor-not-allowed bg-primary/10 text-primary"
+                  : reasoningDisabled
+                    ? "cursor-not-allowed opacity-40"
+                    : effectiveReasoningEnabled
+                      ? "bg-primary/10 text-primary hover:bg-primary/20"
+                      : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
-              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+              aria-label={
+                reasoningLockedOn
+                  ? "Thinking is required for this model"
+                  : effectiveReasoningEnabled
+                    ? "Disable thinking"
+                    : "Enable thinking"
+              }
             >
-              {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
+              {reasoningLockedOn ||
+              (effectiveReasoningEnabled && !reasoningDisabled) ? (
                 <LightbulbIcon className="size-3.5" />
               ) : (
                 <LightbulbOffIcon className="size-3.5" />
               )}
               <span>Think</span>
             </button>
-          )}
+            )
+          ) : null}
           {supportsPreserveThinking && (
             <button
               type="button"
