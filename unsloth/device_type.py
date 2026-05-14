@@ -20,21 +20,40 @@ __all__ = [
     "DEVICE_COUNT",
     "ALLOW_PREQUANTIZED_MODELS",
     "ALLOW_BITSANDBYTES",
+    "is_mlx_available",
 ]
 
-import torch
 import functools
 import inspect
+import os
 from unsloth_zoo.utils import Version
+
+
+def is_mlx_available():
+    try:
+        from unsloth_zoo.mlx import is_mlx_available as _is_mlx_available
+    except ImportError:
+        return False
+    return _is_mlx_available()
+
+
+_IS_MLX = is_mlx_available()
+
+if not _IS_MLX:
+    import torch
 
 
 @functools.cache
 def is_hip():
+    if _IS_MLX:
+        return False
     return bool(getattr(getattr(torch, "version", None), "hip", None))
 
 
 @functools.cache
 def get_device_type():
+    if _IS_MLX:
+        return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"
@@ -64,6 +83,8 @@ DEVICE_TYPE: str = get_device_type()
 DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
+elif DEVICE_TYPE_TORCH == "mlx":
+    DEVICE_TYPE_TORCH = "mps"
 
 
 @functools.cache

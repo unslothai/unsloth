@@ -437,6 +437,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         inference_router = APIRouter(),
         inference_studio_router = APIRouter(),
         models_router = APIRouter(),
+        providers_router = APIRouter(),
         training_history_router = APIRouter(),
         training_router = APIRouter(),
     )

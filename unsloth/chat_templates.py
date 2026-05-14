@@ -30,11 +30,9 @@ __all__ = [
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
-from .save import patch_saving_functions
 import os
 import shutil
 from .tokenizer_utils import *
-from .models._utils import patch_tokenizer
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
 from unsloth_zoo.dataset_utils import (
@@ -1844,6 +1842,8 @@ def get_chat_template(
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
     map_eos_token = True,
     system_message = None,
+    patch_saving = True,
+    use_zoo_tokenizer_patch = False,
 ):
     assert(type(map_eos_token) is bool)
     old_tokenizer = tokenizer
@@ -2026,6 +2026,12 @@ def get_chat_template(
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
+    if use_zoo_tokenizer_patch:
+        # Studio MLX avoids the model-utils tokenizer wrapper because that
+        # import path pulls in Torch/GPU-specific modules before MLX training.
+        from unsloth_zoo.tokenizer_utils import patch_tokenizer
+    else:
+        from .models._utils import patch_tokenizer
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side = old_padding_side
 
@@ -2059,7 +2065,9 @@ def get_chat_template(
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
     # Patch saving functions
-    tokenizer = patch_saving_functions(tokenizer)
+    if patch_saving:
+        from .save import patch_saving_functions
+        tokenizer = patch_saving_functions(tokenizer)
 
     # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile

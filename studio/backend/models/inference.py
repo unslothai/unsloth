@@ -531,9 +531,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
-    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = Field(
         None,
-        description = "[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
+        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic adaptive thinking uses `max` as the top tier on Claude 4.6 Opus/Sonnet (inbound `xhigh` is mapped to `max`) and `xhigh` on Claude 4.7 Opus; local Harmony/gpt-oss templates support low|medium|high.",
     )
     preserve_thinking: Optional[bool] = Field(
         None,
@@ -568,6 +570,28 @@ class ChatCompletionRequest(BaseModel):
     cancel_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
+    )
+
+    # ── External provider routing (x-unsloth extensions) ──────────
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved provider config ID. If set with encrypted_api_key, routes to external LLM.",
+    )
+    provider_type: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",
+    )
+    external_model: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Model ID at the external provider.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded API key for the external provider.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Override base URL for the external provider.",
     )
 
 
