@@ -46,8 +46,8 @@ def test_wandb_init_strips_secret_keys():
 
 def test_local_dataset_loader_uses_load_dataset_path():
     src = WORKER.read_text()
-    assert "_resolve_local_files" in src
-    assert "_loader_for_files" in src
+    assert "_resolve_mlx_local_dataset_files" in src
+    assert "_mlx_local_dataset_loader_for_files" in src
     assert "data_files = all_files" in src or "data_files=all_files" in src
 
 
@@ -84,7 +84,7 @@ def test_poll_stop_returns_on_broken_pipe():
 
 def test_unsloth_zoo_mlx_imports_have_friendly_error():
     src = WORKER.read_text()
-    assert "from unsloth_zoo.mlx_loader import FastMLXModel" in src
-    assert "from unsloth_zoo.mlx_trainer import" in src
+    assert "from unsloth_zoo.mlx.loader import FastMLXModel" in src
+    assert "from unsloth_zoo.mlx.trainer import" in src
     assert "raise ImportError" in src
     assert "install.sh" in src

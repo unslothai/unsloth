@@ -1298,6 +1298,13 @@ def disable_torchcodec_if_broken():
 
     This function tests if torchcodec can actually load and if not, patches
     transformers to think torchcodec is unavailable so it falls back to librosa.
+
+    Two shapes to cover:
+      * transformers < 5: a module-level ``_torchcodec_available`` flag
+        cached in ``transformers.utils.import_utils``; flip it to False.
+      * transformers >= 5: a public ``is_torchcodec_available()`` callable
+        wrapped with ``functools.lru_cache``; replace it with a stub that
+        returns False and clear the cache so subsequent callers see it.
     """
     try:
         import importlib.util
@@ -1311,10 +1318,24 @@ def disable_torchcodec_if_broken():
         # torchcodec cannot load - disable it in transformers
         try:
             import transformers.utils.import_utils as tf_import_utils
+        except ImportError:
+            return
 
+        # transformers < 5 path: module-level cached flag.
+        try:
             tf_import_utils._torchcodec_available = False
-        except (ImportError, AttributeError):
+        except AttributeError:
             pass
+
+        # transformers >= 5 path: public lru_cache'd function. Clear any
+        # cached True result then rebind to a stub that returns False.
+        is_avail = getattr(tf_import_utils, "is_torchcodec_available", None)
+        if is_avail is not None:
+            try:
+                is_avail.cache_clear()
+            except AttributeError:
+                pass
+            tf_import_utils.is_torchcodec_available = lambda: False
 
 
 def disable_broken_wandb():
@@ -1370,6 +1391,239 @@ def disable_broken_wandb():
             pass
         # Set env var as additional fallback
         os.environ["WANDB_DISABLED"] = "true"
+
+
+# ---------------------------------------------------------------------------
+# peft 0.19.x + transformers 4.x drift
+# ---------------------------------------------------------------------------
+# peft 0.19.x's ``peft/utils/transformers_weight_conversion.py`` unconditionally
+# imports ``transformers.conversion_mapping`` and ``transformers.core_model_loading``
+# at module top. Neither submodule exists on transformers <5, so the import
+# explodes with ModuleNotFoundError -- silently swallowed by the bare except
+# in ``patch_peft_weight_converter_compatibility`` below. Fix: when (and only
+# when) the import is broken, stub the two missing submodules with the symbols
+# peft pulls at module top. The stubs are inert at runtime because peft itself
+# only calls into them behind ``if is_transformers_ge_v5:`` gates.
+# ---------------------------------------------------------------------------
+
+# Stamped on stub modules so a second call is a strict no-op and so third
+# parties can introspect ``__unsloth_stub__`` to detect our patch.
+_UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
+
+
+def _peft_stub_module_importable(name):
+    """True iff ``import {name}`` would succeed without side effects."""
+    if name in sys.modules and sys.modules[name] is not None:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+
+
+def _make_peft_stub_module(fullname):
+    import types as _types
+
+    mod = _types.ModuleType(fullname)
+    mod.__file__ = f"<unsloth stub: {fullname}>"
+    mod.__package__ = fullname.rpartition(".")[0]
+    setattr(mod, _UNSLOTH_STUB_SENTINEL, True)
+    return mod
+
+
+def _install_transformers_conversion_mapping_stub():
+    """Stub the 3 symbols peft 0.19.x imports from this module at top level."""
+    name = "transformers.conversion_mapping"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _make_peft_stub_module(name)
+
+    # peft does ``.copy()`` + keyed assignment at module top; real dict suffices.
+    mod._MODEL_TO_CONVERSION_PATTERN = {}
+
+    def get_checkpoint_conversion_mapping(model_type, *args, **kwargs):
+        # ``None`` = peft's "no conversion registered"; both callsites
+        # early-return on it.
+        return None
+
+    def get_model_conversion_mapping(model, *args, **kwargs):
+        return None
+
+    mod.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
+    mod.get_model_conversion_mapping = get_model_conversion_mapping
+
+    sys.modules[name] = mod
+    # Attach to parent so attribute-style access matches a real submodule.
+    parent = sys.modules.get("transformers")
+    if parent is not None and not hasattr(parent, "conversion_mapping"):
+        try:
+            parent.conversion_mapping = mod
+        except Exception:
+            # Frozen parent: sys.modules entry is enough for ``from ... import``.
+            pass
+    return mod
+
+
+def _install_transformers_core_model_loading_stub():
+    """Stub the 8 symbols peft 0.19.x imports from this module at top level.
+
+    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft
+    subclasses them at module top); the rest only appear in runtime
+    ``isinstance`` / construction calls gated behind ``is_transformers_ge_v5``."""
+    name = "transformers.core_model_loading"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _make_peft_stub_module(name)
+
+    class ConversionOps:
+        def convert(self, *args, **kwargs):  # pragma: no cover - inert stub
+            raise NotImplementedError(
+                "unsloth stub: transformers.core_model_loading.ConversionOps "
+                "is a no-op on transformers <5. Upgrade transformers to v5+ "
+                "to use peft.utils.transformers_weight_conversion at runtime."
+            )
+
+        @property
+        def reverse_op(self):  # pragma: no cover - inert stub
+            raise NotImplementedError
+
+    class Concatenate(ConversionOps):
+        def __init__(self, dim = 0, *args, **kwargs):
+            self.dim = dim
+
+    class MergeModulelist(ConversionOps):
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class Transpose(ConversionOps):
+        def __init__(self, dim0 = 0, dim1 = 1, *args, **kwargs):
+            self.dim0 = dim0
+            self.dim1 = dim1
+
+    class WeightConverter:
+        def __init__(self, *args, **kwargs):
+            # Accept any signature; upstream class evolves.
+            self.args = args
+            self.kwargs = kwargs
+
+    class WeightRenaming:
+        def __init__(
+            self,
+            source_patterns = None,
+            target_patterns = None,
+            *args,
+            **kwargs,
+        ):
+            self.source_patterns = source_patterns
+            self.target_patterns = target_patterns
+
+    def dot_natural_key(key):
+        return key
+
+    def rename_source_key(original_key, renamings, converters):
+        return original_key, None
+
+    mod.ConversionOps = ConversionOps
+    mod.Concatenate = Concatenate
+    mod.MergeModulelist = MergeModulelist
+    mod.Transpose = Transpose
+    mod.WeightConverter = WeightConverter
+    mod.WeightRenaming = WeightRenaming
+    mod.dot_natural_key = dot_natural_key
+    mod.rename_source_key = rename_source_key
+
+    sys.modules[name] = mod
+    parent = sys.modules.get("transformers")
+    if parent is not None and not hasattr(parent, "core_model_loading"):
+        try:
+            parent.core_model_loading = mod
+        except Exception:
+            pass
+    return mod
+
+
+def fix_peft_transformers_weight_conversion_import():
+    """Make ``from peft.utils import transformers_weight_conversion`` import
+    cleanly on (peft 0.19.x, transformers 4.x) by stubbing the two missing
+    transformers-v5 submodules. See header block above for details.
+
+    Must run BEFORE ``patch_peft_weight_converter_compatibility`` -- that
+    function's bare ``except (ImportError, AttributeError): return`` would
+    otherwise silently no-op.
+
+    No-op if peft / transformers missing, or if the peft module already
+    imports cleanly. Idempotent and strictly additive (never overwrites a
+    real ``transformers.conversion_mapping`` / ``core_model_loading``).
+
+    Returns True if patched, False if no action needed, None if peft absent."""
+    if importlib.util.find_spec("peft") is None:
+        return None
+
+    # Already importable? Either we patched, or transformers is v5+.
+    try:
+        importlib.import_module("peft.utils.transformers_weight_conversion")
+        return False
+    except ModuleNotFoundError as exc:
+        # Only act on our specific drift class.
+        missing = getattr(exc, "name", "") or ""
+        if missing not in (
+            "transformers.conversion_mapping",
+            "transformers.core_model_loading",
+        ):
+            return False
+    except ImportError as exc:
+        # Older Python ImportError has no `.name`; string-match instead.
+        msg = str(exc)
+        if (
+            "transformers.conversion_mapping" not in msg
+            and "transformers.core_model_loading" not in msg
+        ):
+            return False
+
+    # Need transformers loaded to attach stubs to its package.
+    transformers_root = sys.modules.get("transformers")
+    if transformers_root is None:
+        try:
+            transformers_root = importlib.import_module("transformers")
+        except Exception:
+            return False
+
+    # Stub only the genuinely missing submodules; never clobber real ones.
+    patched_any = False
+    if not _peft_stub_module_importable("transformers.conversion_mapping"):
+        _install_transformers_conversion_mapping_stub()
+        patched_any = True
+
+    if not _peft_stub_module_importable("transformers.core_model_loading"):
+        _install_transformers_core_model_loading_stub()
+        patched_any = True
+
+    if not patched_any:
+        # Real submodules present; failure was for some other reason.
+        return False
+
+    # Force a fresh import now that stubs are in place. Drop any cached
+    # ``None`` entry first so importlib retries.
+    pkg = "peft.utils.transformers_weight_conversion"
+    if pkg in sys.modules and sys.modules[pkg] is None:
+        del sys.modules[pkg]
+    try:
+        importlib.import_module(pkg)
+    except Exception:
+        # Other upstream drift; stubs stay installed so a later retry succeeds.
+        return True
+
+    logger.info(
+        "Unsloth: stubbed transformers.conversion_mapping / "
+        "transformers.core_model_loading so peft.utils."
+        "transformers_weight_conversion imports cleanly on "
+        "transformers <5."
+    )
+    return True
 
 
 def patch_peft_weight_converter_compatibility():

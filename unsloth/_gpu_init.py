@@ -153,6 +153,7 @@ from .import_fixes import (
     disable_torchcodec_if_broken,
     disable_broken_wandb,
     fix_trl_vllm_ascend,
+    fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
 )
 
@@ -177,6 +178,11 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
+# Must run before patch_peft_weight_converter_compatibility -- stubs the
+# transformers v5 submodules peft 0.19.x imports unconditionally, so the
+# next patch can actually wrap build_peft_weight_mapping instead of being
+# swallowed by its bare ImportError except.
+fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
 
 del fix_xformers_performance_issue
@@ -199,6 +205,7 @@ del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_broken_wandb
+del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 
 # Torch 2.4 has including_emulation

@@ -23,7 +23,10 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  type ReasoningEffort,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
@@ -31,6 +34,7 @@ import {
 import {
   isMultimodalResponse,
 } from "../types/api";
+import { isExternalModelId } from "../external-providers";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -143,6 +147,15 @@ function normalizeSpeculativeType(v: string | null | undefined): string | null {
   return "default";
 }
 
+type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function clampLocalReasoningEffort(value: ReasoningEffort): LocalReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  return "low";
+}
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
@@ -221,7 +234,9 @@ export function useChatModelRuntime() {
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
 
-      if (statusRes.active_model) {
+      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
+      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
+      if (statusRes.active_model && !isExternalSelectionActive) {
         setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
 
         // Apply inference defaults on reconnect (page refresh with model already loaded)
@@ -241,6 +256,10 @@ export function useChatModelRuntime() {
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
         const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
+        const reasoningEffortLevels =
+          reasoningStyle === "reasoning_effort"
+            ? (["low", "medium", "high"] as const)
+            : (["low", "medium", "high"] as const);
         const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
         const currentGgufContextLength = statusRes.is_gguf
@@ -262,6 +281,9 @@ export function useChatModelRuntime() {
         // Otherwise we'd clobber the values the load path just applied and
         // the UI would appear to revert the user's changes.
         const prevState = useChatRuntimeStore.getState();
+        const clampedReasoningEffort = clampLocalReasoningEffort(
+          prevState.reasoningEffort,
+        );
         const nextDefaultChatTemplate =
           statusRes.chat_template === undefined
             ? prevState.defaultChatTemplate
@@ -270,12 +292,25 @@ export function useChatModelRuntime() {
           supportsReasoning,
           reasoningAlwaysOn,
           reasoningStyle,
+          supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+          reasoningEffortLevels,
+          reasoningEffort: clampedReasoningEffort,
           supportsPreserveThinking,
           supportsTools,
-          // Reset per-turn reasoning flag so models that do not support
-          // reasoning do not inherit a stale off state from a prior model.
+          // Reset per-turn reasoning flag so:
+          //   1. models that do not support reasoning do not inherit a stale
+          //      off state from a prior model, and
+          //   2. local reasoning-effort models (where the composer hides
+          //      the Off option via supportsReasoningOff=false) cannot end
+          //      up with reasoningEnabled=false carried over from an
+          //      external model where Off was selected — the composer would
+          //      keep showing "Think: <level>" via effectiveReasoningEnabled,
+          //      but the chat-adapter would omit the kwarg and the Harmony
+          //      template would fall back to its own default effort.
           reasoningEnabled: supportsReasoning
-            ? useChatRuntimeStore.getState().reasoningEnabled
+            ? reasoningStyle === "reasoning_effort"
+              ? true
+              : useChatRuntimeStore.getState().reasoningEnabled
             : true,
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
@@ -313,7 +348,7 @@ export function useChatModelRuntime() {
           }
           useChatRuntimeStore.getState().setReasoningEnabled(reasoningDefault);
         }
-      } else {
+      } else if (!statusRes.active_model && !isExternalSelectionActive) {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
@@ -569,6 +604,15 @@ export function useChatModelRuntime() {
             // context state and display the backend-reported effective context.
             const keepCustomCtx = null;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
+            const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
+            const reasoningEffortLevels =
+              reasoningStyle === "reasoning_effort"
+                ? (["low", "medium", "high"] as const)
+                : (["low", "medium", "high"] as const);
+            const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
+            const clampedReasoningEffort = clampLocalReasoningEffort(
+              existingReasoningEffort,
+            );
             const ggufMaxContextLength = reportedMaxCtx;
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
@@ -579,7 +623,10 @@ export function useChatModelRuntime() {
               supportsReasoning: loadResponse.supports_reasoning ?? false,
               reasoningAlwaysOn,
               reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
-              reasoningStyle: loadResponse.reasoning_style ?? "enable_thinking",
+              reasoningStyle,
+              supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+              reasoningEffortLevels,
+              reasoningEffort: clampedReasoningEffort,
               supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools: loadResponse.supports_tools ?? false,
               toolsEnabled: loadResponse.supports_tools ?? false,

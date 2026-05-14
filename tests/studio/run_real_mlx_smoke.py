@@ -211,8 +211,8 @@ def cmd_train(args) -> int:
     workdir.mkdir(parents = True, exist_ok = True)
 
     import mlx.core as mx
-    from unsloth_zoo.mlx_loader import FastMLXModel
-    from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
+    from unsloth_zoo.mlx.loader import FastMLXModel
+    from unsloth_zoo.mlx.trainer import MLXTrainer, MLXTrainingConfig
 
     hf_token = os.environ.get("HF_TOKEN") or None
 
@@ -440,7 +440,7 @@ def cmd_reload(args) -> int:
         return _reload_gguf(save_dir, metrics)
 
     import mlx.core as mx
-    from unsloth_zoo.mlx_loader import FastMLXModel
+    from unsloth_zoo.mlx.loader import FastMLXModel
     from mlx_lm import generate
 
     hf_token = os.environ.get("HF_TOKEN") or None
