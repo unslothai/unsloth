@@ -339,6 +339,36 @@ def _detect_amd_gfx_codes() -> list[str]:
 _rocm_windows_torch_installed: bool = False
 
 
+def _install_bnb_windows_rocm() -> None:
+    """Install the AMD Windows BNB prerelease wheel.
+
+    The continuous-release wheel is intentionally mismatched: the filename
+    encodes version 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the
+    wheel metadata reports 0.50.0.dev0.  uv rejects this by default; we set
+    UV_SKIP_WHEEL_FILENAME_CHECK=1 only for this install and restore the env
+    afterwards.
+    """
+    _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
+    if _bnb_win_url is None:
+        return
+    _prev = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
+    os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
+    try:
+        pip_install_try(
+            "bitsandbytes (AMD Windows, pre-release main)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-deps",
+            _bnb_win_url,
+            constrain = False,
+        )
+    finally:
+        if _prev is None:
+            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
+        else:
+            os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = _prev
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -355,16 +385,7 @@ def _ensure_rocm_torch() -> None:
         # setup.ps1 already installed ROCm torch, but we still need to install
         # the AMD Windows BNB wheel here — the PyPI bitsandbytes wheel ships
         # only CUDA DLLs and will fail to load on ROCm (no libbitsandbytes_rocm72.dll).
-        _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
-        if _bnb_win_url is not None:
-            pip_install_try(
-                "bitsandbytes (AMD Windows, pre-release main)",
-                "--force-reinstall",
-                "--no-cache-dir",
-                "--no-deps",
-                _bnb_win_url,
-                constrain = False,
-            )
+        _install_bnb_windows_rocm()
         return
     if IS_MACOS:
         return
@@ -413,16 +434,7 @@ def _ensure_rocm_torch() -> None:
         # Always install AMD Windows bitsandbytes — the PyPI wheel ships only
         # CUDA DLLs and will fail to load on ROCm.  Install even when torch was
         # already a ROCm build so that `studio update` repairs a broken bnb.
-        _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
-        if _bnb_win_url is not None:
-            pip_install_try(
-                "bitsandbytes (AMD Windows, pre-release main)",
-                "--force-reinstall",
-                "--no-cache-dir",
-                "--no-deps",
-                _bnb_win_url,
-                constrain = False,
-            )
+        _install_bnb_windows_rocm()
         _rocm_windows_torch_installed = True
         return
 
