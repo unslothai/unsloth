@@ -1084,21 +1084,20 @@ def run_training_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 1d. Pre-stub torch._C._distributed_c10d and torchao ──
-    # Windows ROCm wheels (both repo.radeon.com and repo.amd.com) omit the
-    # _distributed_c10d C++ extension — RCCL is not shipped on Windows.
-    # torch/distributed/__init__.py and distributed_c10d.py both import from it
-    # unconditionally at module level, so the stub must be in sys.modules BEFORE
-    # any `import torch.distributed` call.
-    #
+    # ── 1d. Stub torchao on Windows ROCm ──
     # torchao (pulled in by transformers.quantizers) imports
-    # torch.distributed._functional_collectives → distributed_c10d at import
-    # time.  Stubbing the entire torchao package short-circuits that chain.
+    # torch.distributed._functional_collectives at module level, which imports
+    # distributed_c10d.py unconditionally — that file crashes on Windows ROCm
+    # because torch._C._distributed_c10d (the RCCL backend) is absent.
+    # torch/distributed/__init__.py itself is guarded by `if is_available()`
+    # so `import torch.distributed` alone is safe; the crash only comes via
+    # torchao's import chain.  Stubbing torchao short-circuits it entirely.
+    # _StubSubpackageFinder handles any depth of torchao.xxx.yyy imports.
     import types as _types
     import importlib.machinery as _ilm
     import importlib.abc as _ilabc
 
-    _STUB_SENTINEL = object()  # identity tag on every stub module
+    _STUB_SENTINEL = object()
 
     def _make_mod_stub(mod_name):
         m = _types.ModuleType(mod_name)
@@ -1138,24 +1137,8 @@ def run_training_process(
 
     sys.meta_path.append(_StubSubpackageFinder())
 
-    # Metaclass so stub class attributes (e.g. ProcessGroup.BackendType.NCCL)
-    # don't raise AttributeError.
-    class _StubClassMeta(type):
-        def __getattr__(cls, attr):
-            if attr == "__members__":
-                return {}
-            if attr.startswith("__"):
-                raise AttributeError(attr)
-            child = _StubClassMeta(attr, (), {"__init__": lambda self, *a, **kw: None})
-            setattr(cls, attr, child)
-            return child
-
-    def _make_stub_class(name):
-        return _StubClassMeta(name, (), {"__init__": lambda self, *a, **kw: None})
-
     if sys.platform == "win32":
-        # Stub torchao up-front so its import chain never reaches
-        # torch.distributed._functional_collectives.
+        # Seed torchao top-level + key submodules; the finder handles the rest.
         for _tao_name in (
             "torchao",
             "torchao.quantization",
@@ -1165,28 +1148,6 @@ def run_training_process(
         ):
             if _tao_name not in sys.modules:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
-
-        # Stub torch._C._distributed_c10d so torch/distributed/__init__.py
-        # and distributed_c10d.py can import from it without crashing.
-        _c10d_key = "torch._C._distributed_c10d"
-        if _c10d_key not in sys.modules:
-            _c10d_stub = _types.ModuleType(_c10d_key)
-
-            def _c10d_stub_getattr(_attr):
-                if _attr.startswith("__"):
-                    raise AttributeError(_attr)
-                _cls = _make_stub_class(_attr)
-                setattr(_c10d_stub, _attr, _cls)
-                return _cls
-
-            _c10d_stub.__getattr__ = _c10d_stub_getattr
-            sys.modules[_c10d_key] = _c10d_stub
-            try:
-                import torch._C as _torch_C_mod
-                if not hasattr(_torch_C_mod, "_distributed_c10d"):
-                    _torch_C_mod._distributed_c10d = _c10d_stub
-            except Exception:
-                pass
 
     # ── 1e. Ensure torch.distributed helper attrs are present ──
     # Single-GPU training never initialises the process group, so these helpers
