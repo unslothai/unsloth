@@ -15,7 +15,27 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import {
+  encryptProviderApiKey,
+  isProviderKeyRotationError,
+} from "./providers-api";
 import { db } from "../db";
+import type {
+  OpenAIChatCompletionsRequest,
+  OpenAIMessageContent,
+} from "../types/api";
+import {
+  getExternalProviderApiKey,
+  loadExternalProviders,
+  parseExternalModelId,
+} from "../external-providers";
+import {
+  EXTERNAL_MAX_OUTPUT_TOKENS,
+  clampReasoningEffortToLevels,
+  getExternalMinOutputTokens,
+  getExternalReasoningCapabilities,
+  getProviderCapabilities,
+} from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
@@ -118,6 +138,70 @@ function estimateTokenCount(text: string): number | undefined {
   return Math.max(1, Math.round(trimmed.length / 4));
 }
 
+/**
+ * Normalize a streamed `delta.content` to a plain text string.
+ *
+ * OpenAI Chat Completions originally typed `delta.content` as a string, but
+ * a number of providers now emit it as an array of structured content parts.
+ * Concatenating that with `cumulativeText += delta` would stringify each
+ * part as `[object Object]` — this function is the guard against that.
+ *
+ * Handled part shapes:
+ *   { type: "text" | "output_text", text | content: "..." }   → text body
+ *   { type: "thinking" | "reasoning", thinking | text: "..." } → wrapped as
+ *       inline `<think>...</think>` so the downstream parser
+ *       (`parseAssistantContent`) lifts it into a reasoning part the same way
+ *       it does for providers that emit thinking inline. Without this wrap,
+ *       Mistral magistral and similar reasoning-part providers would lose
+ *       their thinking panel.
+ *
+ * Unknown part types are skipped — better to drop a stray field than to
+ * stringify an object and pollute the rendered chat with `[object Object]`.
+ */
+function extractDeltaText(delta: unknown): string {
+  const extractReasoningText = (payload: unknown): string => {
+    if (typeof payload === "string") return payload;
+    if (Array.isArray(payload)) {
+      return payload.map((item) => extractReasoningText(item)).join("");
+    }
+    if (!payload || typeof payload !== "object") return "";
+
+    const obj = payload as Record<string, unknown>;
+    for (const key of ["thinking", "text", "content", "reasoning", "summary"]) {
+      if (key in obj) {
+        const text = extractReasoningText(obj[key]);
+        if (text) return text;
+      }
+    }
+    return "";
+  };
+
+  if (typeof delta === "string") return delta;
+  if (!Array.isArray(delta)) return "";
+  let out = "";
+  for (const part of delta) {
+    if (typeof part === "string") {
+      out += part;
+      continue;
+    }
+    if (!part || typeof part !== "object") continue;
+    const obj = part as {
+      type?: string;
+      text?: string;
+      content?: string;
+      thinking?: string;
+    };
+    if (obj.type === "text" || obj.type === "output_text") {
+      if (typeof obj.text === "string") out += obj.text;
+      else if (typeof obj.content === "string") out += obj.content;
+    } else if (obj.type === "thinking" || obj.type === "reasoning") {
+      const thinking = extractReasoningText(obj);
+      if (thinking) out += `<think>${thinking}</think>`;
+    }
+  }
+  return out;
+}
+
 function buildTiming(
   streamStartTime: number,
   totalChunks: number,
@@ -162,9 +246,51 @@ function collectTextParts(message: RunMessage): string[] {
   return textParts;
 }
 
+function collectImageParts(
+  message: RunMessage,
+): Array<{ type: "image_url"; image_url: { url: string } }> {
+  const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  
+  for (const part of message.content ?? []) {
+    if (part.type === "image" && "image" in part) {
+      const src = (part as { image: string }).image;
+      if (src) {
+        parts.push({
+          type: "image_url",
+          image_url: {
+            url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+          },
+        });
+      }
+    }
+  }
+  
+  if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) {
+        if (part.type === "image" && "image" in part) {
+          const src = (part as { image: string }).image;
+          if (src) {
+            parts.push({
+              type: "image_url",
+              image_url: {
+                url: src.startsWith("data:")
+                  ? src
+                  : `data:image/png;base64,${src}`,
+              },
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  return parts;
+}
+
 function toOpenAIMessage(message: RunMessage): {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 } | null {
   if (
     message.role !== "system" &&
@@ -174,17 +300,25 @@ function toOpenAIMessage(message: RunMessage): {
     return null;
   }
 
-  let content = collectTextParts(message).join("\n");
+  let textContent = collectTextParts(message).join("\n");
   // Strip inline audio base64 from prior assistant messages to avoid
   // inflating token counts (e.g. audio-player responses with embedded WAV).
   if (message.role === "assistant") {
-    content = content.replace(
+    textContent = textContent.replace(
       /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
       "[audio]",
     );
   }
 
-  return { role: message.role, content };
+  const imageParts = collectImageParts(message);
+  if (imageParts.length > 0) {
+    return {
+      role: message.role,
+      content: [{ type: "text", text: textContent }, ...imageParts],
+    };
+  }
+
+  return { role: message.role, content: textContent };
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -594,6 +728,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toolsEnabled,
         codeToolsEnabled,
       } = runtime;
+      const externalSelection = parseExternalModelId(params.checkpoint);
+      const isExternalRequest = externalSelection !== null;
+      const externalProvider = isExternalRequest
+        ? loadExternalProviders().find(
+            (provider) => provider.id === externalSelection.providerId,
+          )
+        : null;
+      const externalApiKey = externalProvider
+        ? getExternalProviderApiKey(externalProvider.id).trim()
+        : "";
+
+      if (isExternalRequest && !externalProvider) {
+        toast.error("External provider not found.", {
+          description: "Open API Providers and re-add this provider.",
+        });
+        throw new Error("External provider not found.");
+      }
+      if (isExternalRequest && !externalApiKey) {
+        toast.error("Missing API key for selected external provider.", {
+          description: "Open API Providers and set the API key again.",
+        });
+        throw new Error("Missing external provider API key.");
+      }
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
@@ -711,6 +868,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
+      // Tracks whether we are currently inside a `<think>` block opened by
+      // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
+      // and DeepSeek's reasoner stream their thinking as a separate
+      // `reasoning_content` field on the chat-completion delta — not as
+      // `content`, not as a structured part. We wrap those chunks with
+      // inline `<think>...</think>` so the existing parseAssistantContent
+      // lifts them into the reasoning panel the same way it does for
+      // local Harmony models. State has to live outside the SSE loop
+      // because the close tag fires when the next chunk carries content
+      // (or when the stream ends).
+      let reasoningContentOpen = false;
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
@@ -760,8 +928,106 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
-        const stream = streamChatCompletions(
-          {
+        const externalBackendProviderType =
+          externalProvider?.providerType === "custom"
+            ? "openai"
+            : externalProvider?.providerType;
+        const externalCapabilities = getProviderCapabilities(
+          externalProvider?.providerType,
+        );
+        const externalReasoningCaps: ReturnType<
+          typeof getExternalReasoningCapabilities
+        > =
+          externalSelection && externalProvider
+            ? getExternalReasoningCapabilities(
+                externalProvider.providerType,
+                externalSelection.modelId,
+              )
+            : {
+                supportsReasoning,
+                reasoningStyle,
+                reasoningAlwaysOn: false,
+                supportsReasoningOff: false,
+                reasoningEffortLevels: ["low", "medium", "high"] as const,
+              };
+        type RequestReasoningEffort = Extract<
+          NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]>,
+          "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh"
+        >;
+        const fallbackExternalEffort =
+          (externalReasoningCaps.reasoningEffortLevels[0] ??
+            "low") as RequestReasoningEffort;
+        const selectedExternalEffort: RequestReasoningEffort =
+          clampReasoningEffortToLevels(
+            reasoningEffort,
+            externalReasoningCaps.reasoningEffortLevels,
+          ) as RequestReasoningEffort;
+        const localReasoningEffort =
+          reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+            ? reasoningEffort
+            : "low";
+        const externalReasoningEnabled =
+          !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
+        const buildRequestPayload = async (
+          forceRefreshPublicKey = false,
+        ): Promise<OpenAIChatCompletionsRequest> => {
+          if (externalSelection && externalProvider) {
+            return {
+              model: externalSelection.modelId,
+              messages: outboundMessages,
+              stream: true,
+              // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature
+              // and top_p; only forward when the active provider supports them.
+              ...(externalCapabilities?.temperature !== false
+                ? { temperature: params.temperature }
+                : {}),
+              ...(externalCapabilities?.topP !== false
+                ? { top_p: params.topP }
+                : {}),
+              // Clamp to the cross-provider output cap so a maxTokens value
+              // carried over from a local-model session does not blow past
+              // provider limits (e.g. Claude Opus 400s on >128k). Also
+              // floor to the provider's documented minimum — Kimi's
+              // thinking models need >=16k or the response truncates
+              // before the answer fits alongside reasoning_content.
+              max_tokens: Math.min(
+                Math.max(
+                  params.maxTokens,
+                  getExternalMinOutputTokens(externalProvider?.providerType),
+                ),
+                EXTERNAL_MAX_OUTPUT_TOKENS,
+              ),
+              // Only forward sampling knobs the provider actually accepts; the
+              // backend's external-provider proxy is param-permissive and would
+              // surface a 400 from providers that reject unknown fields (e.g.
+              // OpenAI rejects top_k, Anthropic/DeepSeek reject presence_penalty).
+              ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
+              ...(externalCapabilities?.presencePenalty
+                ? { presence_penalty: params.presencePenalty }
+                : {}),
+              provider_id: externalProvider.id,
+              provider_type: externalBackendProviderType,
+              external_model: externalSelection.modelId,
+              encrypted_api_key: await encryptProviderApiKey(
+                externalApiKey,
+                forceRefreshPublicKey,
+              ),
+              provider_base_url: externalProvider.baseUrl || null,
+              ...(externalReasoningCaps.supportsReasoning
+                ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
+                  ? externalReasoningEnabled
+                    ? { reasoning_effort: selectedExternalEffort }
+                    : externalReasoningCaps.supportsReasoningOff
+                      ? { reasoning_effort: "none" }
+                      : {
+                          reasoning_effort: fallbackExternalEffort,
+                        }
+                  : { enable_thinking: reasoningEnabled }
+                : {}),
+            };
+          }
+
+          return {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
@@ -779,7 +1045,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "reasoning_effort"
-                ? { reasoning_effort: reasoningEffort }
+                ? reasoningEnabled
+                  ? { reasoning_effort: localReasoningEffort }
+                  : {}
                 : { enable_thinking: reasoningEnabled }
               : {}),
             ...(supportsPreserveThinking ? { preserve_thinking: preserveThinking } : {}),
@@ -798,115 +1066,233 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   })(),
                 }
               : {}),
-          },
-          abortSignal,
-        );
+          };
+        };
 
-        for await (const chunk of stream) {
-          // Handle tool status events
-          const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
-          if (toolStatusText !== undefined) {
-            runtime.setToolStatus(toolStatusText || null);
-            continue;
-          }
+        let retriedWithRefreshedKey = false;
+        while (true) {
+          try {
+            const stream = streamChatCompletions(
+              await buildRequestPayload(retriedWithRefreshedKey),
+              abortSignal,
+            );
 
-          // Emit tool-call content parts for assistant-ui.
-          // On tool_start: add a new tool-call part (renders in "running" state).
-          // On tool_end: set result on the existing part (transitions to "complete").
-          const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
-          if (toolEvent !== undefined) {
-            if (toolEvent.type === "tool_start") {
-              const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
-              const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
-              toolCallParts.push({
-                type: "tool-call" as const,
-                toolCallId: id,
-                toolName: toolEvent.tool_name as string,
-                argsText: JSON.stringify(toolArgs),
-                args: toolArgs,
-              });
-            } else if (toolEvent.type === "tool_end") {
-              const id = (toolEvent.tool_call_id as string) ||
-                toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
-              const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
-              if (idx !== -1) {
-                const rawResult = (toolEvent.result as string) ?? "";
-                const imgMarker = "\n__IMAGES__:";
-                const imgIdx = rawResult.lastIndexOf(imgMarker);
-                let parsedResult: string | { text: string; images: string[]; sessionId: string };
-                if (imgIdx !== -1) {
-                  const text = rawResult.slice(0, imgIdx);
-                  // Fall back to "_default" to match the backend sandbox directory
-                  // used when no session_id is provided (see tools.py _get_workdir).
-                  const sessionId = resolvedThreadId || "_default";
-                  try {
-                    const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
-                    parsedResult = { text, images, sessionId };
-                  } catch {
-                    parsedResult = rawResult;
+            for await (const chunk of stream) {
+              // Handle tool status events
+              const toolStatusText = (chunk as unknown as { _toolStatus?: string })._toolStatus;
+              if (toolStatusText !== undefined) {
+                runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+    
+              // Emit tool-call content parts for assistant-ui.
+              // On tool_start: add a new tool-call part (renders in "running" state).
+              // On tool_end: set result on the existing part (transitions to "complete").
+              const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
+              if (toolEvent !== undefined) {
+                if (toolEvent.type === "tool_start") {
+                  const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
+                  const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];
+                  toolCallParts.push({
+                    type: "tool-call" as const,
+                    toolCallId: id,
+                    toolName: toolEvent.tool_name as string,
+                    argsText: JSON.stringify(toolArgs),
+                    args: toolArgs,
+                  });
+                } else if (toolEvent.type === "tool_end") {
+                  const id = (toolEvent.tool_call_id as string) ||
+                    toolCallParts[toolCallParts.length - 1]?.toolCallId || "";
+                  const idx = toolCallParts.findIndex((p) => p.toolCallId === id);
+                  if (idx !== -1) {
+                    const rawResult = (toolEvent.result as string) ?? "";
+                    const imgMarker = "\n__IMAGES__:";
+                    const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    let parsedResult: string | { text: string; images: string[]; sessionId: string };
+                    if (imgIdx !== -1) {
+                      const text = rawResult.slice(0, imgIdx);
+                      // Fall back to "_default" to match the backend sandbox directory
+                      // used when no session_id is provided (see tools.py _get_workdir).
+                      const sessionId = resolvedThreadId || "_default";
+                      try {
+                        const images = JSON.parse(rawResult.slice(imgIdx + imgMarker.length)) as string[];
+                        parsedResult = { text, images, sessionId };
+                      } catch {
+                        parsedResult = rawResult;
+                      }
+                    } else {
+                      parsedResult = rawResult;
+                    }
+                    toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
                   }
-                } else {
-                  parsedResult = rawResult;
                 }
-                toolCallParts[idx] = { ...toolCallParts[idx], result: parsedResult };
+                // Yield cumulative state so tool UI updates (tools first, text after)
+                const textParts = parseAssistantContent(cumulativeText);
+                yield {
+                  content: [...toolCallParts, ...textParts],
+                  metadata: {
+                    timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
+                    custom: { reasoningDuration },
+                  },
+                };
+                continue;
+              }
+
+              // OpenAI-standard usage chunk: choices=[], usage populated
+              if (chunk.choices?.length === 0 && chunk.usage) {
+                serverMetadata = {
+                  usage: chunk.usage,
+                  timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
+                };
+                continue;
+              }
+
+              totalChunks += 1;
+              // OpenRouter's free router (openrouter/free) picks a different
+              // underlying free model per request and reports it in every
+              // chunk's top-level `model` field. Latch the first non-empty
+              // value that differs from the requested checkpoint so the
+              // header chip can render "openrouter/free:<chosen>".
+              if (
+                isExternalRequest &&
+                externalProvider?.providerType === "openrouter" &&
+                externalSelection?.modelId === "openrouter/free"
+              ) {
+                const chunkModel = (chunk as { model?: unknown }).model;
+                if (
+                  typeof chunkModel === "string" &&
+                  chunkModel.length > 0 &&
+                  chunkModel !== externalSelection.modelId
+                ) {
+                  const storeState = useChatRuntimeStore.getState();
+                  if (storeState.lastOpenRouterChosenModel !== chunkModel) {
+                    storeState.setLastOpenRouterChosenModel(chunkModel);
+                  }
+                }
+              }
+              const rawDelta = chunk.choices?.[0]?.delta?.content;
+              // Providers like Mistral's magistral return delta.content as an
+              // array of structured parts; normalize to text (with thinking
+              // parts re-wrapped as inline <think> tags) so the rest of the
+              // accumulator stays string-based.
+              const delta = extractDeltaText(rawDelta);
+              // Kimi (kimi-k2.6, kimi-k2-thinking) and DeepSeek reasoner
+              // stream thinking via `delta.reasoning_content` as a plain
+              // string field — separate from `delta.content` which carries
+              // the answer. Wrap reasoning chunks inline as <think>...
+              // </think> so parseAssistantContent treats them like any
+              // other reasoning. The close tag fires when the next chunk
+              // brings content, or when the stream ends.
+              const rawReasoning = (
+                chunk.choices?.[0]?.delta as
+                  | { reasoning_content?: unknown }
+                  | undefined
+              )?.reasoning_content;
+              // OpenRouter uses a third reasoning shape: a structured
+              // `delta.reasoning_details` array of parts (each carrying
+              // `text`). The router emits this regardless of which
+              // underlying provider it picked, so we extract here and
+              // merge into the same <think>...</think> wrap path used
+              // for Kimi / DeepSeek reasoning_content. See
+              //   https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+              const rawReasoningDetails = (
+                chunk.choices?.[0]?.delta as
+                  | { reasoning_details?: unknown }
+                  | undefined
+              )?.reasoning_details;
+              const reasoningFromDetails = Array.isArray(rawReasoningDetails)
+                ? rawReasoningDetails
+                    .map((part) => {
+                      if (!part || typeof part !== "object") return "";
+                      const text = (part as { text?: unknown }).text;
+                      return typeof text === "string" ? text : "";
+                    })
+                    .join("")
+                : "";
+              const reasoning =
+                (typeof rawReasoning === "string" ? rawReasoning : "") +
+                reasoningFromDetails;
+              if (!delta && !reasoning) {
+                continue;
+              }
+              if (waitingFirstChunk) {
+                waitingFirstChunk = false;
+                firstTokenTime = Date.now() - streamStartTime;
+                settleFirstTokenOk();
+                runtime.setGeneratingStatus(null);
+              }
+
+              if (reasoning) {
+                if (!reasoningContentOpen) {
+                  cumulativeText += `<think>${reasoning}`;
+                  reasoningContentOpen = true;
+                } else {
+                  cumulativeText += reasoning;
+                }
+              }
+              if (delta) {
+                if (reasoningContentOpen) {
+                  cumulativeText += "</think>";
+                  reasoningContentOpen = false;
+                }
+                cumulativeText += delta;
+              }
+              // Mistral's magistral occasionally emits a trailing
+              // template-literal artifact (e.g. "${response}") at the end of
+              // an otherwise complete answer. It is never part of a real
+              // reply, so strip a trailing `${...}` token from external
+              // provider streams. The regex anchors to end-of-string and is
+              // idempotent — fragments mid-stream (e.g. "${re") leave the
+              // string untouched and only collapse once the closing brace
+              // arrives. Local-model output is left alone.
+              if (isExternalRequest) {
+                cumulativeText = cumulativeText.replace(
+                  /\s*\$\{[^}]*\}\s*$/,
+                  "",
+                );
+              }
+              const parts = parseAssistantContent(cumulativeText);
+
+              if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
+                reasoningStartAt = Date.now();
+              }
+              if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
+                reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
+              }
+
+              if (parts.length > 0 || toolCallParts.length > 0) {
+                yield {
+                  content: [...toolCallParts, ...parts],
+                  metadata: {
+                    timing: buildTiming(
+                      streamStartTime,
+                      totalChunks,
+                      firstTokenTime,
+                    ),
+                    custom: { reasoningDuration },
+                  },
+                };
               }
             }
-            // Yield cumulative state so tool UI updates (tools first, text after)
-            const textParts = parseAssistantContent(cumulativeText);
-            yield {
-              content: [...toolCallParts, ...textParts],
-              metadata: {
-                timing: buildTiming(streamStartTime, totalChunks, firstTokenTime),
-                custom: { reasoningDuration },
-              },
-            };
-            continue;
+            break;
+          } catch (streamError) {
+            if (
+              isExternalRequest &&
+              !retriedWithRefreshedKey &&
+              isProviderKeyRotationError(streamError)
+            ) {
+              retriedWithRefreshedKey = true;
+              continue;
+            }
+            throw streamError;
           }
-
-          // OpenAI-standard usage chunk: choices=[], usage populated
-          if (chunk.choices?.length === 0 && chunk.usage) {
-            serverMetadata = {
-              usage: chunk.usage,
-              timings: (chunk as Record<string, unknown>).timings as ServerTimings | undefined,
-            };
-            continue;
-          }
-
-          totalChunks += 1;
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (!delta) {
-            continue;
-          }
-          if (waitingFirstChunk) {
-            waitingFirstChunk = false;
-            firstTokenTime = Date.now() - streamStartTime;
-            settleFirstTokenOk();
-            runtime.setGeneratingStatus(null);
-          }
-
-          cumulativeText += delta;
-          const parts = parseAssistantContent(cumulativeText);
-
-          if (parts.some((part) => part.type === "reasoning") && !reasoningStartAt) {
-            reasoningStartAt = Date.now();
-          }
-          if (hasClosedThinkTag(cumulativeText) && reasoningStartAt && !reasoningDuration) {
-            reasoningDuration = Math.round((Date.now() - reasoningStartAt) / 1000);
-          }
-
-          if (parts.length > 0 || toolCallParts.length > 0) {
-            yield {
-              content: [...toolCallParts, ...parts],
-              metadata: {
-                timing: buildTiming(
-                  streamStartTime,
-                  totalChunks,
-                  firstTokenTime,
-                ),
-                custom: { reasoningDuration },
-              },
-            };
-          }
+        }
+        // If the stream ended while we were still inside a
+        // delta.reasoning_content block (Kimi / DeepSeek path), close
+        // the open <think> tag so the reasoning panel parses cleanly.
+        if (reasoningContentOpen) {
+          cumulativeText += "</think>";
+          reasoningContentOpen = false;
         }
         settleFirstTokenOk();
 

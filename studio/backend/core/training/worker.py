@@ -30,6 +30,7 @@ from utils.hardware import apply_gpu_ids
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
+    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -313,6 +314,12 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
         return
+    if has_blackwell_gpu():
+        _send_status(
+            event_queue,
+            "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+        )
+        return
 
     installed = _install_package_wheel_first(
         event_queue = event_queue,
@@ -417,6 +424,55 @@ def _normalize_mlx_studio_scheduler(value):
     return raw
 
 
+def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
+    """Resolve Studio local dataset uploads without importing the GPU trainer."""
+    from utils.paths import resolve_dataset_path
+
+    all_files: list[str] = []
+    for dataset_file in file_paths or []:
+        file_path = (
+            dataset_file
+            if os.path.isabs(dataset_file)
+            else str(resolve_dataset_path(dataset_file))
+        )
+        file_path_obj = Path(file_path)
+
+        if file_path_obj.is_dir():
+            parquet_dir = (
+                file_path_obj / "parquet-files"
+                if (file_path_obj / "parquet-files").exists()
+                else file_path_obj
+            )
+            parquet_files = sorted(parquet_dir.glob("*.parquet"))
+            if parquet_files:
+                all_files.extend(str(p) for p in parquet_files)
+                continue
+
+            candidates: list[Path] = []
+            for ext in (".json", ".jsonl", ".csv", ".parquet"):
+                candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
+            if candidates:
+                all_files.extend(str(c) for c in candidates)
+                continue
+
+            raise ValueError(f"No supported data files in directory: {file_path_obj}")
+
+        all_files.append(str(file_path_obj))
+
+    return all_files
+
+
+def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
+    first_ext = Path(files[0]).suffix.lower()
+    if first_ext in (".json", ".jsonl"):
+        return "json"
+    if first_ext == ".csv":
+        return "csv"
+    if first_ext == ".parquet":
+        return "parquet"
+    raise ValueError(f"Unsupported dataset format: {files[0]}")
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -442,8 +498,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     import mlx.core as mx
 
     try:
-        from unsloth_zoo.mlx_loader import FastMLXModel
-        from unsloth_zoo.mlx_trainer import (
+        from unsloth_zoo.mlx.loader import FastMLXModel
+        from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
             MLXTrainingConfig,
             train_on_responses_only,
@@ -451,7 +507,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError as e:
         raise ImportError(
             "Unsloth: MLX training requires unsloth-zoo with the MLX modules "
-            "(unsloth_zoo.mlx_loader / unsloth_zoo.mlx_trainer). Reinstall via "
+            "(unsloth_zoo.mlx.loader / unsloth_zoo.mlx.trainer). Reinstall via "
             "install.sh on Apple Silicon."
         ) from e
     from datasets import load_dataset
@@ -572,7 +628,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         return ds
 
     def _load_local(file_paths):
-        from core.training.trainer import UnslothTrainer
         from datasets import load_from_disk
 
         if len(file_paths) == 1:
@@ -581,10 +636,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 (p / "dataset_info.json").exists() or (p / "state.json").exists()
             ):
                 return load_from_disk(str(p))
-        all_files = UnslothTrainer._resolve_local_files(file_paths)
+        all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
-        loader = UnslothTrainer._loader_for_files(all_files)
+        loader = _mlx_local_dataset_loader_for_files(all_files)
         return load_dataset(loader, data_files = all_files, split = "train")
 
     if hf_dataset:
@@ -718,6 +773,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
+    # MLX: value-clip grads to [-5, 5]; norm clipping disabled for compile-friendliness.
+    max_grad_norm = 0.0
+    max_grad_value = 5.0  # TODO: expose MLX grad-clip in Studio UI for power users
+
     trainer = MLXTrainer(
         model = model,
         tokenizer = tokenizer,
@@ -732,6 +791,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             lr_scheduler_type = lr_scheduler_type,
             optim = optim_name,
             weight_decay = float(config.get("weight_decay", 0.001) or 0.001),
+            max_grad_norm = max_grad_norm,
+            max_grad_value = max_grad_value,
             logging_steps = 1,
             max_seq_length = max_seq_length,
             seed = config.get("random_seed", 3407),
@@ -820,7 +881,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 9. Real-time progress callback ──
     _send("status", status_message = f"Training {model_name}...")
 
-    def _on_step(step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens):
+    def _on_step(
+        step,
+        total,
+        loss,
+        lr,
+        tok_s,
+        peak_gb,
+        elapsed,
+        num_tokens,
+        grad_norm = None,
+    ):
         eta = (elapsed / step * (total - step)) if step > 0 else 0
         _send(
             "progress",
@@ -831,7 +902,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             total_steps = total,
             elapsed_seconds = elapsed,
             eta_seconds = max(0, eta),
-            grad_norm = None,
+            grad_norm = grad_norm,
             num_tokens = num_tokens,
             eval_loss = None,
             status_message = None,
@@ -846,6 +917,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         "train/tokens_per_sec": tok_s,
                         "train/peak_gb": peak_gb,
                         "train/num_tokens": num_tokens,
+                        **(
+                            {"train/grad_norm": grad_norm}
+                            if grad_norm is not None
+                            else {}
+                        ),
                     },
                     step = step,
                 )
@@ -857,6 +933,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 tb_writer.add_scalar("train/learning_rate", lr, step)
                 tb_writer.add_scalar("train/tokens_per_sec", tok_s, step)
                 tb_writer.add_scalar("train/peak_gb", peak_gb, step)
+                if grad_norm is not None:
+                    tb_writer.add_scalar("train/grad_norm", grad_norm, step)
             except Exception:
                 pass
 

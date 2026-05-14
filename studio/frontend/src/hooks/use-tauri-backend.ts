@@ -29,7 +29,10 @@ type DesktopPreflightDisposition =
   | "not_installed"
   | "managed_ready"
   | "managed_stale"
-  | "attached_ready";
+  | "owned_ready"
+  | "owned_stale"
+  | "attached_ready"
+  | "external_conflict";
 
 interface DesktopPreflightResult {
   disposition: DesktopPreflightDisposition;
@@ -39,18 +42,37 @@ interface DesktopPreflightResult {
   managed_bin: string | null;
 }
 
-const MANAGED_STARTUP_TIMEOUT_MS = 5 * 60_000;
 const MANAGED_STARTUP_POLL_MS = 500;
 
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
   | { status: "ready"; port: number }
-  | { status: "aborted" }
-  | { status: "missing-port" }
-  | { status: "unhealthy" };
+  | { status: "aborted" };
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function externalConflictMessage(preflight: DesktopPreflightResult) {
+  if (preflight.reason === "desktop_owned_backend_active") {
+    return preflight.port
+      ? `A desktop-owned Studio server for this install is already running on port ${preflight.port}. Quit the other desktop app instance, then try again.`
+      : "A desktop-owned Studio server for this install is already running. Quit the other desktop app instance, then try again.";
+  }
+
+  if (preflight.reason === "desktop_owned_backend_starting") {
+    return "The desktop-owned Studio backend is still starting. Wait a moment, then try again.";
+  }
+
+  if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
+    return preflight.port
+      ? `A desktop-owned Studio backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen Studio.`
+      : "A desktop-owned Studio backend cannot be safely controlled by this desktop app. Stop that backend, then reopen Studio.";
+  }
+
+  return preflight.port
+    ? `A Studio server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
+    : "A Studio server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.";
 }
 
 async function waitForManagedServerReady(
@@ -58,9 +80,7 @@ async function waitForManagedServerReady(
   getPort: () => number | null,
   shouldContinue: () => boolean,
 ): Promise<ManagedStartupResult> {
-  const deadline = Date.now() + MANAGED_STARTUP_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
+  while (true) {
     if (!shouldContinue()) {
       return { status: "aborted" };
     }
@@ -81,10 +101,6 @@ async function waitForManagedServerReady(
 
     await wait(MANAGED_STARTUP_POLL_MS);
   }
-
-  return getPort() === null
-    ? { status: "missing-port" }
-    : { status: "unhealthy" };
 }
 
 export function useTauriBackend() {
@@ -109,6 +125,7 @@ export function useTauriBackend() {
   const externalPollAbortedRef = useRef(false);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
+  const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
@@ -205,12 +222,24 @@ export function useTauriBackend() {
           startExternalServerPoll(preflight.port);
           return;
         }
+        case "owned_ready":
+          if (!preflight.port) {
+            setBackendError("Desktop preflight found an owned backend without a port.");
+            return;
+          }
+          setApiBase(preflight.port);
+          portRef.current = preflight.port;
+          setIsExternalServer(false);
+          stopExternalServerPoll();
+          setRunningStatus();
+          return;
         case "managed_ready":
           setIsExternalServer(false);
           stopExternalServerPoll();
           setBackendStatus("starting");
           await startManagedServer();
           return;
+        case "owned_stale":
         case "managed_stale":
           setIsExternalServer(false);
           stopExternalServerPoll();
@@ -218,9 +247,16 @@ export function useTauriBackend() {
             await startRepair();
           } else {
             setBackendError(
-              "Managed Studio install is too old. Run `unsloth studio update`.",
+              preflight.disposition === "owned_stale"
+                ? "Desktop-owned Studio backend is too old for this desktop app. Run `unsloth studio update`, then restart Studio."
+                : "Managed Studio install is too old. Run `unsloth studio update`.",
             );
           }
+          return;
+        case "external_conflict":
+          setIsExternalServer(false);
+          stopExternalServerPoll();
+          setBackendError(externalConflictMessage(preflight));
           return;
         case "not_installed":
           setBackendStatus("not-installed");
@@ -264,11 +300,6 @@ export function useTauriBackend() {
         return;
       }
 
-      const message =
-        startupResult.status === "missing-port"
-          ? "Managed server started without reporting a port. Check the logs for details."
-          : "Server started but is not responding. Check the logs for details.";
-      setBackendError(message);
     } catch (e) {
       const msg = String(e);
       if (msg.includes("already running")) {
@@ -441,9 +472,9 @@ export function useTauriBackend() {
     });
   }, [currentStepIndex, elevationPackages, error, logs, progressDetail]);
 
-  // Initial check on mount (guarded against Strict Mode double-mount)
+  // Initial check on mount after Tauri event listeners are registered.
   useEffect(() => {
-    if (mountedRef.current) return;
+    if (!tauriEventsReady || mountedRef.current) return;
     mountedRef.current = true;
 
     if (!isTauri) {
@@ -451,7 +482,7 @@ export function useTauriBackend() {
       return;
     }
     checkInstallAndStart();
-  }, []);
+  }, [tauriEventsReady]);
 
   // Listen for Tauri events
   useEffect(() => {
@@ -460,17 +491,20 @@ export function useTauriBackend() {
     let disposed = false;
 
     import("@tauri-apps/api/event").then(({ listen }) => {
+      const registrations: Promise<void>[] = [];
       function register<T>(
         event: string,
         handler: Parameters<typeof listen<T>>[1],
       ) {
-        listen<T>(event, handler).then((unlisten) => {
-          if (disposed) {
-            unlisten();
-          } else {
-            cleanup.push(unlisten);
-          }
-        });
+        registrations.push(
+          listen<T>(event, handler).then((unlisten) => {
+            if (disposed) {
+              unlisten();
+            } else {
+              cleanup.push(unlisten);
+            }
+          }),
+        );
       }
 
       register<string>("install-progress", (e) => {
@@ -549,6 +583,16 @@ export function useTauriBackend() {
           retry();
         }
       });
+
+      Promise.all(registrations)
+        .then(() => {
+          if (!disposed) setTauriEventsReady(true);
+        })
+        .catch((error) => {
+          if (!disposed) setBackendError(String(error));
+        });
+    }).catch((error) => {
+      if (!disposed) setBackendError(String(error));
     });
 
     const onAuthFailed = (event: Event) => {

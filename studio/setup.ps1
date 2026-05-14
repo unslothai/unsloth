@@ -530,12 +530,33 @@ function Write-LlamaFailureLog {
         Write-Host "   | $line" -ForegroundColor DarkGray
     }
 }
+# Mirror the plain (no ANSI) form of step/substep messages to the
+# OS-level stdout handle when a parent is consuming our stdout via
+# a pipe (CI `tee`, Python subprocess.PIPE, CREATE_NO_WINDOW grandchild).
+# Write-Host on PS 5.1 routes through $Host.UI / the Information
+# stream, neither of which propagates reliably across the
+# install.ps1 -> unsloth.exe -> python -> powershell.exe ->
+# setup.ps1 process chain. [Console]::Out always lands on the OS
+# stdout file handle. Gated on IsOutputRedirected so the
+# interactive-console path keeps the colorized Write-Host output
+# only (no double-print).
+function Write-StudioStdoutMirror {
+    param([Parameter(Mandatory = $true)][string]$Line)
+    try {
+        if ([Console]::IsOutputRedirected) {
+            [Console]::Out.WriteLine($Line)
+            [Console]::Out.Flush()
+        }
+    } catch {}
+}
+
 function step {
     param(
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$Value,
         [string]$Color = "Green"
     )
+    $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         $dim = Get-StudioAnsi Dim
         $rst = Get-StudioAnsi Reset
@@ -546,10 +567,8 @@ function step {
             'DarkGray' { Get-StudioAnsi Dim }
             default { Get-StudioAnsi Ok }
         }
-        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
         Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
     } else {
-        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
         Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
         $fc = switch ($Color) {
             'Green' { 'DarkGreen' }
@@ -560,6 +579,7 @@ function step {
         }
         Write-Host $Value -ForegroundColor $fc
     }
+    Write-StudioStdoutMirror ("  {0}{1}" -f $padded, $Value)
 }
 
 function substep {
@@ -581,6 +601,7 @@ function substep {
         }
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
+    Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
 }
 
 # ─────────────────────────────────────────────
