@@ -29,6 +29,7 @@ logger = structlog.get_logger(__name__)
 # still accept it. Match the 4-7 line specifically so we keep the knob
 # live on every other Claude generation.
 _ANTHROPIC_TOP_K_DEPRECATED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+_OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -908,7 +909,9 @@ class ExternalProviderClient:
             "max",
             "xhigh",
         ):
-            body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+            body["reasoning"] = {"effort": reasoning_effort}
+            if not _OPENAI_REASONING_SUMMARY_UNSUPPORTED.match(model.strip().lower()):
+                body["reasoning"]["summary"] = "auto"
         elif reasoning_effort == "none" or enable_thinking is False:
             body["reasoning"] = {"effort": "none"}
         elif enable_thinking is True:
