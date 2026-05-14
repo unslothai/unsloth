@@ -221,17 +221,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
-        # `openrouter/free` is a server-side router that picks a free
-        # model at random per request, intelligently filtering by the
-        # capabilities the request needs (vision, tool calling,
-        # structured outputs, reasoning). Documented at
-        #   https://openrouter.ai/openrouter/free/api
-        # Lead with it so users get a zero-cost option by default.
+        # Seed list — shows in the picker before /v1/models loads, and
+        # remains visible if the live fetch fails. `openrouter/free` is
+        # the server-side free-tier router (see
+        # https://openrouter.ai/openrouter/free/api). The rest are
+        # popular ids from the orgs the allowlist below also lets
+        # through, so the seed and the remote merge stay coherent.
         "default_models": [
             "openrouter/free",
             "openai/gpt-4o",
+            "anthropic/claude-sonnet-4-5",
             "google/gemini-2.5-flash",
-            "mistralai/mistral-small-3.1-24b-instruct",
+            "mistralai/mistral-large-2411",
+            "deepseek/deepseek-r1",
         ],
         "supports_streaming": True,
         "supports_vision": True,
@@ -243,7 +245,17 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "X-Title": "Unsloth Studio",
         },
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
-        "model_list_mode": "curated",
+        # Switched to remote — OpenRouter's /v1/models endpoint returns
+        # the full cross-provider catalog (300+ ids). Scope it with
+        # the same shape as Hugging Face: an org-prefix allowlist plus
+        # a count cap. Picker has a search box, so 20 is enough room
+        # for the curated set to expand without overwhelming.
+        "model_list_mode": "remote",
+        "model_id_allowlist": re.compile(
+            r"^(openrouter|openai|anthropic|google|meta-llama|qwen|"
+            r"mistralai|deepseek|moonshotai|inclusionai|zai-org|z-ai)/"
+        ),
+        "model_id_limit": 20,
     },
 }
 
