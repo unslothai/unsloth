@@ -124,6 +124,107 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
     assert "top_k" not in body
 
 
+def test_adaptive_thinking_maps_xhigh_to_max_on_claude_4_6(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-sonnet-4-6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "xhigh",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    assert captured["body"]["output_config"] == {"effort": "max"}
+
+
+def test_adaptive_thinking_keeps_max_on_claude_4_6(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "max",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    assert captured["body"]["output_config"] == {"effort": "max"}
+
+
+def test_adaptive_thinking_keeps_xhigh_on_claude_4_7(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "xhigh",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    body = captured["body"]
+    assert body["output_config"] == {"effort": "xhigh"}
+    assert "effort" not in body
+
+
 def test_manual_thinking_body_uses_budget_tokens_on_4_5(monkeypatch):
     captured: dict = {}
 

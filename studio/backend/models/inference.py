@@ -535,7 +535,7 @@ class ChatCompletionRequest(BaseModel):
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = Field(
         None,
-        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic 4.6 treats max as xhigh alias; local Harmony/gpt-oss templates support low|medium|high.",
+        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic adaptive thinking uses `max` as the top tier on Claude 4.6 Opus/Sonnet (inbound `xhigh` is mapped to `max`) and `xhigh` on Claude 4.7 Opus; local Harmony/gpt-oss templates support low|medium|high.",
     )
     preserve_thinking: Optional[bool] = Field(
         None,

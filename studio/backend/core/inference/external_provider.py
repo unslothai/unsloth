@@ -548,13 +548,14 @@ class ExternalProviderClient:
             else ("none", "low", "medium", "high")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
-        # Claude 4.6 surfaces its highest tier as "Max" in UX copy, but the
-        # backend and existing persisted values use xhigh semantics. Accept both
-        # for compatibility and normalize outbound requests.
-        if effort == "max" and model.startswith(
+        # Claude 4.6 Opus/Sonnet accept top-tier adaptive effort as "max" only;
+        # "xhigh" is rejected (supported on Claude 4.7). Map our shared "xhigh"
+        # semantic to "max" for 4.6 outbound requests while still accepting
+        # both in ``allowed_efforts`` for persisted / cross-provider UI state.
+        if effort == "xhigh" and model.startswith(
             ("claude-opus-4-6", "claude-sonnet-4-6")
         ):
-            effort = "xhigh"
+            effort = "max"
         if effort is None:
             if enable_thinking is False:
                 effort = "none"

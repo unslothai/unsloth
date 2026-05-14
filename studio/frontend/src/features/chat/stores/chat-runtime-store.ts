@@ -45,13 +45,10 @@ function loadReasoningEffort(fallback: ReasoningEffort): ReasoningEffort {
       raw === "low" ||
       raw === "medium" ||
       raw === "high" ||
+      raw === "max" ||
       raw === "xhigh"
     ) {
       return raw;
-    }
-    if (raw === "max") {
-      // Migrate the short-lived Anthropic 4.6 "max" value back to xhigh.
-      return "xhigh";
     }
     return fallback;
   } catch {

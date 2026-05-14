@@ -48,6 +48,29 @@ export type ExternalReasoningCapabilities = {
 };
 
 /**
+ * Prefer a stored reasoning effort level that exists in ``effortLevels``,
+ * mapping legacy "xhigh" to "max" when the model only exposes the latter
+ * (Claude 4.6 adaptive thinking).
+ */
+export function clampReasoningEffortToLevels(
+  preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
+  effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
+): ExternalReasoningCapabilities["reasoningEffortLevels"][number] {
+  let candidate = preferred;
+  if (
+    candidate === "xhigh" &&
+    !effortLevels.includes("xhigh") &&
+    effortLevels.includes("max")
+  ) {
+    candidate = "max";
+  }
+  if (effortLevels.includes(candidate)) {
+    return candidate;
+  }
+  return effortLevels[0] ?? "low";
+}
+
+/**
  * Output-token cap for any external provider request. Picked to stay below the
  * tightest declared limit across the providers we ship (Anthropic Claude Opus
  * tops out at 128k, GPT-5.x ~128k, Gemini 2.5 ~65k, DeepSeek 8k) while staying
@@ -220,7 +243,7 @@ const ANTHROPIC_REASONING_MODELS = [
   },
   {
     prefixes: ["claude-opus-4-6", "claude-sonnet-4-6"],
-    levels: ["none", "low", "medium", "high", "xhigh"],
+    levels: ["none", "low", "medium", "high", "max"],
   },
   {
     prefixes: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],

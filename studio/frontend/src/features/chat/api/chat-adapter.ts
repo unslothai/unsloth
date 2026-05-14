@@ -31,6 +31,7 @@ import {
 } from "../external-providers";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
+  clampReasoningEffortToLevels,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -957,9 +958,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           (externalReasoningCaps.reasoningEffortLevels[0] ??
             "low") as RequestReasoningEffort;
         const selectedExternalEffort: RequestReasoningEffort =
-          externalReasoningCaps.reasoningEffortLevels.includes(reasoningEffort)
-            ? reasoningEffort
-            : fallbackExternalEffort;
+          clampReasoningEffortToLevels(
+            reasoningEffort,
+            externalReasoningCaps.reasoningEffortLevels,
+          ) as RequestReasoningEffort;
         const localReasoningEffort =
           reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
             ? reasoningEffort

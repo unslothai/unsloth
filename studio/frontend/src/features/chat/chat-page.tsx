@@ -47,6 +47,7 @@ import {
   parseExternalModelId,
 } from "./external-providers";
 import {
+  clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
 } from "./provider-capabilities";
@@ -673,9 +674,10 @@ export function ChatPage(): ReactElement {
     const state = useChatRuntimeStore.getState();
     const preferredEffort = state.reasoningEffort;
     const effortLevels = reasoningCaps.reasoningEffortLevels;
-    const clampedEffort = effortLevels.includes(preferredEffort)
-      ? preferredEffort
-      : effortLevels[0] ?? "low";
+    const clampedEffort = clampReasoningEffortToLevels(
+      preferredEffort,
+      effortLevels,
+    );
     const nextReasoningEffort = reasoningCaps.supportsReasoning
       ? clampedEffort
       : state.reasoningEffort;
@@ -804,9 +806,10 @@ export function ChatPage(): ReactElement {
         );
         const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
-        const clampedEffort = effortLevels.includes(preferredEffort)
-          ? preferredEffort
-          : effortLevels[0] ?? "low";
+        const clampedEffort = clampReasoningEffortToLevels(
+          preferredEffort,
+          effortLevels,
+        );
         const nextReasoningEffort = reasoningCaps.supportsReasoning
           ? clampedEffort
           : store.reasoningEffort;
