@@ -63,6 +63,13 @@ const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found, please make sure API key is added and valid for this provider.";
 const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
+const OPENROUTER_EXCLUDED_MODELS = new Set([
+  "google/chirp-3",
+  "kwaivgi/kling-v3.0-pro",
+  "openai/whisper-1",
+  "openai/gpt-4o-mini-transcribe",
+  "recraft/recraft-v4-pro",
+]);
 
 function normalizeUrl(input: string): string {
   return input.trim().replace(/\/+$/, "");
@@ -124,6 +131,9 @@ function pruneProviderModelIds(providerType: string, modelIds: string[]): string
   }
   if (providerType === "openai") {
     return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
+  }
+  if (providerType === "openrouter") {
+    return modelIds.filter((id) => !OPENROUTER_EXCLUDED_MODELS.has(id));
   }
   return modelIds;
 }

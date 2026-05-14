@@ -308,30 +308,49 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
   const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const effectiveExternalModelId =
+    selectedExternalProvider?.providerType === "openrouter" &&
+    externalSelection?.modelId === "openrouter/free" &&
+    lastOpenRouterChosenModel
+      ? lastOpenRouterChosenModel
+      : externalSelection?.modelId;
   const externalReasoningCaps =
     externalSelection != null
       ? getExternalReasoningCapabilities(
-          externalProviders.find((p) => p.id === externalSelection.providerId)
-            ?.providerType,
-          externalSelection.modelId,
+          selectedExternalProvider?.providerType,
+          effectiveExternalModelId,
         )
       : null;
   const isExternalOpenAIReasoning =
     externalReasoningCaps?.supportsReasoning === true &&
     externalReasoningCaps.reasoningStyle === "reasoning_effort";
+  const effectiveReasoningStyle =
+    externalReasoningCaps?.reasoningStyle ?? reasoningStyle;
+  const effectiveReasoningAlwaysOn =
+    externalReasoningCaps?.reasoningAlwaysOn ?? reasoningAlwaysOn;
   const effectiveSupportsReasoningOff =
     externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
   const effectiveReasoningEffortLevels =
     externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
-  const effectiveReasoningEnabled =
-    reasoningStyle === "reasoning_effort" && !effectiveSupportsReasoningOff
-      ? true
-      : reasoningEnabled;
+  const effectiveSupportsReasoning =
+    externalReasoningCaps?.supportsReasoning ?? supportsReasoning;
+  const reasoningLockedOn =
+    effectiveSupportsReasoning &&
+    (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
-  const reasoningDisabled = !modelLoaded || !supportsReasoning;
-  const showReasoningControl = supportsReasoning || reasoningAlwaysOn;
+  const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
+  const showReasoningControl =
+    effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
   const toolsDisabled = !modelLoaded || !supportsTools;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
@@ -686,7 +705,7 @@ export function SharedComposer({
             </>
           )}
           {showReasoningControl ? (
-            reasoningStyle === "reasoning_effort" ? (
+            effectiveReasoningStyle === "reasoning_effort" ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <button
@@ -758,24 +777,39 @@ export function SharedComposer({
           ) : (
             <button
               type="button"
-              disabled={reasoningDisabled}
+              disabled={reasoningDisabled || reasoningLockedOn}
+              aria-disabled={reasoningDisabled || reasoningLockedOn}
+              title={
+                reasoningLockedOn
+                  ? "This model requires reasoning to stay on."
+                  : undefined
+              }
               onClick={() => {
-                if (reasoningAlwaysOn) return;
+                if (reasoningLockedOn) return;
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
                 applyQwenThinkingParams(next);
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                reasoningDisabled
-                  ? "cursor-not-allowed opacity-40"
-                  : (reasoningEnabled || reasoningAlwaysOn)
-                    ? "bg-primary/10 text-primary hover:bg-primary/20"
-                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+                reasoningLockedOn
+                  ? "cursor-not-allowed bg-primary/10 text-primary"
+                  : reasoningDisabled
+                    ? "cursor-not-allowed opacity-40"
+                    : effectiveReasoningEnabled
+                      ? "bg-primary/10 text-primary hover:bg-primary/20"
+                      : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
               )}
-              aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+              aria-label={
+                reasoningLockedOn
+                  ? "Thinking is required for this model"
+                  : effectiveReasoningEnabled
+                    ? "Disable thinking"
+                    : "Enable thinking"
+              }
             >
-              {(reasoningEnabled || reasoningAlwaysOn) && !reasoningDisabled ? (
+              {reasoningLockedOn ||
+              (effectiveReasoningEnabled && !reasoningDisabled) ? (
                 <LightbulbIcon className="size-3.5" />
               ) : (
                 <LightbulbOffIcon className="size-3.5" />

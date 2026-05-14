@@ -181,6 +181,18 @@ export function getProviderCapabilities(
 }
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
+  "google/gemini-pro-latest",
+  "baidu/cobuddy:free",
+  "inclusionai/ring-2.6-1t:free",
+  "deepseek/deepseek-r1",
+]);
+
+function isOpenRouterMandatoryReasoningModel(modelId: string): boolean {
+  const normalized = modelId.trim().toLowerCase();
+  const canonical = normalized.startsWith("~") ? normalized.slice(1) : normalized;
+  return OPENROUTER_MANDATORY_REASONING_MODELS.has(canonical);
+}
 type ReasoningCaps = {
   supportsReasoning: boolean;
   supportsReasoningOff: boolean;
@@ -362,6 +374,16 @@ export function getExternalReasoningCapabilities(
     return withEnableThinkingStyle();
   }
 
+  // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even
+  // if they arrive through aliased/custom provider routes.
+  if (isOpenRouterMandatoryReasoningModel(normalizedModel)) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: true,
+      supportsReasoningOff: false,
+    });
+  }
+
   // OpenRouter ids are namespaced (e.g. "openai/gpt-5.5").
   const modelForMatching =
     normalizedProvider === "openrouter" && normalizedModel.includes("/")
@@ -376,9 +398,8 @@ export function getExternalReasoningCapabilities(
   if (isOpenRouterProvider) {
     // OpenRouter's unified `reasoning` parameter is accepted on every
     // chat-completion request; the gateway silently no-ops for models
-    // that don't reason. Surface an enable_thinking-style toggle for all
-    // OpenRouter models — the router decides at fan-out time whether to
-    // exercise the underlying reasoning channel.
+    // that don't reason. Mandatory-reasoning ids are handled by the
+    // early guard above; everything else exposes a toggleable control.
     return {
       supportsReasoning: true,
       reasoningStyle: "enable_thinking",

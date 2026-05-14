@@ -965,10 +965,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? reasoningEffort
             : "low";
         const externalReasoningEnabled =
-          externalReasoningCaps.reasoningStyle === "reasoning_effort" &&
-          !externalReasoningCaps.supportsReasoningOff
-            ? true
-            : reasoningEnabled;
+          !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {

@@ -81,6 +81,15 @@ _MISTRAL_THINKING_SPECS = (
     ),
 )
 
+_OPENROUTER_MANDATORY_REASONING_MODELS = frozenset(
+    {
+        "~google/gemini-pro-latest",
+        "baidu/cobuddy:free",
+        "inclusionai/ring-2.6-1t:free",
+        "deepseek/deepseek-r1",
+    }
+)
+
 
 def _mistral_thinking_spec(model: str) -> _MistralThinkingSpec:
     for spec in _MISTRAL_THINKING_SPECS:
@@ -293,14 +302,20 @@ class ExternalProviderClient:
         # Shape: `reasoning: {enabled?: bool, effort?: low|medium|high,
         # max_tokens?: N, exclude?: bool}` with effort and max_tokens
         # mutually exclusive. We forward either an effort level (when
-        # the user picked one) or a bare {enabled: true/false}.
+        # the user picked one) or a bare {enabled: true}. A small set of
+        # known routes rejects explicit disable with 400 ("Reasoning is
+        # mandatory for this endpoint ..."), so only those omit "off".
         if self.provider_type == "openrouter":
+            normalized_or_model = model.strip().lower()
             if reasoning_effort in ("low", "medium", "high"):
                 body["reasoning"] = {"effort": reasoning_effort}
             elif enable_thinking is True:
                 body["reasoning"] = {"enabled": True}
             elif enable_thinking is False:
-                body["reasoning"] = {"enabled": False}
+                if normalized_or_model in _OPENROUTER_MANDATORY_REASONING_MODELS:
+                    body.pop("reasoning", None)
+                else:
+                    body["reasoning"] = {"enabled": False}
 
         url = f"{self.base_url}/chat/completions"
         logger.info(

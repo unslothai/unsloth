@@ -479,6 +479,7 @@ const ReasoningToggle: FC = () => {
   );
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
@@ -486,27 +487,45 @@ const ReasoningToggle: FC = () => {
   const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
   const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const effectiveExternalModelId =
+    selectedExternalProvider?.providerType === "openrouter" &&
+    externalSelection?.modelId === "openrouter/free" &&
+    lastOpenRouterChosenModel
+      ? lastOpenRouterChosenModel
+      : externalSelection?.modelId;
   const externalReasoningCaps =
     externalSelection != null
       ? getExternalReasoningCapabilities(
-          externalProviders.find((p) => p.id === externalSelection.providerId)
-            ?.providerType,
-          externalSelection.modelId,
+          selectedExternalProvider?.providerType,
+          effectiveExternalModelId,
         )
       : null;
+  const effectiveReasoningStyle =
+    externalReasoningCaps?.reasoningStyle ?? reasoningStyle;
+  const effectiveReasoningAlwaysOn =
+    externalReasoningCaps?.reasoningAlwaysOn ?? reasoningAlwaysOn;
   const effectiveSupportsReasoningOff =
     externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
   const effectiveReasoningEffortLevels =
     externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
-  const effectiveReasoningEnabled =
-    reasoningStyle === "reasoning_effort" && !effectiveSupportsReasoningOff
-      ? true
-      : reasoningEnabled;
+  const effectiveSupportsReasoning =
+    externalReasoningCaps?.supportsReasoning ?? supportsReasoning;
+  const reasoningLockedOn =
+    effectiveSupportsReasoning &&
+    (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
-  const disabled = !(modelLoaded && supportsReasoning);
+  const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh") return level.charAt(0).toUpperCase() + level.slice(1);
     const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
@@ -520,7 +539,7 @@ const ReasoningToggle: FC = () => {
   };
   const effortLabel = formatEffortLabel(reasoningEffort);
 
-  if (reasoningStyle === "reasoning_effort") {
+  if (effectiveReasoningStyle === "reasoning_effort") {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
@@ -582,17 +601,34 @@ const ReasoningToggle: FC = () => {
   return (
     <button
       type="button"
-      disabled={disabled}
+      disabled={disabled || reasoningLockedOn}
+      aria-disabled={disabled || reasoningLockedOn}
+      title={
+        reasoningLockedOn
+          ? "This model requires reasoning to stay on."
+          : undefined
+      }
       onClick={() => {
+        if (reasoningLockedOn) return;
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
       }}
       className="composer-pill-btn"
-      data-active={reasoningEnabled && !disabled ? "true" : "false"}
-      aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+      data-active={
+        reasoningLockedOn || (effectiveReasoningEnabled && !disabled)
+          ? "true"
+          : "false"
+      }
+      aria-label={
+        reasoningLockedOn
+          ? "Thinking is required for this model"
+          : effectiveReasoningEnabled
+            ? "Disable thinking"
+            : "Enable thinking"
+      }
     >
-      {reasoningEnabled && !disabled ? (
+      {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
         <LightbulbIcon className="size-3.5" />
       ) : (
         <LightbulbOffIcon className="size-3.5" />
