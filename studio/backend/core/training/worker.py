@@ -766,20 +766,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    max_grad_norm = float(config.get("max_grad_norm", 0.0) or 0.0)
-    if "max_grad_value" in config and config.get("max_grad_value") is not None:
-        max_grad_value = float(config.get("max_grad_value") or 0.0)
-    else:
-        max_grad_value = 0.0 if max_grad_norm > 0 else 1.0
-    if max_grad_norm > 0 and max_grad_value > 0:
-        _send(
-            "status",
-            status_message = (
-                "max_grad_norm and max_grad_value are both enabled; "
-                "ignoring max_grad_norm in favor of max_grad_value."
-            ),
-        )
-        max_grad_norm = 0.0
+    # MLX: value-clip grads to [-5, 5]; norm clipping disabled for compile-friendliness.
+    max_grad_norm = 0.0
+    max_grad_value = 5.0  # TODO: expose MLX grad-clip in Studio UI for power users
 
     trainer = MLXTrainer(
         model = model,
