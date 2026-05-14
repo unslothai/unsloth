@@ -89,7 +89,19 @@ jobs:
     # Silicon (~5-7 min), so we budget headroom.
     timeout-minutes: 25
     steps:
+      # harden-runner audit mode: macOS runners cannot use blocking mode
+      # today (eBPF egress enforcement is Linux-only), but audit mode is
+      # supported cross-platform and surfaces the egress destinations in
+      # the runner log. This produces the data needed to graduate this
+      # job to a block-mode allowlist once macOS support lands.
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -153,7 +165,20 @@ jobs:
             'httpx==0.28.1'
           pip install --index-url https://download.pytorch.org/whl/cpu \
             'torch==2.10.0'
-          pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"
+          # github.com occasionally 500s on the git fetch; retry the
+          # zoo install so a single upstream blip does not fail CI.
+          for attempt in 1 2 3; do
+            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::pip install unsloth_zoo failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((5 * attempt))
+            echo "::warning::unsloth_zoo install failed (attempt $attempt/3), retrying in ${delay}s..."
+            sleep "$delay"
+          done
           pip install -e . --no-deps
 
       # Real Apple Silicon sanity: confirm _IS_MLX activates on real

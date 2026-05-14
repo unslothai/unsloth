@@ -41,7 +41,7 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@tailwindcss/vite": "^4.2.2",
-    "@tanstack/react-router": "^1.159.10",
+    "@tanstack/react-router": "1.169.2",
     "@tanstack/react-table": "^8.21.3",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
@@ -82,6 +82,11 @@
     "tw-shimmer": "^0.4.6",
     "unpdf": "^1.4.0",
     "zustand": "^5.0.11"
+  },
+  "overrides": {
+    "@tanstack/react-router": "1.169.2",
+    "@tanstack/router-core": "1.169.2",
+    "@tanstack/history": "1.161.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

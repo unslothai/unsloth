@@ -14,11 +14,28 @@ Converts IPython magics to plain Python:
 
 import nbformat
 import re
+import shlex
 import sys
 import os
 import urllib.request
 import urllib.parse
 from pathlib import Path
+
+
+# Hosts we are willing to fetch raw notebook JSON from. Anything else
+# is rejected before `urlopen` so a typoed / hostile URL cannot pull
+# code from arbitrary infrastructure.
+_ALLOWED_NOTEBOOK_HOSTS = {
+    "raw.githubusercontent.com",
+    "gist.githubusercontent.com",
+}
+
+
+# Shell metacharacters that imply the cell's `!cmd` line cannot be
+# parsed as a flat argv. If any of these appears, `shlex.split` would
+# either fail or, worse, silently strip the operator -- so we keep
+# `shell=True` for that command and emit a review marker.
+_SHELL_METACHARS_RE = re.compile(r"\$\(|`|\|\||\||&&|>>?|<<?|\*|\?|;")
 
 
 def needs_fstring(cmd: str) -> bool:
@@ -53,6 +70,18 @@ def download_notebook(url: str) -> tuple[str, str]:
     parsed = urllib.parse.urlparse(raw_url)
     filename = os.path.basename(urllib.parse.unquote(parsed.path))
 
+    # Host allowlist. Refuse to fetch from anywhere the campaign IOC
+    # tables flag (or just anywhere we don't recognise). The blob->raw
+    # conversion above only emits `raw.githubusercontent.com`, so a
+    # rejection here means the caller hand-typed a URL pointing
+    # somewhere we don't trust.
+    host = parsed.hostname
+    if host not in _ALLOWED_NOTEBOOK_HOSTS:
+        raise ValueError(
+            f"Refused notebook fetch from {host!r}: not in allowlist "
+            f"{sorted(_ALLOWED_NOTEBOOK_HOSTS)}"
+        )
+
     # Download
     print(f"Downloading {url}...")
     with urllib.request.urlopen(raw_url, timeout = 60) as response:
@@ -74,7 +103,52 @@ def replace_colab_paths(source: str) -> str:
     return source
 
 
-def convert_cell_to_python(source: str) -> str:
+def _emit_shell_command(indent: str, full_cmd: str, *, allow_shell: bool) -> list[str]:
+    """Render a `!cmd` notebook line as one or more Python statements.
+
+    When the command body is f-string-interpolated, contains shell
+    metacharacters, or spans multiple lines, falling back to
+    `shell=True` is the only correct option -- `shlex.split` would
+    either drop operators or fail outright. We surface that with a
+    `# WARNING: shell=True; reviewed for hostile input` comment so a
+    reviewer cannot miss it.
+
+    Otherwise we emit `subprocess.run(shlex.split(cmd), shell=False)`
+    so the converted script is not a re-injection vector if the
+    notebook ever interpolates user-controlled data.
+
+    `allow_shell` defaults to True at the CLI for backwards
+    compatibility. Setting it to False makes `shell=True` emission a
+    hard error (no surprise behaviour).
+    """
+    needs_f = needs_fstring(full_cmd)
+    has_meta = bool(_SHELL_METACHARS_RE.search(full_cmd))
+    multiline = "\n" in full_cmd
+
+    must_use_shell = needs_f or has_meta or multiline
+
+    if must_use_shell:
+        if not allow_shell:
+            raise ValueError(
+                "Cell uses shell metacharacters / interpolation but "
+                "--no-allow-shell was set; refusing to emit shell=True"
+            )
+        warn = f"{indent}# WARNING: shell=True; reviewed for hostile input"
+        f_prefix = "f" if needs_f else ""
+        if multiline:
+            escaped_cmd = full_cmd.replace('"""', r"\"\"\"")
+            if escaped_cmd.rstrip().endswith('"'):
+                escaped_cmd = escaped_cmd.rstrip() + " "
+            stmt = f'{indent}subprocess.run({f_prefix}"""{escaped_cmd}""", shell=True)'
+        else:
+            stmt = f"{indent}subprocess.run({f_prefix}{full_cmd!r}, shell=True)"
+        return [warn, stmt]
+
+    # Shell-safe argv form.
+    return [f"{indent}subprocess.run(shlex.split({full_cmd!r}), shell=False)"]
+
+
+def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
     """Convert a cell's IPython magics to plain Python."""
     lines = source.split("\n")
     result = []
@@ -112,18 +186,9 @@ def convert_cell_to_python(source: str) -> str:
                 cmd_lines.append(lines[i].strip())
             full_cmd = "\n".join(cmd_lines)
 
-            f_prefix = "f" if needs_fstring(full_cmd) else ""
-            if "\n" in full_cmd:
-                escaped_cmd = full_cmd.replace('"""', r"\"\"\"")
-                if escaped_cmd.rstrip().endswith('"'):
-                    escaped_cmd = escaped_cmd.rstrip() + " "
-                result.append(
-                    f'{indent}subprocess.run({f_prefix}"""{escaped_cmd}""", shell=True)'
-                )
-            else:
-                result.append(
-                    f"{indent}subprocess.run({f_prefix}{full_cmd!r}, shell=True)"
-                )
+            result.extend(
+                _emit_shell_command(indent, full_cmd, allow_shell = allow_shell)
+            )
 
         # %cd path -> os.chdir(path)
         elif stripped.startswith("%cd "):
@@ -154,7 +219,12 @@ def convert_cell_to_python(source: str) -> str:
     return "\n".join(result)
 
 
-def convert_notebook(notebook_content: str, source_name: str = "notebook") -> str:
+def convert_notebook(
+    notebook_content: str,
+    source_name: str = "notebook",
+    *,
+    allow_shell: bool = True,
+) -> str:
     """Convert notebook JSON content to Python script."""
     # Parse notebook
     if isinstance(notebook_content, str):
@@ -167,6 +237,7 @@ def convert_notebook(notebook_content: str, source_name: str = "notebook") -> st
         "# coding: utf-8",
         f"# Converted from: {source_name}",
         "",
+        "import shlex",
         "import subprocess",
         "import os",
         "import sys",
@@ -189,7 +260,7 @@ def convert_notebook(notebook_content: str, source_name: str = "notebook") -> st
             continue
 
         if cell.cell_type == "code":
-            converted = convert_cell_to_python(source)
+            converted = convert_cell_to_python(source, allow_shell = allow_shell)
             converted = replace_colab_paths(converted)
             lines.append(converted)
             lines.append("")
@@ -215,13 +286,20 @@ def convert_notebook(notebook_content: str, source_name: str = "notebook") -> st
     return "\n".join(lines)
 
 
-def convert_notebook_to_script(source: str, output_dir: str | None = None):
+def convert_notebook_to_script(
+    source: str,
+    output_dir: str | None = None,
+    *,
+    allow_shell: bool = True,
+):
     """
     Convert a notebook to Python script.
 
     Args:
         source: Local file path or URL to notebook
         output_dir: Output directory (optional, defaults to current directory)
+        allow_shell: When False, refuse to emit `shell=True` for any
+            `!cmd` cell that uses metacharacters / interpolation.
     """
     if is_url(source):
         content, filename = download_notebook(source)
@@ -246,7 +324,7 @@ def convert_notebook_to_script(source: str, output_dir: str | None = None):
         output_path = output_filename
 
     # Convert
-    script = convert_notebook(content, source_name)
+    script = convert_notebook(content, source_name, allow_shell = allow_shell)
 
     # Write output
     with open(output_path, "w", encoding = "utf-8") as f:
@@ -281,19 +359,56 @@ Examples:
     parser.add_argument(
         "-o", "--output", dest = "output_dir", default = ".", help = "Output directory."
     )
+    # Default True for backwards compatibility: existing Colab notebooks
+    # routinely use pipes / redirection / interpolation in `!cmd` lines
+    # and the converted script needs to keep working. Operators who
+    # convert untrusted notebooks should pass --no-allow-shell to force
+    # a hard error on every metacharacter-bearing cell.
+    parser.add_argument(
+        "--allow-shell",
+        dest = "allow_shell",
+        action = "store_true",
+        default = True,
+        help = "Allow emitting subprocess.run(..., shell=True) for cells "
+        "that use shell metacharacters or interpolation (default).",
+    )
+    parser.add_argument(
+        "--no-allow-shell",
+        dest = "allow_shell",
+        action = "store_false",
+        help = "Refuse to emit shell=True; cells with metacharacters error out.",
+    )
 
     args = parser.parse_args()
 
     # Create output directory if needed
     os.makedirs(args.output_dir, exist_ok = True)
 
+    # SF2: track per-notebook failures so a CI invocation that converts
+    # 10 notebooks but silently fails on 3 is no longer reported as
+    # success. Each failure is collected and the loop continues so the
+    # caller sees the full set; final exit status is 1 if anything
+    # failed.
+    failures: list[tuple[str, str]] = []
+    ok = 0
+    total = len(args.notebooks)
     for source in args.notebooks:
         try:
             convert_notebook_to_script(
-                source, output_dir = args.output_dir if args.output_dir != "." else None
+                source,
+                output_dir = args.output_dir if args.output_dir != "." else None,
+                allow_shell = args.allow_shell,
             )
+            ok += 1
         except Exception as e:
             print(f"ERROR converting {source}: {e}")
+            failures.append((source, f"{type(e).__name__}: {e}"))
+
+    print(
+        f"converted {ok}/{total}, {len(failures)} failed",
+        file = sys.stderr if failures else sys.stdout,
+    )
+    sys.exit(1 if failures else 0)
 
 
 if __name__ == "__main__":

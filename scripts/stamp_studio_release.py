@@ -12,8 +12,33 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
+
+
+def _atomic_write_text(path: Path, data: str, encoding: str = "utf-8") -> None:
+    """Atomic version of ``Path.write_text``.
+
+    A crash or signal mid-write leaves the prior file intact; the
+    Studio build never reads a partial ``_studio_release_build.py``.
+    """
+    dirpath = str(path.parent) or "."
+    path.parent.mkdir(parents = True, exist_ok = True)
+    fd, tmp_path = tempfile.mkstemp(prefix = ".stamp_studio.", dir = dirpath)
+    try:
+        with os.fdopen(fd, "w", encoding = encoding) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_INFO_PATH = (
@@ -178,11 +203,11 @@ def stamp(require_release: bool) -> int:
                 file = sys.stderr,
             )
             return 2
-        BUILD_INFO_PATH.write_text(PLACEHOLDER, encoding = "utf-8")
+        _atomic_write_text(BUILD_INFO_PATH, PLACEHOLDER, encoding = "utf-8")
         print("dev")
         return 0
 
-    BUILD_INFO_PATH.write_text(build_info_source(version), encoding = "utf-8")
+    _atomic_write_text(BUILD_INFO_PATH, build_info_source(version), encoding = "utf-8")
     print(f"Stamping Studio release version {version} from {source}", file = sys.stderr)
     print(version)
     return 0

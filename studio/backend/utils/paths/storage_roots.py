@@ -276,21 +276,52 @@ def _clean_relative_path(
     return Path(*parts) if parts else Path()
 
 
+def _assert_contained(resolved: Path, root: Path) -> None:
+    """Raise ValueError if ``resolved`` realpaths outside ``root``."""
+    try:
+        resolved_real = Path(os.path.realpath(resolved))
+        root_real = Path(os.path.realpath(root))
+    except OSError as exc:
+        raise ValueError(f"path resolution failed: {exc}") from exc
+    try:
+        resolved_real.relative_to(root_real)
+    except ValueError as exc:
+        raise ValueError(
+            f"path escapes root: {resolved!s} -> {resolved_real!s} "
+            f"is not under {root_real!s}"
+        ) from exc
+
+
 def resolve_under_root(
     path_value: str | None,
     *,
     root: Path,
     strip_prefixes: tuple[str, ...] = (),
 ) -> Path:
+    """Resolve ``path_value`` and assert the result is under ``root``.
+
+    Absolutes are accepted only if already contained (so internal pre-resolved
+    paths re-enter idempotently); user-facing schemas reject absolutes upstream.
+    """
     if not path_value or not str(path_value).strip():
         return root
 
-    path = Path(str(path_value).strip()).expanduser()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+
     if path.is_absolute():
+        _assert_contained(path, root)
         return path
 
-    cleaned = _clean_relative_path(str(path), strip_prefixes = strip_prefixes)
-    return root / cleaned
+    cleaned = _clean_relative_path(raw, strip_prefixes = strip_prefixes)
+    candidate = root / cleaned
+    _assert_contained(candidate, root)
+    return candidate
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
@@ -318,9 +349,22 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_dataset_path(path_value: str) -> Path:
-    path = Path(path_value).expanduser()
+    raw = str(path_value or "").strip()
+    if "\x00" in raw:
+        raise ValueError("dataset path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"dataset path may not contain '..' segments: {raw!r}")
     if path.is_absolute():
-        return path
+        for root_fn in (datasets_root, dataset_uploads_root, recipe_datasets_root):
+            try:
+                _assert_contained(path, root_fn())
+                return path
+            except ValueError:
+                continue
+        raise ValueError(
+            f"dataset path must be relative or under a dataset root: {raw!r}"
+        )
 
     parts = [part for part in Path(path_value).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:
