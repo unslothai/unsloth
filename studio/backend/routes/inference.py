@@ -3586,11 +3586,7 @@ def _select_anthropic_server_tools(
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
 
-    return [
-        tool
-        for tool in all_tools
-        if tool["function"]["name"] in selected_names
-    ]
+    return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
 
 
 def _normalize_anthropic_openai_images(
