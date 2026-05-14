@@ -362,6 +362,8 @@ def _ensure_rocm_torch() -> None:
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch:
             return  # no AMD GPU visible via hipinfo
+        # Probe whether torch already links against HIP.
+        _torch_already_rocm = False
         try:
             probe = subprocess.run(
                 [
@@ -379,23 +381,25 @@ def _ensure_rocm_torch() -> None:
                 timeout = 30,
             )
             if probe.returncode == 0 and probe.stdout.decode().strip() == "yes":
-                _rocm_windows_torch_installed = True
-                return  # already ROCm torch
+                _torch_already_rocm = True
         except (OSError, subprocess.TimeoutExpired):
             pass
-        index_url = _windows_rocm_index_url(gfx_arch)
-        if index_url is None:
-            print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
-            return
-        print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
-        pip_install(
-            f"ROCm torch (Windows, {gfx_arch})",
-            "--force-reinstall",
-            "--index-url", index_url,
-            "torch", "torchvision", "torchaudio",
-            constrain = False,
-        )
-        # bitsandbytes Windows ROCm wheel.
+        if not _torch_already_rocm:
+            index_url = _windows_rocm_index_url(gfx_arch)
+            if index_url is None:
+                print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
+                return
+            print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
+            pip_install(
+                f"ROCm torch (Windows, {gfx_arch})",
+                "--force-reinstall",
+                "--index-url", index_url,
+                "torch", "torchvision", "torchaudio",
+                constrain = False,
+            )
+        # Always install AMD Windows bitsandbytes — the PyPI wheel ships only
+        # CUDA DLLs and will fail to load on ROCm.  Install even when torch was
+        # already a ROCm build so that `studio update` repairs a broken bnb.
         _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
         if _bnb_win_url is not None:
             pip_install_try(
