@@ -34,7 +34,10 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
-from routes.inference import _normalize_anthropic_openai_images
+from routes.inference import (
+    _normalize_anthropic_openai_images,
+    _select_anthropic_server_tools,
+)
 from fastapi import HTTPException
 import base64 as _b64
 from io import BytesIO as _BytesIO
@@ -441,6 +444,24 @@ class TestAnthropicToolsToOpenAI:
             {"type": "web_search_20250305", "name": "web_search"},
         ]
         assert anthropic_tools_to_openai(tools) == []
+
+    def test_server_tool_selection_merges_enabled_tools_extension(self):
+        all_tools = [
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "function": {"name": "python"}},
+            {"type": "function", "function": {"name": "terminal"}},
+        ]
+
+        result = _select_anthropic_server_tools(
+            all_tools,
+            requested_studio_tools = {"web_search"},
+            enabled_tools = ["python"],
+        )
+
+        assert [tool["function"]["name"] for tool in result] == [
+            "web_search",
+            "python",
+        ]
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(

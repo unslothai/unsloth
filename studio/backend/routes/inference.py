@@ -3573,6 +3573,26 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     return requested
 
 
+def _select_anthropic_server_tools(
+    all_tools: list[dict],
+    requested_studio_tools: set[str],
+    enabled_tools: Optional[list[str]],
+) -> list[dict]:
+    """Select Studio tools requested through Anthropic tools and extensions."""
+    if not requested_studio_tools and enabled_tools is None:
+        return all_tools
+
+    selected_names = set(requested_studio_tools)
+    if enabled_tools is not None:
+        selected_names.update(enabled_tools)
+
+    return [
+        tool
+        for tool in all_tools
+        if tool["function"]["name"] in selected_names
+    ]
+
+
 def _normalize_anthropic_openai_images(
     openai_messages: list[dict], is_vision: bool
 ) -> bool:
@@ -3758,16 +3778,11 @@ async def anthropic_messages(
     if server_tools:
         from core.inference.tools import ALL_TOOLS
 
-        if requested_studio_tools:
-            openai_tools = [
-                t for t in ALL_TOOLS if t["function"]["name"] in requested_studio_tools
-            ]
-        elif payload.enabled_tools is not None:
-            openai_tools = [
-                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
-            ]
-        else:
-            openai_tools = ALL_TOOLS
+        openai_tools = _select_anthropic_server_tools(
+            ALL_TOOLS,
+            requested_studio_tools,
+            payload.enabled_tools,
+        )
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _tool_names = {t["function"]["name"] for t in openai_tools}
