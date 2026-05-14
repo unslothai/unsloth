@@ -1178,22 +1178,108 @@ def run_training_process(
         except Exception:
             pass
 
-    # ── 1f. Disable torch.compile on Windows ROCm ──
-    # torch._grouped_mm crashes on gfx1200 (null HIP kernel pointer, 0xC0000005).
-    # The crash is triggered via torch.compile's JitDecomp dispatch during the
-    # first forward pass (stack: _grouped_mm ← JitDecompRegisterer ← Python).
-    # Disabling dynamo entirely avoids the kernel dispatch.  torch is already
-    # in sys.modules from section 1e's `import torch.distributed`.
-    if sys.platform == "win32" and "TORCHDYNAMO_DISABLE" not in os.environ:
-        _torch_for_rocm_check = sys.modules.get("torch")
-        if _torch_for_rocm_check is not None and getattr(
-            getattr(_torch_for_rocm_check, "version", None), "hip", None
+    # ── 1f. Windows ROCm runtime patches ──
+    # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm 7.12 Windows),
+    # causing 0xC0000005 (access violation) during training.
+    #
+    # Root cause: the JitDecomp autograd decomposition system (NOT torch.compile)
+    # dispatches _grouped_mm → _fused_adagrad_ → _grouped_mm HIP → null crash.
+    # TORCHDYNAMO_DISABLE=1 stops the compiler frontend but does NOT stop
+    # JitDecomp, so we must also override the CUDA dispatch key for _grouped_mm
+    # with a safe Python fallback.
+    #
+    # Verified on torch==2.10.0+rocm7.12.0:
+    #   torch.library.Library("aten","IMPL").impl("_grouped_mm", fn, "CUDA")
+    #   correctly overrides the HIP kernel and the call succeeds.
+    #
+    # Schema: _grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None,
+    #                     Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor
+    #   offs: optional group-split offsets (MoE-style variable-size batches)
+    #
+    # torch is already in sys.modules from section 1e's `import torch.distributed`.
+    _WINDOWS_ROCM_GROUPED_MM_LIB = None  # kept alive to prevent GC of registration
+    if sys.platform == "win32":
+        _torch_for_rocm = sys.modules.get("torch")
+        if _torch_for_rocm is not None and getattr(
+            getattr(_torch_for_rocm, "version", None), "hip", None
         ):
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.info(
-                "Windows ROCm detected — torch.compile disabled "
-                "(_grouped_mm kernel crashes on gfx1200 with 0xC0000005)"
-            )
+            # Disable dynamo (belt-and-suspenders; JitDecomp patch below is the
+            # real fix, but keeping dynamo off avoids any other compile paths).
+            if "TORCHDYNAMO_DISABLE" not in os.environ:
+                os.environ["TORCHDYNAMO_DISABLE"] = "1"
+                logger.info("Windows ROCm: torch.compile (dynamo) disabled")
+
+            # Patch _grouped_mm CUDA dispatch with a safe Python mm fallback.
+            try:
+                import warnings as _warnings
+
+                _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
+
+                def _grouped_mm_safe_impl(
+                    self, mat2, offs=None, bias=None, out_dtype=None
+                ):
+                    """Safe fallback for _grouped_mm on gfx1200 (null HIP kernel)."""
+                    _t = _torch_for_rocm
+                    if offs is None:
+                        # Simple case: plain matrix multiply.
+                        result = _t.mm(self.contiguous(), mat2.contiguous())
+                    else:
+                        # Grouped case: offs[i] is the exclusive end-row of group i
+                        # in `self`; mat2 may be 3-D (num_groups, K, N) or 2-D.
+                        offs_list = offs.tolist()
+                        pieces = []
+                        prev = 0
+                        for idx, end in enumerate(offs_list):
+                            end = int(end)
+                            a_part = self[prev:end].contiguous()
+                            if mat2.dim() == 3:
+                                b_part = mat2[idx].contiguous()
+                            else:
+                                b_part = mat2.contiguous()
+                            pieces.append(_t.mm(a_part, b_part))
+                            prev = end
+                        # Include any trailing rows not covered by offs
+                        if prev < self.shape[0]:
+                            a_tail = self[prev:].contiguous()
+                            b_tail = (
+                                mat2[-1].contiguous()
+                                if mat2.dim() == 3
+                                else mat2.contiguous()
+                            )
+                            pieces.append(_t.mm(a_tail, b_tail))
+                        result = (
+                            _t.cat(pieces, dim=0)
+                            if pieces
+                            else _t.zeros(
+                                0,
+                                mat2.shape[-1],
+                                device=self.device,
+                                dtype=self.dtype,
+                            )
+                        )
+                    if bias is not None:
+                        result = result + bias
+                    if out_dtype is not None:
+                        result = result.to(out_dtype)
+                    elif result.dtype != self.dtype:
+                        result = result.to(self.dtype)
+                    return result
+
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore")
+                    _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+
+                _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
+                logger.info(
+                    "Windows ROCm: patched _grouped_mm CUDA dispatch "
+                    "(null HIP kernel on gfx1200 bypassed with safe mm fallback)"
+                )
+            except Exception as _patch_exc:
+                logger.warning(
+                    "Windows ROCm: could not patch _grouped_mm — "
+                    "training may crash with 0xC0000005: %s",
+                    _patch_exc,
+                )
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
