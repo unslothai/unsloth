@@ -305,17 +305,28 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
     tc = pytest.importorskip("triton.compiler.compiler")
 
     ck_cls = tc.CompiledKernel
-    # Healthy if class has num_ctas directly; otherwise the fix installs
-    # at instance __init__ time and we cannot cheaply observe that on CPU.
+    # Healthy if either: pre-3.6 class attr present, or unsloth wrapped
+    # ``__init__`` to install num_ctas + cluster_dims per instance (the
+    # post-3.6 shape ``fix_triton_compiled_kernel_missing_attrs`` lands).
     if hasattr(ck_cls, "num_ctas"):
         return
+    init = getattr(ck_cls, "__init__", None)
+    if init is not None:
+        code = getattr(init, "__code__", None)
+        freevars = set(getattr(code, "co_freevars", ()) or ())
+        co_names = set(getattr(code, "co_names", ()) or ())
+        if "_orig_init" in freevars or {"num_ctas", "cluster_dims"}.issubset(
+            co_names
+        ):
+            return
 
     pytest.fail(
         "DRIFT DETECTED: triton.CompiledKernel lacks the `num_ctas` "
-        "class attribute; fix_triton_compiled_kernel_missing_attrs "
-        "patches __init__ to inject num_ctas and cluster_dims so "
-        "torch._inductor.runtime.triton_heuristics.make_launcher "
-        "stops crashing under torch.compile."
+        "class attribute AND ``__init__`` has not been wrapped by "
+        "fix_triton_compiled_kernel_missing_attrs; torch Inductor's "
+        "``make_launcher`` will crash on the eager "
+        "``binary.metadata.num_ctas, *binary.metadata.cluster_dims`` "
+        "unpack under torch.compile."
     )
 
 
