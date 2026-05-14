@@ -1099,6 +1099,30 @@ def run_training_process(
 
     _STUB_SENTINEL = object()
 
+    # Metaclass for stub types so that isinstance(x, StubClass) returns False
+    # instead of raising TypeError ("arg 2 must be a type").
+    # peft/tuners/lora/torchao.py does:
+    #   from torchao.dtypes import AffineQuantizedTensor, LinearActivationQuantizedTensor
+    #   isinstance(weight, (AffineQuantizedTensor, LinearActivationQuantizedTensor))
+    # If those names resolve to stub modules rather than types, isinstance() raises.
+    class _StubTypeMeta(type):
+        def __instancecheck__(cls, instance):
+            return False
+        def __subclasscheck__(cls, subclass):
+            return False
+        def __getattr__(cls, attr):
+            if attr.startswith("__"):
+                raise AttributeError(attr)
+            child = _StubTypeMeta(attr, (), {})
+            setattr(cls, attr, child)
+            return child
+        def __call__(cls, *args, **kwargs):
+            return None
+
+    def _make_stub_type(name):
+        """Stub class: accepted by isinstance() (always False), supports attr access."""
+        return _StubTypeMeta(name, (), {})
+
     def _make_mod_stub(mod_name):
         m = _types.ModuleType(mod_name)
         m.__path__ = []
@@ -1108,9 +1132,9 @@ def run_training_process(
         def _ga(attr, _m=m, _n=mod_name):
             if attr.startswith("__"):
                 raise AttributeError(attr)
-            child_name = f"{_n}.{attr}"
-            child = _make_mod_stub(child_name)
-            sys.modules.setdefault(child_name, child)
+            # Return a stub CLASS (not a module) so that isinstance(x, attr)
+            # works and returns False instead of raising TypeError.
+            child = _make_stub_type(f"{_n}.{attr}")
             setattr(_m, attr, child)
             return child
         m.__getattr__ = _ga
