@@ -500,16 +500,16 @@ def resolve_attention_implementation(
         if _is_eager_only(model_type):
             attn_impl = _set_attn_impl(config, "eager")
         elif prefers_flex_attention and supports_flex_attention:
+            # Models in _FLEX_PREFERRED_MODELS (gemma3 family) prefer flex_attention
+            # over flash. Caller can still override by passing
+            # requested_attn_implementation="sdpa" (handled below).
             attn_impl = _set_attn_impl(config, "flex_attention")
         elif (
-            not prefers_flex_attention
-            and not flash_attention_disabled
+            not flash_attention_disabled
             and HAS_FLASH_ATTENTION
             and supports_flash_attention
         ):
             attn_impl = _set_attn_impl(config, "flash_attention_2")
-        elif supports_flex_attention:
-            attn_impl = _set_attn_impl(config, "flex_attention")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -521,6 +521,11 @@ def resolve_attention_implementation(
             )
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
+        elif supports_flex_attention:
+            # Flex is only a fallback for models that don't support SDPA
+            # (e.g. some custom configurations). Without this fallback such
+            # models would land on eager.
+            attn_impl = _set_attn_impl(config, "flex_attention")
         else:
             attn_impl = _set_attn_impl(config, "eager")
 
