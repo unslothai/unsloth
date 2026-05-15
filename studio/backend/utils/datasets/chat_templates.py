@@ -28,6 +28,23 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 {}"""
 
 
+def _is_mlx_runtime() -> bool:
+    try:
+        from unsloth_zoo.mlx import is_mlx_available
+    except ImportError:
+        return False
+    return is_mlx_available()
+
+
+def _chat_template_kwargs() -> dict:
+    if not _is_mlx_runtime():
+        return {}
+    return {
+        "patch_saving": False,
+        "use_zoo_tokenizer_patch": True,
+    }
+
+
 def get_tokenizer_chat_template(tokenizer, model_name):
     """
     Gets appropriate chat template for tokenizer based on model.
@@ -60,6 +77,7 @@ def get_tokenizer_chat_template(tokenizer, model_name):
             tokenizer = get_chat_template(
                 tokenizer,
                 chat_template = matched_template,
+                **_chat_template_kwargs(),
             )
         except Exception as e:
             logger.info(f"⚠️ Failed to apply Unsloth template '{matched_template}': {e}")
@@ -79,6 +97,7 @@ def get_tokenizer_chat_template(tokenizer, model_name):
                 tokenizer = get_chat_template(
                     tokenizer,
                     chat_template = "chatml",
+                    **_chat_template_kwargs(),
                 )
             except Exception as e:
                 logger.info(f"⚠️ Failed to apply default ChatML template: {e}")
@@ -255,7 +274,11 @@ def apply_chat_template_to_dataset(
         if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
             try:
                 from unsloth.chat_templates import get_chat_template
-                tokenizer = get_chat_template(tokenizer, chat_template = "alpaca")
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template = "alpaca",
+                    **_chat_template_kwargs(),
+                )
                 logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
             except Exception as e:
                 logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")

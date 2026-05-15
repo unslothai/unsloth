@@ -160,6 +160,10 @@ else:
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
+elif DEVICE_TYPE == "mlx":
+
+    def _gpu_getCurrentRawStream(_index = 0):
+        return 0
 # NVIDIA GPU Default Logic
 elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
@@ -206,6 +210,11 @@ if DEVICE_TYPE == "xpu":
         XPU_STREAMS = ()
         WEIGHT_BUFFERS = []
         ABSMAX_BUFFERS = []
+elif DEVICE_TYPE == "mlx":
+    CUDA_STREAMS = ()
+    XPU_STREAMS = ()
+    WEIGHT_BUFFERS = []
+    ABSMAX_BUFFERS = []
 else:
     # NVIDIA GPU Default Logic
     if DEVICE_COUNT > 0:

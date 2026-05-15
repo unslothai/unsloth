@@ -139,3 +139,25 @@ if not _has_real_accelerator():
     if not _preload_device_type("unsloth"):
         _install_device_type_stub("unsloth.device_type")
     _patch_torch_cuda_for_import()
+
+
+# ---------------------------------------------------------------------------
+# Apply ALL upstream-drift fixes (vllm GuidedDecodingParams alias, triton
+# CompiledKernel attr wrap, peft transformers_weight_conversion stub, etc.)
+# by triggering ``import unsloth``. Fixes live on ``unsloth/import_fixes.py``
+# and apply at unsloth import time. The GPU-free harness above pre-spoofs
+# the device-type chain so ``import unsloth`` survives on a CPU-only runner.
+# Suites without unsloth installed (e.g. security-only) keep passing --
+# the ImportError is swallowed and the drift detectors will surface any
+# pathology the missing patches would have hidden.
+# ---------------------------------------------------------------------------
+
+
+def _apply_upstream_import_fixes_for_tests() -> None:
+    try:
+        import unsloth  # noqa: F401  # runs unsloth/import_fixes.py
+    except Exception:
+        pass
+
+
+_apply_upstream_import_fixes_for_tests()

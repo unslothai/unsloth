@@ -13,6 +13,7 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
+import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -31,6 +32,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { parseExternalModelId } from "@/features/chat/external-providers";
+import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -210,13 +214,28 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+  const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
+
+  useEffect(() => {
+    const hour = new Date().getHours();
+    if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
+    else if (hour >= 12 && hour < 17) setCurrentEmoji("sloth magnify final.png");
+    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
+    else setCurrentEmoji("unsloth-gem.png");
+  }, []);
+
+  const currentEmojiSrc =
+    currentEmoji === "unsloth-gem.png"
+      ? `/${currentEmoji}`
+      : `/Sloth emojis/${currentEmoji}`;
+
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img
-              src="/Sloth emojis/sloth pc square.png"
+              src={currentEmojiSrc}
               alt="Sloth mascot"
               className="size-20"
             />
@@ -459,15 +478,76 @@ const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const disabled = !(modelLoaded && supportsReasoning);
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const effectiveExternalModelId =
+    selectedExternalProvider?.providerType === "openrouter" &&
+    externalSelection?.modelId === "openrouter/free" &&
+    lastOpenRouterChosenModel
+      ? lastOpenRouterChosenModel
+      : externalSelection?.modelId;
+  const externalReasoningCaps =
+    externalSelection != null
+      ? getExternalReasoningCapabilities(
+          selectedExternalProvider?.providerType,
+          effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
+        )
+      : null;
+  const effectiveReasoningStyle =
+    externalReasoningCaps?.reasoningStyle ?? reasoningStyle;
+  const effectiveReasoningAlwaysOn =
+    externalReasoningCaps?.reasoningAlwaysOn ?? reasoningAlwaysOn;
+  const effectiveSupportsReasoningOff =
+    externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
+  const effectiveReasoningEffortLevels =
+    externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
+  const effectiveSupportsReasoning =
+    externalReasoningCaps?.supportsReasoning ?? supportsReasoning;
+  const reasoningLockedOn =
+    effectiveSupportsReasoning &&
+    (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  const effectiveReasoningVisualEnabled =
+    effectiveReasoningEnabled && reasoningEffort !== "none";
+  const disabled = !(modelLoaded && effectiveSupportsReasoning);
+  const formatEffortLabel = (level: typeof reasoningEffort): string => {
+    if (level !== "xhigh") return level.charAt(0).toUpperCase() + level.slice(1);
+    const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
+    if (
+      normalized.startsWith("claude-opus-4-6") ||
+      normalized.startsWith("claude-sonnet-4-6")
+    ) {
+      return "Max";
+    }
+    return "Extra High";
+  };
+  const effortLabel = formatEffortLabel(reasoningEffort);
 
-  if (reasoningStyle === "reasoning_effort") {
+  if (effectiveReasoningStyle === "reasoning_effort") {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
@@ -478,26 +558,52 @@ const ReasoningToggle: FC = () => {
               "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
               disabled
                 ? "cursor-not-allowed opacity-40"
-                : "bg-primary/10 text-primary hover:bg-primary/20",
+                : effectiveReasoningVisualEnabled
+                  ? "bg-primary/10 text-primary hover:bg-primary/20"
+                  : "text-muted-foreground hover:bg-muted-foreground/15",
             )}
             aria-label={`Reasoning effort: ${reasoningEffort}`}
           >
-            <LightbulbIcon className="size-3.5" />
+            {effectiveReasoningVisualEnabled ? (
+              <LightbulbIcon className="size-3.5" />
+            ) : (
+              <LightbulbOffIcon className="size-3.5" />
+            )}
             <span>
-              Think:{" "}
-              {reasoningEffort.charAt(0).toUpperCase() +
-                reasoningEffort.slice(1)}
+              Think: {effectiveReasoningVisualEnabled ? effortLabel : "None"}
             </span>
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {(["low", "medium", "high"] as const).map((level) => (
+          {effectiveSupportsReasoningOff && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setReasoningEnabled(false);
+                applyQwenThinkingParams(false);
+              }}
+            >
+              None
+              {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
+            </DropdownMenuItem>
+          )}
+          {effectiveReasoningEffortLevels
+            .filter((level) => level !== "none")
+            .map((level) => (
             <DropdownMenuItem
               key={level}
-              onSelect={() => setReasoningEffort(level)}
+              onSelect={() => {
+                setReasoningEffort(level);
+                setReasoningEnabled(true);
+                applyQwenThinkingParams(true);
+                // Kimi's $web_search builtin forbids thinking, so
+                // enabling thinking flips the Search pill off.
+                if (isKimiExternal && toolsEnabled) {
+                  setToolsEnabled(false);
+                }
+              }}
             >
-              {level.charAt(0).toUpperCase() + level.slice(1)}
-              {reasoningEffort === level ? " \u2713" : ""}
+              {formatEffortLabel(level)}
+              {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
@@ -508,17 +614,39 @@ const ReasoningToggle: FC = () => {
   return (
     <button
       type="button"
-      disabled={disabled}
+      disabled={disabled || reasoningLockedOn}
+      aria-disabled={disabled || reasoningLockedOn}
+      title={
+        reasoningLockedOn
+          ? "This model requires reasoning to stay on."
+          : undefined
+      }
       onClick={() => {
+        if (reasoningLockedOn) return;
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
+        // Mutual exclusion with the Search pill on Kimi — see the
+        // dropdown branch above and shared-composer for the same rule.
+        if (isKimiExternal && next && toolsEnabled) {
+          setToolsEnabled(false);
+        }
       }}
       className="composer-pill-btn"
-      data-active={reasoningEnabled && !disabled ? "true" : "false"}
-      aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+      data-active={
+        reasoningLockedOn || (effectiveReasoningEnabled && !disabled)
+          ? "true"
+          : "false"
+      }
+      aria-label={
+        reasoningLockedOn
+          ? "Thinking is required for this model"
+          : effectiveReasoningEnabled
+            ? "Disable thinking"
+            : "Enable thinking"
+      }
     >
-      {reasoningEnabled && !disabled ? (
+      {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
         <LightbulbIcon className="size-3.5" />
       ) : (
         <LightbulbOffIcon className="size-3.5" />
@@ -570,16 +698,44 @@ const WebSearchToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers (OpenAI today) expose a server-side web_search tool
+  // even when the local tool runtime is unavailable — gate the Search pill
+  // on either source so it lights up on external models too. Mirror of
+  // shared-composer's searchDisabled.
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const disabled = !(modelLoaded && supportsTools);
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => setToolsEnabled(!toolsEnabled)}
+      onClick={() => {
+        const next = !toolsEnabled;
+        setToolsEnabled(next);
+        // Kimi's $web_search builtin requires thinking=disabled (see
+        // https://platform.kimi.ai/docs/guide/use-web-search). Keep
+        // the two pills mutually exclusive so the visible state always
+        // matches what the backend ends up sending.
+        if (isKimiExternal) {
+          setReasoningEnabled(!next);
+          applyQwenThinkingParams(!next);
+        }
+      }}
       className="composer-pill-btn"
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
@@ -595,9 +751,18 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers have no local tool runtime, but Anthropic's
+  // Claude 4.x dispatches code_execution_20250825 server-side. The
+  // chat-page resolver stashes that capability in the runtime store
+  // (next to supportsBuiltinWebSearch). Mirror of shared-composer's
+  // codeDisabled so this pill lights up in active threads too.
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const disabled = !(modelLoaded && supportsTools);
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
@@ -791,6 +956,7 @@ const AssistantMessage: FC = () => {
                 web_search: WebSearchToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
+                code_execution: CodeExecutionToolUI,
               },
               Fallback: ToolFallback,
             },

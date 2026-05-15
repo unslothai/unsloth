@@ -62,6 +62,8 @@ jobs:
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -343,9 +345,13 @@ jobs:
 
       - name: Stop Studio
         if: always()
-        run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Studio child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
       - name: Upload logs
         if: always()
@@ -388,6 +394,8 @@ jobs:
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -758,9 +766,13 @@ jobs:
 
       - name: Stop Studio
         if: always()
-        run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Studio child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
       - name: Upload logs
         if: always()
@@ -796,6 +808,8 @@ jobs:
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -1144,9 +1158,13 @@ jobs:
 
       - name: Stop Studio
         if: always()
-        run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Studio child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
       - name: Upload logs
         if: always()
