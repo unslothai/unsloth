@@ -84,6 +84,44 @@ export function clampReasoningEffortToLevels(
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
 /**
+ * Whether the external provider offers a built-in web-search tool that the
+ * model invokes server-side. When `true`, the chat composer's Search button
+ * is available for that provider and the chat-adapter forwards
+ * `enable_tools: true, enabled_tools: ["web_search"]` on the request — the
+ * backend routes the call through the provider's tool schema:
+ *   - OpenAI:     `tools: [{type: "web_search"}]` on /v1/responses
+ *   - Anthropic:  `tools: [{type: "web_search_20250305", name: "web_search",
+ *                           max_uses: 5}]` on /v1/messages
+ *   - OpenRouter: `plugins: [{id: "web"}]` on /v1/chat/completions (the
+ *                 router's universal web-search shape; works for every
+ *                 underlying model including the `openrouter/free` router).
+ *   - Kimi:       `tools: [{type: "builtin_function", function: {name:
+ *                          "$web_search"}}]` with `thinking: {type:
+ *                          "disabled"}`. Requires a client round-trip:
+ *                 the first call returns the search args; the backend
+ *                 echoes them back as a role=tool message; the second
+ *                 call streams the answer. Handled in
+ *                 _stream_kimi_web_search on the backend.
+ *
+ * Mistral is intentionally excluded: their `web_search` connector lives on
+ * the Agents API (`/v1/agents` + `/v1/conversations`), not chat completions,
+ * and returns `"WebSearchTool connector is not supported"` if injected into
+ * /v1/chat/completions. Wiring it would require a dedicated Agents streaming
+ * path. Gemini's grounded-search can be added with the same pattern when
+ * matching backend translation lands.
+ */
+export function providerSupportsBuiltinWebSearch(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType === "openai" ||
+    providerType === "anthropic" ||
+    providerType === "openrouter" ||
+    providerType === "kimi"
+  );
+}
+
+/**
  * Per-provider minimum on the outbound max_tokens. Kimi's docs require
  * `max_tokens >= 16000` whenever a thinking model is in use so the
  * reasoning_content and final answer both fit in the budget — anything
@@ -239,7 +277,7 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 const ANTHROPIC_REASONING_MODELS = [
   {
     prefixes: ["claude-opus-4-7"],
-    levels: ["none", "low", "medium", "high", "xhigh"],
+    levels: ["none", "low", "medium", "high", "xhigh", "max"],
   },
   {
     prefixes: ["claude-opus-4-6", "claude-sonnet-4-6"],

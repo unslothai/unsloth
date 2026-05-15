@@ -35,6 +35,7 @@ import {
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
@@ -1004,6 +1005,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
+                : {}),
+              // Built-in web search: when the user has the Search toggle
+              // on AND the active provider supports a server-side
+              // web_search tool (currently OpenAI's /v1/responses), pass
+              // the enable_tools shorthand. Backend translates
+              // enabled_tools=["web_search"] into the provider's tool
+              // schema — for OpenAI that's `tools: [{type:"web_search"}]`
+              // on the Responses body, see _stream_openai_responses.
+              ...(toolsEnabled &&
+              providerSupportsBuiltinWebSearch(externalProvider.providerType)
+                ? {
+                    enable_tools: true,
+                    enabled_tools: ["web_search"],
+                  }
                 : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,

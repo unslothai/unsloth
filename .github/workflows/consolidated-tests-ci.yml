@@ -206,7 +206,8 @@ jobs:
             'numpy<3' pytest==9.0.3 pytest-asyncio httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
-            'peft>=0.18,<0.20' 'accelerate>=0.34,<2'
+            'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
+            ipython
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu \
             'torch>=2.4,<2.11' 'torchvision<0.26'
@@ -303,6 +304,17 @@ jobs:
         # without a corresponding zoo / unsloth-side workaround.
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
+
+      - name: public-api surface drift detectors (9 tests, HARD GATE)
+        # Companion to test_import_fixes_drift.py: that file catches
+        # third-party drift; this one catches drift in unsloth's OWN
+        # public surface (FastLanguageModel / FastVisionModel /
+        # FastModel + their classmethods + is_bf16_supported). A
+        # rename here would silently break the unslothai/notebooks tree
+        # one PR cycle later -- this gate catches it BEFORE the
+        # breakage reaches users.
+        run: |
+          python -m pytest -v --tb=short tests/test_public_api_surface.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # 16 tests across 5 files. They live inside tests/saving/ and
@@ -1020,16 +1032,28 @@ jobs:
               """Spot-check on the three production-relevant families that
               the compile_every sweep also covers; this case verifies the
               emitted cache file has the model-specific RMSNorm class
-              attribute, not just that the file parses + imports."""
+              attribute, not just that the file parses + imports.
+
+              Note on test isolation: ``unsloth_compile_transformers``
+              early-returns when ``modeling.__UNSLOTH_PATCHED__`` is set,
+              so once an earlier test in the same collection patches the
+              module the next call won't re-emit the cache file. Drop the
+              marker (and any stale cache file) before invoking so this
+              test is order-independent."""
               import importlib as _il
               try:
-                  _il.import_module(
+                  modeling = _il.import_module(
                       f"transformers.models.{model_type}.modeling_{model_type}"
                   )
               except ModuleNotFoundError:
                   pytest.skip(
                       f"transformers build lacks model_type={model_type}"
                   )
+              if hasattr(modeling, "__UNSLOTH_PATCHED__"):
+                  delattr(modeling, "__UNSLOTH_PATCHED__")
+              combined = _CACHE / f"unsloth_compiled_module_{model_type}.py"
+              if combined.exists():
+                  combined.unlink()
               unsloth_compile_transformers(
                   model_type=model_type, fast_lora_forwards=False,
               )
@@ -1037,7 +1061,6 @@ jobs:
                   f"transformers.models.{model_type}.modeling_{model_type}"
               )
               assert getattr(modeling, "__UNSLOTH_PATCHED__", False) is True
-              combined = _CACHE / f"unsloth_compiled_module_{model_type}.py"
               _verify_file(combined, must_expose=[rms_class])
 
 
