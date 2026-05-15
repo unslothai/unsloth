@@ -106,8 +106,12 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "download/continuous-release_main/"
         "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
     ),
-    # Windows ROCm wheel — ships libbitsandbytes_rocm72.dll.
-    # BNB_ROCM_VERSION=72 must be set in the environment before importing bnb.
+    # Windows ROCm wheel — ships libbitsandbytes_rocm72.dll only.
+    # As of torch==2.11.0+rocm7.13.0 (AMD index, May 2026), BNB auto-detects
+    # HIP version as "7.13" and looks for rocm713.dll — which does not exist.
+    # BNB_ROCM_VERSION=72 must be set in the environment before importing bnb
+    # to force it to load rocm72.dll.  Set in worker.py (training subprocess)
+    # and in _install_bnb_windows_rocm() (install subprocess).
     "win_amd64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
         "download/continuous-release_main/"
@@ -356,6 +360,10 @@ def _install_bnb_windows_rocm() -> None:
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
         return
+    # Pin BNB_ROCM_VERSION=72 in this process now so that any post-install
+    # import of bitsandbytes (e.g. health-checks) loads the correct DLL.
+    # The worker subprocess sets this independently in worker.py section 1f.
+    os.environ.setdefault("BNB_ROCM_VERSION", "72")
     _prev = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
     os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
     try:

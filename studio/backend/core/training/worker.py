@@ -1321,6 +1321,21 @@ def run_training_process(
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
+            # Force BNB to load libbitsandbytes_rocm72.dll regardless of the
+            # HIP version that torch reports.  As of torch==2.11.0+rocm7.13.0
+            # (AMD index, May 2026) torch.version.hip returns "7.13", which
+            # makes BNB look for rocm713.dll — a file our AMD Windows prerelease
+            # wheel does not ship.  The wheel only ships rocm72.dll, so we pin
+            # BNB_ROCM_VERSION="72" here.  Callers may override by setting the
+            # variable before launching the worker.
+            if "BNB_ROCM_VERSION" not in os.environ:
+                os.environ["BNB_ROCM_VERSION"] = "72"
+                logger.info(
+                    "Windows ROCm: set BNB_ROCM_VERSION=72 "
+                    "(AMD Windows BNB wheel ships rocm72.dll; "
+                    "overrides auto-detection from torch.version.hip)"
+                )
+
             # Patch _grouped_mm CUDA dispatch with a safe Python mm fallback.
             try:
                 import warnings as _warnings

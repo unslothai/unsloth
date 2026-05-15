@@ -1674,6 +1674,27 @@ class TestInstallBnbWindowsRocm:
                 stack_mod._install_bnb_windows_rocm()
         mock_pip.assert_not_called()
 
+    def test_sets_bnb_rocm_version_72(self):
+        """BNB_ROCM_VERSION must be set to '72' before install.
+
+        As of torch==2.11.0+rocm7.13.0 (AMD index, May 2026), BNB auto-detects
+        HIP 7.13 and looks for rocm713.dll — which the prerelease wheel does not
+        ship.  _install_bnb_windows_rocm() must pin BNB_ROCM_VERSION=72 so that
+        bitsandbytes loads libbitsandbytes_rocm72.dll instead.
+        """
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                stack_mod._install_bnb_windows_rocm()
+            assert os.environ.get("BNB_ROCM_VERSION") == "72"
+
+    def test_does_not_override_existing_bnb_rocm_version(self):
+        """An explicit BNB_ROCM_VERSION in the caller's env must not be clobbered."""
+        with patch.dict(os.environ, {"BNB_ROCM_VERSION": "60"}):
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                stack_mod._install_bnb_windows_rocm()
+            assert os.environ.get("BNB_ROCM_VERSION") == "60"
+
 
 # =============================================================================
 # TEST: install_python_stack.py -- UNSLOTH_ROCM_TORCH_INSTALLED early-return path
@@ -1763,6 +1784,32 @@ class TestWorkerWindowsRocmPatches:
         """worker.py should disable dynamo on Windows ROCm as belt-and-suspenders."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
         assert "TORCHDYNAMO_DISABLE" in source
+
+    def test_bnb_rocm_version_set_on_windows_rocm(self):
+        """worker.py must pin BNB_ROCM_VERSION=72 in the Windows ROCm section.
+
+        As of torch==2.11.0+rocm7.13.0, BNB auto-detects HIP 7.13 and looks for
+        rocm713.dll, which the AMD prerelease wheel does not ship.  The worker
+        must force BNB_ROCM_VERSION=72 before any ML library is imported so that
+        bitsandbytes loads libbitsandbytes_rocm72.dll.
+        """
+        source = _WORKER_PATH.read_text(encoding="utf-8")
+        assert "BNB_ROCM_VERSION" in source
+        assert '"72"' in source
+
+    def test_bnb_rocm_version_set_before_ml_imports(self):
+        """BNB_ROCM_VERSION must appear in section 1f, before section 2 ML imports."""
+        source = _WORKER_PATH.read_text(encoding="utf-8")
+        idx_bnb = source.find("BNB_ROCM_VERSION")
+        # Use the specific section-2 marker that appears in the worker process
+        # entry-point function (not the trainer helper which has its own "# ── 2.").
+        idx_sec2 = source.find("# ── 2. Now import ML libraries")
+        assert idx_bnb != -1, "BNB_ROCM_VERSION not found in worker.py"
+        assert idx_sec2 != -1, "'# ── 2. Now import ML libraries' marker not found in worker.py"
+        assert idx_bnb < idx_sec2, (
+            "BNB_ROCM_VERSION must be set before section 2 ML imports "
+            f"(found at {idx_bnb}, section 2 at {idx_sec2})"
+        )
 
     def test_grouped_mm_patch_guarded_by_windows_and_hip_check(self):
         """_grouped_mm patch must only apply on Windows + HIP torch."""
