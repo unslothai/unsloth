@@ -205,7 +205,9 @@ async def test_provider(
         try:
             api_key = decrypt_api_key(payload.encrypted_api_key)
         except Exception as exc:
-            logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
+            logger.warning(
+                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
+            )
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
@@ -272,7 +274,9 @@ async def list_provider_models(
         try:
             api_key = decrypt_api_key(payload.encrypted_api_key)
         except Exception as exc:
-            logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
+            logger.warning(
+                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
+            )
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
