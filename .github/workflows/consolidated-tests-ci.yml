@@ -962,6 +962,12 @@ jobs:
               # Category E: undefined name in emitted file.
               "perceiver":       "name 'AbstractPreprocessor' is not defined",
               "sam3_lite_text":  "name 'Sam3LiteTextLayerScaledResidual' is not defined",
+              # Category F: compile exceeds 60s budget on the runner.
+              # First seen on transformers >=5,<6; each represents a slow
+              # or recursive source-rewriter path the zoo can address.
+              "beit":            "TimeoutError: compile exceeds per-model budget",
+              "sam":             "TimeoutError: compile exceeds per-model budget",
+              "sam_hq":          "TimeoutError: compile exceeds per-model budget",
           }
 
 
