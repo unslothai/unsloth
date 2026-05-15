@@ -2367,11 +2367,7 @@ class LlamaCppBackend:
                 if not Path(mmproj_path).is_file():
                     logger.warning(f"mmproj file not found: {mmproj_path}")
                 else:
-                    # Defense in depth for #5347: detect_mmproj_file already
-                    # drops cross-family projectors, but mmproj_path can also
-                    # arrive from config injection or future overrides that
-                    # bypass it. Skip mismatched pairings here too so the
-                    # launcher never hands llama-server a known-wrong file.
+                    # #5347 guard for paths that bypass detect_mmproj_file.
                     from utils.models.model_config import (
                         mmproj_matches_model_family,
                     )

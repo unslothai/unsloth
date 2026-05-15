@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for :mod:`utils.models.gguf_metadata`.
-
-The metadata reader is used by ``detect_mmproj_file`` to pair a model
-GGUF with the right projector via ``general.base_model.0.repo_url``
-(and basename / organization fallbacks). These tests synthesise small
-GGUF headers in tmp dirs so we never depend on multi-GB real model
-files.
-"""
+"""Tests for :mod:`utils.models.gguf_metadata`. Synthesise small GGUF
+headers in tmp dirs so we never depend on real model files."""
 
 from __future__ import annotations
 
@@ -61,7 +54,7 @@ def _write_synthetic_gguf(
     extra_uint32: Mapping[str, int] | None = None,
     extra_string_arrays: Mapping[str, Iterable[str]] | None = None,
 ) -> Path:
-    """Build a minimally valid GGUF file containing only metadata."""
+    """Minimal GGUF: header + KV body, no tensors."""
     extra_uint32 = extra_uint32 or {}
     extra_string_arrays = extra_string_arrays or {}
     kv_count = len(general_strings) + len(extra_uint32) + len(extra_string_arrays)
@@ -121,7 +114,7 @@ def test_extracts_general_string_fields(tmp_path: Path):
 
 
 def test_skips_unrelated_fields_without_breaking(tmp_path: Path):
-    """Walks past arrays and uint32s on unrelated keys."""
+    """Skip unwanted arrays and uint32s without losing position."""
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.basename": "Foo"},
@@ -133,16 +126,14 @@ def test_skips_unrelated_fields_without_breaking(tmp_path: Path):
 
 
 def test_metadata_is_cached(tmp_path: Path):
-    """Mutating the file in place after a read returns the cached value
-    until mtime/size changes."""
+    """Cache invalidates on size change."""
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.basename": "First"},
     )
     first = read_gguf_general_metadata(str(p))
     assert first == {"general.basename": "First"}
-    # Rewriting with the same size and mtime would hit cache; force a
-    # size change instead.
+    # Force size change so the (path, mtime, size) key invalidates.
     _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.basename": "Second", "general.organization": "X"},
@@ -219,8 +210,7 @@ def test_pairing_score_basename_only_fallback():
 
 
 def test_pairing_score_no_overlap_returns_zero():
-    """One side has no metadata: scorer cannot decide. The caller
-    should fall back to filename family matching."""
+    """One side empty: scorer punts to filename fallback."""
     assert pairing_score({"general.basename": "Foo"}, {}) == 0
     assert pairing_score({}, {"general.basename": "Foo"}) == 0
     assert pairing_score(None, {"general.basename": "Foo"}) == 0

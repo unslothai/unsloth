@@ -921,11 +921,8 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-# Family tokens used to detect mismatched mmproj/model pairings in flat
-# local GGUF directories (#5347). The tuple is iterated for diagnostics;
-# the actual selection uses word-bounded matching plus leftmost-position
-# tiebreak (see ``_detect_family_token``), so list order does not affect
-# correctness. Keep lowercase. New families should be added here.
+# Family tokens for #5347's filename fallback. Lowercase. Order does not
+# matter (see ``_detect_family_token``).
 _MODEL_FAMILY_TOKENS: tuple[str, ...] = (
     "qwen",
     "gemma",
@@ -958,12 +955,8 @@ _MODEL_FAMILY_TOKENS: tuple[str, ...] = (
 )
 
 
-# Compiled regex cache for word-bounded family token matching. A token
-# matches only when it appears as a discrete component of the filename:
-# any letter on either side disqualifies, so ``phi`` does not match
-# ``sapphire``, ``yi`` does not match ``tiny``, and ``mimo`` does not
-# match ``mimosa``. Hyphens, dots, digits, underscores, and string ends
-# count as boundaries.
+# Word-bounded match: any letter on either side disqualifies. Stops
+# ``phi`` matching ``sapphire``, ``yi`` matching ``tiny``, etc.
 _FAMILY_TOKEN_RE_CACHE: Dict[str, "_re.Pattern[str]"] = {}
 
 
@@ -976,10 +969,7 @@ def _family_token_re(token: str) -> "_re.Pattern[str]":
 
 
 def _detect_family_token(filename: str) -> Optional[str]:
-    """Return the family token whose first match in ``filename`` starts
-    earliest. Ties (same starting position) prefer the longer token, so
-    ``ministral`` beats ``mistral`` on a name like ``ministral-3-8b.gguf``
-    when both happen to match. Returns None when no token matches."""
+    """Leftmost-position match; ties prefer the longer token."""
     name = filename.lower()
     best: Optional[tuple[int, int, str]] = None  # (start, -len, token)
     for token in _MODEL_FAMILY_TOKENS:
@@ -993,13 +983,8 @@ def _detect_family_token(filename: str) -> Optional[str]:
 
 
 def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
-    """Return True when ``mmproj_path`` is safe to attach to ``model_path``
-    based on family-token agreement. A projector whose family token is
-    unrecognised (e.g. the HF convention ``mmproj-F16.gguf``) is treated
-    as a wildcard and always returns True. Intended as a defense-in-depth
-    check at the llama-server launcher in case ``mmproj_path`` arrives
-    from a path that bypasses :func:`detect_mmproj_file` (config
-    injection, manual override, future routes)."""
+    """Defense-in-depth guard for the launcher: True unless both filenames
+    carry recognised family tokens that disagree."""
     model_fam = _detect_family_token(Path(model_path).name)
     mmproj_fam = _detect_family_token(Path(mmproj_path).name)
     if model_fam is None or mmproj_fam is None:
@@ -1114,9 +1099,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
                 continue
             if resolved in seen_resolved:
                 continue
-            # Identify projectors via GGUF metadata (``general.type ==
-            # 'mmproj'``) when available, falling back to the filename
-            # substring heuristic for headerless or self-built files.
+            # Prefer ``general.type=='mmproj'``; fall back to filename.
             meta = read_gguf_general_metadata(str(resolved))
             by_meta = is_mmproj_by_metadata(meta)
             if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
@@ -1126,17 +1109,11 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     if not candidates:
         return None
 
-    # When ``path`` is a directory we have no model name to match against,
-    # preserve historical behaviour (return the first candidate).
+    # Directory path: no model name to compare against; legacy behaviour.
     if not p.is_file():
         return str(candidates[0])
 
-    # Two-stage selection. Stage 1 reads ``general.*`` metadata from the
-    # weight and each candidate; ``general.base_model.0.repo_url`` is an
-    # exact identity key, and ``general.basename`` plus organisation give
-    # a strong fallback. Stage 2 uses the filename family-token heuristic
-    # when one or both files lack metadata. Headerless candidates that
-    # disagree on filename family are dropped (#5347).
+    # Stage 1: GGUF metadata. Stage 2: filename family token (#5347).
     model_stem = p.stem.lower()
     model_family = _detect_family_token(p.name)
     weight_meta = read_gguf_general_metadata(str(p))
@@ -1146,34 +1123,23 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         cand_meta = read_gguf_general_metadata(str(c))
         meta_score = pairing_score(weight_meta, cand_meta)
         if meta_score == -1:
-            logger.info(
-                f"detect_mmproj_file: dropped {c.name} on metadata mismatch "
-                f"(model={p.name})"
-            )
+            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch)")
             continue
-        if meta_score == 0:
-            # Fall back to filename family token. Treat unrecognised
-            # candidate families as wildcards so the HF convention
-            # (``mmproj-F16.gguf``) keeps working.
-            if model_family is not None:
-                cand_family = _detect_family_token(c.name)
-                if cand_family is not None and cand_family != model_family:
-                    logger.info(
-                        f"detect_mmproj_file: dropped {c.name} on filename "
-                        f"family mismatch (expected '{model_family}', got "
-                        f"'{cand_family}', model={p.name})"
-                    )
-                    continue
+        if meta_score == 0 and model_family is not None:
+            # Unrecognised candidate family is a wildcard (``mmproj-F16.gguf``).
+            cand_family = _detect_family_token(c.name)
+            if cand_family is not None and cand_family != model_family:
+                logger.info(
+                    f"detect_mmproj_file: dropped {c.name} "
+                    f"(filename family {cand_family!r} vs model {model_family!r})"
+                )
+                continue
         scored.append((meta_score, c))
 
     if not scored:
         return None
 
-    # Multi-key ranking: metadata score first (so a 100-score
-    # base_model_url match always beats a 0-score filename-only match),
-    # then longest shared filename prefix as the tiebreak (so 9B picks
-    # the 9B mmproj over the 35B one within the same family), then
-    # shorter stem to prefer the simpler name on perfect ties.
+    # Score first, then longest shared prefix, then shorter stem.
     best = max(
         scored,
         key = lambda sc: (
@@ -1536,7 +1502,7 @@ def detect_gguf_model_remote(
             if attempt < 2:
                 time.sleep(2**attempt)
     logger.warning(
-        f"Could not check GGUF files for '{repo_id}' after 3 attempts: " f"{last_err}"
+        f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
     )
     return None
 

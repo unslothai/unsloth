@@ -1,26 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Lightweight ``general.*`` metadata reader for GGUF files.
-
-The Studio backend already has a hand-rolled GGUF header parser inside
-``LlamaCppBackend._read_gguf_metadata`` for context length, attention
-heads, chat template, etc. That parser is bound to a backend instance
-and mutates ``self``, so it cannot be reused from the discovery path
-in ``model_config.py``.
-
-This module exposes a small free function that returns just the string
-``general.*`` fields and the ``general.architecture``. It is used by
-``detect_mmproj_file`` to pair model GGUFs with their projector via
-``general.base_model.0.repo_url`` (and basename / organization
-fallbacks), which is far more accurate than parsing the filename.
-
-Reads cost about 30 ms per file even on multi-GB GGUFs because we walk
-KV pairs sequentially and skip values we do not need. Results are
-cached by (path, mtime, size) so repeated discovery calls on a stable
-directory are free after the first scan.
-"""
+"""Free-function ``general.*`` reader for GGUF headers, used by
+``detect_mmproj_file`` to pair weights and projectors via
+``general.base_model.0.repo_url``. ~30 ms per file, cached by
+(path, mtime, size)."""
 
 from __future__ import annotations
 
@@ -35,10 +19,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-_GGUF_MAGIC = 0x46554747  # b"GGUF" little-endian u32
+_GGUF_MAGIC = 0x46554747  # b"GGUF" LE u32
 
-# String fields we care about. Anything else is skipped without
-# decoding to keep header walks fast.
 _WANTED_GENERAL_KEYS: frozenset[str] = frozenset(
     {
         "general.architecture",
@@ -59,9 +41,7 @@ _WANTED_GENERAL_KEYS: frozenset[str] = frozenset(
 )
 
 
-# Cache key: (resolved_path, mtime_ns, size). Cache value is the
-# extracted dict, or None when the file could not be parsed (so we do
-# not re-pay the failed read on every discovery scan).
+# Cache failed parses too so a broken file is not retried each scan.
 _CacheKey = Tuple[str, int, int]
 _METADATA_CACHE: Dict[_CacheKey, Optional[Dict[str, str]]] = {}
 _CACHE_LOCK = threading.Lock()
@@ -81,16 +61,9 @@ def _cache_key(path: str) -> Optional[_CacheKey]:
 
 
 def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
-    """Return the ``general.*`` string fields from a GGUF header.
-
-    Returns ``None`` when the file is missing, unreadable, or not a
-    GGUF. Returns ``{}`` for valid GGUFs that simply contain none of
-    the keys in :data:`_WANTED_GENERAL_KEYS`.
-
-    Cached by (resolved path, mtime_ns, size). Callers may invoke
-    this on every discovery without paying repeated I/O after the
-    first read.
-    """
+    """Return ``general.*`` strings from a GGUF header, or ``None`` if
+    the file is missing, unreadable, or not a GGUF. ``{}`` means the
+    file is valid but carries none of the wanted keys."""
     key = _cache_key(path)
     if key is None:
         return None
@@ -100,8 +73,7 @@ def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
     result = _parse_gguf_header(path)
     with _CACHE_LOCK:
         if len(_METADATA_CACHE) >= _CACHE_MAX_ENTRIES:
-            # Drop an arbitrary entry. Header reads are cheap; we do
-            # not need a true LRU here, just an upper bound on memory.
+            # Arbitrary eviction: header reads are cheap, true LRU not needed.
             try:
                 _METADATA_CACHE.pop(next(iter(_METADATA_CACHE)))
             except StopIteration:
@@ -127,7 +99,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB key length sanity bound
+                    if klen > 1 << 20:  # 1 MB sanity bound
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -143,7 +115,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
                         if len(slen_bytes) < 8:
                             break
                         slen = struct.unpack("<Q", slen_bytes)[0]
-                        if slen > 1 << 22:  # 4 MB string length sanity bound
+                        if slen > 1 << 22:  # 4 MB sanity bound
                             break
                         sbytes = f.read(slen)
                         if len(sbytes) < slen:
@@ -163,8 +135,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
     return out
 
 
-# Fixed-size GGUF value types. Values not in this map (strings, arrays)
-# are handled inline.
+# Strings (8) and arrays (9) are handled inline.
 _FIXED_VTYPE_SIZES: Dict[int, int] = {
     0: 1,  # uint8
     1: 1,  # int8
@@ -181,8 +152,7 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
 
 
 def _skip_gguf_value(f, vtype: int) -> bool:
-    """Advance ``f`` past one GGUF value. Returns False on truncation
-    or unknown type so the caller can stop walking the header."""
+    """Advance past one GGUF value. False on truncation or unknown type."""
     if vtype == 8:  # STRING
         slen_bytes = f.read(8)
         if len(slen_bytes) < 8:
@@ -221,10 +191,7 @@ def _skip_gguf_value(f, vtype: int) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """Return True when ``general.type == 'mmproj'``, False when it is
-    a non-mmproj value, and None when ``meta`` is missing or has no
-    ``general.type`` field. Callers should fall back to a filename
-    check on a None result."""
+    """True/False from ``general.type``; None means fall back to filename."""
     if not meta:
         return None
     t = meta.get("general.type")
@@ -237,20 +204,8 @@ def pairing_score(
     weight_meta: Optional[Dict[str, str]],
     mmproj_meta: Optional[Dict[str, str]],
 ) -> int:
-    """Return a numeric score for how confidently ``mmproj_meta``
-    belongs to the model described by ``weight_meta``.
-
-    Convention:
-      * ``100`` -- ``general.base_model.0.repo_url`` matches exactly.
-      * ``80``  -- ``general.basename`` and ``general.base_model.0.organization``
-                   both match.
-      * ``60``  -- ``general.basename`` matches.
-      * ``-1``  -- both files have metadata that disagrees on every
-                   strong signal we tested (definitive mismatch).
-      * ``0``   -- neither side carries enough metadata to decide;
-                   the caller should fall back to a filename-based
-                   family-token check.
-    """
+    """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
+    60 = basename, -1 = definitive mismatch, 0 = decide from filename."""
     if not weight_meta or not mmproj_meta:
         return 0
 
