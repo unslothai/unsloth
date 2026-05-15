@@ -1797,13 +1797,21 @@ class ExternalProviderClient:
         # default in-memory policy only survives ~5-10 min of inactivity
         # (up to ~1 hr). Opt into the 24-hour retention policy so a chat
         # left idle overnight still hits the cache on the next turn.
-        # Pricing is identical to in_memory per OpenAI's docs. Studio's
-        # OpenAI model picker is registry-scoped to gpt-5.x / o3 / gpt-4.5,
-        # all of which accept this parameter — gpt-5.5+ already defaults
-        # to "24h" and rejects "in_memory", so setting it explicitly is a
-        # safe no-op there too. Pass False explicitly to fall back to the
-        # model's default retention.
-        if enable_prompt_caching is not False:
+        # Pricing is identical to in_memory per OpenAI's docs.
+        #
+        # Gated on the base URL because ollama / llama.cpp / "custom"
+        # presets all collapse to provider_type="openai" in
+        # toExternalBackendProviderType, so they also land in this
+        # helper. Those servers expose /v1/responses-shaped routes in
+        # some configurations but don't implement
+        # prompt_cache_retention — sending the field unconditionally
+        # would 400 them. Match the public OpenAI host strictly so the
+        # field only goes to OpenAI cloud. Studio's openai model picker
+        # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
+        # accept this parameter (gpt-5.5+ already defaults to "24h" and
+        # rejects "in_memory", so it's a safe no-op there).
+        is_openai_cloud = "api.openai.com" in (self.base_url or "")
+        if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
 
         # OpenAI server-side tools — see
