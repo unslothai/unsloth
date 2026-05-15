@@ -200,8 +200,6 @@ async def test_provider(
             detail = f"Unknown provider type: {payload.provider_type}",
         )
 
-    # Key is optional for self-hosted local providers (llama.cpp / vLLM /
-    # Ollama). When omitted, the client skips the auth header.
     api_key = ""
     if payload.encrypted_api_key:
         try:
@@ -269,8 +267,6 @@ async def list_provider_models(
             detail = f"Unknown provider type: {payload.provider_type}",
         )
 
-    # Key is optional for self-hosted local providers (llama.cpp / vLLM /
-    # Ollama). When omitted, the client skips the auth header.
     api_key = ""
     if payload.encrypted_api_key:
         try:

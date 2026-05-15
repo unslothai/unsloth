@@ -178,10 +178,7 @@ async function withApiKeyEncryptionRetry<T>(
   plaintextApiKey: string,
   call: (encryptedApiKey: string | null) => Promise<T>,
 ): Promise<T> {
-  // Allow callers to pass an empty key for self-hosted local providers
-  // (llama.cpp / vLLM / Ollama). The backend treats a missing
-  // ``encrypted_api_key`` as "no auth header" rather than failing
-  // decryption on an empty ciphertext.
+  // Empty key (local providers): skip RSA round-trip and let the backend omit auth.
   if (!plaintextApiKey) {
     return await call(null);
   }

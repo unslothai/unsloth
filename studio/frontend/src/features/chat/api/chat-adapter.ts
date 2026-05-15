@@ -749,9 +749,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
         throw new Error("External provider not found.");
       }
-      // Self-hosted custom providers (llama.cpp / vLLM / Ollama) frequently
-      // run without auth — the connection dialog already marks the key as
-      // optional for them. Only block hosted providers when the key is missing.
+      // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
       const externalProviderIsCustom = externalProvider
         ? isCustomProviderType(externalProvider.providerType)
         : false;
@@ -1035,9 +1033,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
-              // Encrypt only when there's actually a key to send; the
-              // backend skips auth headers when ``encrypted_api_key`` is
-              // omitted (used for local llama.cpp / vLLM / Ollama).
               ...(externalApiKey
                 ? {
                     encrypted_api_key: await encryptProviderApiKey(

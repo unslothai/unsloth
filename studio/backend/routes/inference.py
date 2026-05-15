@@ -1554,9 +1554,6 @@ async def _proxy_to_external_provider(
             detail = f"Unknown provider type: {provider_type}",
         )
 
-    # Decrypt the API key when present. The key is optional for self-hosted
-    # local providers (llama.cpp / vLLM / Ollama); the client downstream
-    # omits the Authorization header when ``api_key`` is empty.
     api_key = ""
     if payload.encrypted_api_key:
         try:
@@ -1650,11 +1647,7 @@ async def openai_chat_completions(
     - Other models → Unsloth/transformers via InferenceBackend
     """
     # ── External provider routing ────────────────────────────────
-    # ``encrypted_api_key`` is optional: self-hosted custom providers
-    # (llama.cpp / vLLM / Ollama) frequently run without auth, and the
-    # connection dialog explicitly marks the key as optional for them.
-    # Route on provider identity alone — the proxy below skips auth
-    # headers when no key is supplied.
+    # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
         return await _proxy_to_external_provider(payload, request)
 
