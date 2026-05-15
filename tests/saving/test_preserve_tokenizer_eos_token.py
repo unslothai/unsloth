@@ -45,9 +45,7 @@ def test_preserve_tokenizer_eos_token_restores_gemma4_turn_token(tmp_path):
 def test_preserve_tokenizer_eos_token_supports_processor_tokenizer(tmp_path):
     preserve = _load_preserve_helper()
     tokenizer_config = tmp_path / "tokenizer_config.json"
-    tokenizer_config.write_text(
-        json.dumps({"eos_token": "<eos>"}), encoding = "utf-8"
-    )
+    tokenizer_config.write_text(json.dumps({"eos_token": "<eos>"}), encoding = "utf-8")
     processor = types.SimpleNamespace(
         tokenizer = types.SimpleNamespace(eos_token = "<turn|>")
     )

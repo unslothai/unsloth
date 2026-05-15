@@ -1080,9 +1080,7 @@ def unsloth_save_model(
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
 
-    _preserve_tokenizer_eos_token(
-        tokenizer, save_pretrained_settings["save_directory"]
-    )
+    _preserve_tokenizer_eos_token(tokenizer, save_pretrained_settings["save_directory"])
 
     # Revert config back
     original_model = model
