@@ -37,6 +37,70 @@ def quant_act(x: "torch.Tensor"):
 def dequant_act(x_q: "torch.Tensor", scale: "torch.Tensor"):
     """Dequantize an INT8 activation tensor back to BF16/FP16."""
     return x_q.to(scale.dtype) * scale
+
+
+class _Int8LoRALinear(torch.autograd.Function):
+    """
+    Drop-in for the lora_A nn.Linear forward that saves the input in INT8.
+    Halves the memory of the largest saved activation in standard PEFT LoRA.
+    Used for models that don't go through LoRA_MLP (Gemma4, Qwen3.6, etc.).
+    """
+    @staticmethod
+    def forward(ctx, x, weight):
+        orig_shape = x.shape
+        x_flat = x.reshape(-1, x.shape[-1])
+        x_q, x_s = quant_act(x_flat)
+        ctx.save_for_backward(x_q, x_s, weight)
+        ctx.orig_shape = orig_shape
+        out = torch.mm(x_flat, weight.T)
+        return out.view(*orig_shape[:-1], weight.shape[0])
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x_q, x_s, weight = ctx.saved_tensors
+        x_flat = dequant_act(x_q, x_s)
+        grad_out_flat = grad_out.reshape(-1, grad_out.shape[-1])
+        grad_weight = grad_out_flat.T @ x_flat
+        grad_x = (grad_out_flat @ weight).view(ctx.orig_shape)
+        return grad_x, grad_weight
+
+
+def patch_lora_for_int8_activations(model):
+    """
+    Patch all PEFT lora_A layers to save input activations in INT8 instead of BF16.
+    Applies to models that use standard PEFT LoRA (Gemma4, Qwen3.6 / qwen3_5, etc.)
+    rather than Unsloth's custom LoRA_MLP kernel.
+    Call after get_peft_model() with UNSLOTH_QUANTIZE_ACTIVATIONS = True.
+    """
+    try:
+        from peft.tuners.lora.layer import Linear as PeftLoraLinear
+    except ImportError:
+        return model
+
+    patched = 0
+    for module in model.modules():
+        if isinstance(module, PeftLoraLinear):
+            for lora_A in module.lora_A.values():
+                if not isinstance(lora_A, torch.nn.Linear) or lora_A.bias is not None:
+                    continue
+                if getattr(lora_A, "_unsloth_int8_patched", False):
+                    continue
+                original_forward = lora_A.forward
+
+                def _make_int8_forward(orig_fwd, linear):
+                    def _int8_forward(x):
+                        if UNSLOTH_QUANTIZE_ACTIVATIONS:
+                            return _Int8LoRALinear.apply(x, linear.weight)
+                        return orig_fwd(x)
+                    return _int8_forward
+
+                lora_A.forward = _make_int8_forward(original_forward, lora_A)
+                lora_A._unsloth_int8_patched = True
+                patched += 1
+
+    if patched:
+        print(f"Unsloth: INT8 activation compression active on {patched} LoRA-A layers.")
+    return model
 # ─────────────────────────────────────────────────────────────────────────────
 import functools
 from typing import Optional
