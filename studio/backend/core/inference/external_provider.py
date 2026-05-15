@@ -2906,10 +2906,23 @@ class ExternalProviderClient:
         silently rejected (e.g. missing OpenAI-Beta header), so a
         status-only check is not sufficient.
         """
+        url = f"{self.base_url}/containers/{container_id}"
+        headers = self._container_headers()
+        logger.info(
+            "openai_container_delete.outbound url=%s has_auth=%s openai_beta=%s",
+            url,
+            "Authorization" in headers,
+            headers.get("OpenAI-Beta"),
+        )
         response = await _http_client.delete(
-            f"{self.base_url}/containers/{container_id}",
-            headers = self._container_headers(),
+            url,
+            headers = headers,
             timeout = self._timeout,
+        )
+        logger.info(
+            "openai_container_delete.response status=%s body=%s",
+            response.status_code,
+            response.text[:300],
         )
         response.raise_for_status()
         try:
