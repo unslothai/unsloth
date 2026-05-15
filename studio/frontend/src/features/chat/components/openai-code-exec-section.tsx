@@ -121,6 +121,12 @@ export function OpenAICodeExecSection({
   // with what feels "most recent" from the user's perspective. The
   // user can still pick "Auto-create per thread" explicitly to start
   // fresh.
+  //
+  // Dexie's `update()` returns 0 affected rows when the thread record
+  // is not yet persisted (empty-state composer, no message sent). We
+  // silently ignore that here because auto-bind is best-effort; the
+  // user-initiated `onPick` below surfaces the same condition as a
+  // toast so the user understands why the picker didn't stick.
   useEffect(() => {
     if (!activeThreadId || activeContainerId || containers.length === 0) {
       return;
@@ -146,12 +152,29 @@ export function OpenAICodeExecSection({
     onProviderChange({ ...provider, openaiContainerTtlMinutes: clamped });
   };
 
-  const onPick = (value: string) => {
+  const onPick = async (value: string) => {
     if (!activeThreadId) return;
     const next = value === AUTO_OPTION_VALUE ? null : value;
-    void db.threads
-      .update(activeThreadId, { openaiCodeExecContainerId: next })
-      .catch(() => {});
+    // Dexie's `update` returns the count of rows changed: 0 means the
+    // thread record is not yet in IndexedDB. That happens when the user
+    // is on a brand-new thread before sending the first message — the
+    // thread row is materialized on first send by the chat adapter.
+    // Without this guard the selection silently no-ops and the picker
+    // snaps back to "Auto-create per thread", which looks broken.
+    try {
+      const affected = await db.threads.update(activeThreadId, {
+        openaiCodeExecContainerId: next,
+      });
+      if (affected === 0) {
+        toast.error(
+          "Send a message first to pin a container to this thread.",
+        );
+      }
+    } catch (err) {
+      toast.error(
+        `Could not update thread: ${err instanceof Error ? err.message : "Unknown"}`,
+      );
+    }
   };
 
   const onCreate = async () => {
