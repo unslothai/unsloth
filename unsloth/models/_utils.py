@@ -1193,7 +1193,7 @@ SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
