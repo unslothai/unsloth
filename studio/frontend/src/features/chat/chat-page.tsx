@@ -864,7 +864,7 @@ export function ChatPage(): ReactElement {
         // See sibling useEffect above: Kimi's k2.x default to thinking
         // enabled, so the Think pill comes up clicked. Search pill stays
         // off by default; mutual exclusion flips them via the composer.
-        const isKimi = provider?.providerType === "kimi";
+        const isKimi = selectedProvider?.providerType === "kimi";
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
