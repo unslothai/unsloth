@@ -339,28 +339,27 @@ class ExternalProviderClient:
                 else:
                     body["reasoning"] = {"enabled": False}
 
-            # OpenRouter's universal web-search shortcut: append `:online`
-            # to the model id. The gateway runs search server-side and
-            # streams citations back as annotations on text deltas — see
-            #   https://openrouter.ai/docs/features/web-search
-            # `openrouter/free` is a meta-router; `:online` is not a valid
-            # suffix on it (and the gateway 400s), so skip the rewrite
-            # there. For everything else, swap any existing `:variant`
-            # (e.g. `:free`, `:nitro`) for `:online` — OpenRouter variants
-            # are mutually exclusive.
-            if (
-                enabled_tools
-                and "web_search" in enabled_tools
-                and body.get("model")
-                and body["model"] != "openrouter/free"
-            ):
-                current_model = body["model"]
-                base_model = current_model.split(":", 1)[0]
-                body["model"] = f"{base_model}:online"
+            # OpenRouter web-search plugin — universal shape that works
+            # for every model id, including the `openrouter/free` and
+            # `openrouter/auto` meta-routers. Documented at
+            #   https://openrouter.ai/docs/guides/features/plugins/web-search
+            # The `:online` model-suffix shortcut is "exactly equivalent
+            # to" this plugin per the same doc, but only works on
+            # concrete model ids — meta-routers reject the suffix.
+            # `plugins: [{id: "web"}]` works everywhere, no model id
+            # rewrite needed, and idempotent if some future call site
+            # adds the entry first.
+            if enabled_tools and "web_search" in enabled_tools:
+                plugins = list(body.get("plugins") or [])
+                if not any(
+                    isinstance(p, dict) and p.get("id") == "web" for p in plugins
+                ):
+                    plugins.append({"id": "web"})
+                body["plugins"] = plugins
                 logger.info(
-                    "OpenRouter web_search: rewrote model %s -> %s",
-                    current_model,
-                    body["model"],
+                    "OpenRouter web_search: attached plugins=[{id: 'web'}] "
+                    "(model=%s)",
+                    body.get("model"),
                 )
 
         url = f"{self.base_url}/chat/completions"
@@ -408,6 +407,94 @@ class ExternalProviderClient:
                 # error" in the UI with no trail on the server side.
                 event_counts: dict[str, int] = {}
                 chosen_model: Optional[str] = None
+                # Web-search tool-card synthesis for OpenRouter. The gateway
+                # doesn't emit structured web_search_call events — citations
+                # come back as `annotations` of type=url_citation on delta /
+                # message objects. Mirror the OpenAI/Anthropic UX by yielding
+                # a synthetic tool_start at stream open and tool_end at
+                # stream close with the collected citation list.
+                web_search_active = (
+                    self.provider_type == "openrouter"
+                    and bool(enabled_tools)
+                    and "web_search" in (enabled_tools or [])
+                )
+                web_search_tool_id = "openrouter_web_search"
+                web_search_citations: list[dict[str, str]] = []
+                web_search_tool_started = False
+                web_search_tool_ended = False
+
+                def _emit_synthetic_tool_event(payload: dict[str, Any]) -> str:
+                    chunk = {
+                        "id": f"chatcmpl-{self.provider_type}-synthetic",
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "_toolEvent": payload,
+                    }
+                    return f"data: {_json.dumps(chunk)}"
+
+                def _record_or_url_citation(payload: Any) -> None:
+                    if not isinstance(payload, dict):
+                        return
+                    if payload.get("type") != "url_citation":
+                        return
+                    # OpenRouter (and OpenAI Chat Completions web_search)
+                    # nest the citation under url_citation; some variants
+                    # ship the fields flat on the annotation itself. Accept
+                    # both.
+                    cit = payload.get("url_citation")
+                    if not isinstance(cit, dict):
+                        cit = payload
+                    url = cit.get("url", "") if isinstance(cit, dict) else ""
+                    if not url or not isinstance(url, str):
+                        return
+                    if any(c["url"] == url for c in web_search_citations):
+                        return
+                    title = cit.get("title") or url
+                    snippet = cit.get("content") or cit.get("snippet") or ""
+                    web_search_citations.append(
+                        {
+                            "url": url,
+                            "title": title,
+                            "snippet": snippet if isinstance(snippet, str) else "",
+                        }
+                    )
+
+                def _build_web_search_tool_end() -> str:
+                    blocks: list[str] = []
+                    for cit in web_search_citations:
+                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                        if cit.get("snippet"):
+                            line += f"\nSnippet: {cit['snippet']}"
+                        blocks.append(line)
+                    return _emit_synthetic_tool_event(
+                        {
+                            "type": "tool_end",
+                            "tool_call_id": web_search_tool_id,
+                            "result": (
+                                "\n---\n".join(blocks)
+                                if blocks
+                                else "(search complete)"
+                            ),
+                        }
+                    )
+
+                if web_search_active:
+                    yield _emit_synthetic_tool_event(
+                        {
+                            "type": "tool_start",
+                            "tool_name": "web_search",
+                            "tool_call_id": web_search_tool_id,
+                            "arguments": {},
+                        }
+                    )
+                    web_search_tool_started = True
+
                 try:
                     while True:
                         try:
@@ -420,6 +507,17 @@ class ExternalProviderClient:
                             data_str = line[len("data:") :].strip()
                             if data_str == "[DONE]":
                                 event_counts["done"] = event_counts.get("done", 0) + 1
+                                # Emit synthetic tool_end with collected
+                                # citations BEFORE forwarding [DONE], so the
+                                # tool-card transitions to "complete" in the
+                                # UI before the stream closes.
+                                if (
+                                    web_search_active
+                                    and web_search_tool_started
+                                    and not web_search_tool_ended
+                                ):
+                                    yield _build_web_search_tool_end()
+                                    web_search_tool_ended = True
                             elif data_str:
                                 try:
                                     parsed = _json.loads(data_str)
@@ -452,17 +550,52 @@ class ExternalProviderClient:
                                         parsed.get("model"), str
                                     ):
                                         chosen_model = parsed["model"]
+                                    # When the user has web_search on, scan
+                                    # every chunk's delta and message
+                                    # objects for url_citation annotations.
+                                    # Different OpenRouter upstreams place
+                                    # them in different spots.
+                                    if web_search_active:
+                                        choices = parsed.get("choices") or []
+                                        if isinstance(choices, list):
+                                            for choice in choices:
+                                                if not isinstance(choice, dict):
+                                                    continue
+                                                for envelope in (
+                                                    choice.get("delta"),
+                                                    choice.get("message"),
+                                                ):
+                                                    if not isinstance(envelope, dict):
+                                                        continue
+                                                    for ann in (
+                                                        envelope.get("annotations")
+                                                        or []
+                                                    ):
+                                                        _record_or_url_citation(ann)
                         yield line
+                    # Stream ended without [DONE] (some upstreams just close
+                    # the connection). Emit tool_end so the card doesn't
+                    # stay in "running" forever.
+                    if (
+                        web_search_active
+                        and web_search_tool_started
+                        and not web_search_tool_ended
+                    ):
+                        yield _build_web_search_tool_end()
+                        web_search_tool_ended = True
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
                     logger.info(
-                        "%s stream complete (model=%s, chosen=%s, events=%s)",
+                        "%s stream complete (model=%s, chosen=%s, "
+                        "web_search_requested=%s, citations=%s, events=%s)",
                         self.provider_type,
                         model,
                         chosen_model,
+                        web_search_active,
+                        len(web_search_citations),
                         event_counts,
                     )
                     await response.aclose()
