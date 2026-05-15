@@ -208,10 +208,11 @@ class ExternalProviderClient:
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
 
-        headers = {
-            "Content-Type": "application/json",
-            auth_header: f"{auth_prefix}{self.api_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        # Skip auth header when api_key is empty (optional for local providers);
+        # httpx rejects an empty `Bearer ` value as "Illegal header value".
+        if self.api_key:
+            headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge any provider-specific extra headers (e.g. anthropic-version, OpenRouter attribution)
         headers.update(provider_info.get("extra_headers", {}))
         return headers
