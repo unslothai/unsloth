@@ -170,10 +170,10 @@ class UnslothTrainingArguments(TrainingArguments):
     # Disable these by passing dataloader_num_workers yourself or by setting the
     # env var UNSLOTH_FAST_DATALOADER=0.
     _UNSLOTH_DATALOADER_DEFAULTS = {
-        "dataloader_num_workers":        2,
+        "dataloader_num_workers": 2,
         "dataloader_persistent_workers": True,
-        "dataloader_prefetch_factor":    4,
-        "dataloader_pin_memory":         True,
+        "dataloader_prefetch_factor": 4,
+        "dataloader_pin_memory": True,
     }
 
     def __init__(
@@ -189,7 +189,10 @@ class UnslothTrainingArguments(TrainingArguments):
         if os.environ.get("UNSLOTH_FAST_DATALOADER", "1") != "0":
             applied = []
             if "dataloader_num_workers" not in kwargs:
-                for k, v in UnslothTrainingArguments._UNSLOTH_DATALOADER_DEFAULTS.items():
+                for (
+                    k,
+                    v,
+                ) in UnslothTrainingArguments._UNSLOTH_DATALOADER_DEFAULTS.items():
                     if k not in kwargs:
                         kwargs[k] = v
                         applied.append(f"{k}={v}")
@@ -198,11 +201,18 @@ class UnslothTrainingArguments(TrainingArguments):
                 # This avoids injecting persistent_workers/prefetch_factor when
                 # dataloader_num_workers=0.
                 pass
-            if applied and not getattr(UnslothTrainingArguments, "_unsloth_dl_print_done", False):
-                print("[unsloth-perf #3] dataloader defaults applied: " + ", ".join(applied))
+            if applied and not getattr(
+                UnslothTrainingArguments, "_unsloth_dl_print_done", False
+            ):
+                print(
+                    "[unsloth-perf #3] dataloader defaults applied: "
+                    + ", ".join(applied)
+                )
                 UnslothTrainingArguments._unsloth_dl_print_done = True
         elif not getattr(UnslothTrainingArguments, "_unsloth_dl_print_done", False):
-            print("[unsloth-perf #3] dataloader defaults DISABLED (UNSLOTH_FAST_DATALOADER=0)")
+            print(
+                "[unsloth-perf #3] dataloader defaults DISABLED (UNSLOTH_FAST_DATALOADER=0)"
+            )
             UnslothTrainingArguments._unsloth_dl_print_done = True
 
         super().__init__(*args, **kwargs)

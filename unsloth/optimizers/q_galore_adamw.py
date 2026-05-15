@@ -231,12 +231,16 @@ class QGaLoreAdamW8bit(Optimizer2State):
         # divergence is suspected.
         if os.environ.get("UNSLOTH_QGALORE_SYNC", "0") == "1":
             if not getattr(self, "_unsloth_sync_warned", False):
-                print("[unsloth-perf #1] Q-GaLore: per-step cuda.synchronize ENABLED (debug)")
+                print(
+                    "[unsloth-perf #1] Q-GaLore: per-step cuda.synchronize ENABLED (debug)"
+                )
                 self._unsloth_sync_warned = True
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
         elif not getattr(self, "_unsloth_sync_warned", False):
-            print("[unsloth-perf #1] Q-GaLore: per-step cuda.synchronize removed (default fast path)")
+            print(
+                "[unsloth-perf #1] Q-GaLore: per-step cuda.synchronize removed (default fast path)"
+            )
             self._unsloth_sync_warned = True
 
         return loss

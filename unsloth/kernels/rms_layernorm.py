@@ -259,10 +259,10 @@ def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
 # we leave it alone so torch.compile can fuse RMSNorm with neighboring ops.
 import os as _os_perf_A
 from unsloth_zoo.utils import Version as _Version_perf_A
-_UNSLOTH_RMSNORM_COMPILE_DISABLE = (
-    _os_perf_A.environ.get("UNSLOTH_DISABLE_KERNEL_COMPILE", "0") == "1"
-    or _Version_perf_A(torch.__version__) < _Version_perf_A("2.4.0")
-)
+
+_UNSLOTH_RMSNORM_COMPILE_DISABLE = _os_perf_A.environ.get(
+    "UNSLOTH_DISABLE_KERNEL_COMPILE", "0"
+) == "1" or _Version_perf_A(torch.__version__) < _Version_perf_A("2.4.0")
 if _UNSLOTH_RMSNORM_COMPILE_DISABLE:
     fast_rms_layernorm = torch.compiler.disable(fast_rms_layernorm)
     print(

@@ -227,7 +227,9 @@ if torch.cuda.is_available() and os.environ.get("UNSLOTH_FAST_BACKENDS", "1") !=
     except Exception as _e:
         print(f"[unsloth-perf #4] cuDNN/matmul perf flags skipped: {_e}")
 elif torch.cuda.is_available():
-    print("[unsloth-perf #4] cuDNN/matmul perf flags DISABLED (UNSLOTH_FAST_BACKENDS=0)")
+    print(
+        "[unsloth-perf #4] cuDNN/matmul perf flags DISABLED (UNSLOTH_FAST_BACKENDS=0)"
+    )
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():

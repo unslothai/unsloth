@@ -332,10 +332,10 @@ def fast_rope_embedding(
 # UNSLOTH_DISABLE_KERNEL_COMPILE=1. See the long comment above.
 import os as _os_perf_A
 from unsloth_zoo.utils import Version as _Version_perf_A
-_UNSLOTH_ROPE_COMPILE_DISABLE = (
-    _os_perf_A.environ.get("UNSLOTH_DISABLE_KERNEL_COMPILE", "0") == "1"
-    or _Version_perf_A(torch.__version__) < _Version_perf_A("2.4.0")
-)
+
+_UNSLOTH_ROPE_COMPILE_DISABLE = _os_perf_A.environ.get(
+    "UNSLOTH_DISABLE_KERNEL_COMPILE", "0"
+) == "1" or _Version_perf_A(torch.__version__) < _Version_perf_A("2.4.0")
 if _UNSLOTH_ROPE_COMPILE_DISABLE:
     fast_rope_embedding = torch.compiler.disable(fast_rope_embedding)
     print(

@@ -2382,6 +2382,7 @@ def patch_gradient_accumulation_fix(Trainer):
                     _skip = os.environ.get("UNSLOTH_SKIP_ACCEL_GA_CLAMP", "0") == "1"
                     try:
                         import accelerate as _accel
+
                         _accelerate_version = getattr(_accel, "__version__", "?")
                     except Exception:
                         _accelerate_version = "?"

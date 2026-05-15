@@ -133,11 +133,7 @@ def run_attention(
     # varlen over dense SDPA. The dense SDPA path builds a (T*T) attention
     # mask in unsloth/utils/packing.py which alone is GBs at long context.
     # An attention_mask, if also present, is redundant with cu_seqlens here.
-    if (
-        HAS_FLASH_ATTENTION
-        and context.seq_info is not None
-        and backend != FLASH_VARLEN
-    ):
+    if HAS_FLASH_ATTENTION and context.seq_info is not None and backend != FLASH_VARLEN:
         if not getattr(run_attention, "_unsloth_pack_to_varlen_print_done", False):
             print(
                 f"[unsloth-perf #10] packed batch routed to FLASH_VARLEN "
@@ -199,9 +195,7 @@ def run_attention(
                     )
                     run_attention._unsloth_mask_to_varlen_skip_done = True
         except Exception as _exc:
-            if not getattr(
-                run_attention, "_unsloth_mask_to_varlen_fail_done", False
-            ):
+            if not getattr(run_attention, "_unsloth_mask_to_varlen_fail_done", False):
                 print(
                     f"[unsloth-perf #11] padding-mask -> cu_seqlens FAILED "
                     f"({_exc}); falling through to SDPA"
