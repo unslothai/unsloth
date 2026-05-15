@@ -33,6 +33,7 @@ class KernelPackageSpec:
     import_name: str
     display_name: str
     pypi_spec: str
+    wheel_dependency_specs: tuple[str, ...] = ()
     wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None
     filename_prefix: str | None = None
     package_version: str | None = None
@@ -208,6 +209,7 @@ CAUSAL_CONV1D_SPEC = KernelPackageSpec(
     import_name = "causal_conv1d",
     display_name = "causal-conv1d",
     pypi_spec = "causal-conv1d==1.6.1",
+    wheel_dependency_specs = ("packaging", "ninja"),
     filename_prefix = "causal_conv1d",
     package_version = "1.6.1",
     release_tag = "v1.6.1.post4",
@@ -218,6 +220,7 @@ MAMBA_SSM_SPEC = KernelPackageSpec(
     import_name = "mamba_ssm",
     display_name = "mamba-ssm",
     pypi_spec = "mamba-ssm==2.3.1",
+    wheel_dependency_specs = ("ninja", "einops", "packaging", "setuptools>=61.0.0"),
     filename_prefix = "mamba_ssm",
     package_version = "2.3.1",
     release_tag = "v2.3.1",
@@ -228,6 +231,7 @@ FLASH_ATTN_SPEC = KernelPackageSpec(
     import_name = "flash_attn",
     display_name = "flash-attn",
     pypi_spec = "flash-attn",
+    wheel_dependency_specs = ("einops",),
     wheel_url_builder = flash_attn_wheel_url,
     pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
 )
@@ -245,16 +249,18 @@ def install_wheel(
     python_executable: str,
     use_uv: bool,
     uv_needs_system: bool = False,
+    dependency_specs: tuple[str, ...] = (),
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
 
-    # Try uv first if available, then fall back to pip
     if use_uv and shutil.which("uv"):
         uv_cmd = ["uv", "pip", "install"]
         if uv_needs_system:
             uv_cmd.append("--system")
-        uv_cmd.extend(["--python", python_executable, "--no-deps", wheel_url])
+        uv_cmd.extend(["--python", python_executable, "--no-deps"])
+        uv_cmd.extend(dependency_specs)
+        uv_cmd.append(wheel_url)
         result = run(
             uv_cmd,
             stdout = subprocess.PIPE,
@@ -266,7 +272,9 @@ def install_wheel(
         if result.returncode == 0:
             return attempts
 
-    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
+    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]
+    pip_cmd.extend(dependency_specs)
+    pip_cmd.append(wheel_url)
     result = run(
         pip_cmd,
         stdout = subprocess.PIPE,
@@ -380,6 +388,7 @@ def install_optional_kernel(
             python_executable = python_executable,
             use_uv = use_uv,
             uv_needs_system = uv_needs_system,
+            dependency_specs = spec.wheel_dependency_specs,
             run = run,
         ):
             if result.returncode == 0:

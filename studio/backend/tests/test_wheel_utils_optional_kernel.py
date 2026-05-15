@@ -68,6 +68,67 @@ def test_direct_wheel_success_returns_true_and_skips_pypi(monkeypatch):
     assert "test-kernel==1.0.0" not in calls[0]
 
 
+def test_direct_wheel_installs_declared_non_torch_dependencies(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    assert (
+        wheel_utils.install_optional_kernel(
+            wheel_utils.FLASH_ATTN_SPEC,
+            python_executable = sys.executable,
+            use_uv = True,
+            allow_pypi_fallback = False,
+            run = fake_run,
+        )
+        is True
+    )
+
+    assert calls[0][:6] == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "--no-deps",
+    ]
+    assert calls[0][-2] == "einops"
+    assert calls[0][-1].endswith(".whl")
+
+
+def test_direct_wheel_dependencies_are_used_on_pip_fallback(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0] == "uv":
+            return subprocess.CompletedProcess(cmd, 1, "uv failed")
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    assert (
+        wheel_utils.install_optional_kernel(
+            wheel_utils.FLASH_ATTN_SPEC,
+            python_executable = sys.executable,
+            use_uv = True,
+            allow_pypi_fallback = False,
+            run = fake_run,
+        )
+        is True
+    )
+
+    assert calls[1][:5] == [sys.executable, "-m", "pip", "install", "--no-deps"]
+    assert calls[1][-2] == "einops"
+    assert calls[1][-1].endswith(".whl")
+
+
 def test_missing_direct_wheel_without_fallback_returns_false(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
