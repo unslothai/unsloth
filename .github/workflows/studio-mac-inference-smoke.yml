@@ -710,11 +710,22 @@ jobs:
         continue-on-error: true
         with:
           path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v2
 
-      - name: Download GGUF + mmproj if cache miss
+      - name: Verify cache contains BOTH gguf + mmproj
+        id: verify-cache
+        if: steps.cache-gguf.outputs.cache-hit == 'true'
+        run: |
+          if [[ -f "gguf-cache/$GGUF_FILE" && -f "gguf-cache/$MMPROJ_FILE" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Partial cache hit -- forcing re-download."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download GGUF + mmproj if cache miss or partial
         id: download-gguf
-        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.verify-cache.outputs.ok != 'true'
         # Authenticated + parallel: shared macos-14 NAT egress stalls
         # multi-GB anonymous downloads.
         env:
@@ -734,13 +745,15 @@ jobs:
           ls -lh "gguf-cache/$GGUF_FILE" "gguf-cache/$MMPROJ_FILE"
 
       # Save partial caches on cancel. hashFiles guard avoids a hard
-      # save failure when the download step exits with no files.
+      # save failure when the download step exits with no files. The
+      # additional mmproj-presence check stops a partial save from
+      # poisoning the cache for the next run.
       - name: Save GGUF + mmproj files
-        if: always() && steps.download-gguf.outcome != 'skipped' && hashFiles('gguf-cache/**/*.gguf') != ''
+        if: always() && steps.download-gguf.outcome != 'skipped' && hashFiles('gguf-cache/**/*.gguf') != '' && hashFiles(format('gguf-cache/{0}', env.MMPROJ_FILE)) != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Install Studio (--local, --no-torch)
         env:
