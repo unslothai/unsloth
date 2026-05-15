@@ -1014,33 +1014,18 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
 
 
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """
-    Find the mmproj (vision projection) GGUF file for a given model.
+    """Find the mmproj GGUF for a model.
 
-    Args:
-        path: Directory to search — or a .gguf file (uses its parent dir
-            as the starting point).
-        search_root: Optional outer directory that should also be scanned
-            (and any directory between it and ``path``). This handles
-            local layouts where the model weights live in a quant-named
-            subdir (``snapshot/BF16/foo.gguf``) but the mmproj sits at
-            the snapshot root (``snapshot/mmproj-BF16.gguf``). When
-            ``None``, only the immediate parent dir is scanned, matching
-            the historical behavior.
-
-    Returns:
-        Full path to the mmproj .gguf file, or None if not found.
-    """
+    ``path``: directory or a .gguf file. ``search_root``: optional ancestor
+    to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
+    but the projector sits at ``snapshot/``). Returns the projector path or
+    ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
         return None
 
-    # Build the list of dirs to scan: immediate dir first, then walk up
-    # to (and including) ``search_root`` if it is an ancestor. We walk
-    # incrementally rather than recursing into ``search_root`` so we
-    # don't accidentally pick up an mmproj from a sibling subdir
-    # belonging to a different model variant.
+    # Walk incrementally so a sibling subdir's mmproj cannot leak in.
     seen: set[Path] = set()
     scan_order: list[Path] = []
 
@@ -1056,12 +1041,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
 
     _add(start_dir)
 
-    # When ``path`` is a symlink (e.g. Ollama's ``.studio_links/...gguf``
-    # -> ``blobs/sha256-...``), the symlink's parent directory rarely
-    # contains the mmproj sibling; the real mmproj file lives next to
-    # the symlink target. Add the target's parent to the scan so vision
-    # GGUFs that are surfaced via symlinks are still recognised as
-    # vision models.
+    # Ollama's .studio_links/foo.gguf -> blobs/sha256-...: also scan target dir.
     try:
         if p.is_symlink() and p.is_file():
             target_parent = p.resolve().parent
@@ -1073,14 +1053,12 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         try:
             root_resolved = Path(search_root).resolve()
             start_resolved = start_dir.resolve()
-            # Only walk if start_dir is inside (or equal to) search_root.
             if root_resolved == start_resolved or (
                 start_resolved.is_relative_to(root_resolved)
                 if hasattr(start_resolved, "is_relative_to")
                 else str(start_resolved).startswith(str(root_resolved) + "/")
             ):
                 cur = start_resolved
-                # Walk up from start_dir to (and including) root_resolved.
                 while cur != root_resolved and cur.parent != cur:
                     cur = cur.parent
                     _add(cur)
