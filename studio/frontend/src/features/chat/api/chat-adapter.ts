@@ -1037,44 +1037,47 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   /* fall through to lazy-create below */
                 }
               }
-              // Lazy pre-create when the user has configured a non-
-              // default TTL and there's no inherited container: we
-              // POST /v1/containers ourselves with that TTL so the
-              // auto-create-per-thread path actually honors the
-              // user's preference. The default 20-min container_auto
-              // path stays as-is (no extra round trip) when TTL is
-              // unset or matches OpenAI's default.
+              // Lazy pre-create when there's no inherited container.
+              // We always POST /v1/containers ourselves (rather than
+              // letting the backend send container_auto) so every
+              // container shows up in the picker with a friendly
+              // English-word name and the user's configured TTL.
+              // Falls back to container_auto only if the POST fails
+              // — keeps the chat moving in that case.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
               ) {
                 const ttl = externalProvider.openaiContainerTtlMinutes;
-                if (typeof ttl === "number" && ttl >= 1 && ttl !== 20) {
-                  try {
-                    const created = await createOpenAIContainer(
-                      {
-                        apiKey: externalApiKey,
-                        baseUrl: externalProvider.baseUrl || null,
-                      },
-                      {
-                        // Friendly English-word name so the container
-                        // is human-readable in the picker list (e.g.
-                        // "kestrel-3f9c") instead of a thread-id slug.
-                        name: pickFriendlyContainerName(),
-                        ttlMinutes: ttl,
-                      },
-                    );
-                    openaiCodeExecContainerId = created.id;
-                    void db.threads
-                      .update(resolvedThreadId, {
-                        openaiCodeExecContainerId: created.id,
-                      })
-                      .catch(() => {});
-                  } catch {
-                    // Fall back to container_auto on failure — keeps
-                    // the chat moving; the next turn can retry.
-                    openaiCodeExecContainerId = null;
-                  }
+                const ttlToUse =
+                  typeof ttl === "number" && ttl >= 1 ? ttl : 20;
+                try {
+                  const created = await createOpenAIContainer(
+                    {
+                      apiKey: externalApiKey,
+                      baseUrl: externalProvider.baseUrl || null,
+                    },
+                    {
+                      // Friendly English-word name so the container
+                      // is human-readable in the picker list (e.g.
+                      // "kestrel-3f9c") instead of a thread-id slug
+                      // or OpenAI's default blank name.
+                      name: pickFriendlyContainerName(),
+                      ttlMinutes: ttlToUse,
+                    },
+                  );
+                  openaiCodeExecContainerId = created.id;
+                  void db.threads
+                    .update(resolvedThreadId, {
+                      openaiCodeExecContainerId: created.id,
+                    })
+                    .catch(() => {});
+                } catch {
+                  // Fall back to backend's container_auto path on
+                  // failure — keeps the chat moving; the next turn
+                  // can retry. The auto-created container will be
+                  // unnamed, but the chat doesn't break.
+                  openaiCodeExecContainerId = null;
                 }
               }
             }
