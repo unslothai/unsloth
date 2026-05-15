@@ -364,25 +364,13 @@ class TestInstallPythonStackFlashAttnIntegration:
         return flash_attn_calls
 
     def test_linux_torch_install_calls_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = False, is_macos = False, is_windows = False)
-            == 1
-        )
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = False) == 1
 
     def test_no_torch_install_skips_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = True, is_macos = False, is_windows = False)
-            == 0
-        )
+        assert self._run_install(no_torch = True, is_macos = False, is_windows = False) == 0
 
     def test_macos_install_skips_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = False, is_macos = True, is_windows = False)
-            == 0
-        )
+        assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
 
     def test_windows_install_skips_flash_attn_step(self):
-        assert (
-            self._run_install(no_torch = False, is_macos = False, is_windows = True)
-            == 0
-        )
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0

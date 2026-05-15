@@ -27,6 +27,7 @@ CAUSAL_CONV1D_RELEASE_BASE_URL = (
 )
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
+
 @dataclass(frozen = True)
 class KernelPackageSpec:
     import_name: str
@@ -476,7 +477,9 @@ def install_optional_kernel(
         return False
 
     if is_hip:
-        _logger.info("Compiled and installed %s from source for ROCm", spec.display_name)
+        _logger.info(
+            "Compiled and installed %s from source for ROCm", spec.display_name
+        )
     else:
         _logger.info("Installed %s from PyPI", spec.display_name)
     return True
