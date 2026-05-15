@@ -345,15 +345,13 @@ jobs:
 
       - name: Stop Studio
         if: always()
-        # `set +e` + redirect everything: Git Bash on windows-latest
-        # has been observed to exit 143 from the kill/sleep block even
-        # when the upstream test work passed, masking a green run. The
-        # teardown does not gate correctness, so absorb any signal.
-        run: |
-          set +e
-          kill "${STUDIO_PID}" >/dev/null 2>&1 || true
-          sleep 2 >/dev/null 2>&1 || true
-          exit 0
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Studio child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
       - name: Upload logs
         if: always()
@@ -768,15 +766,13 @@ jobs:
 
       - name: Stop Studio
         if: always()
-        # `set +e` + redirect everything: Git Bash on windows-latest
-        # has been observed to exit 143 from the kill/sleep block even
-        # when the upstream test work passed, masking a green run. The
-        # teardown does not gate correctness, so absorb any signal.
-        run: |
-          set +e
-          kill "${STUDIO_PID}" >/dev/null 2>&1 || true
-          sleep 2 >/dev/null 2>&1 || true
-          exit 0
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Studio child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
       - name: Upload logs
         if: always()
@@ -1162,15 +1158,13 @@ jobs:
 
       - name: Stop Studio
         if: always()
-        # `set +e` + redirect everything: Git Bash on windows-latest
-        # has been observed to exit 143 from the kill/sleep block even
-        # when the upstream test work passed, masking a green run. The
-        # teardown does not gate correctness, so absorb any signal.
-        run: |
-          set +e
-          kill "${STUDIO_PID}" >/dev/null 2>&1 || true
-          sleep 2 >/dev/null 2>&1 || true
-          exit 0
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Studio child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
       - name: Upload logs
         if: always()
