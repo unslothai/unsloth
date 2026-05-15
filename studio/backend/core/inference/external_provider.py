@@ -32,7 +32,9 @@ logger = structlog.get_logger(__name__)
 # 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
 # the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
 # anchor keeps future versions (e.g. claude-opus-5) unaffected.
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
+    r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
+)
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
 
@@ -1136,11 +1138,7 @@ class ExternalProviderClient:
         }
         if not sampling_removed:
             body["temperature"] = temperature
-        if (
-            top_k is not None
-            and top_k > 0
-            and not sampling_removed
-        ):
+        if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k
         if system:
             # Anthropic only caches a prefix when at least one cache_control
