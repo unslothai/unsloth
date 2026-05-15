@@ -681,9 +681,17 @@ const WebSearchToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers (OpenAI today) expose a server-side web_search tool
+  // even when the local tool runtime is unavailable — gate the Search pill
+  // on either source so it lights up on external models too. Mirror of
+  // shared-composer's searchDisabled.
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const disabled = !(modelLoaded && supportsTools);
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
