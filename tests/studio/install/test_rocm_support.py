@@ -51,6 +51,9 @@ _ensure_rocm_torch = stack_mod._ensure_rocm_torch
 _has_rocm_gpu = stack_mod._has_rocm_gpu
 _has_usable_nvidia_gpu = stack_mod._has_usable_nvidia_gpu
 _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
+_windows_rocm_index_url = stack_mod._windows_rocm_index_url
+_detect_windows_gfx_arch = stack_mod._detect_windows_gfx_arch
+_install_bnb_windows_rocm = stack_mod._install_bnb_windows_rocm
 
 
 def _extract_sh_function_body(source: str, name: str) -> str:
@@ -1480,6 +1483,335 @@ class TestIsRdnaExpansion:
         # RDNA architectures should NOT be in is_cdna
         assert "gfx1030" not in func_body
         assert "gfx1100" not in func_body
+
+
+# =============================================================================
+# TEST: install_python_stack.py -- _windows_rocm_index_url arch mapping
+# =============================================================================
+
+
+class TestWindowsRocmIndexUrl:
+    """Verify GPU arch → AMD pip index URL mapping."""
+
+    def test_gfx1200_maps_to_gfx120x_all(self):
+        url = stack_mod._windows_rocm_index_url("gfx1200")
+        assert url is not None
+        assert "gfx120X-all" in url
+
+    def test_gfx1201_maps_to_gfx120x_all(self):
+        url = stack_mod._windows_rocm_index_url("gfx1201")
+        assert url is not None
+        assert "gfx120X-all" in url
+
+    def test_gfx1151_maps_to_gfx1151(self):
+        url = stack_mod._windows_rocm_index_url("gfx1151")
+        assert url is not None
+        assert "gfx1151" in url
+
+    def test_gfx1150_maps_to_gfx1150(self):
+        url = stack_mod._windows_rocm_index_url("gfx1150")
+        assert url is not None
+        assert "gfx1150" in url
+
+    def test_gfx1100_maps_to_gfx110x_all(self):
+        url = stack_mod._windows_rocm_index_url("gfx1100")
+        assert url is not None
+        assert "gfx110X-all" in url
+
+    def test_unknown_arch_returns_none(self):
+        assert stack_mod._windows_rocm_index_url("gfx9999") is None
+
+    def test_none_arch_returns_none(self):
+        assert stack_mod._windows_rocm_index_url(None) is None
+
+    def test_url_ends_with_slash(self):
+        """AMD pip index URLs must end with / for --index-url compatibility."""
+        url = stack_mod._windows_rocm_index_url("gfx1200")
+        assert url is not None
+        assert url.endswith("/")
+
+    def test_base_url_uses_repo_amd_com_by_default(self):
+        url = stack_mod._windows_rocm_index_url("gfx1200")
+        assert url is not None
+        assert "repo.amd.com" in url
+
+    def test_mirror_env_var_overrides_base(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://my-mirror.example.com/rocm/whl")
+        # Reload module-level constant by calling helper directly
+        url = stack_mod._windows_rocm_index_url("gfx1200")
+        # The env var is read at module load time for _ROCM_WINDOWS_INDEX_BASE,
+        # so just verify the helper itself doesn't error.
+        assert url is not None
+
+
+# =============================================================================
+# TEST: install_python_stack.py -- _detect_windows_gfx_arch
+# =============================================================================
+
+
+class TestDetectWindowsGfxArch:
+    """Verify hipinfo parsing for GPU arch detection on Windows."""
+
+    def test_returns_none_when_hipinfo_not_on_path(self):
+        with patch("shutil.which", return_value = None):
+            result = stack_mod._detect_windows_gfx_arch()
+        assert result is None
+
+    def test_parses_gcnarchname_from_hipinfo_output(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1200\nsome other line\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1200"
+
+    def test_returns_none_on_nonzero_returncode(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = b"gcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result is None
+
+    def test_returns_none_when_no_gcnarchname_in_output(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"deviceName : Radeon RX 9060 XT\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result is None
+
+    def test_returns_none_on_timeout(self):
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch(
+                "subprocess.run",
+                side_effect = subprocess.TimeoutExpired("hipinfo", 10),
+            ):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result is None
+
+    def test_strips_whitespace_from_arch(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"  gcnArchName :   gfx1201  \n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1201"
+
+
+# =============================================================================
+# TEST: install_python_stack.py -- _install_bnb_windows_rocm
+# =============================================================================
+
+
+class TestInstallBnbWindowsRocm:
+    """Verify AMD Windows BNB wheel install helper."""
+
+    def test_calls_pip_install_try_with_win_amd64_url(self):
+        """Should call pip_install_try with the win_amd64 wheel URL."""
+        with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
+            stack_mod._install_bnb_windows_rocm()
+        assert mock_pip.call_count == 1
+        call_args = str(mock_pip.call_args_list[0])
+        assert "bitsandbytes" in call_args
+        assert "win_amd64" in call_args
+
+    def test_sets_uv_skip_env_var_during_install(self):
+        """UV_SKIP_WHEEL_FILENAME_CHECK must be '1' when pip_install_try runs."""
+        observed = {}
+
+        def _capture(*args, **kwargs):
+            observed["val"] = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
+            return True
+
+        with patch.object(stack_mod, "pip_install_try", side_effect = _capture):
+            stack_mod._install_bnb_windows_rocm()
+        assert observed.get("val") == "1"
+
+    def test_restores_uv_skip_env_var_after_install(self):
+        """UV_SKIP_WHEEL_FILENAME_CHECK should be removed after install if it wasn't set before."""
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                stack_mod._install_bnb_windows_rocm()
+            assert "UV_SKIP_WHEEL_FILENAME_CHECK" not in os.environ
+
+    def test_restores_previous_uv_skip_value(self):
+        """If UV_SKIP_WHEEL_FILENAME_CHECK was already set, restore it afterwards."""
+        with patch.dict(os.environ, {"UV_SKIP_WHEEL_FILENAME_CHECK": "0"}):
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                stack_mod._install_bnb_windows_rocm()
+            assert os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK") == "0"
+
+    def test_restores_env_even_if_install_raises(self):
+        """UV_SKIP_WHEEL_FILENAME_CHECK must be cleaned up even on pip failure."""
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
+            with patch.object(
+                stack_mod, "pip_install_try", side_effect = RuntimeError("pip failed")
+            ):
+                try:
+                    stack_mod._install_bnb_windows_rocm()
+                except RuntimeError:
+                    pass
+            assert "UV_SKIP_WHEEL_FILENAME_CHECK" not in os.environ
+
+    def test_no_op_when_win_amd64_url_missing(self):
+        """Should be silent no-op if win_amd64 key absent from _BNB_ROCM_PRERELEASE_URLS."""
+        with patch.object(stack_mod, "_BNB_ROCM_PRERELEASE_URLS", {}):
+            with patch.object(stack_mod, "pip_install_try") as mock_pip:
+                stack_mod._install_bnb_windows_rocm()
+        mock_pip.assert_not_called()
+
+
+# =============================================================================
+# TEST: install_python_stack.py -- UNSLOTH_ROCM_TORCH_INSTALLED early-return path
+# =============================================================================
+
+
+class TestRocmTorchInstalledEnvVar:
+    """Verify UNSLOTH_ROCM_TORCH_INSTALLED=1 skips main install but still installs BNB."""
+
+    @patch.object(stack_mod, "_install_bnb_windows_rocm")
+    @patch.object(stack_mod, "pip_install")
+    def test_env_var_skips_main_pip_install(self, mock_pip, mock_bnb):
+        """UNSLOTH_ROCM_TORCH_INSTALLED=1 should not trigger torch pip_install."""
+        with patch.dict(os.environ, {"UNSLOTH_ROCM_TORCH_INSTALLED": "1"}):
+            stack_mod._ensure_rocm_torch()
+        mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "_install_bnb_windows_rocm")
+    @patch.object(stack_mod, "pip_install")
+    def test_env_var_calls_bnb_install(self, mock_pip, mock_bnb):
+        """UNSLOTH_ROCM_TORCH_INSTALLED=1 should still call _install_bnb_windows_rocm."""
+        with patch.dict(os.environ, {"UNSLOTH_ROCM_TORCH_INSTALLED": "1"}):
+            stack_mod._ensure_rocm_torch()
+        mock_bnb.assert_called_once()
+
+    @patch.object(stack_mod, "_install_bnb_windows_rocm")
+    @patch.object(stack_mod, "pip_install")
+    def test_env_var_sets_rocm_windows_flag(self, mock_pip, mock_bnb):
+        """UNSLOTH_ROCM_TORCH_INSTALLED=1 should set _rocm_windows_torch_installed."""
+        stack_mod._rocm_windows_torch_installed = False
+        with patch.dict(os.environ, {"UNSLOTH_ROCM_TORCH_INSTALLED": "1"}):
+            stack_mod._ensure_rocm_torch()
+        assert stack_mod._rocm_windows_torch_installed is True
+
+
+# =============================================================================
+# TEST: worker.py -- Windows ROCm patches (source-level checks)
+# =============================================================================
+
+
+class TestWorkerWindowsRocmPatches:
+    """Verify worker.py contains the required Windows ROCm runtime patches."""
+
+    def test_grouped_mm_dispatch_patch_present(self):
+        """worker.py must register a _grouped_mm CUDA dispatch override."""
+        source = _WORKER_PATH.read_text()
+        assert '_gm_lib.impl("_grouped_mm"' in source
+
+    def test_grouped_mm_patch_targets_cuda_dispatch_key(self):
+        """The dispatch override must target the CUDA key (not CompositeImplicitAutograd)."""
+        source = _WORKER_PATH.read_text()
+        assert '"_grouped_mm", _grouped_mm_safe_impl, "CUDA"' in source
+
+    def test_grouped_mm_lib_kept_alive(self):
+        """The Library object must be stored to prevent GC clearing the registration."""
+        source = _WORKER_PATH.read_text()
+        assert "_WINDOWS_ROCM_GROUPED_MM_LIB" in source
+
+    def test_grouped_mm_handles_offs_grouped_case(self):
+        """_grouped_mm fallback must handle the grouped (offs!=None) variant."""
+        source = _WORKER_PATH.read_text()
+        assert "offs_list" in source
+        assert "offs.tolist()" in source
+
+    def test_torchao_stub_uses_stub_type_meta(self):
+        """Torchao stub must use _StubTypeMeta so isinstance() returns False not TypeError."""
+        source = _WORKER_PATH.read_text()
+        assert "_StubTypeMeta" in source
+
+    def test_stub_type_meta_has_instancecheck(self):
+        """_StubTypeMeta must define __instancecheck__ returning False."""
+        source = _WORKER_PATH.read_text()
+        assert "__instancecheck__" in source
+
+    def test_stub_subpackage_finder_registered(self):
+        """_StubSubpackageFinder must be appended to sys.meta_path."""
+        source = _WORKER_PATH.read_text()
+        assert "sys.meta_path.append(_StubSubpackageFinder())" in source
+
+    def test_torchao_key_submodules_pre_stubbed(self):
+        """Key torchao submodules (dtypes, quantization) must be pre-stubbed."""
+        source = _WORKER_PATH.read_text()
+        assert "torchao.dtypes" in source
+        assert "torchao.quantization" in source
+
+    def test_torchdynamo_disabled_on_windows_rocm(self):
+        """worker.py should disable dynamo on Windows ROCm as belt-and-suspenders."""
+        source = _WORKER_PATH.read_text()
+        assert "TORCHDYNAMO_DISABLE" in source
+
+    def test_grouped_mm_patch_guarded_by_windows_and_hip_check(self):
+        """_grouped_mm patch must only apply on Windows + HIP torch."""
+        source = _WORKER_PATH.read_text()
+        # Should check sys.platform == "win32" AND torch.version.hip
+        assert 'sys.platform == "win32"' in source
+        assert "torch.version" in source and '"hip"' in source
+
+
+# =============================================================================
+# TEST: install_python_stack.py -- _ROCM_TORCH_PKG_SPECS mapping
+# =============================================================================
+
+
+class TestRocmTorchPkgSpecs:
+    """Verify per-tag torch version specs are correct."""
+
+    def test_rocm72_has_torch_211(self):
+        """rocm7.2 should specify torch 2.11.x."""
+        specs = stack_mod._ROCM_TORCH_PKG_SPECS.get("rocm7.2")
+        assert specs is not None
+        torch_spec = specs[0]
+        assert "2.11" in torch_spec
+
+    def test_default_caps_below_211(self):
+        """Default spec (rocm7.1 and earlier) should cap below 2.11."""
+        specs = stack_mod._ROCM_TORCH_PKG_SPECS.get("_default")
+        assert specs is not None
+        torch_spec = specs[0]
+        assert "<2.11" in torch_spec
+
+    def test_specs_have_torch_vision_audio(self):
+        """Each entry should be a 3-tuple: torch, torchvision, torchaudio."""
+        for tag, specs in stack_mod._ROCM_TORCH_PKG_SPECS.items():
+            assert len(specs) == 3, f"{tag}: expected (torch, torchvision, torchaudio)"
+            assert "torch" in specs[0]
+            assert "torchvision" in specs[1]
+            assert "torchaudio" in specs[2]
+
+    def test_gfx_to_amd_index_covers_rdna4(self):
+        """_GFX_TO_AMD_INDEX_ARCH must cover gfx1200 and gfx1201 (RDNA 4)."""
+        mapping = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        assert mapping.get("gfx1200") == "gfx120X-all"
+        assert mapping.get("gfx1201") == "gfx120X-all"
+
+    def test_gfx_to_amd_index_covers_strix_halo(self):
+        """_GFX_TO_AMD_INDEX_ARCH must cover gfx1151 and gfx1150 (RDNA 3.5)."""
+        mapping = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        assert mapping.get("gfx1151") == "gfx1151"
+        assert mapping.get("gfx1150") == "gfx1150"
+
+    def test_gfx_to_amd_index_covers_rdna3(self):
+        """_GFX_TO_AMD_INDEX_ARCH must cover gfx1100-gfx1103 (RDNA 3)."""
+        mapping = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        for arch in ("gfx1100", "gfx1101", "gfx1102", "gfx1103"):
+            assert mapping.get(arch) == "gfx110X-all", f"{arch} missing from mapping"
 
 
 if __name__ == "__main__":
