@@ -346,6 +346,13 @@ class ExternalProviderClient:
             _apply_mistral_reasoning_controls(
                 body, model, enable_thinking, reasoning_effort
             )
+        elif self.provider_type == "vllm" and enable_thinking is not None:
+            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+            tpl_kw = body.get("chat_template_kwargs")
+            if not isinstance(tpl_kw, dict):
+                tpl_kw = {}
+            tpl_kw["enable_thinking"] = bool(enable_thinking)
+            body["chat_template_kwargs"] = tpl_kw
 
         # OpenRouter exposes a unified `reasoning` parameter on every
         # chat-completion request — the gateway routes it to whichever

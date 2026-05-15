@@ -674,6 +674,7 @@ export function ChatPage(): ReactElement {
     const reasoningCaps = getExternalReasoningCapabilities(
       provider?.providerType,
       selection.modelId,
+      { isReasoningProvider: provider?.isReasoningModel === true },
     );
     const state = useChatRuntimeStore.getState();
     const preferredEffort = state.reasoningEffort;
@@ -866,6 +867,10 @@ export function ChatPage(): ReactElement {
         const reasoningCaps = getExternalReasoningCapabilities(
           selectedProvider?.providerType,
           selectedExternal?.modelId,
+          {
+            isReasoningProvider:
+              selectedProvider?.isReasoningModel === true,
+          },
         );
         const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;

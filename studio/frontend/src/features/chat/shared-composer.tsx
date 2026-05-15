@@ -330,6 +330,10 @@ export function SharedComposer({
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
         )
       : null;
   const isExternalOpenAIReasoning =

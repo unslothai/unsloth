@@ -59,6 +59,7 @@ import {
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
   supportsProviderPromptCaching,
+  supportsProviderReasoningToggle,
   toExternalBackendProviderType,
 } from "./external-providers";
 
@@ -184,8 +185,10 @@ export function ChatProvidersSettings({
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState("Custom");
+  const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
   const isCustomProvider = isCustomProviderType(providerType);
+  const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
@@ -312,6 +315,9 @@ export function ChatProvidersSettings({
               enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
                 ? (existing?.enablePromptCaching ?? true)
                 : undefined,
+              isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
+                ? existing?.isReasoningModel === true
+                : undefined,
               createdAt: existing?.createdAt ?? createdAt,
               updatedAt,
             };
@@ -344,6 +350,7 @@ export function ChatProvidersSettings({
     setManualModelIds("");
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
+    setIsReasoningModel(false);
   }
 
   function openAddProvider() {
@@ -526,17 +533,21 @@ export function ChatProvidersSettings({
       const updatedAt = Number.isFinite(Date.parse(created.updated_at))
         ? Date.parse(created.updated_at)
         : Date.now();
+      const uiProviderType = isCustomProvider
+        ? providerType
+        : created.provider_type;
       const provider: ExternalProviderConfig = {
         id: created.id,
-        providerType: isCustomProvider
-          ? providerType
-          : created.provider_type,
+        providerType: uiProviderType,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
         availableModels: manualModels
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
+          ? isReasoningModel
+          : undefined,
         createdAt,
         updatedAt,
       };
@@ -636,6 +647,11 @@ export function ChatProvidersSettings({
                 availableModels: manualModels
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
+                isReasoningModel: supportsProviderReasoningToggle(
+                  existing.providerType,
+                )
+                  ? isReasoningModel
+                  : undefined,
                 updatedAt,
               }
             : provider,
@@ -663,6 +679,11 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setModelSearchQuery("");
+    setIsReasoningModel(
+      supportsProviderReasoningToggle(provider.providerType)
+        ? provider.isReasoningModel === true
+        : false,
+    );
     if (isCustomProviderType(provider.providerType)) {
       setAvailableModels([]);
       setSelectedModelIds([]);
@@ -942,6 +963,30 @@ export function ChatProvidersSettings({
                     placeholder={customProviderBaseUrlPlaceholder(providerType)}
                     className="h-9 text-sm"
                   />
+                </div>
+              ) : null}
+
+              {showReasoningToggle ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <Label
+                    htmlFor="provider-is-reasoning"
+                    className="text-sm font-medium"
+                  >
+                    Reasoning model
+                  </Label>
+                  <label
+                    htmlFor="provider-is-reasoning"
+                    className="flex cursor-pointer items-center gap-2 text-sm"
+                  >
+                    <Checkbox
+                      id="provider-is-reasoning"
+                      checked={isReasoningModel}
+                      onCheckedChange={(checked) =>
+                        setIsReasoningModel(checked === true)
+                      }
+                    />
+                    This server runs a reasoning model
+                  </label>
                 </div>
               ) : null}
             </div>

@@ -423,6 +423,37 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
   return withEnableThinkingStyle();
 }
 
+export interface ExternalReasoningResolveOptions {
+  /**
+   * Self-hosted providers (vLLM) expose no reasoning metadata over their
+   * OpenAI-compatible endpoint. When the user has flagged the connection
+   * as a reasoning model via the provider config, treat it as supporting
+   * a toggleable `enable_thinking` so the chat panel renders the Think
+   * pill and the adapter forwards the toggle through `chat_template_kwargs`.
+   */
+  isReasoningProvider?: boolean;
+}
+
+/**
+ * Connection-level opt-in for providers whose OpenAI-compatible API
+ * can't advertise reasoning support per model (currently vLLM). When
+ * the user has flagged the server as a reasoning model in the provider
+ * config, return a toggleable `enable_thinking` capability set so the
+ * chat panel shows the Think pill regardless of model id.
+ */
+function resolveConnectionLevelReasoning(
+  normalizedProvider: string,
+  options: ExternalReasoningResolveOptions | undefined,
+): ExternalReasoningCapabilities | null {
+  if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+    });
+  }
+  return null;
+}
+
 /**
  * resolve external-model thinking capabilities.
  * provider-specific matching lives in the OpenAI/Anthropic resolvers.
@@ -431,9 +462,17 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
   const normalizedModel = modelId?.trim().toLowerCase() ?? "";
   const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
+  const connectionLevel = resolveConnectionLevelReasoning(
+    normalizedProvider,
+    options,
+  );
+  if (connectionLevel) {
+    return connectionLevel;
+  }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
   }

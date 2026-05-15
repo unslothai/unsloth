@@ -510,6 +510,10 @@ const ReasoningToggle: FC = () => {
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
         )
       : null;
   const effectiveReasoningStyle =

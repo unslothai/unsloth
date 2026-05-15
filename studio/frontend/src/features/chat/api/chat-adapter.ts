@@ -944,6 +944,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
                 externalSelection.modelId,
+                {
+                  isReasoningProvider:
+                    externalProvider.isReasoningModel === true,
+                },
               )
             : {
                 supportsReasoning,
