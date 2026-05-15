@@ -320,6 +320,30 @@ class ExternalProviderClient:
                 else:
                     body["reasoning"] = {"enabled": False}
 
+            # OpenRouter's universal web-search shortcut: append `:online`
+            # to the model id. The gateway runs search server-side and
+            # streams citations back as annotations on text deltas — see
+            #   https://openrouter.ai/docs/features/web-search
+            # `openrouter/free` is a meta-router; `:online` is not a valid
+            # suffix on it (and the gateway 400s), so skip the rewrite
+            # there. For everything else, swap any existing `:variant`
+            # (e.g. `:free`, `:nitro`) for `:online` — OpenRouter variants
+            # are mutually exclusive.
+            if (
+                enabled_tools
+                and "web_search" in enabled_tools
+                and body.get("model")
+                and body["model"] != "openrouter/free"
+            ):
+                current_model = body["model"]
+                base_model = current_model.split(":", 1)[0]
+                body["model"] = f"{base_model}:online"
+                logger.info(
+                    "OpenRouter web_search: rewrote model %s -> %s",
+                    current_model,
+                    body["model"],
+                )
+
         url = f"{self.base_url}/chat/completions"
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",

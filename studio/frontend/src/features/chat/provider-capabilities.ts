@@ -89,18 +89,26 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  * is available for that provider and the chat-adapter forwards
  * `enable_tools: true, enabled_tools: ["web_search"]` on the request — the
  * backend routes the call through the provider's tool schema:
- *   - OpenAI:    `tools: [{type: "web_search"}]` on /v1/responses
- *   - Anthropic: `tools: [{type: "web_search_20250305", name: "web_search",
- *                          max_uses: 5}]` on /v1/messages
+ *   - OpenAI:     `tools: [{type: "web_search"}]` on /v1/responses
+ *   - Anthropic:  `tools: [{type: "web_search_20250305", name: "web_search",
+ *                           max_uses: 5}]` on /v1/messages
+ *   - OpenRouter: rewrites the model id to append `:online` (the router's
+ *                 universal web-search shortcut). Skipped for the
+ *                 `openrouter/free` meta-router where `:online` is not a
+ *                 valid suffix.
  *
- * Gemini's grounded-search, Mistral's web_search, Kimi's $web_search and
- * OpenRouter's :online variants can be added with the same pattern when
- * matching backend translation lands.
+ * Gemini's grounded-search, Mistral's web_search, and Kimi's $web_search
+ * can be added with the same pattern when matching backend translation
+ * lands.
  */
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
 ): boolean {
-  return providerType === "openai" || providerType === "anthropic";
+  return (
+    providerType === "openai" ||
+    providerType === "anthropic" ||
+    providerType === "openrouter"
+  );
 }
 
 /**
