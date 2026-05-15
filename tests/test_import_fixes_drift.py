@@ -568,13 +568,13 @@ def test_patch_loss_functions_covers_conditional_generation():
 
     saved = dict(lu.LOSS_MAPPING)
     try:
-        cel.patch_loss_functions(torch_compile=False)
+        cel.patch_loss_functions(torch_compile = False)
 
         unsloth_loss = lu.LOSS_MAPPING.get("ForCausalLM")
         assert unsloth_loss is not None
-        assert "Unsloth" in str(unsloth_loss), (
-            f"LOSS_MAPPING['ForCausalLM'] was not replaced: {unsloth_loss}"
-        )
+        assert "Unsloth" in str(
+            unsloth_loss
+        ), f"LOSS_MAPPING['ForCausalLM'] was not replaced: {unsloth_loss}"
 
         cg_loss = lu.LOSS_MAPPING.get("ForConditionalGeneration")
         assert cg_loss is unsloth_loss, (
@@ -593,13 +593,14 @@ def test_patch_loss_functions_does_not_touch_other_loss_types():
     cel = pytest.importorskip("unsloth.kernels.cross_entropy_loss")
 
     non_causal_keys = {
-        k for k, v in lu.LOSS_MAPPING.items()
+        k
+        for k, v in lu.LOSS_MAPPING.items()
         if getattr(v, "__name__", "") != "ForCausalLMLoss"
     }
 
     saved = dict(lu.LOSS_MAPPING)
     try:
-        cel.patch_loss_functions(torch_compile=False)
+        cel.patch_loss_functions(torch_compile = False)
 
         unsloth_loss = lu.LOSS_MAPPING.get("ForCausalLM")
         for key in non_causal_keys:
