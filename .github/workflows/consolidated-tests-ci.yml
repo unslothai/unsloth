@@ -887,14 +887,23 @@ jobs:
           import _zoo_aggressive_cuda_spoof as _spoof
           _spoof.apply()
 
-          # Hermetic cache dir + force compile path BEFORE importing
-          # unsloth_zoo.compiler (its globals capture env at module load).
+          # Hermetic cache dir + force compile path. The compiler's
+          # globals (UNSLOTH_COMPILE_LOCATION, UNSLOTH_COMPILE_USE_TEMP)
+          # are captured at module load; an earlier conftest `import
+          # unsloth` may have already imported unsloth_zoo.compiler with
+          # the default "unsloth_compiled_cache" path. Mutate the live
+          # module globals after import so this shim is robust to that
+          # ordering. Otherwise the compiler silently writes to the
+          # default cache and the per-model file assertion fails.
           _CACHE = pathlib.Path(tempfile.mkdtemp(prefix="unsloth_cache_"))
           os.environ["UNSLOTH_COMPILE_LOCATION"] = str(_CACHE)
           os.environ["UNSLOTH_COMPILE_OVERWRITE"] = "1"
           os.environ.pop("UNSLOTH_COMPILE_DISABLE", None)
 
           import pytest
+          import unsloth_zoo.compiler as _zoo_compiler
+          _zoo_compiler.UNSLOTH_COMPILE_LOCATION = str(_CACHE)
+          _zoo_compiler.UNSLOTH_COMPILE_USE_TEMP = False
           from unsloth_zoo.compiler import unsloth_compile_transformers
 
 
@@ -1034,12 +1043,14 @@ jobs:
               emitted cache file has the model-specific RMSNorm class
               attribute, not just that the file parses + imports.
 
-              Note on test isolation: ``unsloth_compile_transformers``
-              early-returns when ``modeling.__UNSLOTH_PATCHED__`` is set,
-              so once an earlier test in the same collection patches the
-              module the next call won't re-emit the cache file. Drop the
-              marker (and any stale cache file) before invoking so this
-              test is order-independent."""
+              ``unsloth_compile_transformers`` is not idempotent in-
+              process: calling it twice on the same modeling module
+              after rewriting class attributes corrupts the inspect
+              source/line cache and the second emitted file is malformed
+              Python. The sweep above already produced a valid cache
+              file for every non-KNOWN_BROKEN model_type, so just verify
+              that artefact here. Trigger a compile only when running
+              this test in isolation (no sweep preceded)."""
               import importlib as _il
               try:
                   modeling = _il.import_module(
@@ -1049,17 +1060,14 @@ jobs:
                   pytest.skip(
                       f"transformers build lacks model_type={model_type}"
                   )
-              if hasattr(modeling, "__UNSLOTH_PATCHED__"):
-                  delattr(modeling, "__UNSLOTH_PATCHED__")
               combined = _CACHE / f"unsloth_compiled_module_{model_type}.py"
-              if combined.exists():
-                  combined.unlink()
-              unsloth_compile_transformers(
-                  model_type=model_type, fast_lora_forwards=False,
-              )
-              modeling = _il.import_module(
-                  f"transformers.models.{model_type}.modeling_{model_type}"
-              )
+              if not combined.exists():
+                  unsloth_compile_transformers(
+                      model_type=model_type, fast_lora_forwards=False,
+                  )
+                  modeling = _il.import_module(
+                      f"transformers.models.{model_type}.modeling_{model_type}"
+                  )
               assert getattr(modeling, "__UNSLOTH_PATCHED__", False) is True
               _verify_file(combined, must_expose=[rms_class])
 
