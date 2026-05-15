@@ -1299,6 +1299,13 @@ class ExternalProviderClient:
                 current_server_tool_use: Optional[dict[str, Any]] = None
                 current_result_block: Optional[dict[str, Any]] = None
                 web_search_calls: dict[str, dict[str, Any]] = {}
+                # Cache usage tracking. message_start carries the input
+                # accounting (incl. cache_creation_input_tokens and
+                # cache_read_input_tokens); message_delta carries cumulative
+                # output_tokens. Both are surfaced in the "stream complete"
+                # log so prompt caching can be verified per-request without
+                # opening the Anthropic dashboard.
+                last_usage: dict[str, Any] = {}
 
                 def _content_chunk(text: str) -> str:
                     chunk = {
@@ -1372,6 +1379,16 @@ class ExternalProviderClient:
                         else:
                             key = event_type or "<unknown>"
                         event_counts[key] = event_counts.get(key, 0) + 1
+
+                        # message_start carries the input-side usage block
+                        # including cache_creation_input_tokens and
+                        # cache_read_input_tokens. message_delta updates
+                        # output_tokens (and may overwrite the input fields
+                        # with final values). Merge both into last_usage.
+                        if event_type == "message_start":
+                            start_usage = (event.get("message") or {}).get("usage")
+                            if isinstance(start_usage, dict):
+                                last_usage.update(start_usage)
 
                         if event_type == "content_block_start":
                             content_block = event.get("content_block") or {}
@@ -1510,6 +1527,9 @@ class ExternalProviderClient:
                                 thinking_open = False
 
                         elif event_type == "message_delta":
+                            delta_usage = event.get("usage")
+                            if isinstance(delta_usage, dict):
+                                last_usage.update(delta_usage)
                             stop_reason = event.get("delta", {}).get("stop_reason")
                             if stop_reason:
                                 if thinking_open:
@@ -1559,15 +1579,28 @@ class ExternalProviderClient:
                         for sc in web_search_calls.values()
                         if sc.get("query")
                     ]
+                    # cache_read_input_tokens > 0 on turn N proves the
+                    # cache_control marker on the system block is doing
+                    # its job — turn 1 will show cache_creation > 0
+                    # instead. cache_creation tokens are billed at a
+                    # small premium; cache_read tokens are billed at a
+                    # discount.
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
-                        "results=%s, queries=%s, events=%s)",
+                        "results=%s, queries=%s, "
+                        "input_tokens=%s, output_tokens=%s, "
+                        "cache_creation_input_tokens=%s, "
+                        "cache_read_input_tokens=%s, events=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
                         total_results,
                         queries,
+                        last_usage.get("input_tokens"),
+                        last_usage.get("output_tokens"),
+                        last_usage.get("cache_creation_input_tokens"),
+                        last_usage.get("cache_read_input_tokens"),
                         event_counts,
                     )
                     await response.aclose()
@@ -1766,6 +1799,12 @@ class ExternalProviderClient:
                 done_emitted = False
                 reasoning_open = False
                 reasoning_emitted = False
+                # Latched from response.completed / response.incomplete so
+                # the final log can surface input_tokens_details.cached_tokens —
+                # the field that proves prompt_cache_retention="24h" is
+                # actually hitting OpenAI's cache instead of recomputing
+                # the prefix every turn.
+                last_usage: Optional[dict[str, Any]] = None
                 # Per-call state for OpenAI's server-side web_search tool. Mapped
                 # back into our local _toolEvent shape so the existing chat-UI
                 # renderer surfaces web_search the same way it does for local
@@ -1990,6 +2029,9 @@ class ExternalProviderClient:
                                 reasoning_emitted = True
 
                         elif event_type == "response.completed":
+                            completed_usage = (event.get("response") or {}).get("usage")
+                            if isinstance(completed_usage, dict):
+                                last_usage = completed_usage
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
@@ -2033,6 +2075,11 @@ class ExternalProviderClient:
                             yield f"data: {_json.dumps(chunk)}"
 
                         elif event_type == "response.incomplete":
+                            incomplete_usage = (event.get("response") or {}).get(
+                                "usage"
+                            )
+                            if isinstance(incomplete_usage, dict):
+                                last_usage = incomplete_usage
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
@@ -2106,16 +2153,33 @@ class ExternalProviderClient:
                         for sc in web_search_calls.values()
                         if sc.get("query")
                     ]
+                    # cached_input_tokens > 0 on turn N proves
+                    # prompt_cache_retention="24h" is letting the previous
+                    # turn's prefix hit the cache instead of being
+                    # recomputed. On /v1/responses the field is nested as
+                    # usage.input_tokens_details.cached_tokens (not
+                    # prompt_tokens_details, which is the /v1/chat/completions
+                    # shape).
+                    cached_input_tokens = None
+                    if isinstance(last_usage, dict):
+                        details = last_usage.get("input_tokens_details")
+                        if isinstance(details, dict):
+                            cached_input_tokens = details.get("cached_tokens")
                     logger.info(
                         "OpenAI Responses stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
-                        "citations=%s, queries=%s, reasoning_emitted=%s)",
+                        "citations=%s, queries=%s, reasoning_emitted=%s, "
+                        "input_tokens=%s, output_tokens=%s, "
+                        "cached_input_tokens=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
                         total_citations,
                         queries,
                         reasoning_emitted,
+                        (last_usage or {}).get("input_tokens"),
+                        (last_usage or {}).get("output_tokens"),
+                        cached_input_tokens,
                     )
                     await response.aclose()
                     await lines_gen.aclose()
