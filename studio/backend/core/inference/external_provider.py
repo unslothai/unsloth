@@ -199,6 +199,7 @@ class ExternalProviderClient:
         top_k: Optional[int] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
+        enabled_tools: Optional[list[str]] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -240,6 +241,7 @@ class ExternalProviderClient:
                 max_tokens,
                 enable_thinking,
                 reasoning_effort,
+                enabled_tools,
             ):
                 yield line
             return
@@ -824,6 +826,7 @@ class ExternalProviderClient:
         max_tokens: Optional[int],
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
+        enabled_tools: Optional[list[str]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -917,6 +920,20 @@ class ExternalProviderClient:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
+
+        # OpenAI server-side tools — see
+        #   https://developers.openai.com/api/docs/guides/tools
+        # The frontend's Search button maps to the unified
+        # enabled_tools=["web_search"] shorthand; translate that into the
+        # Responses-API tool schema. Other built-in tools (file_search,
+        # code_interpreter, image_generation, computer_use_preview) can be
+        # added with the same pattern when we surface their toggles.
+        if enabled_tools:
+            tools_array: list[dict[str, Any]] = []
+            if "web_search" in enabled_tools:
+                tools_array.append({"type": "web_search"})
+            if tools_array:
+                body["tools"] = tools_array
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"

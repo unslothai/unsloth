@@ -84,6 +84,25 @@ export function clampReasoningEffortToLevels(
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
 /**
+ * Whether the external provider offers a built-in web-search tool that the
+ * model invokes server-side. When `true`, the chat composer's Search button
+ * is available for that provider and the chat-adapter forwards
+ * `enable_tools: true, enabled_tools: ["web_search"]` on the request — the
+ * backend routes the call through OpenAI's `/v1/responses` (or the
+ * provider's equivalent) with `tools: [{type: "web_search"}]` attached so
+ * the model can run a search before responding.
+ *
+ * Currently only OpenAI is wired. Anthropic's `web_search_20250305`,
+ * Gemini's grounded-search, and OpenRouter's variants can be added later
+ * with matching backend translation.
+ */
+export function providerSupportsBuiltinWebSearch(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "openai";
+}
+
+/**
  * Per-provider minimum on the outbound max_tokens. Kimi's docs require
  * `max_tokens >= 16000` whenever a thinking model is in use so the
  * reasoning_content and final answer both fit in the budget — anything

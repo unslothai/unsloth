@@ -50,6 +50,7 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
@@ -681,6 +682,9 @@ export function ChatPage(): ReactElement {
     const nextReasoningEffort = reasoningCaps.supportsReasoning
       ? clampedEffort
       : state.reasoningEffort;
+    const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+      provider?.providerType,
+    );
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -694,6 +698,13 @@ export function ChatPage(): ReactElement {
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
+      // Mirror the model-switch handler — external models without a
+      // built-in web-search tool keep the Search button disabled, and
+      // OpenAI external models start with the toggle off (opt-in).
+      supportsTools: supportsBuiltinWebSearch,
+      ...(supportsBuiltinWebSearch
+        ? {}
+        : { toolsEnabled: false, codeToolsEnabled: false }),
     });
   }, [externalProviders, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -823,6 +834,13 @@ export function ChatPage(): ReactElement {
           ...store.params,
           checkpoint: value,
         });
+        // Built-in web search is opt-in (off by default per the spec) and
+        // currently only OpenAI's /v1/responses exposes a server-side
+        // web_search tool. For other external providers we keep
+        // supportsTools=false so the Search button stays disabled.
+        const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+          selectedProvider?.providerType,
+        );
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -841,6 +859,12 @@ export function ChatPage(): ReactElement {
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
+          supportsTools: supportsBuiltinWebSearch,
+          // Force off by default whenever an external model is picked —
+          // user can opt in by clicking the Search button. Mirrors the
+          // user-facing requirement that web search is not implicit.
+          toolsEnabled: false,
+          codeToolsEnabled: false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
         return;
