@@ -445,6 +445,7 @@ def _preserve_tokenizer_eos_token(tokenizer, save_directory):
         eos_token = getattr(tokenizer, "eos_token", None)
     if eos_token is None:
         return
+    eos_token = str(eos_token)
 
     tokenizer_config = os.path.join(str(save_directory), "tokenizer_config.json")
     if not os.path.isfile(tokenizer_config):
@@ -734,9 +735,6 @@ def unsloth_save_model(
             _tokenizer.padding_side = "left"
 
             tokenizer.save_pretrained(**tokenizer_save_settings)
-            _preserve_tokenizer_eos_token(
-                tokenizer, tokenizer_save_settings["save_directory"]
-            )
 
             # Revert back padding side
             _tokenizer.padding_side = old_padding_side
@@ -1079,8 +1077,6 @@ def unsloth_save_model(
         )
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
-
-    _preserve_tokenizer_eos_token(tokenizer, save_pretrained_settings["save_directory"])
 
     # Revert config back
     original_model = model
@@ -3134,7 +3130,6 @@ def unsloth_generic_save(
                 old_padding_side = _tokenizer.padding_side
                 _tokenizer.padding_side = "left"
                 tokenizer.save_pretrained(save_directory)
-                _preserve_tokenizer_eos_token(tokenizer, save_directory)
                 _tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
@@ -3152,7 +3147,6 @@ def unsloth_generic_save(
             low_disk_space_usage = True,
             use_temp_file = False,
         )
-        _preserve_tokenizer_eos_token(tokenizer, save_directory)
 
     if push_to_hub and datasets:
         try:
@@ -3569,6 +3563,7 @@ def patch_saving_functions(model, vision = False):
             save_directory,
             token = kwargs.get("token", None),
         )
+        _preserve_tokenizer_eos_token(self, save_directory)
         if push_to_hub:
             push_kwargs = dict(kwargs)
             repo_id = push_kwargs.pop("repo_id", save_directory)

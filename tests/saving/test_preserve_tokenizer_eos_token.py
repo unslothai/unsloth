@@ -54,3 +54,20 @@ def test_preserve_tokenizer_eos_token_supports_processor_tokenizer(tmp_path):
 
     saved_config = json.loads(tokenizer_config.read_text(encoding = "utf-8"))
     assert saved_config["eos_token"] == "<turn|>"
+
+
+class _StringableToken:
+    def __str__(self):
+        return "<turn|>"
+
+
+def test_preserve_tokenizer_eos_token_serializes_stringable_tokens(tmp_path):
+    preserve = _load_preserve_helper()
+    tokenizer_config = tmp_path / "tokenizer_config.json"
+    tokenizer_config.write_text(json.dumps({"eos_token": "<eos>"}), encoding = "utf-8")
+    tokenizer = types.SimpleNamespace(eos_token = _StringableToken())
+
+    preserve(tokenizer, tmp_path)
+
+    saved_config = json.loads(tokenizer_config.read_text(encoding = "utf-8"))
+    assert saved_config["eos_token"] == "<turn|>"
