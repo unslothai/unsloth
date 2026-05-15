@@ -88,6 +88,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           path: unsloth
+          persist-credentials: false
 
       - name: Checkout unslothai/notebooks @ ${{ env.NOTEBOOKS_REF }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -96,6 +97,7 @@ jobs:
           ref: ${{ env.NOTEBOOKS_REF }}
           path: notebooks
           fetch-depth: 0  # drift check needs git status / diff
+          persist-credentials: false
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -196,12 +198,15 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with: { path: unsloth }
+        with:
+          persist-credentials: false
+          path: unsloth
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: unslothai/notebooks
           ref: ${{ env.NOTEBOOKS_REF }}
           path: notebooks
+          persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with: { python-version: '3.12', cache: 'pip' }
       - name: Install
@@ -239,12 +244,15 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with: { path: unsloth }
+        with:
+          persist-credentials: false
+          path: unsloth
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: unslothai/notebooks
           ref: ${{ env.NOTEBOOKS_REF }}
           path: notebooks
+          persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with: { python-version: '3.12', cache: 'pip' }
 
@@ -342,12 +350,15 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with: { path: unsloth }
+        with:
+          persist-credentials: false
+          path: unsloth
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: unslothai/notebooks
           ref: ${{ env.NOTEBOOKS_REF }}
           path: notebooks
+          persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with: { python-version: '3.12' }
 

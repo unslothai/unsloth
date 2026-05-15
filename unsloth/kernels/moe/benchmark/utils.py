@@ -183,7 +183,7 @@ def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_di
         filename = "_".join(key)
         save_path = f"{save_dir}/{filename}.json"
         print(f"Saving autotune results to {save_path}")
-        with open(save_path, "w") as f:
+        with open(save_path, "w", encoding = "utf-8") as f:
             result = {
                 **config.all_kwargs(),
                 "ref_time": ref_time,

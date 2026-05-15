@@ -19,6 +19,11 @@ from utils.paths import (
     resolve_export_dir,
 )
 from utils.utils import without_hf_auth
+from utils.models.gguf_metadata import (
+    is_mmproj_by_metadata,
+    pairing_score,
+    read_gguf_general_metadata,
+)
 import structlog
 from loggers import get_logger
 import os
@@ -801,12 +806,15 @@ _AUDIO_TOKEN_PATTERNS = {
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: "<|audio_start|>" in tokens
-    and "<|audio_end|>" in tokens
-    and "<|text_start|>" in tokens
-    and "<|text_end|>" in tokens,
-    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_"))
-    > 10000,
+    "dac": lambda tokens: (
+        "<|audio_start|>" in tokens
+        and "<|audio_end|>" in tokens
+        and "<|text_start|>" in tokens
+        and "<|text_end|>" in tokens
+    ),
+    "snac": lambda tokens: (
+        sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000
+    ),
 }
 
 
@@ -913,6 +921,85 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Family tokens for #5347's filename fallback. Lowercase. Order does not
+# matter (see ``_detect_family_token``).
+_MODEL_FAMILY_TOKENS: tuple[str, ...] = (
+    "qwen",
+    "gemma",
+    "llama",
+    "mistral",
+    "ministral",
+    "magistral",
+    "devstral",
+    "phi",
+    "deepseek",
+    "internvl",
+    "minicpm",
+    "llava",
+    "glm",
+    "yi",
+    "command-r",
+    "molmo",
+    "pixtral",
+    "smolvlm",
+    "moondream",
+    "granite",
+    "ovis",
+    "nemotron",
+    "kimi",
+    "nanonets",
+    "cosmos",
+    "mimo",
+    "apriel",
+    "lfm",
+)
+
+
+# Word-bounded match: any letter on either side disqualifies. Stops
+# ``phi`` matching ``sapphire``, ``yi`` matching ``tiny``, etc.
+_FAMILY_TOKEN_RE_CACHE: Dict[str, "_re.Pattern[str]"] = {}
+
+
+def _family_token_re(token: str) -> "_re.Pattern[str]":
+    pat = _FAMILY_TOKEN_RE_CACHE.get(token)
+    if pat is None:
+        pat = _re.compile(rf"(?:^|[^a-z])({_re.escape(token)})(?:[^a-z]|$)")
+        _FAMILY_TOKEN_RE_CACHE[token] = pat
+    return pat
+
+
+def _detect_family_token(filename: str) -> Optional[str]:
+    """Leftmost-position match; ties prefer the longer token."""
+    name = filename.lower()
+    best: Optional[tuple[int, int, str]] = None  # (start, -len, token)
+    for token in _MODEL_FAMILY_TOKENS:
+        m = _family_token_re(token).search(name)
+        if m is None:
+            continue
+        key = (m.start(1), -len(token), token)
+        if best is None or key < best:
+            best = key
+    return None if best is None else best[2]
+
+
+def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
+    """Defense-in-depth guard for the launcher: True unless both filenames
+    carry recognised family tokens that disagree."""
+    model_fam = _detect_family_token(Path(model_path).name)
+    mmproj_fam = _detect_family_token(Path(mmproj_path).name)
+    if model_fam is None or mmproj_fam is None:
+        return True
+    return model_fam == mmproj_fam
+
+
+def _shared_prefix_len(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
+
+
 def _is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
@@ -927,33 +1014,18 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
 
 
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """
-    Find the mmproj (vision projection) GGUF file for a given model.
+    """Find the mmproj GGUF for a model.
 
-    Args:
-        path: Directory to search — or a .gguf file (uses its parent dir
-            as the starting point).
-        search_root: Optional outer directory that should also be scanned
-            (and any directory between it and ``path``). This handles
-            local layouts where the model weights live in a quant-named
-            subdir (``snapshot/BF16/foo.gguf``) but the mmproj sits at
-            the snapshot root (``snapshot/mmproj-BF16.gguf``). When
-            ``None``, only the immediate parent dir is scanned, matching
-            the historical behavior.
-
-    Returns:
-        Full path to the mmproj .gguf file, or None if not found.
-    """
+    ``path``: directory or a .gguf file. ``search_root``: optional ancestor
+    to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
+    but the projector sits at ``snapshot/``). Returns the projector path or
+    ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
         return None
 
-    # Build the list of dirs to scan: immediate dir first, then walk up
-    # to (and including) ``search_root`` if it is an ancestor. We walk
-    # incrementally rather than recursing into ``search_root`` so we
-    # don't accidentally pick up an mmproj from a sibling subdir
-    # belonging to a different model variant.
+    # Walk incrementally so a sibling subdir's mmproj cannot leak in.
     seen: set[Path] = set()
     scan_order: list[Path] = []
 
@@ -969,12 +1041,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
 
     _add(start_dir)
 
-    # When ``path`` is a symlink (e.g. Ollama's ``.studio_links/...gguf``
-    # -> ``blobs/sha256-...``), the symlink's parent directory rarely
-    # contains the mmproj sibling; the real mmproj file lives next to
-    # the symlink target. Add the target's parent to the scan so vision
-    # GGUFs that are surfaced via symlinks are still recognised as
-    # vision models.
+    # Ollama's .studio_links/foo.gguf -> blobs/sha256-...: also scan target dir.
     try:
         if p.is_symlink() and p.is_file():
             target_parent = p.resolve().parent
@@ -986,14 +1053,12 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         try:
             root_resolved = Path(search_root).resolve()
             start_resolved = start_dir.resolve()
-            # Only walk if start_dir is inside (or equal to) search_root.
             if root_resolved == start_resolved or (
                 start_resolved.is_relative_to(root_resolved)
                 if hasattr(start_resolved, "is_relative_to")
                 else str(start_resolved).startswith(str(root_resolved) + "/")
             ):
                 cur = start_resolved
-                # Walk up from start_dir to (and including) root_resolved.
                 while cur != root_resolved and cur.parent != cur:
                     cur = cur.parent
                     _add(cur)
@@ -1002,11 +1067,66 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         except OSError:
             pass
 
+    candidates: list[Path] = []
+    seen_resolved: set[Path] = set()
     for d in scan_order:
         for f in _iter_gguf_files(d):
-            if _is_mmproj(f.name):
-                return str(f.resolve())
-    return None
+            try:
+                resolved = f.resolve()
+            except OSError:
+                continue
+            if resolved in seen_resolved:
+                continue
+            # Prefer ``general.type=='mmproj'``; fall back to filename.
+            meta = read_gguf_general_metadata(str(resolved))
+            by_meta = is_mmproj_by_metadata(meta)
+            if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
+                seen_resolved.add(resolved)
+                candidates.append(resolved)
+
+    if not candidates:
+        return None
+
+    # Directory path: no model name to compare against; legacy behaviour.
+    if not p.is_file():
+        return str(candidates[0])
+
+    # Stage 1: GGUF metadata. Stage 2: filename family token (#5347).
+    model_stem = p.stem.lower()
+    model_family = _detect_family_token(p.name)
+    weight_meta = read_gguf_general_metadata(str(p))
+
+    scored: list[tuple[int, Path]] = []
+    for c in candidates:
+        cand_meta = read_gguf_general_metadata(str(c))
+        meta_score = pairing_score(weight_meta, cand_meta)
+        if meta_score == -1:
+            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch)")
+            continue
+        if meta_score == 0 and model_family is not None:
+            # Unrecognised candidate family is a wildcard (``mmproj-F16.gguf``).
+            cand_family = _detect_family_token(c.name)
+            if cand_family is not None and cand_family != model_family:
+                logger.info(
+                    f"detect_mmproj_file: dropped {c.name} "
+                    f"(filename family {cand_family!r} vs model {model_family!r})"
+                )
+                continue
+        scored.append((meta_score, c))
+
+    if not scored:
+        return None
+
+    # Score first, then longest shared prefix, then shorter stem.
+    best = max(
+        scored,
+        key = lambda sc: (
+            sc[0],
+            _shared_prefix_len(model_stem, sc[1].stem.lower()),
+            -len(sc[1].stem),
+        ),
+    )
+    return str(best[1])
 
 
 def detect_gguf_model(path: str) -> Optional[str]:
@@ -1360,7 +1480,7 @@ def detect_gguf_model_remote(
             if attempt < 2:
                 time.sleep(2**attempt)
     logger.warning(
-        f"Could not check GGUF files for '{repo_id}' after 3 attempts: " f"{last_err}"
+        f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
     )
     return None
 
@@ -1696,20 +1816,21 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
                         )
                         return base_model
 
-        training_args_path = checkpoint_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        "Detected base model from training_args.bin: %s", base_model
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; re-enable via safe_globals or weights_only=False once threat model allows.
+        # training_args_path = checkpoint_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 "Detected base model from training_args.bin: %s", base_model
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         dir_name = checkpoint_path_obj.name
         if dir_name.startswith("unsloth_"):
@@ -1757,20 +1878,21 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
-        training_args_path = lora_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        f"Detected base model from training_args.bin: {base_model}"
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; also an RCE sink for third-party LoRAs via this route, re-enable behind a trust check if needed.
+        # training_args_path = lora_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 f"Detected base model from training_args.bin: {base_model}"
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         # Last resort: parse from directory name
         # Format: unsloth_Meta-Llama-3.1-8B-Instruct-bnb-4bit_timestamp
