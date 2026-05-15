@@ -946,6 +946,24 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
     import copy as _copy
 
+    # torch.distributed is incomplete on Windows ROCm — it ships without the
+    # process-group helpers (is_initialized, is_available, etc.).
+    # resolve_attention_implementation (unsloth) calls is_initialized()
+    # unconditionally, so patch any missing attrs before importing it.
+    try:
+        import torch.distributed as _td
+
+        for _attr, _stub in (
+            ("is_initialized", lambda: False),
+            ("is_available", lambda: False),
+            ("get_rank", lambda: 0),
+            ("get_world_size", lambda: 1),
+        ):
+            if not hasattr(_td, _attr):
+                setattr(_td, _attr, _stub)
+    except ImportError:
+        pass
+
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
 
