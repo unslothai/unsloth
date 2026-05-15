@@ -304,6 +304,17 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
 
+      - name: public-api surface drift detectors (9 tests, HARD GATE)
+        # Companion to test_import_fixes_drift.py: that file catches
+        # third-party drift; this one catches drift in unsloth's OWN
+        # public surface (FastLanguageModel / FastVisionModel /
+        # FastModel + their classmethods + is_bf16_supported). A
+        # rename here would silently break the unslothai/notebooks tree
+        # one PR cycle later -- this gate catches it BEFORE the
+        # breakage reaches users.
+        run: |
+          python -m pytest -v --tb=short tests/test_public_api_surface.py
+
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # 16 tests across 5 files. They live inside tests/saving/ and
         # tests/utils/, both of which Repo tests (CPU) excludes via --ignore
