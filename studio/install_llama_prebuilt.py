@@ -3447,7 +3447,11 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         (linkname starts with the top-level dir name but no following
         slash) and search archive entries under that dir for a real
         file whose basename ends with the mangled suffix. Only accept
-        when the suffix uniquely identifies a real archive entry."""
+        when the suffix uniquely identifies a real archive entry.
+        Returns the corrected linkname expressed relative to the
+        member's parent directory -- callers join it with
+        `target.parent`, so a full `top/file` path would double the
+        prefix into `top/top/file`."""
         if "/" not in member_name or "/" in link_name:
             return None
         top, _, _ = member_name.partition("/")
@@ -3466,7 +3470,10 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         ]
         if len(candidates) != 1:
             return None
-        return candidates[0]
+        # Strip the top-level dir so the caller's `target.parent / Path(...)`
+        # composition resolves inside the staging dir, not into a duplicate
+        # `top/top/...` path.
+        return candidates[0][len(prefix) :]
 
     def safe_link_target(
         base: Path,
