@@ -866,7 +866,9 @@ class TestHardwareRocmFlag:
         )
         source = hw_path.read_text(encoding = "utf-8")
         for attr in ("is_initialized", "is_available", "get_rank", "get_world_size"):
-            assert attr in source, f"distributed stub for '{attr}' missing from hardware.py"
+            assert (
+                attr in source
+            ), f"distributed stub for '{attr}' missing from hardware.py"
 
 
 # =============================================================================
