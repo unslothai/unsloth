@@ -850,6 +850,14 @@ class ExternalProviderClient:
             first_args = _json.loads(first_args_raw)
         except Exception:
             first_args = {}
+        # Log the raw arguments + parsed query so we can verify the model
+        # actually issued a real search (rather than emitting an empty
+        # tool_call envelope and answering from prior knowledge).
+        logger.info(
+            "Kimi $web_search: %d tool_call(s), args[0]=%s",
+            len(search_calls),
+            first_args_raw[:500],
+        )
         yield _synthetic_chunk(
             {
                 "type": "tool_start",
@@ -927,6 +935,12 @@ class ExternalProviderClient:
 
                 lines_gen = response.aiter_lines().__aiter__()
                 tool_ended = False
+                # Diagnostics: latch usage.prompt_tokens from the final
+                # chunk. The Kimi docs say search results count toward
+                # prompt_tokens, so a big value here is direct evidence
+                # the server actually injected results into context.
+                last_usage: Optional[dict[str, Any]] = None
+                annotation_shapes: set[str] = set()
                 try:
                     while True:
                         try:
@@ -949,6 +963,9 @@ class ExternalProviderClient:
                                 except Exception:
                                     parsed = None
                                 if isinstance(parsed, dict):
+                                    usage = parsed.get("usage")
+                                    if isinstance(usage, dict):
+                                        last_usage = usage
                                     for choice in parsed.get("choices") or []:
                                         if not isinstance(choice, dict):
                                             continue
@@ -961,6 +978,10 @@ class ExternalProviderClient:
                                             for ann in (
                                                 envelope.get("annotations") or []
                                             ):
+                                                if isinstance(ann, dict):
+                                                    annotation_shapes.add(
+                                                        str(ann.get("type") or "?")
+                                                    )
                                                 _record_citation(ann)
                         yield line
                     if not tool_ended:
@@ -974,9 +995,12 @@ class ExternalProviderClient:
                     raise
                 finally:
                     logger.info(
-                        "Kimi $web_search complete (model=%s, citations=%s)",
+                        "Kimi $web_search complete (model=%s, citations=%s, "
+                        "annotation_types=%s, prompt_tokens=%s)",
                         model,
                         len(citations),
+                        sorted(annotation_shapes) or None,
+                        (last_usage or {}).get("prompt_tokens"),
                     )
                     await response.aclose()
                     await lines_gen.aclose()
