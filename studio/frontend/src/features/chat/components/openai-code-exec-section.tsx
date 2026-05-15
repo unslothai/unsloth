@@ -31,6 +31,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -50,6 +60,11 @@ const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
 const TTL_MAX = 10080; // one week — matches backend bound
+// Cadence for re-fetching the container list while the section is
+// mounted. OpenAI's container TTL flips at minute granularity, so 30s
+// is fast enough that an expired container loses its ACTIVE pill within
+// half a minute without hammering /v1/containers.
+const REFRESH_POLL_MS = 30_000;
 
 function ageLabel(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "";
@@ -61,6 +76,21 @@ function ageLabel(epochSeconds: number | null | undefined): string {
   if (ageHr < 48) return `${ageHr}h ago`;
   const ageDay = Math.floor(ageHr / 24);
   return `${ageDay}d ago`;
+}
+
+function shortContainerId(id: string): string {
+  // Mid-truncate keeps the "cntr_" prefix readable and still surfaces the
+  // tail digits users sometimes copy off OpenAI's dashboard.
+  if (id.length <= 18) return id;
+  return `${id.slice(0, 12)}…${id.slice(-4)}`;
+}
+
+function isContainerRunning(c: OpenAIContainerSummary): boolean {
+  // OpenAI's containers API reports `status: "running"` while idle TTL is
+  // valid and `status: "expired"` once the idle window has passed. Treat
+  // a missing status as running so we don't false-positive on any older
+  // payloads that didn't include the field.
+  return c.status == null || c.status === "running";
 }
 
 interface OpenAICodeExecSectionProps {
@@ -84,6 +114,12 @@ export function OpenAICodeExecSection({
   const [createTtl, setCreateTtl] = useState<number>(
     provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES,
   );
+  // Target row for the destructive confirmation dialog. Held in state
+  // (rather than blocking with window.confirm) so the dialog sits inside
+  // the settings sheet instead of a native browser alert.
+  const [pendingDelete, setPendingDelete] =
+    useState<OpenAIContainerSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const thread = useLiveQuery(
     async () => (activeThreadId ? db.threads.get(activeThreadId) : undefined),
@@ -101,15 +137,27 @@ export function OpenAICodeExecSection({
     [containers],
   );
 
-  // What the dropdown should display right now. We decouple this from
-  // `activeContainerId` (which is whatever is in Dexie) so the user
-  // immediately sees the most-recent container by name when there is
-  // no thread binding yet, rather than a "Selecting most recent…"
-  // placeholder while the auto-bind effect's async write propagates
-  // back through useLiveQuery. The auto-bind effect still writes the
-  // bind to Dexie so the chat adapter sees it on send.
+  // First running container by lastActiveAt — the auto-bind target and
+  // also what we surface visually before Dexie catches up.
+  const firstRunningContainer = useMemo(
+    () => sortedContainers.find(isContainerRunning) ?? null,
+    [sortedContainers],
+  );
+
+  // What the picker should treat as "active" right now. We decouple
+  // this from `activeContainerId` (Dexie state) so the user immediately
+  // sees the most-recent running container while the auto-bind effect's
+  // async write propagates. If the Dexie-bound container has since
+  // expired, fall back to the first running candidate — the stale-bind
+  // sweeper below will clear Dexie shortly after.
+  const boundContainer = useMemo(
+    () => sortedContainers.find((c) => c.id === activeContainerId) ?? null,
+    [sortedContainers, activeContainerId],
+  );
   const displayedContainerId =
-    activeContainerId ?? sortedContainers[0]?.id ?? null;
+    (boundContainer && isContainerRunning(boundContainer)
+      ? boundContainer.id
+      : firstRunningContainer?.id) ?? null;
 
   const refresh = useCallback(async () => {
     if (!apiKey) return;
@@ -129,9 +177,28 @@ export function OpenAICodeExecSection({
     }
   }, [apiKey, provider.baseUrl]);
 
-  // Fetch once when the section mounts (or provider changes).
+  // Fetch once when the section mounts (or provider changes), then
+  // poll on a low cadence so an expired container's ACTIVE pill clears
+  // without the user clicking the refresh button. Also re-fetch when
+  // the tab regains visibility — covers the common case of leaving the
+  // sheet open across a long idle period.
   useEffect(() => {
     void refresh();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    }, REFRESH_POLL_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   // Auto-bind the active thread to the most-recently-active container
@@ -150,14 +217,10 @@ export function OpenAICodeExecSection({
   // the chat-adapter's lazy-create path will mint the first container
   // on first send.
   useEffect(() => {
-    if (!activeThreadId || activeContainerId || containers.length === 0) {
+    if (!activeThreadId || activeContainerId || !firstRunningContainer) {
       return;
     }
-    const sorted = [...containers].sort(
-      (a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0),
-    );
-    const candidate = sorted[0];
-    if (!candidate) return;
+    const candidateId = firstRunningContainer.id;
     void (async () => {
       try {
         await ensureThreadRecord({
@@ -165,13 +228,31 @@ export function OpenAICodeExecSection({
           modelType: "base",
         });
         await db.threads.update(activeThreadId, {
-          openaiCodeExecContainerId: candidate.id,
+          openaiCodeExecContainerId: candidateId,
         });
       } catch {
         // Best-effort; the chat-adapter will inherit/create on send.
       }
     })();
-  }, [activeThreadId, activeContainerId, containers]);
+  }, [activeThreadId, activeContainerId, firstRunningContainer]);
+
+  // Stale-bind sweeper: when the active thread is pinned to a container
+  // that the latest list no longer reports as running (expired by idle
+  // TTL, or deleted out-of-band), drop the binding so the auto-bind
+  // effect above can pick a healthy candidate and the chat adapter's
+  // lazy-create path can mint a fresh container on the next send. Only
+  // fires when `containers` has actually been fetched at least once to
+  // avoid clearing on a transient empty list during initial load.
+  useEffect(() => {
+    if (!activeThreadId || !activeContainerId) return;
+    if (containers.length === 0) return;
+    if (boundContainer && isContainerRunning(boundContainer)) return;
+    void db.threads
+      .update(activeThreadId, { openaiCodeExecContainerId: null })
+      .catch(() => {
+        /* best-effort cleanup */
+      });
+  }, [activeThreadId, activeContainerId, boundContainer, containers.length]);
 
   const ttlValue = provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES;
 
@@ -253,15 +334,10 @@ export function OpenAICodeExecSection({
     }
   };
 
-  const onDelete = async (id: string, name: string | null | undefined) => {
-    if (!apiKey) return;
-    if (
-      !window.confirm(
-        `Delete container ${name || id}? Threads using it will fall back to auto-create on their next turn.`,
-      )
-    ) {
-      return;
-    }
+  const confirmDelete = async () => {
+    if (!apiKey || !pendingDelete) return;
+    const { id, name } = pendingDelete;
+    setDeleting(true);
     try {
       await deleteOpenAIContainer(
         { apiKey, baseUrl: provider.baseUrl || null },
@@ -277,13 +353,18 @@ export function OpenAICodeExecSection({
         ),
       );
       toast.success(`Deleted container ${name || id}`);
+      setPendingDelete(null);
       await refresh();
     } catch (err) {
       toast.error(
         `Delete failed: ${err instanceof Error ? err.message : "Unknown"}`,
       );
+    } finally {
+      setDeleting(false);
     }
   };
+
+  const displayActiveId = displayedContainerId;
 
   return (
     <div className="flex flex-col gap-3 pt-1">
@@ -293,7 +374,7 @@ export function OpenAICodeExecSection({
           htmlFor="openai-container-ttl"
           className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg"
         >
-          New-container idle timeout (min)
+          Idle timeout (min)
         </label>
         <Input
           id="openai-container-ttl"
@@ -302,23 +383,23 @@ export function OpenAICodeExecSection({
           max={TTL_MAX}
           value={ttlValue}
           onChange={(e) => onTtlChange(e.target.value)}
-          className="h-8 w-24 text-sm"
+          className="h-8 w-14 px-2 text-center text-sm tabular-nums"
         />
       </div>
 
-      {/* Active container picker — visually emphasized so it reads as
-          the primary control vs. the static list below. Accent
-          background + ring outline distinguish it from the plain
-          bordered list items beneath. */}
-      <div className="flex flex-col gap-1.5 rounded-md border border-primary/30 bg-primary/5 p-2.5">
+      {/* Single container list. The previously-separate "Active for
+          this thread" picker collapses into this list: clicking a row
+          binds it to the active thread, and the ACTIVE pill marks
+          which one. Avoids duplicating state across two controls. */}
+      <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-semibold leading-[1.25] tracking-nav text-primary">
-            Active for this thread
+          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Containers
           </span>
           <Button
             size="sm"
             variant="ghost"
-            className="h-7 px-2"
+            className="-mr-1 h-6 w-6 p-0 text-muted-foreground"
             onClick={() => void refresh()}
             disabled={isLoading || !apiKey}
             aria-label="Refresh container list"
@@ -328,72 +409,80 @@ export function OpenAICodeExecSection({
             />
           </Button>
         </div>
-        {/* When no containers exist yet, render a disabled placeholder
-            instead of the picker. The first one is created by the
-            chat-adapter on first send (lazy-create) and will appear
-            here after the next refresh. */}
-        {sortedContainers.length === 0 ? (
-          <div className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 flex items-center text-sm text-muted-foreground">
-            (none yet — will be created on first send)
-          </div>
-        ) : (
-          <select
-            value={displayedContainerId ?? sortedContainers[0].id}
-            onChange={(e) => onPick(e.target.value)}
-            disabled={!activeThreadId}
-            className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 text-sm font-medium shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-          >
-            {sortedContainers.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name ?? "(unnamed)"} · {c.id.slice(0, 14)}…
-                {c.lastActiveAt ? ` · active ${ageLabel(c.lastActiveAt)}` : ""}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {/* Container list with delete actions — labeled and visually
-          quieter so it's clearly the "all containers, manage them"
-          area rather than the active selector above. */}
-      <div className="flex flex-col gap-1.5">
-        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          All containers
-        </span>
-        {isLoading && containers.length === 0 ? (
+        {isLoading && sortedContainers.length === 0 ? (
           <Skeleton className="h-16 w-full" />
-        ) : containers.length > 0 ? (
-          <ul className="flex flex-col gap-1 max-h-44 overflow-auto">
-            {containers.map((c) => {
-              const isActive = c.id === activeContainerId;
+        ) : sortedContainers.length > 0 ? (
+          <ul className="flex max-h-52 flex-col gap-1 overflow-auto">
+            {sortedContainers.map((c) => {
+              const running = isContainerRunning(c);
+              const isActive = running && c.id === displayActiveId;
+              const ttlMinutes = c.expiresAfterMinutes ?? DEFAULT_TTL_MINUTES;
+              const canActivate =
+                activeThreadId != null && !isActive && running;
+              const statusLabel = !running
+                ? (c.status ?? "expired")
+                : null;
               return (
                 <li
                   key={c.id}
-                  className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-xs ${
+                  className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
                       ? "border-primary/30 bg-primary/5"
-                      : "border-border/60"
+                      : "border-border/60 hover:bg-muted/40"
+                  } ${canActivate ? "cursor-pointer" : ""} ${
+                    running ? "" : "opacity-60"
                   }`}
+                  onClick={() => {
+                    if (canActivate) void onPick(c.id);
+                  }}
+                  role={canActivate ? "button" : undefined}
+                  aria-pressed={isActive}
+                  title={
+                    canActivate
+                      ? "Use this container for the active thread"
+                      : !running
+                        ? `Container is ${statusLabel}`
+                        : undefined
+                  }
                 >
-                  <div className="flex min-w-0 flex-col">
-                    <span className="truncate font-medium">
-                      {c.name ?? "(unnamed)"}
+                  {/* min-w-0 + truncate keeps long OpenAI container ids
+                      from spilling under the trash button on narrow
+                      settings sheets. */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 truncate font-medium">
+                        {c.name ?? "(unnamed)"}
+                      </span>
                       {isActive ? (
-                        <span className="ml-1.5 text-[10px] font-normal uppercase tracking-wider text-primary">
-                          · active
+                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium uppercase tracking-wider text-primary">
+                          Active
+                        </span>
+                      ) : statusLabel ? (
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                          {statusLabel}
                         </span>
                       ) : null}
-                    </span>
-                    <span className="text-muted-foreground">
-                      {c.id} · TTL{" "}
-                      {c.expiresAfterMinutes ?? DEFAULT_TTL_MINUTES}m
-                    </span>
+                    </div>
+                    <div
+                      className="flex min-w-0 items-center gap-1.5 text-muted-foreground"
+                      title={c.id}
+                    >
+                      <span className="min-w-0 truncate font-mono text-[11px]">
+                        {shortContainerId(c.id)}
+                      </span>
+                      <span className="shrink-0 text-[10px] uppercase tracking-wider">
+                        · {ttlMinutes}m
+                      </span>
+                    </div>
                   </div>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-6 w-6 p-0 text-destructive"
-                    onClick={() => void onDelete(c.id, c.name)}
+                    className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPendingDelete(c);
+                    }}
                     aria-label={`Delete container ${c.name ?? c.id}`}
                   >
                     <TrashIcon className="size-3.5" />
@@ -404,8 +493,7 @@ export function OpenAICodeExecSection({
           </ul>
         ) : (
           <p className="text-xs text-muted-foreground">
-            No saved containers yet. Use auto-create or create a named
-            one below.
+            None yet — one will be created on first send.
           </p>
         )}
       </div>
@@ -472,6 +560,43 @@ export function OpenAICodeExecSection({
           New container
         </Button>
       )}
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && deleting) return;
+          if (!nextOpen) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete{" "}
+              <span className="font-mono">
+                {pendingDelete?.name ?? "container"}
+              </span>
+              ?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Threads using this container will fall back to auto-create on
+              their next turn. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDelete();
+              }}
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
