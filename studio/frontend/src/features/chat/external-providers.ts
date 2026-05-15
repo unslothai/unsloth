@@ -18,6 +18,103 @@ export interface ExternalProviderConfig {
   updatedAt: number;
 }
 
+export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
+export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
+
+export const CUSTOM_PROVIDER_PRESETS = [
+  {
+    providerType: "llama_cpp",
+    displayName: "llama.cpp",
+    baseUrlPlaceholder: "http://localhost:8080/v1",
+    modelIdsPlaceholder: "gpt-oss-20b\nqwen3-14b",
+  },
+  {
+    providerType: "vllm",
+    displayName: "vLLM",
+    baseUrlPlaceholder: "https://my-vllm-server.com/v1",
+    modelIdsPlaceholder: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
+  },
+  {
+    providerType: "ollama",
+    displayName: "Ollama",
+    baseUrlPlaceholder: "http://localhost:11434/v1",
+    modelIdsPlaceholder: "gpt-oss:20b\nqwen3:14b",
+  },
+] as const;
+
+const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: "Custom",
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_PRESETS.map((preset) => [
+      preset.providerType,
+      preset.displayName,
+    ]),
+  ),
+};
+
+const CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS: Record<string, string> = {
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: "https://my-vllm-server.com/v1",
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_PRESETS.map((preset) => [
+      preset.providerType,
+      preset.baseUrlPlaceholder,
+    ]),
+  ),
+};
+
+const CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS: Record<string, string> = {
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_PRESETS.map((preset) => [
+      preset.providerType,
+      preset.modelIdsPlaceholder,
+    ]),
+  ),
+};
+
+export function isCustomProviderType(
+  providerType: string | null | undefined,
+): boolean {
+  if (!providerType) return false;
+  return providerType in CUSTOM_PROVIDER_LABELS;
+}
+
+export function customProviderDisplayName(
+  providerType: string | null | undefined,
+): string {
+  if (!providerType) return "Custom";
+  return CUSTOM_PROVIDER_LABELS[providerType] ?? providerType;
+}
+
+export function customProviderBaseUrlPlaceholder(
+  providerType: string | null | undefined,
+): string {
+  if (!providerType) return CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS.custom;
+  return (
+    CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[providerType] ??
+    CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS.custom
+  );
+}
+
+export function customProviderModelIdsPlaceholder(
+  providerType: string | null | undefined,
+): string {
+  if (!providerType) return CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS.custom;
+  return (
+    CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[providerType] ??
+    CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS.custom
+  );
+}
+
+export function toExternalBackendProviderType(
+  providerType: string | null | undefined,
+): string | undefined {
+  if (!providerType) return undefined;
+  return isCustomProviderType(providerType)
+    ? CUSTOM_BACKEND_PROVIDER_TYPE
+    : providerType;
+}
+
 const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
 const EXTERNAL_MODEL_PREFIX = "external::";

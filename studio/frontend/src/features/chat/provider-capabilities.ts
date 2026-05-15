@@ -183,10 +183,13 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops params the target model does not support, so we
   // surface every knob and let the gateway handle the per-model fan-out.
   openrouter: ALL_SUPPORTED,
-  // Custom providers are assumed OpenAI-compatible by the backend; users who
-  // point at vLLM/Ollama backends often want top_k / min_p / repetition,
-  // so be permissive.
+  // Local OpenAI-compatible connections are proxied through the OpenAI backend
+  // path, but vLLM/Ollama/llama.cpp users often want top_k / min_p /
+  // repetition controls, so be permissive.
   custom: ALL_SUPPORTED,
+  vllm: ALL_SUPPORTED,
+  ollama: ALL_SUPPORTED,
+  llama_cpp: ALL_SUPPORTED,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
