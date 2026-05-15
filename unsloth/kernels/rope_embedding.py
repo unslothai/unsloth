@@ -277,8 +277,34 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         )
 
 
-# [TODO] Unsure why RoPE Embedding is not torch.compiling properly
-@torch.compiler.disable
+# [unsloth-perf A] Same rationale as fast_rms_layernorm: the original
+# @torch.compiler.disable was a stale workaround. Removing it on torch >= 2.4
+# lets torch.compile fuse RoPE with the surrounding attention math (Q/K proj
+# -> RoPE -> attention), which is one of the biggest pretraining wins once
+# compile is enabled. We re-disable on torch < 2.4 or when
+# UNSLOTH_DISABLE_KERNEL_COMPILE=1.
+#
+# --- Notes for things we deliberately did NOT change ---
+#
+# [unsloth-perf B (skipped)] At first glance the two
+#   Q.transpose(1, 2).contiguous() / K.transpose(1, 2).contiguous()
+# calls below look like fresh per-layer allocations. They are NOT: on the
+# standard attention path Q arrives as (B, H, S, D) non-contiguous (from
+# view + transpose in LlamaAttention_fast_forward), so transpose(1, 2)
+# un-transposes back to (B, S, H, D) whose strides line up exactly with
+# contiguous layout. `.contiguous()` is therefore a no-op and the kernel
+# mutates Q's storage in-place; the trailing `.transpose(1, 2)` is a view.
+# Routing this branch through Fast_RoPE_Embedding_QK instead would force a
+# `Q.clone()` (because that kernel's is_contiguous() guard fails for the
+# original (B, H, S, D) layout), turning a 0-alloc path into a 1-alloc/
+# 1-copy path. Leave as-is.
+#
+# [unsloth-perf C (note only)] The DEVICE_COUNT > 1 stream.synchronize()
+# below fires per-layer per-forward on multi-GPU setups. For the targeted
+# single-GPU pretraining configuration it is dead code. On real multi-GPU
+# pretraining it is a sizable footgun (forces a host-visible sync every
+# layer); a follow-up should investigate whether it can be removed entirely
+# or hoisted out of the per-layer hot path.
 def fast_rope_embedding(
     Q,
     K,
@@ -300,6 +326,28 @@ def fast_rope_embedding(
     if DEVICE_COUNT > 1:
         torch_device_stream(Q.device).synchronize()
     return Q_out, K_out
+
+
+# [unsloth-perf A] Conditionally re-disable compile on torch < 2.4 or when
+# UNSLOTH_DISABLE_KERNEL_COMPILE=1. See the long comment above.
+import os as _os_perf_A
+from unsloth_zoo.utils import Version as _Version_perf_A
+_UNSLOTH_ROPE_COMPILE_DISABLE = (
+    _os_perf_A.environ.get("UNSLOTH_DISABLE_KERNEL_COMPILE", "0") == "1"
+    or _Version_perf_A(torch.__version__) < _Version_perf_A("2.4.0")
+)
+if _UNSLOTH_ROPE_COMPILE_DISABLE:
+    fast_rope_embedding = torch.compiler.disable(fast_rope_embedding)
+    print(
+        "[unsloth-perf A] fast_rope_embedding: torch.compiler.disable ACTIVE "
+        f"(torch={torch.__version__})"
+    )
+else:
+    print(
+        "[unsloth-perf A] fast_rope_embedding: compile passthrough "
+        f"(torch={torch.__version__} >= 2.4)"
+    )
+del _os_perf_A, _Version_perf_A
 
 
 class Fast_RoPE_Embedding_QK(torch.autograd.Function):

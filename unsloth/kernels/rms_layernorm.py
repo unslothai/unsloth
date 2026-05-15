@@ -234,8 +234,15 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         return dX, None, None, None
 
 
-# [TODO] Unsure why RMS Layernorm is not torch.compiling properly
-@torch.compiler.disable
+# [unsloth-perf A] The original @torch.compiler.disable was a workaround from
+# an older PyTorch where wrapping a Triton-kernel-backed autograd.Function in
+# torch.compile would crash. On torch >= 2.4 the Triton-op machinery handles
+# this cleanly, and keeping the decorator inserts two graph breaks per decoder
+# layer (input_layernorm + post_attention_layernorm) which is the single
+# largest fusion miss for pretraining throughput (RMSNorm -> Q/K/V proj never
+# fuses). We now leave the function compile-compatible by default on torch
+# >= 2.4, and re-disable it on older torch or whenever
+# UNSLOTH_DISABLE_KERNEL_COMPILE=1 is set.
 def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
     W: torch.Tensor = layernorm.weight
     eps: float = (
@@ -245,6 +252,29 @@ def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
     )
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
+
+
+# [unsloth-perf A] Apply the legacy compile-disable on torch < 2.4 (where it
+# was actually needed) and when the user opts out via env var. On modern torch
+# we leave it alone so torch.compile can fuse RMSNorm with neighboring ops.
+import os as _os_perf_A
+from unsloth_zoo.utils import Version as _Version_perf_A
+_UNSLOTH_RMSNORM_COMPILE_DISABLE = (
+    _os_perf_A.environ.get("UNSLOTH_DISABLE_KERNEL_COMPILE", "0") == "1"
+    or _Version_perf_A(torch.__version__) < _Version_perf_A("2.4.0")
+)
+if _UNSLOTH_RMSNORM_COMPILE_DISABLE:
+    fast_rms_layernorm = torch.compiler.disable(fast_rms_layernorm)
+    print(
+        "[unsloth-perf A] fast_rms_layernorm: torch.compiler.disable ACTIVE "
+        f"(torch={torch.__version__})"
+    )
+else:
+    print(
+        "[unsloth-perf A] fast_rms_layernorm: compile passthrough "
+        f"(torch={torch.__version__} >= 2.4)"
+    )
+del _os_perf_A, _Version_perf_A
 
 
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
