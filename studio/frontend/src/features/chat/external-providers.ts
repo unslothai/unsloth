@@ -131,6 +131,11 @@ export function toExternalBackendProviderType(
   providerType: string | null | undefined,
 ): string | undefined {
   if (!providerType) return undefined;
+  // vLLM's /v1/responses applies the loaded model's chat template, which
+  // 400s on strict-alternation templates (e.g. Gemma 3). Pass the actual
+  // type through so the backend routes vLLM to /v1/chat/completions instead
+  // of the OpenAI Responses path used for gpt-5.x.
+  if (providerType === "vllm") return "vllm";
   return isCustomProviderType(providerType)
     ? CUSTOM_BACKEND_PROVIDER_TYPE
     : providerType;
