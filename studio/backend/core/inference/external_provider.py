@@ -819,28 +819,52 @@ class ExternalProviderClient:
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
-            async with _http_client.stream(
-                "POST",
-                url,
-                json = fallback_body,
-                headers = self._auth_headers(),
-                timeout = self._stream_timeout,
-            ) as response:
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors = "replace")
-                    logger.error(
-                        "Kimi fallback returned %d: %s",
-                        response.status_code,
-                        error_text[:500],
-                    )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
-                    return
-                async for line in response.aiter_lines():
-                    if line.strip():
-                        yield line
+            try:
+                async with _http_client.stream(
+                    "POST",
+                    url,
+                    json = fallback_body,
+                    headers = self._auth_headers(),
+                    timeout = self._stream_timeout,
+                ) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        error_text = error_body.decode("utf-8", errors = "replace")
+                        logger.error(
+                            "Kimi fallback returned %d: %s",
+                            response.status_code,
+                            error_text[:500],
+                        )
+                        yield _error_sse_line(
+                            response.status_code, error_text, self.provider_type
+                        )
+                        return
+                    # Manual __anext__ loop instead of `async for` — see the
+                    # comment in stream_chat_completion for the Python 3.13 +
+                    # httpcore 1.0.x GeneratorExit interaction this avoids.
+                    lines_gen = response.aiter_lines().__aiter__()
+                    try:
+                        while True:
+                            try:
+                                line = await lines_gen.__anext__()
+                            except StopAsyncIteration:
+                                break
+                            if line.strip():
+                                yield line
+                    except GeneratorExit:
+                        await response.aclose()
+                        await lines_gen.aclose()
+                        raise
+                    finally:
+                        await response.aclose()
+                        await lines_gen.aclose()
+            except httpx.HTTPError as exc:
+                logger.error("Kimi fallback HTTP error: %s", exc)
+                yield _error_sse_line(
+                    502,
+                    f"Error communicating with kimi: {exc}",
+                    self.provider_type,
+                )
             return
 
         # Synthesize tool_start with the parsed search query so the
