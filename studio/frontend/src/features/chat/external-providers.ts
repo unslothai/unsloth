@@ -116,6 +116,9 @@ export function toExternalBackendProviderType(
 ): undefined;
 export function toExternalBackendProviderType(
   providerType: string | null | undefined,
+): string | undefined;
+export function toExternalBackendProviderType(
+  providerType: string | null | undefined,
 ): string | undefined {
   if (!providerType) return undefined;
   return isCustomProviderType(providerType)
