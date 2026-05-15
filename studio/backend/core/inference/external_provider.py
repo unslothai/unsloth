@@ -223,6 +223,7 @@ class ExternalProviderClient:
                 top_k,
                 enable_thinking,
                 reasoning_effort,
+                enabled_tools,
             ):
                 yield line
             return
@@ -456,6 +457,7 @@ class ExternalProviderClient:
         top_k: Optional[int] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
+        enabled_tools: Optional[list[str]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -604,6 +606,25 @@ class ExternalProviderClient:
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
 
+        # Anthropic server-side web_search — see
+        #   https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
+        # The tool type is date-pinned (web_search_20250305 today) and
+        # Anthropic dispatches search calls server-side, returning
+        # server_tool_use + web_search_tool_result blocks in the SSE
+        # stream, plus url-citation annotations on text deltas. We
+        # translate all of that into our local _toolEvent shape so the
+        # chat UI renders web_search exactly like OpenAI's path.
+        if enabled_tools and "web_search" in enabled_tools:
+            anthropic_tools = list(body.get("tools") or [])
+            anthropic_tools.append(
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 5,
+                }
+            )
+            body["tools"] = anthropic_tools
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -661,6 +682,17 @@ class ExternalProviderClient:
                 # "no thinking content" — distinguishes "Anthropic never sent
                 # thinking_delta" from "frontend didn't render the chunks".
                 event_counts: dict[str, int] = {}
+                # web_search state. Anthropic emits the query inside an
+                # `input_json_delta` stream on a `server_tool_use` content
+                # block, then a separate `web_search_tool_result` block
+                # with the URL list. Unlike OpenAI we get per-call results
+                # directly, so each tool card carries its own citations.
+                # `current_server_tool_use`: {id, name, partial_json_buffer}
+                # `current_result_block`: {tool_use_id, results}
+                # Both go to None when the matching content_block_stop fires.
+                current_server_tool_use: Optional[dict[str, Any]] = None
+                current_result_block: Optional[dict[str, Any]] = None
+                web_search_calls: dict[str, dict[str, Any]] = {}
 
                 def _content_chunk(text: str) -> str:
                     chunk = {
@@ -675,6 +707,37 @@ class ExternalProviderClient:
                         ],
                     }
                     return f"data: {_json.dumps(chunk)}"
+
+                def _emit_tool_event(payload: dict[str, Any]) -> str:
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "_toolEvent": payload,
+                    }
+                    return f"data: {_json.dumps(chunk)}"
+
+                def _format_web_search_results(
+                    results: list[Any],
+                ) -> str:
+                    blocks: list[str] = []
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        if r.get("type") != "web_search_result":
+                            continue
+                        url = r.get("url", "")
+                        title = r.get("title") or url
+                        if not url:
+                            continue
+                        blocks.append(f"Title: {title}\nURL: {url}")
+                    return "\n---\n".join(blocks)
 
                 try:
                     while True:
@@ -704,7 +767,39 @@ class ExternalProviderClient:
                             key = event_type or "<unknown>"
                         event_counts[key] = event_counts.get(key, 0) + 1
 
-                        if event_type == "content_block_delta":
+                        if event_type == "content_block_start":
+                            content_block = event.get("content_block") or {}
+                            block_type = content_block.get("type")
+                            if (
+                                block_type == "server_tool_use"
+                                and content_block.get("name") == "web_search"
+                            ):
+                                tool_use_id = content_block.get("id", "") or (
+                                    f"ws_{len(web_search_calls)}"
+                                )
+                                current_server_tool_use = {
+                                    "id": tool_use_id,
+                                    "buffer": "",
+                                }
+                                web_search_calls[tool_use_id] = {
+                                    "query": "",
+                                    "results": [],
+                                }
+                            elif block_type == "web_search_tool_result":
+                                tool_use_id = content_block.get("tool_use_id", "")
+                                # Anthropic sometimes ships the full results
+                                # list on the start event; sometimes deltas
+                                # follow. Capture whatever is present and
+                                # finalize on content_block_stop.
+                                content = content_block.get("content") or []
+                                current_result_block = {
+                                    "tool_use_id": tool_use_id,
+                                    "results": list(content)
+                                    if isinstance(content, list)
+                                    else [],
+                                }
+
+                        elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
                             delta_type = delta.get("type")
                             if delta_type == "thinking_delta":
@@ -732,16 +827,79 @@ class ExternalProviderClient:
                                 text = delta.get("text", "")
                                 if text:
                                     yield _content_chunk(text)
+                                # Citations on text deltas are attached
+                                # per-call by Anthropic via the
+                                # `web_search_tool_result` block; we don't
+                                # need to scrape them off the text events.
+                            elif (
+                                delta_type == "input_json_delta"
+                                and current_server_tool_use is not None
+                            ):
+                                # Streamed partial_json carrying the search
+                                # query. Buffer until content_block_stop.
+                                current_server_tool_use["buffer"] += delta.get(
+                                    "partial_json", ""
+                                )
                             # signature_delta and any other delta types are
                             # intentionally skipped — they carry trust /
                             # verification metadata, not user-visible content.
 
                         elif event_type == "content_block_stop":
-                            # Close the <think> tag when the thinking block
-                            # ends, in case no text_delta follows (e.g.
-                            # display=omitted on Claude 4.7, or thinking-only
-                            # turns).
-                            if thinking_open:
+                            if current_server_tool_use is not None:
+                                # End of the server_tool_use block — parse the
+                                # accumulated input_json into a query and
+                                # emit tool_start. The matching tool_end fires
+                                # later when the web_search_tool_result block
+                                # closes with the actual results.
+                                buffer = current_server_tool_use["buffer"]
+                                query = ""
+                                if buffer:
+                                    try:
+                                        parsed = _json.loads(buffer)
+                                        if isinstance(parsed, dict):
+                                            q = parsed.get("query", "")
+                                            if isinstance(q, str):
+                                                query = q
+                                    except Exception:
+                                        query = ""
+                                tool_use_id = current_server_tool_use["id"]
+                                if tool_use_id in web_search_calls:
+                                    web_search_calls[tool_use_id]["query"] = query
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "web_search",
+                                        "tool_call_id": tool_use_id,
+                                        "arguments": (
+                                            {"query": query} if query else {}
+                                        ),
+                                    }
+                                )
+                                current_server_tool_use = None
+                            elif current_result_block is not None:
+                                # End of a web_search_tool_result — emit
+                                # tool_end carrying the search results as
+                                # Title:/URL: blocks. parseSourcesFromResult
+                                # on the frontend lifts these into source
+                                # pills at message tail.
+                                tool_use_id = current_result_block["tool_use_id"]
+                                results = current_result_block["results"]
+                                if tool_use_id in web_search_calls:
+                                    web_search_calls[tool_use_id]["results"] = results
+                                result_text = _format_web_search_results(results)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": tool_use_id,
+                                        "result": (result_text or "(search complete)"),
+                                    }
+                                )
+                                current_result_block = None
+                            elif thinking_open:
+                                # Close the <think> tag when the thinking block
+                                # ends, in case no text_delta follows (e.g.
+                                # display=omitted on Claude 4.7, or thinking-
+                                # only turns).
                                 yield _content_chunk("</think>")
                                 thinking_open = False
 
@@ -780,16 +938,30 @@ class ExternalProviderClient:
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
-                    # Surface per-event-type counts so reports of "no
-                    # reasoning panel content" can be triaged at a glance:
-                    # zero `content_block_delta:thinking_delta` entries
-                    # means Anthropic skipped thinking for this prompt
-                    # (adaptive can choose to); non-zero means thinking
-                    # arrived and we wrapped it — any visual gap is then
-                    # on the frontend.
+                    # Surface per-event-type counts + web_search summary so
+                    # reports of "no reasoning panel content" / "Search
+                    # didn't do anything" can be triaged at a glance.
+                    web_search_requested = bool(
+                        enabled_tools and "web_search" in enabled_tools
+                    )
+                    web_search_invocations = len(web_search_calls)
+                    total_results = sum(
+                        len(sc.get("results") or []) for sc in web_search_calls.values()
+                    )
+                    queries = [
+                        sc["query"]
+                        for sc in web_search_calls.values()
+                        if sc.get("query")
+                    ]
                     logger.info(
-                        "Anthropic stream event counts (model=%s): %s",
+                        "Anthropic stream complete (model=%s, "
+                        "web_search_requested=%s, web_search_invocations=%s, "
+                        "results=%s, queries=%s, events=%s)",
                         model,
+                        web_search_requested,
+                        web_search_invocations,
+                        total_results,
+                        queries,
                         event_counts,
                     )
                     await response.aclose()

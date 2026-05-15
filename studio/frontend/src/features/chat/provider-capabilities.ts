@@ -88,18 +88,19 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  * model invokes server-side. When `true`, the chat composer's Search button
  * is available for that provider and the chat-adapter forwards
  * `enable_tools: true, enabled_tools: ["web_search"]` on the request — the
- * backend routes the call through OpenAI's `/v1/responses` (or the
- * provider's equivalent) with `tools: [{type: "web_search"}]` attached so
- * the model can run a search before responding.
+ * backend routes the call through the provider's tool schema:
+ *   - OpenAI:    `tools: [{type: "web_search"}]` on /v1/responses
+ *   - Anthropic: `tools: [{type: "web_search_20250305", name: "web_search",
+ *                          max_uses: 5}]` on /v1/messages
  *
- * Currently only OpenAI is wired. Anthropic's `web_search_20250305`,
- * Gemini's grounded-search, and OpenRouter's variants can be added later
- * with matching backend translation.
+ * Gemini's grounded-search, Mistral's web_search, Kimi's $web_search and
+ * OpenRouter's :online variants can be added with the same pattern when
+ * matching backend translation lands.
  */
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
 ): boolean {
-  return providerType === "openai";
+  return providerType === "openai" || providerType === "anthropic";
 }
 
 /**
