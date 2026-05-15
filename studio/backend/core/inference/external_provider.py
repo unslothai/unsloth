@@ -2836,6 +2836,19 @@ class ExternalProviderClient:
             )
             raise
 
+    def _container_headers(self) -> dict[str, str]:
+        """Auth headers plus the OpenAI-Beta opt-in for /v1/containers.
+
+        OpenAI's containers API requires ``OpenAI-Beta: containers=v1``.
+        Without it, DELETE silently no-ops: the API returns 200 with a
+        ``{"deleted": true}`` body but does not actually remove the
+        container (verified 2026-05-15). The header is required for
+        list / create / delete to behave consistently.
+        """
+        headers = self._auth_headers()
+        headers["OpenAI-Beta"] = "containers=v1"
+        return headers
+
     async def list_openai_containers(self) -> list[dict[str, Any]]:
         """
         GET /v1/containers on the user's OpenAI account.
@@ -2850,7 +2863,7 @@ class ExternalProviderClient:
         """
         response = await _http_client.get(
             f"{self.base_url}/containers",
-            headers = self._auth_headers(),
+            headers = self._container_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
@@ -2878,20 +2891,34 @@ class ExternalProviderClient:
         response = await _http_client.post(
             f"{self.base_url}/containers",
             json = body,
-            headers = self._auth_headers(),
+            headers = self._container_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
         return response.json()
 
     async def delete_openai_container(self, container_id: str) -> None:
-        """DELETE /v1/containers/{id}. 404s are surfaced as HTTPError."""
+        """DELETE /v1/containers/{id}. 404s are surfaced as HTTPError.
+
+        Verifies the response body reports ``deleted: true``. OpenAI
+        returns a 2xx ``deleted: true`` body even when the request is
+        silently rejected (e.g. missing OpenAI-Beta header), so a
+        status-only check is not sufficient.
+        """
         response = await _http_client.delete(
             f"{self.base_url}/containers/{container_id}",
-            headers = self._auth_headers(),
+            headers = self._container_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if not (isinstance(payload, dict) and payload.get("deleted") is True):
+            raise httpx.HTTPError(
+                f"OpenAI did not confirm container deletion: {response.text[:200]}"
+            )
 
     async def close(self) -> None:
         """No-op — the underlying client is shared across requests."""
