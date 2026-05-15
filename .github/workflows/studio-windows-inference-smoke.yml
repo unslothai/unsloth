@@ -345,9 +345,15 @@ jobs:
 
       - name: Stop Studio
         if: always()
+        # `set +e` + redirect everything: Git Bash on windows-latest
+        # has been observed to exit 143 from the kill/sleep block even
+        # when the upstream test work passed, masking a green run. The
+        # teardown does not gate correctness, so absorb any signal.
         run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          set +e
+          kill "${STUDIO_PID}" >/dev/null 2>&1 || true
+          sleep 2 >/dev/null 2>&1 || true
+          exit 0
 
       - name: Upload logs
         if: always()
@@ -762,9 +768,15 @@ jobs:
 
       - name: Stop Studio
         if: always()
+        # `set +e` + redirect everything: Git Bash on windows-latest
+        # has been observed to exit 143 from the kill/sleep block even
+        # when the upstream test work passed, masking a green run. The
+        # teardown does not gate correctness, so absorb any signal.
         run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          set +e
+          kill "${STUDIO_PID}" >/dev/null 2>&1 || true
+          sleep 2 >/dev/null 2>&1 || true
+          exit 0
 
       - name: Upload logs
         if: always()
@@ -1150,9 +1162,15 @@ jobs:
 
       - name: Stop Studio
         if: always()
+        # `set +e` + redirect everything: Git Bash on windows-latest
+        # has been observed to exit 143 from the kill/sleep block even
+        # when the upstream test work passed, masking a green run. The
+        # teardown does not gate correctness, so absorb any signal.
         run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          set +e
+          kill "${STUDIO_PID}" >/dev/null 2>&1 || true
+          sleep 2 >/dev/null 2>&1 || true
+          exit 0
 
       - name: Upload logs
         if: always()
