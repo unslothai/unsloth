@@ -106,12 +106,11 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "download/continuous-release_main/"
         "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
     ),
-    # Windows ROCm wheel — ships libbitsandbytes_rocm72.dll only.
-    # As of torch==2.11.0+rocm7.13.0 (AMD index, May 2026), BNB auto-detects
-    # HIP version as "7.13" and looks for rocm713.dll — which does not exist.
-    # BNB_ROCM_VERSION=72 must be set in the environment before importing bnb
-    # to force it to load rocm72.dll.  Set in worker.py (training subprocess)
-    # and in _install_bnb_windows_rocm() (install subprocess).
+    # Windows ROCm wheel — ships libbitsandbytes_rocm{VER}.dll.
+    # BNB auto-detects HIP version from torch.version.hip, which does not always
+    # match the DLL suffix in this prerelease wheel (e.g. torch 7.13 with a rocm72
+    # DLL).  We scan the installed wheel for the actual DLL name and set
+    # BNB_ROCM_VERSION accordingly in _install_bnb_windows_rocm() and worker.py.
     "win_amd64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
         "download/continuous-release_main/"
@@ -259,6 +258,29 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     return f"{_ROCM_WINDOWS_INDEX_BASE}/{arch_family}/"
 
 
+def _detect_bnb_rocm_dll_ver() -> str | None:
+    """Scan the installed bitsandbytes package for libbitsandbytes_rocm{VER}.dll.
+
+    Returns the version suffix string (e.g. ``"72"``, ``"713"``) or ``None``
+    if bitsandbytes is not installed or no ROCm DLL is found.  Does NOT import
+    bitsandbytes — uses importlib.util.find_spec so it is safe to call before
+    BNB is imported.
+    """
+    import glob
+    import importlib.util
+    import re
+
+    spec = importlib.util.find_spec("bitsandbytes")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    for pkg_dir in spec.submodule_search_locations:
+        for dll in glob.glob(os.path.join(pkg_dir, "libbitsandbytes_rocm*.dll")):
+            m = re.search(r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(dll))
+            if m:
+                return m.group(1)
+    return None
+
+
 def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed)."""
     import re
@@ -360,10 +382,6 @@ def _install_bnb_windows_rocm() -> None:
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
         return
-    # Pin BNB_ROCM_VERSION=72 in this process now so that any post-install
-    # import of bitsandbytes (e.g. health-checks) loads the correct DLL.
-    # The worker subprocess sets this independently in worker.py section 1f.
-    os.environ.setdefault("BNB_ROCM_VERSION", "72")
     _prev = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
     os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
     try:
@@ -380,6 +398,13 @@ def _install_bnb_windows_rocm() -> None:
             os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
         else:
             os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = _prev
+    # After install: detect the actual ROCm DLL suffix from the wheel so any
+    # post-install BNB import in this process loads the correct DLL.
+    # The worker subprocess does the same detection independently (worker.py §1f).
+    # Fall back to "72" if detection fails (e.g. install was a no-op / dry-run).
+    if "BNB_ROCM_VERSION" not in os.environ:
+        _ver = _detect_bnb_rocm_dll_ver() or "72"
+        os.environ["BNB_ROCM_VERSION"] = _ver
 
 
 def _ensure_rocm_torch() -> None:

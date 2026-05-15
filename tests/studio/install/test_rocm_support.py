@@ -1674,18 +1674,37 @@ class TestInstallBnbWindowsRocm:
                 stack_mod._install_bnb_windows_rocm()
         mock_pip.assert_not_called()
 
-    def test_sets_bnb_rocm_version_72(self):
-        """BNB_ROCM_VERSION must be set to '72' before install.
-
-        As of torch==2.11.0+rocm7.13.0 (AMD index, May 2026), BNB auto-detects
-        HIP 7.13 and looks for rocm713.dll — which the prerelease wheel does not
-        ship.  _install_bnb_windows_rocm() must pin BNB_ROCM_VERSION=72 so that
-        bitsandbytes loads libbitsandbytes_rocm72.dll instead.
-        """
+    def test_sets_bnb_rocm_version_from_detected_dll(self):
+        """BNB_ROCM_VERSION is set from the DLL detected after install."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("BNB_ROCM_VERSION", None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                stack_mod._install_bnb_windows_rocm()
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"
+                ):
+                    stack_mod._install_bnb_windows_rocm()
+            assert os.environ.get("BNB_ROCM_VERSION") == "72"
+
+    def test_sets_bnb_rocm_version_from_newer_dll(self):
+        """If AMD ships a newer DLL (e.g. rocm713.dll), that version is used."""
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"
+                ):
+                    stack_mod._install_bnb_windows_rocm()
+            assert os.environ.get("BNB_ROCM_VERSION") == "713"
+
+    def test_falls_back_to_72_when_detection_fails(self):
+        """Falls back to '72' when DLL detection returns None."""
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = None
+                ):
+                    stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "72"
 
     def test_does_not_override_existing_bnb_rocm_version(self):
@@ -1694,6 +1713,47 @@ class TestInstallBnbWindowsRocm:
             with patch.object(stack_mod, "pip_install_try", return_value = True):
                 stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "60"
+
+
+class TestDetectBnbRocmDllVer:
+    """Unit tests for _detect_bnb_rocm_dll_ver()."""
+
+    def test_returns_none_when_bnb_not_installed(self):
+        """Returns None if bitsandbytes is not importable."""
+        import importlib.util
+
+        with patch.object(importlib.util, "find_spec", return_value = None):
+            assert stack_mod._detect_bnb_rocm_dll_ver() is None
+
+    def test_detects_rocm72_dll(self, tmp_path):
+        """Returns '72' when libbitsandbytes_rocm72.dll is present."""
+        (tmp_path / "libbitsandbytes_rocm72.dll").write_text("")
+        mock_spec = MagicMock()
+        mock_spec.submodule_search_locations = [str(tmp_path)]
+        import importlib.util
+
+        with patch.object(importlib.util, "find_spec", return_value = mock_spec):
+            assert stack_mod._detect_bnb_rocm_dll_ver() == "72"
+
+    def test_detects_rocm713_dll(self, tmp_path):
+        """Returns '713' when libbitsandbytes_rocm713.dll is present."""
+        (tmp_path / "libbitsandbytes_rocm713.dll").write_text("")
+        mock_spec = MagicMock()
+        mock_spec.submodule_search_locations = [str(tmp_path)]
+        import importlib.util
+
+        with patch.object(importlib.util, "find_spec", return_value = mock_spec):
+            assert stack_mod._detect_bnb_rocm_dll_ver() == "713"
+
+    def test_returns_none_when_only_cuda_dlls(self, tmp_path):
+        """Returns None when only CUDA DLLs are present (no ROCm DLL)."""
+        (tmp_path / "libbitsandbytes_cuda121.dll").write_text("")
+        mock_spec = MagicMock()
+        mock_spec.submodule_search_locations = [str(tmp_path)]
+        import importlib.util
+
+        with patch.object(importlib.util, "find_spec", return_value = mock_spec):
+            assert stack_mod._detect_bnb_rocm_dll_ver() is None
 
 
 # =============================================================================
@@ -1786,16 +1846,19 @@ class TestWorkerWindowsRocmPatches:
         assert "TORCHDYNAMO_DISABLE" in source
 
     def test_bnb_rocm_version_set_on_windows_rocm(self):
-        """worker.py must pin BNB_ROCM_VERSION=72 in the Windows ROCm section.
+        """worker.py must set BNB_ROCM_VERSION in the Windows ROCm section.
 
-        As of torch==2.11.0+rocm7.13.0, BNB auto-detects HIP 7.13 and looks for
-        rocm713.dll, which the AMD prerelease wheel does not ship.  The worker
-        must force BNB_ROCM_VERSION=72 before any ML library is imported so that
-        bitsandbytes loads libbitsandbytes_rocm72.dll.
+        BNB auto-detects HIP version from torch.version.hip, which can mismatch
+        the DLL suffix in the AMD prerelease wheel.  The worker must detect the
+        actual DLL suffix and override BNB's auto-detection before ML imports.
         """
         source = _WORKER_PATH.read_text(encoding = "utf-8")
+        # Env var must be set
         assert "BNB_ROCM_VERSION" in source
-        assert '"72"' in source
+        # Detection helper must be used
+        assert "_detect_bnb_rocm_dll_ver" in source or "libbitsandbytes_rocm" in source
+        # "72" must appear as the safe fallback
+        assert '"72"' in source or "'72'" in source
 
     def test_bnb_rocm_version_set_before_ml_imports(self):
         """BNB_ROCM_VERSION must appear in section 1f, before section 2 ML imports."""

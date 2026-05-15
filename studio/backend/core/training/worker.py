@@ -1321,19 +1321,45 @@ def run_training_process(
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # Force BNB to load libbitsandbytes_rocm72.dll regardless of the
-            # HIP version that torch reports.  As of torch==2.11.0+rocm7.13.0
-            # (AMD index, May 2026) torch.version.hip returns "7.13", which
-            # makes BNB look for rocm713.dll — a file our AMD Windows prerelease
-            # wheel does not ship.  The wheel only ships rocm72.dll, so we pin
-            # BNB_ROCM_VERSION="72" here.  Callers may override by setting the
-            # variable before launching the worker.
+            # BNB auto-detects the HIP version from torch.version.hip and uses
+            # it to choose which DLL to load (e.g. "7.13" → rocm713.dll).
+            # AMD's Windows BNB prerelease wheel ships only one rocm DLL, and its
+            # version suffix does not always match the torch HIP version (e.g.
+            # torch==2.11.0+rocm7.13.0 ships HIP 7.13, but the BNB wheel still
+            # ships rocm72.dll).  We detect the actual DLL name from the installed
+            # package and override BNB's auto-detection.  "72" is a safe fallback
+            # if detection fails.  Callers may override by pre-setting the var.
             if "BNB_ROCM_VERSION" not in os.environ:
-                os.environ["BNB_ROCM_VERSION"] = "72"
+                _bnb_rocm_ver = None
+                try:
+                    import glob as _glob
+                    import importlib.util as _ilu
+                    import re as _re
+
+                    _bnb_spec = _ilu.find_spec("bitsandbytes")
+                    if _bnb_spec and _bnb_spec.submodule_search_locations:
+                        for _pkg_dir in _bnb_spec.submodule_search_locations:
+                            for _dll in _glob.glob(
+                                os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
+                            ):
+                                _m = _re.search(
+                                    r"libbitsandbytes_rocm(\d+)\.dll",
+                                    os.path.basename(_dll),
+                                )
+                                if _m:
+                                    _bnb_rocm_ver = _m.group(1)
+                                    break
+                            if _bnb_rocm_ver:
+                                break
+                except Exception:
+                    pass
+                _bnb_rocm_ver = _bnb_rocm_ver or "72"
+                os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
                 logger.info(
-                    "Windows ROCm: set BNB_ROCM_VERSION=72 "
-                    "(AMD Windows BNB wheel ships rocm72.dll; "
-                    "overrides auto-detection from torch.version.hip)"
+                    "Windows ROCm: set BNB_ROCM_VERSION=%s "
+                    "(detected from installed BNB wheel; "
+                    "overrides torch.version.hip auto-detection)",
+                    _bnb_rocm_ver,
                 )
 
             # Patch _grouped_mm CUDA dispatch with a safe Python mm fallback.
