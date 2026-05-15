@@ -41,7 +41,7 @@ _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
         prefixes = ("claude-opus-4-7",),
         kind = "adaptive",
-        efforts = ("none", "low", "medium", "high", "xhigh"),
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
     _AnthropicThinkingSpec(
         prefixes = ("claude-opus-4-6", "claude-sonnet-4-6"),
@@ -850,14 +850,25 @@ class ExternalProviderClient:
             first_args = _json.loads(first_args_raw)
         except Exception:
             first_args = {}
-        # Log the raw arguments + parsed query so we can verify the model
-        # actually issued a real search (rather than emitting an empty
-        # tool_call envelope and answering from prior knowledge).
+        # Log the raw arguments so we can confirm the server actually
+        # ran the search. The shape is documented loosely but in practice
+        # the model emits `{"search_result":{"search_id":...},
+        # "usage":{"total_tokens":N}}` — an opaque receipt where N is the
+        # token cost of the injected search context. The query string is
+        # NOT present; Kimi runs the search server-side during the first
+        # call and bakes the results straight into the model's context.
         logger.info(
             "Kimi $web_search: %d tool_call(s), args[0]=%s",
             len(search_calls),
             first_args_raw[:500],
         )
+        first_args_search_tokens: Optional[int] = None
+        if isinstance(first_args, dict):
+            usage_block = first_args.get("usage")
+            if isinstance(usage_block, dict):
+                tok = usage_block.get("total_tokens")
+                if isinstance(tok, int):
+                    first_args_search_tokens = tok
         yield _synthetic_chunk(
             {
                 "type": "tool_start",
@@ -866,6 +877,15 @@ class ExternalProviderClient:
                 "arguments": first_args if isinstance(first_args, dict) else {},
             }
         )
+        # Kimi's search has already executed server-side by the time the
+        # first call returns (the tool_call envelope encodes the search
+        # result reference, not a query for us to dispatch). Emit
+        # tool_end NOW so the UI's web-search card transitions to
+        # "complete" before the second call starts streaming the
+        # answer, instead of after — otherwise the card sits in
+        # "running" all the way through the answer streaming and the
+        # user perceives the model answering before search finishes.
+        yield _build_kimi_tool_end(_synthetic_chunk, tool_call_id, [])
 
         # ---- Second call: echo the tool_calls back and stream answer ----
         assistant_msg = {
@@ -884,33 +904,14 @@ class ExternalProviderClient:
         ]
         followup_body = dict(body)
         followup_body["messages"] = list(messages) + [assistant_msg] + tool_msgs
+        # Ask the SSE stream to include a final `usage` block so we can
+        # see prompt_tokens (which jumps to thousands when the server
+        # injects search context). Without this, OpenAI-compat streams
+        # omit usage entirely. Kimi follows the same convention.
+        followup_body["stream_options"] = {"include_usage": True}
         # Keep the tool definition on the second call so the model can
         # decide to search again mid-turn if needed. Kimi's doc shows
         # the same tools array on every step.
-        citations: list[dict[str, str]] = []
-
-        def _record_citation(payload: Any) -> None:
-            if not isinstance(payload, dict):
-                return
-            if payload.get("type") != "url_citation":
-                return
-            cit = payload.get("url_citation")
-            if not isinstance(cit, dict):
-                cit = payload
-            url_ = cit.get("url", "") if isinstance(cit, dict) else ""
-            if not url_ or not isinstance(url_, str):
-                return
-            if any(c["url"] == url_ for c in citations):
-                return
-            title = cit.get("title") or url_
-            snippet = cit.get("content") or cit.get("snippet") or ""
-            citations.append(
-                {
-                    "url": url_,
-                    "title": title,
-                    "snippet": snippet if isinstance(snippet, str) else "",
-                }
-            )
 
         try:
             async with _http_client.stream(
@@ -934,7 +935,6 @@ class ExternalProviderClient:
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
-                tool_ended = False
                 # Diagnostics: latch usage.prompt_tokens from the final
                 # chunk. The Kimi docs say search results count toward
                 # prompt_tokens, so a big value here is direct evidence
@@ -951,13 +951,7 @@ class ExternalProviderClient:
                             continue
                         if line.startswith("data:"):
                             data_str = line[len("data:") :].strip()
-                            if data_str == "[DONE]":
-                                if not tool_ended:
-                                    yield _build_kimi_tool_end(
-                                        _synthetic_chunk, tool_call_id, citations
-                                    )
-                                    tool_ended = True
-                            elif data_str:
+                            if data_str and data_str != "[DONE]":
                                 try:
                                     parsed = _json.loads(data_str)
                                 except Exception:
@@ -966,6 +960,11 @@ class ExternalProviderClient:
                                     usage = parsed.get("usage")
                                     if isinstance(usage, dict):
                                         last_usage = usage
+                                    # Scan annotations only for diagnostics —
+                                    # Kimi today doesn't emit url_citation, but
+                                    # if a future model version starts to we'll
+                                    # see the type name in the final log line
+                                    # and can wire it into the tool_end payload.
                                     for choice in parsed.get("choices") or []:
                                         if not isinstance(choice, dict):
                                             continue
@@ -982,25 +981,21 @@ class ExternalProviderClient:
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
                                                     )
-                                                _record_citation(ann)
                         yield line
-                    if not tool_ended:
-                        yield _build_kimi_tool_end(
-                            _synthetic_chunk, tool_call_id, citations
-                        )
-                        tool_ended = True
                 except GeneratorExit:
                     await response.aclose()
                     await lines_gen.aclose()
                     raise
                 finally:
                     logger.info(
-                        "Kimi $web_search complete (model=%s, citations=%s, "
-                        "annotation_types=%s, prompt_tokens=%s)",
+                        "Kimi $web_search complete (model=%s, "
+                        "search_ctx_tokens=%s, annotation_types=%s, "
+                        "prompt_tokens=%s, completion_tokens=%s)",
                         model,
-                        len(citations),
+                        first_args_search_tokens,
                         sorted(annotation_shapes) or None,
                         (last_usage or {}).get("prompt_tokens"),
+                        (last_usage or {}).get("completion_tokens"),
                     )
                     await response.aclose()
                     await lines_gen.aclose()

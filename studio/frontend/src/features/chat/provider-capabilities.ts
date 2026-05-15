@@ -277,7 +277,7 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 const ANTHROPIC_REASONING_MODELS = [
   {
     prefixes: ["claude-opus-4-7"],
-    levels: ["none", "low", "medium", "high", "xhigh"],
+    levels: ["none", "low", "medium", "high", "xhigh", "max"],
   },
   {
     prefixes: ["claude-opus-4-6", "claude-sonnet-4-6"],

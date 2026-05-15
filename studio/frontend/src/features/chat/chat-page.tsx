@@ -679,14 +679,35 @@ export function ChatPage(): ReactElement {
       preferredEffort,
       effortLevels,
     );
-    // Default to "medium" on every external model switch rather than
-    // carrying over the prior model's effort value (often "xhigh" after a
-    // previous session). Users can still pick another level explicitly
-    // via the Think dropdown.
-    const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? effortLevels.includes("medium")
+    // Per-provider default effort. Anthropic gets the highest available
+    // level (xhigh on 4.6/4.7, high on 4.5) since Claude's adaptive
+    // thinking adjusts cost per turn — sitting at the top of the dial
+    // gives users the strongest answers and the model can still skip
+    // thinking when the turn is trivial. OpenAI gets "high" by default
+    // — the gpt-5.x reasoning models accept high across the board and
+    // it's the right cost/quality sweet spot for Responses-API tools
+    // (web search included). Everyone else gets "medium" as a balanced
+    // default. Users can pick another level via the Think dropdown.
+    const isAnthropic = provider?.providerType === "anthropic";
+    const isOpenAI = provider?.providerType === "openai";
+    const anthropicTopEffort = effortLevels.includes("xhigh")
+      ? "xhigh"
+      : effortLevels.includes("high")
+        ? "high"
+        : clampedEffort;
+    const openaiDefaultEffort = effortLevels.includes("high")
+      ? "high"
+      : effortLevels.includes("medium")
         ? "medium"
-        : clampedEffort
+        : clampedEffort;
+    const nextReasoningEffort = reasoningCaps.supportsReasoning
+      ? isAnthropic
+        ? anthropicTopEffort
+        : isOpenAI
+          ? openaiDefaultEffort
+          : effortLevels.includes("medium")
+            ? "medium"
+            : clampedEffort
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
@@ -697,6 +718,17 @@ export function ChatPage(): ReactElement {
     // a Kimi model. The Search pill stays off by default; the mutual-
     // exclusion handlers in the composer flip the two when needed.
     const isKimi = provider?.providerType === "kimi";
+    // Web search is on by default for the two providers we trust most
+    // for it: Anthropic (web_search_20250305 server tool, structured
+    // citations) and OpenAI (/v1/responses web_search, structured
+    // citations). Other providers stay off-by-default — OpenRouter's
+    // plugins shape and Kimi's $web_search builtin still work when the
+    // user opts in via the pill, but they're a notch less reliable so
+    // we don't pre-enable them.
+    const searchOnByDefault =
+      supportsBuiltinWebSearch &&
+      (provider?.providerType === "anthropic" ||
+        provider?.providerType === "openai");
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -720,7 +752,7 @@ export function ChatPage(): ReactElement {
       // run web_search server-side.
       supportsTools: false,
       supportsBuiltinWebSearch,
-      toolsEnabled: false,
+      toolsEnabled: searchOnByDefault,
       codeToolsEnabled: false,
     });
   }, [externalProviders, inferenceParams.checkpoint]);
@@ -838,11 +870,29 @@ export function ChatPage(): ReactElement {
           preferredEffort,
           effortLevels,
         );
-        // Same medium-default policy as the useEffect path above.
-        const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? effortLevels.includes("medium")
+        // Same per-provider default policy as the useEffect path above:
+        // Anthropic picks the highest available level, OpenAI picks
+        // "high", everyone else picks "medium".
+        const isAnthropic = selectedProvider?.providerType === "anthropic";
+        const isOpenAI = selectedProvider?.providerType === "openai";
+        const anthropicTopEffort = effortLevels.includes("xhigh")
+          ? "xhigh"
+          : effortLevels.includes("high")
+            ? "high"
+            : clampedEffort;
+        const openaiDefaultEffort = effortLevels.includes("high")
+          ? "high"
+          : effortLevels.includes("medium")
             ? "medium"
-            : clampedEffort
+            : clampedEffort;
+        const nextReasoningEffort = reasoningCaps.supportsReasoning
+          ? isAnthropic
+            ? anthropicTopEffort
+            : isOpenAI
+              ? openaiDefaultEffort
+              : effortLevels.includes("medium")
+                ? "medium"
+                : clampedEffort
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless the
         // user is staying on openrouter/free — otherwise the chip would
@@ -854,10 +904,6 @@ export function ChatPage(): ReactElement {
           ...store.params,
           checkpoint: value,
         });
-        // Built-in web search is opt-in (off by default per the spec) and
-        // currently only OpenAI's /v1/responses exposes a server-side
-        // web_search tool. For other external providers we keep
-        // supportsTools=false so the Search button stays disabled.
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
         );
@@ -865,6 +911,13 @@ export function ChatPage(): ReactElement {
         // enabled, so the Think pill comes up clicked. Search pill stays
         // off by default; mutual exclusion flips them via the composer.
         const isKimi = selectedProvider?.providerType === "kimi";
+        // Mirror of sibling useEffect: Anthropic and OpenAI get Search
+        // on-by-default since their server tools emit structured
+        // citations end-to-end. OpenRouter and Kimi stay off-by-default.
+        const searchOnByDefault =
+          supportsBuiltinWebSearch &&
+          (selectedProvider?.providerType === "anthropic" ||
+            selectedProvider?.providerType === "openai");
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -891,10 +944,7 @@ export function ChatPage(): ReactElement {
           // when the provider offers a server-side web_search tool.
           supportsTools: false,
           supportsBuiltinWebSearch,
-          // Force off by default whenever an external model is picked —
-          // user can opt in by clicking the Search button. Mirrors the
-          // user-facing requirement that web search is not implicit.
-          toolsEnabled: false,
+          toolsEnabled: searchOnByDefault,
           codeToolsEnabled: false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
