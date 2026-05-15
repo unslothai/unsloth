@@ -152,7 +152,9 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
 
 
 def _skip_gguf_value(f, vtype: int) -> bool:
-    """Advance past one GGUF value. False on truncation or unknown type."""
+    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal
+    on a regular file so truncation is detected on the next read; we
+    only return False for unknown types or sanity-bound overflow."""
     if vtype == 8:  # STRING
         slen_bytes = f.read(8)
         if len(slen_bytes) < 8:
@@ -160,7 +162,8 @@ def _skip_gguf_value(f, vtype: int) -> bool:
         slen = struct.unpack("<Q", slen_bytes)[0]
         if slen > 1 << 30:  # 1 GB sanity bound
             return False
-        return len(f.read(slen)) == slen
+        f.seek(slen, 1)
+        return True
     if vtype == 9:  # ARRAY
         head = f.read(12)
         if len(head) < 12:
@@ -176,18 +179,18 @@ def _skip_gguf_value(f, vtype: int) -> bool:
                 slen = struct.unpack("<Q", slen_bytes)[0]
                 if slen > 1 << 30:
                     return False
-                if len(f.read(slen)) != slen:
-                    return False
+                f.seek(slen, 1)
             return True
         sz = _FIXED_VTYPE_SIZES.get(atype)
         if sz is None:
             return False
-        total = sz * alen
-        return len(f.read(total)) == total
+        f.seek(sz * alen, 1)
+        return True
     sz = _FIXED_VTYPE_SIZES.get(vtype)
     if sz is None:
         return False
-    return len(f.read(sz)) == sz
+    f.seek(sz, 1)
+    return True
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
