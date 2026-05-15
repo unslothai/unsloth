@@ -129,6 +129,47 @@ def test_direct_wheel_dependencies_are_used_on_pip_fallback(monkeypatch):
     assert calls[1][-1].endswith(".whl")
 
 
+def test_mamba_wheel_installs_pypi_dependencies_without_torch(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    assert (
+        wheel_utils.install_optional_kernel(
+            wheel_utils.MAMBA_SSM_SPEC,
+            python_executable = sys.executable,
+            use_uv = True,
+            allow_pypi_fallback = False,
+            run = fake_run,
+        )
+        is True
+    )
+
+    assert calls[0][:6] == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "--no-deps",
+    ]
+    assert calls[0][-7:-1] == [
+        "triton",
+        "ninja",
+        "einops",
+        "transformers",
+        "packaging",
+        "setuptools>=61.0.0",
+    ]
+    assert "torch" not in calls[0]
+    assert calls[0][-1].endswith(".whl")
+
+
 def test_missing_direct_wheel_without_fallback_returns_false(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
@@ -185,6 +226,23 @@ def test_missing_direct_wheel_with_fallback_runs_pypi_install(monkeypatch):
 
 def test_flash_linear_attention_spec_is_pypi_only():
     assert wheel_utils.FLASH_LINEAR_ATTN_SPEC.build_wheel_url(_env()) is None
+
+
+def test_optional_kernel_wheel_dependency_specs():
+    assert wheel_utils.CAUSAL_CONV1D_SPEC.wheel_dependency_specs == (
+        "packaging",
+        "ninja",
+    )
+    assert wheel_utils.MAMBA_SSM_SPEC.wheel_dependency_specs == (
+        "triton",
+        "ninja",
+        "einops",
+        "transformers",
+        "packaging",
+        "setuptools>=61.0.0",
+    )
+    assert wheel_utils.FLASH_ATTN_SPEC.wheel_dependency_specs == ("einops",)
+    assert wheel_utils.FLASH_LINEAR_ATTN_SPEC.wheel_dependency_specs == ()
 
 
 def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
