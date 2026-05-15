@@ -44,6 +44,7 @@ import {
 import { db } from "../db";
 import type { ExternalProviderConfig } from "../external-providers";
 import { useLiveQuery } from "../db";
+import { ensureThreadRecord } from "../runtime-provider";
 
 const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
@@ -155,20 +156,23 @@ export function OpenAICodeExecSection({
   const onPick = async (value: string) => {
     if (!activeThreadId) return;
     const next = value === AUTO_OPTION_VALUE ? null : value;
-    // Dexie's `update` returns the count of rows changed: 0 means the
-    // thread record is not yet in IndexedDB. That happens when the user
-    // is on a brand-new thread before sending the first message — the
-    // thread row is materialized on first send by the chat adapter.
-    // Without this guard the selection silently no-ops and the picker
-    // snaps back to "Auto-create per thread", which looks broken.
+    // The thread row is normally materialized on first send by the
+    // chat adapter. When the user picks a container before sending the
+    // first message, the row does not exist yet and Dexie's `update`
+    // returns 0 rows — the selection would silently no-op and the
+    // picker would snap back to "Auto-create per thread". Eagerly
+    // create the row so the user can pin a container up front.
+    // modelType "base" is correct here: the settings sheet that hosts
+    // this section is only rendered in single-thread mode, where the
+    // chat-page passes modelType="base" into ChatRuntimeProvider.
     try {
+      await ensureThreadRecord({ threadId: activeThreadId, modelType: "base" });
       const affected = await db.threads.update(activeThreadId, {
         openaiCodeExecContainerId: next,
       });
       if (affected === 0) {
-        toast.error(
-          "Send a message first to pin a container to this thread.",
-        );
+        // Defensive: ensureThreadRecord should have written the row.
+        toast.error("Could not update thread.");
       }
     } catch (err) {
       toast.error(
