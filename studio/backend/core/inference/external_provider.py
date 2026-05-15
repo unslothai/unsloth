@@ -24,11 +24,18 @@ import structlog
 # sites use printf-style positional args, which structlog accepts.
 logger = structlog.get_logger(__name__)
 
-# Claude 4.7 (Opus/Sonnet/Haiku) deprecated top_k and returns 400
-# "top_k is deprecated for this model" when it is set. 3.x and 4.5/4.6
-# still accept it. Match the 4-7 line specifically so we keep the knob
-# live on every other Claude generation.
-_ANTHROPIC_TOP_K_DEPRECATED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
+# the API returns 400 "<param> is deprecated for this model" if any of
+# them is set to a non-default value. The "Sampling parameters removed"
+# section of the 4.7 release notes is the authoritative reference:
+#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
+# 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
+# the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
+# anchor keeps future versions (e.g. claude-opus-5) unaffected.
+_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
+    r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
+)
+_OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -228,6 +235,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -252,6 +260,7 @@ class ExternalProviderClient:
                 enable_thinking,
                 reasoning_effort,
                 enabled_tools,
+                enable_prompt_caching,
             ):
                 yield line
             return
@@ -271,6 +280,7 @@ class ExternalProviderClient:
                 enable_thinking,
                 reasoning_effort,
                 enabled_tools,
+                enable_prompt_caching,
             ):
                 yield line
             return
@@ -345,6 +355,13 @@ class ExternalProviderClient:
             _apply_mistral_reasoning_controls(
                 body, model, enable_thinking, reasoning_effort
             )
+        elif self.provider_type == "vllm" and enable_thinking is not None:
+            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+            tpl_kw = body.get("chat_template_kwargs")
+            if not isinstance(tpl_kw, dict):
+                tpl_kw = {}
+            tpl_kw["enable_thinking"] = bool(enable_thinking)
+            body["chat_template_kwargs"] = tpl_kw
 
         # OpenRouter exposes a unified `reasoning` parameter on every
         # chat-completion request — the gateway routes it to whichever
@@ -1042,6 +1059,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1111,24 +1129,79 @@ class ExternalProviderClient:
             else:
                 filtered.append(msg)
 
+        # Claude 4.7 family removed temperature / top_p / top_k entirely.
+        # The earlier guard only handled top_k; temperature is now also
+        # rejected with 400 "temperature is deprecated for this model".
+        # Latch the match once and reuse it everywhere temperature or
+        # top_k would otherwise be set — including the thinking-mode
+        # override below, which used to force temperature=1.
+        sampling_removed = bool(_ANTHROPIC_4_7_SAMPLING_REMOVED.match(model))
+
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
             "max_tokens": max_tokens or 1024,  # required by Anthropic
-            "temperature": temperature,
             "stream": True,
         }
-        # top_k is deprecated on Claude 4.7 (Opus/Sonnet/Haiku) — the API
-        # returns 400 "top_k is deprecated for this model" when it is set.
-        # 3.x and 4.5/4.6 still accept it, so gate strictly on the 4.7 ids.
-        if (
-            top_k is not None
-            and top_k > 0
-            and not _ANTHROPIC_TOP_K_DEPRECATED.match(model)
-        ):
+        if not sampling_removed:
+            body["temperature"] = temperature
+        if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k
+        # Anthropic only caches a prefix when at least one cache_control
+        # marker is attached to it — the frontend defaults
+        # enable_prompt_caching to True for Anthropic, so treat `None` the
+        # same as True here (callers that don't set the flag still get
+        # caching). Pass False explicitly to opt out.
+        prompt_caching_enabled = enable_prompt_caching is not False
+
         if system:
-            body["system"] = system
+            if prompt_caching_enabled:
+                # System block is the most stable prefix across turns, so
+                # it gets its own breakpoint. Skipped when system is
+                # empty — there's nothing to cache, and an empty marker
+                # is a no-op.
+                body["system"] = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            else:
+                body["system"] = system
+
+        if prompt_caching_enabled and filtered:
+            # Second breakpoint at the end of the conversation. Anthropic
+            # caches the longest matching prefix up to a cache_control
+            # marker; placing one on the latest message means turn N+1
+            # rehydrates everything up through turn N from cache instead
+            # of recomputing it. This is what makes caching actually work
+            # when the system prompt is empty or shorter than Anthropic's
+            # ~1024-token cache floor — the conversation history carries
+            # the bulk of the input tokens. Anthropic allows up to 4
+            # breakpoints per request; we use at most 2 (system + tail).
+            last_msg = filtered[-1]
+            content = last_msg.get("content")
+            if isinstance(content, str):
+                last_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            elif isinstance(content, list) and content:
+                # Don't mutate the caller's list. Rebuild the tail with
+                # cache_control attached to the final block so an
+                # upstream image-bearing turn still cleanly slots into
+                # the cache as part of the conversational prefix.
+                head = list(content[:-1])
+                tail = content[-1]
+                if isinstance(tail, dict):
+                    head.append({**tail, "cache_control": {"type": "ephemeral"}})
+                else:
+                    head.append(tail)
+                last_msg["content"] = head
         thinking_spec = _anthropic_thinking_spec(model)
         allowed_efforts = (
             thinking_spec.efforts
@@ -1154,13 +1227,15 @@ class ExternalProviderClient:
         if effort and effort != "none":
             # Anthropic rejects top_k whenever thinking is enabled.
             body.pop("top_k", None)
-            # Anthropic requires temperature=1 whenever thinking is enabled,
-            # AND forbids top_p in the same request: setting both produces
+            # Earlier families (4.5/4.6) require temperature=1 when
+            # thinking is enabled and forbid top_p in the same request:
             #   "temperature and top_p cannot both be specified for this
             #    model. Please use only one."
-            # The base body never sets top_p, but pop defensively in case
-            # an upstream edit ever adds it before this branch runs.
-            body["temperature"] = 1
+            # On Claude 4.7, temperature was removed entirely — sending
+            # any value (including 1) returns 400 — so skip the override
+            # there and let the model use its default sampling.
+            if not sampling_removed:
+                body["temperature"] = 1
             body.pop("top_p", None)
             if thinking_spec and thinking_spec.kind == "adaptive":
                 # `display` defaults to "omitted" on Claude Opus 4.7 (per the
@@ -1277,6 +1352,13 @@ class ExternalProviderClient:
                 current_server_tool_use: Optional[dict[str, Any]] = None
                 current_result_block: Optional[dict[str, Any]] = None
                 web_search_calls: dict[str, dict[str, Any]] = {}
+                # Cache usage tracking. message_start carries the input
+                # accounting (incl. cache_creation_input_tokens and
+                # cache_read_input_tokens); message_delta carries cumulative
+                # output_tokens. Both are surfaced in the "stream complete"
+                # log so prompt caching can be verified per-request without
+                # opening the Anthropic dashboard.
+                last_usage: dict[str, Any] = {}
 
                 def _content_chunk(text: str) -> str:
                     chunk = {
@@ -1350,6 +1432,16 @@ class ExternalProviderClient:
                         else:
                             key = event_type or "<unknown>"
                         event_counts[key] = event_counts.get(key, 0) + 1
+
+                        # message_start carries the input-side usage block
+                        # including cache_creation_input_tokens and
+                        # cache_read_input_tokens. message_delta updates
+                        # output_tokens (and may overwrite the input fields
+                        # with final values). Merge both into last_usage.
+                        if event_type == "message_start":
+                            start_usage = (event.get("message") or {}).get("usage")
+                            if isinstance(start_usage, dict):
+                                last_usage.update(start_usage)
 
                         if event_type == "content_block_start":
                             content_block = event.get("content_block") or {}
@@ -1488,6 +1580,9 @@ class ExternalProviderClient:
                                 thinking_open = False
 
                         elif event_type == "message_delta":
+                            delta_usage = event.get("usage")
+                            if isinstance(delta_usage, dict):
+                                last_usage.update(delta_usage)
                             stop_reason = event.get("delta", {}).get("stop_reason")
                             if stop_reason:
                                 if thinking_open:
@@ -1537,15 +1632,28 @@ class ExternalProviderClient:
                         for sc in web_search_calls.values()
                         if sc.get("query")
                     ]
+                    # cache_read_input_tokens > 0 on turn N proves the
+                    # cache_control marker on the system block is doing
+                    # its job — turn 1 will show cache_creation > 0
+                    # instead. cache_creation tokens are billed at a
+                    # small premium; cache_read tokens are billed at a
+                    # discount.
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
-                        "results=%s, queries=%s, events=%s)",
+                        "results=%s, queries=%s, "
+                        "input_tokens=%s, output_tokens=%s, "
+                        "cache_creation_input_tokens=%s, "
+                        "cache_read_input_tokens=%s, events=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
                         total_results,
                         queries,
+                        last_usage.get("input_tokens"),
+                        last_usage.get("output_tokens"),
+                        last_usage.get("cache_creation_input_tokens"),
+                        last_usage.get("cache_read_input_tokens"),
                         event_counts,
                     )
                     await response.aclose()
@@ -1583,6 +1691,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
         enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -1659,6 +1768,9 @@ class ExternalProviderClient:
         # to wrap, and the chat reasoning panel stays blank. Always pair
         # an explicit effort with summary except for the explicit "off"
         # case (effort: "none"), where summaries are pointless.
+        summary_unsupported = bool(
+            _OPENAI_REASONING_SUMMARY_UNSUPPORTED.match(model.strip().lower())
+        )
         if reasoning_effort in (
             "minimal",
             "low",
@@ -1667,15 +1779,40 @@ class ExternalProviderClient:
             "max",
             "xhigh",
         ):
-            body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+            body["reasoning"] = {"effort": reasoning_effort}
+            if not summary_unsupported:
+                body["reasoning"]["summary"] = "auto"
         elif reasoning_effort == "none" or enable_thinking is False:
             body["reasoning"] = {"effort": "none"}
         elif enable_thinking is True:
-            body["reasoning"] = {"effort": "medium", "summary": "auto"}
+            body["reasoning"] = {"effort": "medium"}
+            if not summary_unsupported:
+                body["reasoning"]["summary"] = "auto"
         if instructions_parts:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
+
+        # Prompt caching on /v1/responses is automatic and free, but the
+        # default in-memory policy only survives ~5-10 min of inactivity
+        # (up to ~1 hr). Opt into the 24-hour retention policy so a chat
+        # left idle overnight still hits the cache on the next turn.
+        # Pricing is identical to in_memory per OpenAI's docs.
+        #
+        # Gated on the base URL because ollama / llama.cpp / "custom"
+        # presets all collapse to provider_type="openai" in
+        # toExternalBackendProviderType, so they also land in this
+        # helper. Those servers expose /v1/responses-shaped routes in
+        # some configurations but don't implement
+        # prompt_cache_retention — sending the field unconditionally
+        # would 400 them. Match the public OpenAI host strictly so the
+        # field only goes to OpenAI cloud. Studio's openai model picker
+        # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
+        # accept this parameter (gpt-5.5+ already defaults to "24h" and
+        # rejects "in_memory", so it's a safe no-op there).
+        is_openai_cloud = "api.openai.com" in (self.base_url or "")
+        if is_openai_cloud and enable_prompt_caching is not False:
+            body["prompt_cache_retention"] = "24h"
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools
@@ -1723,6 +1860,12 @@ class ExternalProviderClient:
                 done_emitted = False
                 reasoning_open = False
                 reasoning_emitted = False
+                # Latched from response.completed / response.incomplete so
+                # the final log can surface input_tokens_details.cached_tokens —
+                # the field that proves prompt_cache_retention="24h" is
+                # actually hitting OpenAI's cache instead of recomputing
+                # the prefix every turn.
+                last_usage: Optional[dict[str, Any]] = None
                 # Per-call state for OpenAI's server-side web_search tool. Mapped
                 # back into our local _toolEvent shape so the existing chat-UI
                 # renderer surfaces web_search the same way it does for local
@@ -1947,6 +2090,9 @@ class ExternalProviderClient:
                                 reasoning_emitted = True
 
                         elif event_type == "response.completed":
+                            completed_usage = (event.get("response") or {}).get("usage")
+                            if isinstance(completed_usage, dict):
+                                last_usage = completed_usage
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
@@ -1990,6 +2136,11 @@ class ExternalProviderClient:
                             yield f"data: {_json.dumps(chunk)}"
 
                         elif event_type == "response.incomplete":
+                            incomplete_usage = (event.get("response") or {}).get(
+                                "usage"
+                            )
+                            if isinstance(incomplete_usage, dict):
+                                last_usage = incomplete_usage
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
@@ -2063,16 +2214,33 @@ class ExternalProviderClient:
                         for sc in web_search_calls.values()
                         if sc.get("query")
                     ]
+                    # cached_input_tokens > 0 on turn N proves
+                    # prompt_cache_retention="24h" is letting the previous
+                    # turn's prefix hit the cache instead of being
+                    # recomputed. On /v1/responses the field is nested as
+                    # usage.input_tokens_details.cached_tokens (not
+                    # prompt_tokens_details, which is the /v1/chat/completions
+                    # shape).
+                    cached_input_tokens = None
+                    if isinstance(last_usage, dict):
+                        details = last_usage.get("input_tokens_details")
+                        if isinstance(details, dict):
+                            cached_input_tokens = details.get("cached_tokens")
                     logger.info(
                         "OpenAI Responses stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
-                        "citations=%s, queries=%s, reasoning_emitted=%s)",
+                        "citations=%s, queries=%s, reasoning_emitted=%s, "
+                        "input_tokens=%s, output_tokens=%s, "
+                        "cached_input_tokens=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
                         total_citations,
                         queries,
                         reasoning_emitted,
+                        (last_usage or {}).get("input_tokens"),
+                        (last_usage or {}).get("output_tokens"),
+                        cached_input_tokens,
                     )
                     await response.aclose()
                     await lines_gen.aclose()

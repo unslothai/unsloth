@@ -550,6 +550,7 @@ export function ChatPage(): ReactElement {
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
 
   useEffect(() => {
     const threadId = search.thread;
@@ -629,14 +630,16 @@ export function ChatPage(): ReactElement {
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
   const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const activeExternalProviderType = useMemo(() => {
+  const activeExternalProvider = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
-    const provider = externalProviders.find(
-      (p) => p.id === selection.providerId,
+    return (
+      externalProviders.find(
+        (p) => p.id === selection.providerId,
+      ) ?? null
     );
-    return provider?.providerType ?? null;
   }, [externalProviders, inferenceParams.checkpoint]);
+  const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
@@ -671,6 +674,7 @@ export function ChatPage(): ReactElement {
     const reasoningCaps = getExternalReasoningCapabilities(
       provider?.providerType,
       selection.modelId,
+      { isReasoningProvider: provider?.isReasoningModel === true },
     );
     const state = useChatRuntimeStore.getState();
     const preferredEffort = state.reasoningEffort;
@@ -863,6 +867,10 @@ export function ChatPage(): ReactElement {
         const reasoningCaps = getExternalReasoningCapabilities(
           selectedProvider?.providerType,
           selectedExternal?.modelId,
+          {
+            isReasoningProvider:
+              selectedProvider?.isReasoningModel === true,
+          },
         );
         const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
@@ -1426,6 +1434,14 @@ export function ChatPage(): ReactElement {
         onParamsChange={setInferenceParams}
         isExternalModel={isExternalModel}
         providerCapabilities={activeProviderCapabilities}
+        activeExternalProvider={activeExternalProvider}
+        onExternalProviderChange={(updatedProvider) => {
+          setExternalProviders(
+            externalProviders.map((provider) =>
+              provider.id === updatedProvider.id ? updatedProvider : provider,
+            ),
+          );
+        }}
         externalProviderType={activeExternalProviderType}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();

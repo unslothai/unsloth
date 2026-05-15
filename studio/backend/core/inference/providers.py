@@ -218,6 +218,28 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # are always among the top regardless of the API's order.
         "model_id_limit": 15,
     },
+    "vllm": {
+        "display_name": "vLLM",
+        # User-supplied via provider_base_url; the route layer already falls
+        # back to the payload's base_url when the registry entry has none.
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # Force /v1/chat/completions in stream_chat_completion — vLLM's
+        # /v1/responses rebuilds messages and runs them through the loaded
+        # model's chat template, which 400s on strict-alternation templates
+        # (Gemma 3 raises "Conversation roles must alternate user/assistant
+        # /user/assistant/..."). The chat-completions path takes messages
+        # verbatim and avoids that template gauntlet.
+        "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
+        # Surfaced through the frontend's CUSTOM_PROVIDER_PRESETS, not the
+        # /api/providers/registry dropdown — see list_available_providers.
+        "hidden": True,
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
@@ -269,9 +291,17 @@ def get_base_url(provider_type: str) -> str | None:
 
 
 def list_available_providers() -> list[dict[str, Any]]:
-    """Return all registered providers (for the /registry endpoint)."""
+    """Return all registered providers (for the /registry endpoint).
+
+    Hidden entries (``"hidden": True``) are filtered out — they exist in the
+    registry only for backend lookups (e.g. ``supports_vision`` for vLLM) and
+    are surfaced in the frontend via ``CUSTOM_PROVIDER_PRESETS`` instead of
+    the cloud-provider dropdown.
+    """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
+        if info.get("hidden"):
+            continue
         result.append(
             {
                 "provider_type": provider_type,

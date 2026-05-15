@@ -221,10 +221,13 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops params the target model does not support, so we
   // surface every knob and let the gateway handle the per-model fan-out.
   openrouter: ALL_SUPPORTED,
-  // Custom providers are assumed OpenAI-compatible by the backend; users who
-  // point at vLLM/Ollama backends often want top_k / min_p / repetition,
-  // so be permissive.
+  // Local OpenAI-compatible connections are proxied through the OpenAI backend
+  // path, but vLLM/Ollama/llama.cpp users often want top_k / min_p /
+  // repetition controls, so be permissive.
   custom: ALL_SUPPORTED,
+  vllm: ALL_SUPPORTED,
+  ollama: ALL_SUPPORTED,
+  llama_cpp: ALL_SUPPORTED,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
@@ -420,6 +423,25 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
   return withEnableThinkingStyle();
 }
 
+export interface ExternalReasoningResolveOptions {
+  /** vLLM connection flagged as a reasoning model in provider config. */
+  isReasoningProvider?: boolean;
+}
+
+// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
+function resolveConnectionLevelReasoning(
+  normalizedProvider: string,
+  options: ExternalReasoningResolveOptions | undefined,
+): ExternalReasoningCapabilities | null {
+  if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+    });
+  }
+  return null;
+}
+
 /**
  * resolve external-model thinking capabilities.
  * provider-specific matching lives in the OpenAI/Anthropic resolvers.
@@ -428,9 +450,17 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
   const normalizedModel = modelId?.trim().toLowerCase() ?? "";
   const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
+  const connectionLevel = resolveConnectionLevelReasoning(
+    normalizedProvider,
+    options,
+  );
+  if (connectionLevel) {
+    return connectionLevel;
+  }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
   }

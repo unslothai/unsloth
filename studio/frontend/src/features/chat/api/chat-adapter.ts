@@ -28,6 +28,8 @@ import {
   getExternalProviderApiKey,
   loadExternalProviders,
   parseExternalModelId,
+  supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -742,13 +744,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       if (isExternalRequest && !externalProvider) {
         toast.error("External provider not found.", {
-          description: "Open API Providers and re-add this provider.",
+          description: "Open Connections and re-add this provider.",
         });
         throw new Error("External provider not found.");
       }
       if (isExternalRequest && !externalApiKey) {
         toast.error("Missing API key for selected external provider.", {
-          description: "Open API Providers and set the API key again.",
+          description: "Open Connections and set the API key again.",
         });
         throw new Error("Missing external provider API key.");
       }
@@ -929,10 +931,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
-        const externalBackendProviderType =
-          externalProvider?.providerType === "custom"
-            ? "openai"
-            : externalProvider?.providerType;
+        const externalBackendProviderType = toExternalBackendProviderType(
+          externalProvider?.providerType,
+        );
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
@@ -943,6 +944,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
                 externalSelection.modelId,
+                {
+                  isReasoningProvider:
+                    externalProvider.isReasoningModel === true,
+                },
               )
             : {
                 supportsReasoning,
@@ -1028,6 +1033,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 forceRefreshPublicKey,
               ),
               provider_base_url: externalProvider.baseUrl || null,
+              ...(supportsProviderPromptCaching(externalProvider.providerType)
+                ? {
+                    enable_prompt_caching:
+                      externalProvider.enablePromptCaching ?? true,
+                  }
+                : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
                   ? externalReasoningEnabled

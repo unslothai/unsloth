@@ -286,6 +286,68 @@ def test_responses_reasoning_effort_included_when_requested(monkeypatch):
     assert captured["body"]["reasoning"] == {"effort": "high", "summary": "auto"}
 
 
+def test_responses_reasoning_summary_omitted_for_o3(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "o3",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = None,
+            enable_thinking = None,
+            reasoning_effort = "high",
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning"] == {"effort": "high"}
+
+
+def test_responses_reasoning_summary_omitted_for_o3_with_enable_thinking(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "o3",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = None,
+            enable_thinking = True,
+            reasoning_effort = None,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning"] == {"effort": "medium"}
+
+
 def test_responses_reasoning_effort_none_omits_summary(monkeypatch):
     captured: dict = {}
 

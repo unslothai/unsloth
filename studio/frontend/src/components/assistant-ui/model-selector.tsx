@@ -10,10 +10,12 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
+import { isCustomProviderType } from "@/features/chat/external-providers";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   CloudIcon,
+  DashboardSquare01Icon,
   FolderSearchIcon,
   Logout01Icon,
   Search01Icon,
@@ -40,6 +42,9 @@ const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   kimi: "jpg",
   qwen: "png",
   openrouter: "svg",
+  vllm: "svg",
+  ollama: "svg",
+  llama_cpp: "svg",
 };
 
 function providerLogoSrc(providerType: string | undefined): string | undefined {
@@ -59,6 +64,17 @@ function ExternalProviderLogo({
   title?: string;
 }) {
   const src = providerLogoSrc(providerType);
+  if (!src && isCustomProviderType(providerType)) {
+    return (
+      <span title={title} aria-hidden={true} className="inline-flex shrink-0">
+        <HugeiconsIcon
+          icon={DashboardSquare01Icon}
+          className={cn("shrink-0", className)}
+        />
+      </span>
+    );
+  }
+
   if (!src) return null;
   return (
     <img
