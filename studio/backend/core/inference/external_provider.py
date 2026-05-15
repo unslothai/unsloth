@@ -24,11 +24,15 @@ import structlog
 # sites use printf-style positional args, which structlog accepts.
 logger = structlog.get_logger(__name__)
 
-# Claude 4.7 (Opus/Sonnet/Haiku) deprecated top_k and returns 400
-# "top_k is deprecated for this model" when it is set. 3.x and 4.5/4.6
-# still accept it. Match the 4-7 line specifically so we keep the knob
-# live on every other Claude generation.
-_ANTHROPIC_TOP_K_DEPRECATED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
+# the API returns 400 "<param> is deprecated for this model" if any of
+# them is set to a non-default value. The "Sampling parameters removed"
+# section of the 4.7 release notes is the authoritative reference:
+#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
+# 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
+# the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
+# anchor keeps future versions (e.g. claude-opus-5) unaffected.
+_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
 
@@ -1116,20 +1120,26 @@ class ExternalProviderClient:
             else:
                 filtered.append(msg)
 
+        # Claude 4.7 family removed temperature / top_p / top_k entirely.
+        # The earlier guard only handled top_k; temperature is now also
+        # rejected with 400 "temperature is deprecated for this model".
+        # Latch the match once and reuse it everywhere temperature or
+        # top_k would otherwise be set — including the thinking-mode
+        # override below, which used to force temperature=1.
+        sampling_removed = bool(_ANTHROPIC_4_7_SAMPLING_REMOVED.match(model))
+
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
             "max_tokens": max_tokens or 1024,  # required by Anthropic
-            "temperature": temperature,
             "stream": True,
         }
-        # top_k is deprecated on Claude 4.7 (Opus/Sonnet/Haiku) — the API
-        # returns 400 "top_k is deprecated for this model" when it is set.
-        # 3.x and 4.5/4.6 still accept it, so gate strictly on the 4.7 ids.
+        if not sampling_removed:
+            body["temperature"] = temperature
         if (
             top_k is not None
             and top_k > 0
-            and not _ANTHROPIC_TOP_K_DEPRECATED.match(model)
+            and not sampling_removed
         ):
             body["top_k"] = top_k
         if system:
@@ -1176,13 +1186,15 @@ class ExternalProviderClient:
         if effort and effort != "none":
             # Anthropic rejects top_k whenever thinking is enabled.
             body.pop("top_k", None)
-            # Anthropic requires temperature=1 whenever thinking is enabled,
-            # AND forbids top_p in the same request: setting both produces
+            # Earlier families (4.5/4.6) require temperature=1 when
+            # thinking is enabled and forbid top_p in the same request:
             #   "temperature and top_p cannot both be specified for this
             #    model. Please use only one."
-            # The base body never sets top_p, but pop defensively in case
-            # an upstream edit ever adds it before this branch runs.
-            body["temperature"] = 1
+            # On Claude 4.7, temperature was removed entirely — sending
+            # any value (including 1) returns 400 — so skip the override
+            # there and let the model use its default sampling.
+            if not sampling_removed:
+                body["temperature"] = 1
             body.pop("top_p", None)
             if thinking_spec and thinking_spec.kind == "adaptive":
                 # `display` defaults to "omitted" on Claude Opus 4.7 (per the
