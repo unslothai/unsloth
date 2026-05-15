@@ -15,6 +15,7 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import { pickFriendlyContainerName } from "../lib/friendly-names";
 import { createOpenAIContainer } from "./openai-containers";
 import {
   encryptProviderApiKey,
@@ -1056,7 +1057,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         baseUrl: externalProvider.baseUrl || null,
                       },
                       {
-                        name: `chat-${resolvedThreadId.slice(0, 8)}`,
+                        // Friendly English-word name so the container
+                        // is human-readable in the picker list (e.g.
+                        // "kestrel-3f9c") instead of a thread-id slug.
+                        name: pickFriendlyContainerName(),
                         ttlMinutes: ttl,
                       },
                     );
