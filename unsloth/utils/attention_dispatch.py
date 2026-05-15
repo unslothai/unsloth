@@ -128,6 +128,83 @@ def run_attention(
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
 
+    # [unsloth-perf #10] When packing metadata is present, ALWAYS prefer Flash
+    # varlen over dense SDPA. The dense SDPA path builds a (T*T) attention
+    # mask in unsloth/utils/packing.py which alone is GBs at long context.
+    # An attention_mask, if also present, is redundant with cu_seqlens here.
+    if (
+        HAS_FLASH_ATTENTION
+        and context.seq_info is not None
+        and backend != FLASH_VARLEN
+    ):
+        if not getattr(run_attention, "_unsloth_pack_to_varlen_print_done", False):
+            print(
+                f"[unsloth-perf #10] packed batch routed to FLASH_VARLEN "
+                f"(was: {backend}; seq_info present)"
+            )
+            run_attention._unsloth_pack_to_varlen_print_done = True
+        backend = FLASH_VARLEN
+
+    # [unsloth-perf #11] If only a 2D / 3D key-padding mask is present (no
+    # packing metadata), derive cu_seqlens from it and use Flash varlen
+    # instead of falling all the way down to dense SDPA. Cheaper than
+    # building a (B*1*Q*K) boolean mask.
+    if (
+        HAS_FLASH_ATTENTION
+        and context.seq_info is None
+        and context.attention_mask is not None
+        and isinstance(context.attention_mask, torch.Tensor)
+        and context.attention_mask.dim() == 2
+        and context.attention_mask.dtype != torch.bool
+        and context.requires_grad  # only convert for training; inference path is unchanged
+    ):
+        try:
+            keep = context.attention_mask != 0  # (B, K)
+            # Only safe for right-padded masks (real tokens contiguous from
+            # position 0). Detected by: keep is non-increasing along the
+            # sequence dim, i.e. once we see a 0 we never see a 1 again.
+            right_padded = (keep[:, :-1].int() >= keep[:, 1:].int()).all()
+            if keep.shape[1] == context.q_len and bool(right_padded):
+                lengths = keep.sum(dim = 1).to(torch.int32)
+                cu_seqlens = torch.zeros(
+                    lengths.numel() + 1,
+                    dtype = torch.int32,
+                    device = keep.device,
+                )
+                torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+                max_seqlen = int(lengths.max().item())
+                context.seq_info = (lengths, cu_seqlens, max_seqlen)
+                context.attention_mask = None
+                backend = FLASH_VARLEN
+                if not getattr(
+                    run_attention, "_unsloth_mask_to_varlen_print_done", False
+                ):
+                    print(
+                        f"[unsloth-perf #11] 2D padding mask converted to "
+                        f"cu_seqlens; routed to FLASH_VARLEN "
+                        f"(max_seqlen={max_seqlen})"
+                    )
+                    run_attention._unsloth_mask_to_varlen_print_done = True
+            else:
+                if not getattr(
+                    run_attention, "_unsloth_mask_to_varlen_skip_done", False
+                ):
+                    print(
+                        f"[unsloth-perf #11] padding mask kept on SDPA "
+                        f"(shape={tuple(keep.shape)}, q_len={context.q_len}, "
+                        f"right_padded={bool(right_padded)})"
+                    )
+                    run_attention._unsloth_mask_to_varlen_skip_done = True
+        except Exception as _exc:
+            if not getattr(
+                run_attention, "_unsloth_mask_to_varlen_fail_done", False
+            ):
+                print(
+                    f"[unsloth-perf #11] padding-mask -> cu_seqlens FAILED "
+                    f"({_exc}); falling through to SDPA"
+                )
+                run_attention._unsloth_mask_to_varlen_fail_done = True
+
     # [TODO] Flash attention does not support arbitrary attention masks (only
     # causal via flag). When a padding mask is present (e.g. left-padded
     # batched generation), fall back to SDPA which consumes attn_mask.

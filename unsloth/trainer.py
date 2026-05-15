@@ -157,6 +157,25 @@ class QGaloreConfig:
 
 
 class UnslothTrainingArguments(TrainingArguments):
+    # [unsloth-perf #3] Pretraining-friendly dataloader defaults. The upstream
+    # defaults are num_workers=0 / no persistence / no prefetch, which starves
+    # the GPU on a single-node ~1B-param pretrain. Tuned for ~32GB VRAM where
+    # the CPU collator (tokenize+pack) is the bottleneck, not RAM. Each can be
+    # overridden by passing the kwarg explicitly.
+    #   - num_workers=2 keeps two batches always being staged on CPU
+    #   - persistent_workers=True avoids fork-on-every-epoch (big win at small
+    #     dataset sizes typical for pretrain debugging)
+    #   - prefetch_factor=4 because tokenize+pack is bursty
+    #   - pin_memory=True turns H2D copies non-blocking
+    # Disable any of these by passing the kwarg yourself or by setting the env
+    # var UNSLOTH_FAST_DATALOADER=0.
+    _UNSLOTH_DATALOADER_DEFAULTS = {
+        "dataloader_num_workers":        2,
+        "dataloader_persistent_workers": True,
+        "dataloader_prefetch_factor":    4,
+        "dataloader_pin_memory":         True,
+    }
+
     def __init__(
         self,
         embedding_learning_rate: float = None,
@@ -166,6 +185,20 @@ class UnslothTrainingArguments(TrainingArguments):
     ):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
+
+        if os.environ.get("UNSLOTH_FAST_DATALOADER", "1") != "0":
+            applied = []
+            for k, v in UnslothTrainingArguments._UNSLOTH_DATALOADER_DEFAULTS.items():
+                if k not in kwargs:
+                    kwargs[k] = v
+                    applied.append(f"{k}={v}")
+            if applied and not getattr(UnslothTrainingArguments, "_unsloth_dl_print_done", False):
+                print("[unsloth-perf #3] dataloader defaults applied: " + ", ".join(applied))
+                UnslothTrainingArguments._unsloth_dl_print_done = True
+        elif not getattr(UnslothTrainingArguments, "_unsloth_dl_print_done", False):
+            print("[unsloth-perf #3] dataloader defaults DISABLED (UNSLOTH_FAST_DATALOADER=0)")
+            UnslothTrainingArguments._unsloth_dl_print_done = True
+
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
 

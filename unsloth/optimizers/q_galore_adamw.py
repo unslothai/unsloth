@@ -16,6 +16,7 @@
 # Original paper: "Q-GaLore: Quantized GaLore with INT4 Projection and
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
 
+import os
 import torch
 from typing import Optional, List
 
@@ -224,8 +225,19 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 state["step"] += 1
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # [unsloth-perf #1] Removed per-step torch.cuda.synchronize() from the
+        # optimizer step (it forced a host-device stall every iteration).
+        # Set UNSLOTH_QGALORE_SYNC=1 to restore the old behavior if numerical
+        # divergence is suspected.
+        if os.environ.get("UNSLOTH_QGALORE_SYNC", "0") == "1":
+            if not getattr(self, "_unsloth_sync_warned", False):
+                print("[unsloth-perf #1] Q-GaLore: per-step cuda.synchronize ENABLED (debug)")
+                self._unsloth_sync_warned = True
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        elif not getattr(self, "_unsloth_sync_warned", False):
+            print("[unsloth-perf #1] Q-GaLore: per-step cuda.synchronize removed (default fast path)")
+            self._unsloth_sync_warned = True
 
         return loss
 

@@ -2368,19 +2368,50 @@ def patch_gradient_accumulation_fix(Trainer):
                 except Exception:
                     pass
             _original_trainer_init(self, *args, **kwargs)
+            # [unsloth-perf #9] Only clamp accelerator.gradient_accumulation_steps
+            # to 1 on the Accelerate versions that actually have the regression
+            # this workaround targets ([5.0, 5.6)). On 4.x and 5.6+, clamping
+            # breaks Accelerate's gradient-sync optimization (every micro-batch
+            # synchronizes across DDP ranks). Force-clamp anyway by setting
+            # UNSLOTH_FORCE_ACCEL_GA_CLAMP=1.
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
                     accelerator is not None
                     and getattr(accelerator, "gradient_accumulation_steps", 1) > 1
                 ):
-                    accelerator.gradient_accumulation_steps = 1
-                    gs = getattr(accelerator, "gradient_state", None)
-                    if gs is not None and hasattr(gs, "plugin_kwargs"):
-                        try:
-                            gs.plugin_kwargs["num_steps"] = 1
-                        except Exception:
-                            pass
+                    try:
+                        import accelerate as _accel
+                        _av = Version(_accel.__version__)
+                        _needs_clamp = (
+                            Version("5.0.0") <= _av < Version("5.6.0")
+                        )
+                    except Exception:
+                        _needs_clamp = True  # fail-safe: keep old behavior
+                    _forced = os.environ.get("UNSLOTH_FORCE_ACCEL_GA_CLAMP", "0") == "1"
+                    if _needs_clamp or _forced:
+                        if not getattr(Trainer, "_unsloth_ga_clamp_print_done", False):
+                            print(
+                                f"[unsloth-perf #9] Accelerate GA clamp ACTIVE "
+                                f"(accelerate={getattr(_accel, '__version__', '?')}, "
+                                f"forced={_forced})"
+                            )
+                            Trainer._unsloth_ga_clamp_print_done = True
+                        accelerator.gradient_accumulation_steps = 1
+                        gs = getattr(accelerator, "gradient_state", None)
+                        if gs is not None and hasattr(gs, "plugin_kwargs"):
+                            try:
+                                gs.plugin_kwargs["num_steps"] = 1
+                            except Exception:
+                                pass
+                    else:
+                        if not getattr(Trainer, "_unsloth_ga_clamp_print_done", False):
+                            print(
+                                f"[unsloth-perf #9] Accelerate GA clamp SKIPPED "
+                                f"(accelerate={getattr(_accel, '__version__', '?')}, "
+                                f"ga_steps={accelerator.gradient_accumulation_steps})"
+                            )
+                            Trainer._unsloth_ga_clamp_print_done = True
             except Exception:
                 pass
 

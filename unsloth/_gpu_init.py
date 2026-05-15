@@ -208,6 +208,27 @@ del disable_broken_wandb
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 
+# [unsloth-perf #4] Pretraining-friendly cuDNN / matmul flags. cuDNN benchmark
+# picks the fastest convolution/algorithm pick for the seen shapes (essentially
+# free when batch/seq shapes are stable, which is the case under packing).
+# 'high' matmul precision allows TF32 on Ampere+ and bf16 accumulators where
+# supported — large wins for small (<1B) models that are math-bound. Both are
+# toggled off by setting UNSLOTH_FAST_BACKENDS=0 if you suspect non-determinism.
+if torch.cuda.is_available() and os.environ.get("UNSLOTH_FAST_BACKENDS", "1") != "0":
+    try:
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+        print(
+            "[unsloth-perf #4] cudnn.benchmark=True, cudnn.allow_tf32=True, "
+            "matmul.allow_tf32=True, float32_matmul_precision=high"
+        )
+    except Exception as _e:
+        print(f"[unsloth-perf #4] cuDNN/matmul perf flags skipped: {_e}")
+elif torch.cuda.is_available():
+    print("[unsloth-perf #4] cuDNN/matmul perf flags DISABLED (UNSLOTH_FAST_BACKENDS=0)")
+
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
     major_version, minor_version = torch.cuda.get_device_capability()

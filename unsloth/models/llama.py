@@ -743,9 +743,17 @@ def LlamaAttention_fast_forward(
     else:
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
-        cos = cos.to(device = Q.device, dtype = Q.dtype)
-        sin = sin.to(device = Q.device, dtype = Q.dtype)
+        # [unsloth-perf #5] Use a per-(device, dtype) cache for cos/sin so we
+        # do not re-allocate them every layer of every forward when an
+        # unconditional .to() would otherwise have to materialize a fresh
+        # tensor (e.g. when autocast switches dtype mid-step).
+        if hasattr(rotary_emb, "get_cached_cast"):
+            cos, sin = rotary_emb.get_cached_cast(kv_seq_len, Q.device, Q.dtype)
+        else:
+            cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+            if cos.device != Q.device or cos.dtype != Q.dtype:
+                cos = cos.to(device = Q.device, dtype = Q.dtype)
+                sin = sin.to(device = Q.device, dtype = Q.dtype)
 
     rope_position_ids = position_ids
     if rope_position_ids is None and seq_info is not None:
@@ -1231,13 +1239,25 @@ def LlamaModel_fast_forward(
 
                 return custom_forward
 
+            # [unsloth-perf #2] Switched to non-reentrant checkpointing. It avoids
+            # the full-graph re-run on backward and plays nicely with torch.compile.
+            # Set UNSLOTH_REENTRANT_CHECKPOINT=1 to restore the old behavior.
+            _UNSLOTH_USE_REENTRANT = (
+                os.environ.get("UNSLOTH_REENTRANT_CHECKPOINT", "0") == "1"
+            )
+            if not getattr(self, "_unsloth_ckpt_print_done", False):
+                print(
+                    f"[unsloth-perf #2] gradient_checkpointing use_reentrant="
+                    f"{_UNSLOTH_USE_REENTRANT} (default False)"
+                )
+                self._unsloth_ckpt_print_done = True
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
                 mask,
                 attention_mask,
                 position_ids,
-                use_reentrant = True,
+                use_reentrant = _UNSLOTH_USE_REENTRANT,
                 preserve_rng_state = False,
             )
             hidden_states = layer_outputs[0]
@@ -1808,6 +1828,38 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             device_index
         ]
 
+    # [unsloth-perf #5] Return cos/sin already on the requested (device, dtype),
+    # without re-allocating each forward. The original code did
+    #   cos.to(device=Q.device, dtype=Q.dtype)
+    # per layer per step; when dtype matched it was a no-op, but when an
+    # autocast region was active it produced a fresh copy every call.
+    def get_cached_cast(self, seq_len, device, dtype):
+        device_index = device.index if device.index is not None else 0
+        base_cos = self.multi_gpu_cos_cached[device_index]
+        base_sin = self.multi_gpu_sin_cached[device_index]
+        if base_cos.device == device and base_cos.dtype == dtype:
+            return base_cos, base_sin
+        cache = getattr(self, "_unsloth_cast_cache", None)
+        if cache is None:
+            cache = {}
+            self._unsloth_cast_cache = cache
+            print(
+                f"[unsloth-perf #5] RoPE cast cache initialized "
+                f"(base device={base_cos.device}, base dtype={base_cos.dtype})"
+            )
+        key = (device_index, str(device), dtype, id(base_cos))
+        entry = cache.get(key)
+        if entry is None:
+            cos = base_cos.to(device = device, dtype = dtype)
+            sin = base_sin.to(device = device, dtype = dtype)
+            cache[key] = (cos, sin)
+            print(
+                f"[unsloth-perf #5] RoPE cast cache MISS -> "
+                f"device={device}, dtype={dtype}, seq={base_cos.shape[0]}"
+            )
+            return cos, sin
+        return entry
+
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
             return
@@ -1816,6 +1868,13 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
                 self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype
+            )
+        # Invalidate the cast cache because the base buffers were rebuilt.
+        if hasattr(self, "_unsloth_cast_cache"):
+            self._unsloth_cast_cache.clear()
+            print(
+                f"[unsloth-perf #5] RoPE cast cache invalidated after "
+                f"extend_rope_embedding(seq_len={seq_len})"
             )
 
 
