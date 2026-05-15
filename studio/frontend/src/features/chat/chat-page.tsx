@@ -691,6 +691,12 @@ export function ChatPage(): ReactElement {
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
     );
+    // Kimi's k2.6/k2.5 default to thinking enabled on the server side
+    // (per https://platform.kimi.ai/docs/models). Mirror that default
+    // in the UI so the Think pill comes up clicked when the user picks
+    // a Kimi model. The Search pill stays off by default; the mutual-
+    // exclusion handlers in the composer flip the two when needed.
+    const isKimi = provider?.providerType === "kimi";
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -700,7 +706,9 @@ export function ChatPage(): ReactElement {
       reasoningEffort: nextReasoningEffort,
       reasoningEnabled: reasoningCaps.supportsReasoning
         ? reasoningCaps.supportsReasoningOff
-          ? state.reasoningEnabled
+          ? isKimi
+            ? true
+            : state.reasoningEnabled
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
@@ -853,6 +861,10 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
         );
+        // See sibling useEffect above: Kimi's k2.x default to thinking
+        // enabled, so the Think pill comes up clicked. Search pill stays
+        // off by default; mutual exclusion flips them via the composer.
+        const isKimi = provider?.providerType === "kimi";
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -867,7 +879,9 @@ export function ChatPage(): ReactElement {
           reasoningEffort: nextReasoningEffort,
           reasoningEnabled: reasoningCaps.supportsReasoning
             ? reasoningCaps.supportsReasoningOff
-              ? store.reasoningEnabled
+              ? isKimi
+                ? true
+                : store.reasoningEnabled
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,

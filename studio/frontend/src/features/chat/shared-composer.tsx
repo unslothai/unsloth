@@ -348,6 +348,12 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  // Kimi's $web_search builtin mandates thinking=disabled per the docs at
+  // https://platform.kimi.ai/docs/guide/use-web-search. Both pills stay
+  // clickable for Kimi, but turning one on flips the other off — the
+  // click handlers below enforce this mutual exclusion so the visible
+  // state always matches what the backend actually sends.
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
@@ -781,6 +787,11 @@ export function SharedComposer({
                       setReasoningEffort(level);
                       setReasoningEnabled(true);
                       applyQwenThinkingParams(true);
+                      // Mutual exclusion: turning thinking on for a
+                      // Kimi model forces the web_search builtin off.
+                      if (isKimiExternal && toolsEnabled) {
+                        setToolsEnabled(false);
+                      }
                     }}
                   >
                     {formatReasoningEffortLabel(level, externalSelection?.modelId)}
@@ -804,6 +815,12 @@ export function SharedComposer({
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
                 applyQwenThinkingParams(next);
+                // Mutual exclusion: Kimi's $web_search builtin
+                // requires thinking off, so turning thinking on flips
+                // the Search pill off (and vice versa).
+                if (isKimiExternal && next && toolsEnabled) {
+                  setToolsEnabled(false);
+                }
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
@@ -861,7 +878,19 @@ export function SharedComposer({
           <button
             type="button"
             disabled={searchDisabled}
-            onClick={() => setToolsEnabled(!toolsEnabled)}
+            onClick={() => {
+              const next = !toolsEnabled;
+              setToolsEnabled(next);
+              // Kimi's $web_search builtin requires thinking=disabled
+              // (https://platform.kimi.ai/docs/guide/use-web-search).
+              // Toggle the Think pill off when Search comes on, and
+              // back on when Search goes off — mutual exclusion that
+              // mirrors what the backend enforces.
+              if (isKimiExternal) {
+                setReasoningEnabled(!next);
+                applyQwenThinkingParams(!next);
+              }
+            }}
             className="composer-pill-btn"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
