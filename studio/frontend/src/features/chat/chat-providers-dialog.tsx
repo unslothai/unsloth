@@ -58,6 +58,7 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
+  supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "./external-providers";
 
@@ -308,6 +309,9 @@ export function ChatProvidersSettings({
               baseUrl: config.base_url ?? "",
               models: existingModels,
               availableModels: existing?.availableModels ?? [],
+              enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
+                ? (existing?.enablePromptCaching ?? true)
+                : undefined,
               createdAt: existing?.createdAt ?? createdAt,
               updatedAt,
             };

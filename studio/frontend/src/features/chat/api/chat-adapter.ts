@@ -28,6 +28,7 @@ import {
   getExternalProviderApiKey,
   loadExternalProviders,
   parseExternalModelId,
+  supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
 import {
@@ -1028,6 +1029,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 forceRefreshPublicKey,
               ),
               provider_base_url: externalProvider.baseUrl || null,
+              ...(supportsProviderPromptCaching(externalProvider.providerType)
+                ? {
+                    enable_prompt_caching:
+                      externalProvider.enablePromptCaching ?? true,
+                  }
+                : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
                   ? externalReasoningEnabled

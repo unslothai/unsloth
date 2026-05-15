@@ -14,8 +14,18 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /** Whether to ask supported hosted providers to use prompt caching. */
+  enablePromptCaching?: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
+
+export function supportsProviderPromptCaching(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType != null && PROMPT_CACHING_PROVIDER_TYPES.has(providerType);
 }
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
@@ -179,9 +189,10 @@ function mapLegacyPresetToProviderType(presetId: string): string {
 }
 
 function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
+  const providerType = raw.providerType.trim();
   return {
     ...raw,
-    providerType: raw.providerType.trim(),
+    providerType,
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
     models: raw.models
@@ -190,6 +201,9 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    enablePromptCaching: supportsProviderPromptCaching(providerType)
+      ? raw.enablePromptCaching !== false
+      : undefined,
   };
 }
 
