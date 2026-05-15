@@ -977,40 +977,59 @@ jobs:
                 skipped -> no `modeling_<x>.py` file (expected for some
                            umbrella packages like `auto`, `deprecated`)
                 known   -> in KNOWN_BROKEN_COMPILE; tracked for follow-up.
-              Any uncaught failure fails the cell."""
+              Any uncaught failure fails the cell.
+
+              Per-model SIGALRM cap so one infinite-looping model_type
+              cannot wedge the whole sweep + nuke the job timeout
+              (observed on transformers >=5,<6 -- 30+ min hang before
+              this guard landed)."""
               import importlib as _il
+              import signal
               ok = 0
               skipped = []
               known = []
               new_failures = []
-              for model_type in _all_model_types():
-                  modeling_path = f"transformers.models.{model_type}.modeling_{model_type}"
-                  try:
-                      _il.import_module(modeling_path)
-                  except (ModuleNotFoundError, ImportError):
-                      skipped.append((model_type, "no modeling file"))
-                      continue
-                  try:
-                      unsloth_compile_transformers(
-                          model_type=model_type, fast_lora_forwards=False,
-                      )
-                  except Exception as e:
-                      msg = f"{type(e).__name__}: {str(e)[:200]}"
+              models = _all_model_types()
+              def _on_timeout(signum, frame):
+                  raise TimeoutError("compile exceeded per-model budget")
+              prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
+              try:
+                  for i, model_type in enumerate(models):
+                      if i % 25 == 0:
+                          print(f"  sweep progress: {i}/{len(models)} -> {model_type}", flush=True)
+                      modeling_path = f"transformers.models.{model_type}.modeling_{model_type}"
+                      try:
+                          _il.import_module(modeling_path)
+                      except (ModuleNotFoundError, ImportError):
+                          skipped.append((model_type, "no modeling file"))
+                          continue
+                      signal.alarm(60)
+                      try:
+                          unsloth_compile_transformers(
+                              model_type=model_type, fast_lora_forwards=False,
+                          )
+                      except Exception as e:
+                          signal.alarm(0)
+                          msg = f"{type(e).__name__}: {str(e)[:200]}"
+                          if model_type in KNOWN_BROKEN_COMPILE:
+                              known.append((model_type, msg))
+                          else:
+                              new_failures.append((model_type, msg))
+                          continue
+                      signal.alarm(0)
                       if model_type in KNOWN_BROKEN_COMPILE:
-                          known.append((model_type, msg))
-                      else:
-                          new_failures.append((model_type, msg))
-                      continue
-                  if model_type in KNOWN_BROKEN_COMPILE:
-                      # Came back green unexpectedly -- that's GOOD news,
-                      # the bug was fixed. Surface it so we can drop the
-                      # entry from KNOWN_BROKEN_COMPILE.
-                      print(
-                          f"  UNEXPECTED-OK {model_type}: was in "
-                          "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
-                          "Drop the entry."
-                      )
-                  ok += 1
+                          # Came back green unexpectedly -- that's GOOD news,
+                          # the bug was fixed. Surface it so we can drop the
+                          # entry from KNOWN_BROKEN_COMPILE.
+                          print(
+                              f"  UNEXPECTED-OK {model_type}: was in "
+                              "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
+                              "Drop the entry."
+                          )
+                      ok += 1
+              finally:
+                  signal.alarm(0)
+                  signal.signal(signal.SIGALRM, prev_handler)
               print(f"\nCompile sweep: ok={ok} skipped={len(skipped)} "
                     f"known-broken={len(known)} new-failures={len(new_failures)}")
               for m, r in known:
