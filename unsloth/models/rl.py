@@ -2270,6 +2270,11 @@ def patch_trl_vllm_generation():
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
+    # Under UNSLOTH_ALLOW_CPU=1 (CPU-only CI), skip TRL trainer rewriting so
+    # downstream `inspect.getsource(trl.SFTTrainer)` drift detectors see the
+    # pristine upstream class, not the compiled Unsloth* wrappers.
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return
     # Install the disable_gradient_checkpointing noop BEFORE
     # patch_trl_rl_trainers. patch_trl_rl_trainers imports extra trl.* trainer
     # submodules while generating the compiled cache; any new trl.* modules
