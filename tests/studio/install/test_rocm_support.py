@@ -590,6 +590,7 @@ class TestEnsureRocmTorch:
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -611,6 +612,7 @@ class TestEnsureRocmTorch:
         assert mock_pip_try.call_count >= 1
         assert "bitsandbytes" in str(mock_pip_try.call_args_list[0])
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
@@ -642,6 +644,7 @@ class TestEnsureRocmTorch:
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
@@ -656,6 +659,7 @@ class TestEnsureRocmTorch:
         captured = capsys.readouterr()
         assert "unreadable" in captured.out
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
@@ -671,6 +675,7 @@ class TestEnsureRocmTorch:
         torch_call = mock_pip.call_args_list[0]
         assert "rocm7.2" in str(torch_call)
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -773,7 +778,7 @@ class TestHardwareRocmFlag:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         assert "IS_ROCM: bool" in source and "False" in source
 
     def test_hardware_py_sets_is_rocm_on_hip(self):
@@ -781,7 +786,7 @@ class TestHardwareRocmFlag:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         assert 'torch.version, "hip"' in source or "torch.version.hip" in source
 
     def test_hardware_py_still_returns_cuda_for_rocm(self):
@@ -789,7 +794,7 @@ class TestHardwareRocmFlag:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         # Ensure ROCM is NOT a DeviceType member
         enum_section = source.split("class DeviceType")[1].split("\n\n")[0]
         assert "ROCM" not in enum_section
@@ -799,7 +804,7 @@ class TestHardwareRocmFlag:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         assert '"rocm"' in source
 
     def test_hardware_py_device_type_cuda_references_intact(self):
@@ -807,7 +812,7 @@ class TestHardwareRocmFlag:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         # Key functions that must still reference DeviceType.CUDA
         assert "DeviceType.CUDA" in source
         assert "DEVICE = DeviceType.CUDA" in source
@@ -817,7 +822,7 @@ class TestHardwareRocmFlag:
         init_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
         )
-        source = init_path.read_text()
+        source = init_path.read_text(encoding="utf-8")
         assert "IS_ROCM" in source
 
     def test_is_rocm_in_all_list(self):
@@ -825,7 +830,7 @@ class TestHardwareRocmFlag:
         init_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
         )
-        source = init_path.read_text()
+        source = init_path.read_text(encoding="utf-8")
         # Extract __all__ section
         assert '"IS_ROCM"' in source
 
@@ -834,7 +839,7 @@ class TestHardwareRocmFlag:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         # Find the get_package_versions function body
         func_start = source.find("def get_package_versions")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -853,13 +858,13 @@ class TestTokenizerErrorMessage:
     def test_no_old_amd_message(self):
         """Old 'We do not support AMD' message should be gone."""
         tu_path = PACKAGE_ROOT / "unsloth" / "tokenizer_utils.py"
-        source = tu_path.read_text()
+        source = tu_path.read_text(encoding="utf-8")
         assert "We do not support AMD" not in source
 
     def test_new_message_has_docs_link(self):
         """New message should point to Unsloth AMD docs."""
         tu_path = PACKAGE_ROOT / "unsloth" / "tokenizer_utils.py"
-        source = tu_path.read_text()
+        source = tu_path.read_text(encoding="utf-8")
         assert "docs.unsloth.ai" in source or "No GPU detected" in source
 
 
@@ -874,7 +879,7 @@ class TestInstallShStructure:
     def test_no_here_strings(self):
         """install.sh must not use <<< (not POSIX)."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         # <<< is bash-only; breaks dash
         for i, line in enumerate(source.splitlines(), 1):
             stripped = line.lstrip()
@@ -885,7 +890,7 @@ class TestInstallShStructure:
     def test_rocm_detection_present(self):
         """install.sh should have ROCm detection in get_torch_index_url."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         assert "amd-smi" in source
         assert "rocm" in source.lower()
 
@@ -900,7 +905,7 @@ class TestInstallShStructure:
         block.
         """
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
         nvidia_call = body.find("_has_usable_nvidia_gpu")
         no_nvidia_branch = body.find('if [ -z "$_smi" ]')
@@ -921,20 +926,20 @@ class TestInstallShStructure:
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         assert "bitsandbytes" in source
         assert "rocm*)" in source  # case pattern for ROCm URLs
 
     def test_cpu_hint_mentions_amd(self):
         """CPU-only hint should mention AMD ROCm."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         assert "ROCm" in source
 
     def test_rocm72_supported_future_capped(self):
         """ROCm 7.2 should pass through directly; 7.3+ falls back to rocm7.2."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         assert 'echo "$_base/rocm7.2"' in source  # fallback for unknown future versions
         # Allowlisted versions should pass through directly
         assert "rocm6.*" in source
@@ -945,21 +950,21 @@ class TestInstallShStructure:
     def test_rocm_tag_validation_guard_exists(self):
         """install.sh should validate _rocm_tag with a case guard."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         assert "rocm[1-9]*.[0-9]*)" in source
         assert '_rocm_tag=""' in source  # rejection path
 
     def test_dpkg_epoch_handling(self):
         """install.sh should strip Debian epoch prefix from dpkg-query output."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         assert "sed 's/^[0-9]*://' " in source or "sed 's/^[0-9]*://'" in source
 
     def test_no_double_bracket_in_rocm_block(self):
         """ROCm detection block should not use [[ ]] (bash-only, not POSIX).
         Note: [[:space:]], [[:digit:]] etc. are valid POSIX character classes, not bash [[ ]]."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         func_start = source.find("get_torch_index_url()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
@@ -978,7 +983,7 @@ class TestInstallShStructure:
     def test_no_arithmetic_expansion_in_rocm_block(self):
         """ROCm detection block should not use (( )) (bash-only)."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         func_start = source.find("get_torch_index_url()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
@@ -993,7 +998,7 @@ class TestInstallShStructure:
     def test_macos_returns_cpu_before_rocm_check(self):
         """macOS should return CPU immediately (before any ROCm check)."""
         sh_path = PACKAGE_ROOT / "install.sh"
-        source = sh_path.read_text()
+        source = sh_path.read_text(encoding="utf-8")
         func_start = source.find("get_torch_index_url()")
         func_body = source[func_start:]
         darwin_pos = func_body.find("Darwin")
@@ -1067,12 +1072,12 @@ class TestWorkerRocmMambaSsm:
     def test_probe_returns_hip_version_field(self):
         """The wheel probe should include hip_version, and worker.py should
         consume it."""
-        assert "hip_version" in _WHEEL_UTILS_PATH.read_text()
-        assert "hip_version" in _WORKER_PATH.read_text()
+        assert "hip_version" in _WHEEL_UTILS_PATH.read_text(encoding="utf-8")
+        assert "hip_version" in _WORKER_PATH.read_text(encoding="utf-8")
 
     def test_probe_script_has_getattr_hip(self):
         """Probe script should use getattr for torch.version.hip (safe on CUDA)."""
-        source = _WHEEL_UTILS_PATH.read_text()
+        source = _WHEEL_UTILS_PATH.read_text(encoding="utf-8")
         assert "getattr(torch.version, 'hip', None)" in source
 
     def test_direct_wheel_url_returns_none_without_cuda_major(self):
@@ -1114,22 +1119,22 @@ class TestWorkerRocmMambaSsm:
 
     def test_hipcc_check_exists_in_source(self):
         """worker.py should check for hipcc before ROCm source builds."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "hipcc" in source
 
     def test_rocm_source_build_status_message(self):
         """worker.py should send a specific status for ROCm source compilation."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "Compiling" in source and "from source for ROCm" in source
 
     def test_rocm_build_failure_message(self):
         """worker.py should send a clear error on ROCm build failure."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "Failed to compile" in source and "for ROCm" in source
 
     def test_timeout_on_install(self):
         """worker.py should have a timeout on pip install subprocess."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "TimeoutExpired" in source
         assert "timeout" in source
 
@@ -1150,7 +1155,7 @@ class TestAmdGpuMonitoring:
     def test_amd_py_has_required_functions(self):
         """amd.py should export the same function signatures as nvidia.py."""
         amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
-        source = amd_path.read_text()
+        source = amd_path.read_text(encoding="utf-8")
         assert "def get_physical_gpu_count" in source
         assert "def get_primary_gpu_utilization" in source
         assert "def get_visible_gpu_utilization" in source
@@ -1295,7 +1300,7 @@ class TestHardwareAmdBranching:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
@@ -1305,7 +1310,7 @@ class TestHardwareAmdBranching:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert '_smi_query("get_primary_gpu_utilization"' in func_body
@@ -1323,7 +1328,7 @@ class TestHardwareAmdBranching:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         # The dispatcher call may wrap onto multiple lines; allow whitespace
@@ -1344,7 +1349,7 @@ class TestHardwareAmdBranching:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         func_start = source.find("def get_physical_gpu_count")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "IS_ROCM" in func_body
@@ -1365,7 +1370,7 @@ class TestApplyGpuIdsRocmFallback:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'getattr(_torch.version, "hip", None)' in func_body
@@ -1375,7 +1380,7 @@ class TestApplyGpuIdsRocmFallback:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert 'os.environ["HIP_VISIBLE_DEVICES"] = value' in func_body
@@ -1386,7 +1391,7 @@ class TestApplyGpuIdsRocmFallback:
         hw_path = (
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         )
-        source = hw_path.read_text()
+        source = hw_path.read_text(encoding="utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "import torch as _torch" in func_body
@@ -1403,18 +1408,18 @@ class TestWindowsRocmWarning:
 
     def test_windows_amd_warning_in_source(self):
         """install_python_stack.py should warn Windows AMD users."""
-        source = _STACK_PATH.read_text()
+        source = _STACK_PATH.read_text(encoding="utf-8")
         assert "AMD GPU detected" in source
 
     def test_windows_amd_warning_checks_hipinfo_or_amdsmi(self):
         """Warning should check for hipinfo or amd-smi."""
-        source = _STACK_PATH.read_text()
+        source = _STACK_PATH.read_text(encoding="utf-8")
         assert "hipinfo" in source
         assert "amd-smi" in source
 
     def test_windows_amd_warning_has_docs_link(self):
         """Warning should include AMD docs link."""
-        source = _STACK_PATH.read_text()
+        source = _STACK_PATH.read_text(encoding="utf-8")
         assert "docs.unsloth.ai/get-started/install-and-update/amd" in source
 
 
@@ -1429,7 +1434,7 @@ class TestIsRdnaExpansion:
     def test_is_rdna_source_has_rdna2(self):
         """is_rdna() should include RDNA2 architectures."""
         utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
-        source = utils_path.read_text()
+        source = utils_path.read_text(encoding="utf-8")
         func_start = source.find("def is_rdna()")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "gfx1030" in func_body
@@ -1443,7 +1448,7 @@ class TestIsRdnaExpansion:
     def test_is_rdna_source_has_rdna3(self):
         """is_rdna() should include RDNA3 architectures."""
         utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
-        source = utils_path.read_text()
+        source = utils_path.read_text(encoding="utf-8")
         func_start = source.find("def is_rdna()")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "gfx1100" in func_body
@@ -1454,7 +1459,7 @@ class TestIsRdnaExpansion:
     def test_is_rdna_source_has_rdna35(self):
         """is_rdna() should include RDNA3.5 architectures."""
         utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
-        source = utils_path.read_text()
+        source = utils_path.read_text(encoding="utf-8")
         func_start = source.find("def is_rdna()")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "gfx1150" in func_body
@@ -1464,7 +1469,7 @@ class TestIsRdnaExpansion:
     def test_is_rdna_source_has_rdna4(self):
         """is_rdna() should include RDNA4 architectures."""
         utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
-        source = utils_path.read_text()
+        source = utils_path.read_text(encoding="utf-8")
         func_start = source.find("def is_rdna()")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "gfx1200" in func_body
@@ -1473,7 +1478,7 @@ class TestIsRdnaExpansion:
     def test_is_cdna_not_changed(self):
         """is_cdna() should remain unchanged (no RDNA architectures added)."""
         utils_path = PACKAGE_ROOT / "unsloth" / "kernels" / "utils.py"
-        source = utils_path.read_text()
+        source = utils_path.read_text(encoding="utf-8")
         func_start = source.find("def is_cdna()")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert "gfx940" in func_body
@@ -1714,57 +1719,58 @@ class TestWorkerWindowsRocmPatches:
 
     def test_grouped_mm_dispatch_patch_present(self):
         """worker.py must register a _grouped_mm CUDA dispatch override."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert '_gm_lib.impl("_grouped_mm"' in source
 
     def test_grouped_mm_patch_targets_cuda_dispatch_key(self):
         """The dispatch override must target the CUDA key (not CompositeImplicitAutograd)."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert '"_grouped_mm", _grouped_mm_safe_impl, "CUDA"' in source
 
     def test_grouped_mm_lib_kept_alive(self):
         """The Library object must be stored to prevent GC clearing the registration."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "_WINDOWS_ROCM_GROUPED_MM_LIB" in source
 
     def test_grouped_mm_handles_offs_grouped_case(self):
         """_grouped_mm fallback must handle the grouped (offs!=None) variant."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "offs_list" in source
         assert "offs.tolist()" in source
 
     def test_torchao_stub_uses_stub_type_meta(self):
         """Torchao stub must use _StubTypeMeta so isinstance() returns False not TypeError."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "_StubTypeMeta" in source
 
     def test_stub_type_meta_has_instancecheck(self):
         """_StubTypeMeta must define __instancecheck__ returning False."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "__instancecheck__" in source
 
     def test_stub_subpackage_finder_registered(self):
         """_StubSubpackageFinder must be appended to sys.meta_path."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "sys.meta_path.append(_StubSubpackageFinder())" in source
 
     def test_torchao_key_submodules_pre_stubbed(self):
         """Key torchao submodules (dtypes, quantization) must be pre-stubbed."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "torchao.dtypes" in source
         assert "torchao.quantization" in source
 
     def test_torchdynamo_disabled_on_windows_rocm(self):
         """worker.py should disable dynamo on Windows ROCm as belt-and-suspenders."""
-        source = _WORKER_PATH.read_text()
+        source = _WORKER_PATH.read_text(encoding="utf-8")
         assert "TORCHDYNAMO_DISABLE" in source
 
     def test_grouped_mm_patch_guarded_by_windows_and_hip_check(self):
         """_grouped_mm patch must only apply on Windows + HIP torch."""
-        source = _WORKER_PATH.read_text()
-        # Should check sys.platform == "win32" AND torch.version.hip
+        source = _WORKER_PATH.read_text(encoding="utf-8")
+        # Must check sys.platform == "win32"
         assert 'sys.platform == "win32"' in source
-        assert "torch.version" in source and '"hip"' in source
+        # Must gate on HIP version — code uses getattr chain: "version" and "hip"
+        assert '"version"' in source and '"hip"' in source
 
 
 # =============================================================================
