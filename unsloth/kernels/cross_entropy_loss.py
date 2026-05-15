@@ -461,3 +461,20 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
 # Patch CE Losses in transformers
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
+
+    # _patch_loss_functions only updates LOSS_MAPPING["ForCausalLM"].
+    # Some model classes (e.g. Qwen3_5ForConditionalGeneration) have
+    # loss_type="ForConditionalGeneration", which is a separate key in
+    # LOSS_MAPPING that still points to the old ForCausalLMLoss.
+    # Since the property reads LOSS_MAPPING live, we just need to update
+    # every key that is currently aliased to ForCausalLMLoss.
+    try:
+        import transformers.loss.loss_utils as _lu
+        _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")
+        if _unsloth_loss is not None:
+            _causal_lm_loss_name = "ForCausalLMLoss"
+            for _key, _fn in list(_lu.LOSS_MAPPING.items()):
+                if _key != "ForCausalLM" and getattr(_fn, "__name__", "") == _causal_lm_loss_name:
+                    _lu.LOSS_MAPPING[_key] = _unsloth_loss
+    except Exception:
+        pass

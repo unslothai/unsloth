@@ -545,6 +545,72 @@ def test_transformers_pretrained_model_has_get_input_embeddings():
 # ===========================================================================
 
 
+# ===========================================================================
+# transformers LOSS_MAPPING -- patch_loss_functions() coverage
+# Regression for https://github.com/unslothai/unsloth/issues/4188:
+# Qwen3_5ForConditionalGeneration has loss_type='ForConditionalGeneration',
+# a separate LOSS_MAPPING key that was never patched, leaving the model with
+# the stock ForCausalLMLoss which does logits.float() and OOMs on <=24 GB GPUs.
+# ===========================================================================
+
+
+def _reset_loss_mapping(mapping, saved):
+    mapping.clear()
+    mapping.update(saved)
+
+
+def test_patch_loss_functions_covers_conditional_generation():
+    """After patch_loss_functions(), every LOSS_MAPPING key that was aliased
+    to ForCausalLMLoss must also point at the Unsloth kernel -- not just
+    LOSS_MAPPING['ForCausalLM']."""
+    lu = pytest.importorskip("transformers.loss.loss_utils")
+    cel = pytest.importorskip("unsloth.kernels.cross_entropy_loss")
+
+    saved = dict(lu.LOSS_MAPPING)
+    try:
+        cel.patch_loss_functions(torch_compile=False)
+
+        unsloth_loss = lu.LOSS_MAPPING.get("ForCausalLM")
+        assert unsloth_loss is not None
+        assert "Unsloth" in str(unsloth_loss), (
+            f"LOSS_MAPPING['ForCausalLM'] was not replaced: {unsloth_loss}"
+        )
+
+        cg_loss = lu.LOSS_MAPPING.get("ForConditionalGeneration")
+        assert cg_loss is unsloth_loss, (
+            f"LOSS_MAPPING['ForConditionalGeneration'] not patched: {cg_loss}. "
+            f"Qwen3_5ForConditionalGeneration will silently use the stock "
+            f"ForCausalLMLoss and OOM at large sequence lengths."
+        )
+    finally:
+        _reset_loss_mapping(lu.LOSS_MAPPING, saved)
+
+
+def test_patch_loss_functions_does_not_touch_other_loss_types():
+    """patch_loss_functions() must not overwrite unrelated loss types
+    (segmentation, detection, masked-LM, etc.) with the causal-LM kernel."""
+    lu = pytest.importorskip("transformers.loss.loss_utils")
+    cel = pytest.importorskip("unsloth.kernels.cross_entropy_loss")
+
+    non_causal_keys = {
+        k for k, v in lu.LOSS_MAPPING.items()
+        if getattr(v, "__name__", "") != "ForCausalLMLoss"
+    }
+
+    saved = dict(lu.LOSS_MAPPING)
+    try:
+        cel.patch_loss_functions(torch_compile=False)
+
+        unsloth_loss = lu.LOSS_MAPPING.get("ForCausalLM")
+        for key in non_causal_keys:
+            assert lu.LOSS_MAPPING.get(key) is not unsloth_loss, (
+                f"patch_loss_functions() incorrectly overwrote "
+                f"LOSS_MAPPING['{key}'] with the Unsloth ForCausalLM kernel."
+            )
+    finally:
+        _reset_loss_mapping(lu.LOSS_MAPPING, saved)
+
+
 def test_accelerate_utils_imports_module_present():
     """``disable_broken_wandb`` + ``fix_trl_vllm_ascend`` (import_fixes.py
     493-516, 1320-1372). Both reach into accelerate.utils.imports."""
