@@ -88,6 +88,7 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
+    padding_keep_mask: Optional[Tensor] = None
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -144,11 +145,12 @@ def run_attention(
             )
             run_attention._unsloth_pack_to_varlen_print_done = True
         backend = FLASH_VARLEN
+        context.attention_mask = None
 
-    # [unsloth-perf #11] If only a 2D / 3D key-padding mask is present (no
+    # [unsloth-perf #11] If only a 2D key-padding mask is present (no
     # packing metadata), derive cu_seqlens from it and use Flash varlen
-    # instead of falling all the way down to dense SDPA. Cheaper than
-    # building a (B*1*Q*K) boolean mask.
+    # instead of falling all the way down to dense SDPA. Q/K/V are unpadded
+    # below before calling flash_attn_varlen_func, then scattered back.
     if (
         HAS_FLASH_ATTENTION
         and context.seq_info is None
@@ -159,7 +161,7 @@ def run_attention(
         and context.requires_grad  # only convert for training; inference path is unchanged
     ):
         try:
-            keep = context.attention_mask != 0  # (B, K)
+            keep = (context.attention_mask != 0).to(device = Q.device)  # (B, K)
             # Only safe for right-padded masks (real tokens contiguous from
             # position 0). Detected by: keep is non-increasing along the
             # sequence dim, i.e. once we see a 0 we never see a 1 again.
@@ -174,6 +176,7 @@ def run_attention(
                 torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
                 max_seqlen = int(lengths.max().item())
                 context.seq_info = (lengths, cu_seqlens, max_seqlen)
+                context.padding_keep_mask = keep
                 context.attention_mask = None
                 backend = FLASH_VARLEN
                 if not getattr(
@@ -231,11 +234,22 @@ def run_attention(
     sliding_window = context.sliding_window
 
     if backend == FLASH_VARLEN:
-        Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
-        K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
-        V_f = V.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
+        Q_t = Q.transpose(1, 2)
+        K_t = K.transpose(1, 2)
+        V_t = V.transpose(1, 2)
         _, cu_seqlens, max_seqlen = context.seq_info
-        return flash_attn_varlen_func(
+        keep = context.padding_keep_mask
+        if keep is None:
+            Q_f = Q_t.reshape(bsz * q_len, n_heads, head_dim)
+            K_f = K_t.reshape(bsz * q_len, config.n_kv_heads, head_dim)
+            V_f = V_t.reshape(bsz * q_len, config.n_kv_heads, head_dim)
+        else:
+            keep = keep.to(device = Q.device)
+            Q_f = Q_t[keep]
+            K_f = K_t[keep]
+            V_f = V_t[keep]
+
+        out = flash_attn_varlen_func(
             Q_f,
             K_f,
             V_f,
@@ -244,7 +258,13 @@ def run_attention(
             max_seqlen,
             max_seqlen,
             **flash_varlen_kwargs,
-        ).view(bsz, q_len, n_heads, head_dim)
+        )
+        if keep is None:
+            return out.view(bsz, q_len, n_heads, head_dim)
+
+        padded_out = Q_t.new_zeros(bsz, q_len, n_heads, head_dim)
+        padded_out[keep] = out
+        return padded_out
     elif backend == FLASH_DENSE:
         Q_t = Q.transpose(1, 2)
         K_t = K.transpose(1, 2)

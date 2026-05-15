@@ -167,8 +167,8 @@ class UnslothTrainingArguments(TrainingArguments):
     #     dataset sizes typical for pretrain debugging)
     #   - prefetch_factor=4 because tokenize+pack is bursty
     #   - pin_memory=True turns H2D copies non-blocking
-    # Disable any of these by passing the kwarg yourself or by setting the env
-    # var UNSLOTH_FAST_DATALOADER=0.
+    # Disable these by passing dataloader_num_workers yourself or by setting the
+    # env var UNSLOTH_FAST_DATALOADER=0.
     _UNSLOTH_DATALOADER_DEFAULTS = {
         "dataloader_num_workers":        2,
         "dataloader_persistent_workers": True,
@@ -188,10 +188,16 @@ class UnslothTrainingArguments(TrainingArguments):
 
         if os.environ.get("UNSLOTH_FAST_DATALOADER", "1") != "0":
             applied = []
-            for k, v in UnslothTrainingArguments._UNSLOTH_DATALOADER_DEFAULTS.items():
-                if k not in kwargs:
-                    kwargs[k] = v
-                    applied.append(f"{k}={v}")
+            if "dataloader_num_workers" not in kwargs:
+                for k, v in UnslothTrainingArguments._UNSLOTH_DATALOADER_DEFAULTS.items():
+                    if k not in kwargs:
+                        kwargs[k] = v
+                        applied.append(f"{k}={v}")
+            else:
+                # Respect an explicit worker count as a full dataloader choice.
+                # This avoids injecting persistent_workers/prefetch_factor when
+                # dataloader_num_workers=0.
+                pass
             if applied and not getattr(UnslothTrainingArguments, "_unsloth_dl_print_done", False):
                 print("[unsloth-perf #3] dataloader defaults applied: " + ", ".join(applied))
                 UnslothTrainingArguments._unsloth_dl_print_done = True

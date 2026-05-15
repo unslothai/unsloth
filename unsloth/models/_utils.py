@@ -2353,8 +2353,9 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Wrap Trainer.__init__: (1) pre-init, shadow accepts_loss_kwargs on whatever
     # model was passed in (covers PEFT wrapping done after FastModel.from_pretrained);
-    # (2) post-init, clamp accelerator GA to 1 for the transformers 5.0-5.5
-    # GradientAccumulationPlugin regression. No-op on 4.x and 5.6+. See #4982.
+    # (2) post-init, clamp accelerator GA to 1 for the transformers
+    # GradientAccumulationPlugin regression. Keep the legacy workaround by default;
+    # opt out with UNSLOTH_SKIP_ACCEL_GA_CLAMP=1 when benchmarking sync behavior.
     if not getattr(Trainer, "_unsloth_init_wrapped_for_accelerate_gas", False):
         _original_trainer_init = Trainer.__init__
 
@@ -2368,33 +2369,27 @@ def patch_gradient_accumulation_fix(Trainer):
                 except Exception:
                     pass
             _original_trainer_init(self, *args, **kwargs)
-            # [unsloth-perf #9] Only clamp accelerator.gradient_accumulation_steps
-            # to 1 on the Accelerate versions that actually have the regression
-            # this workaround targets ([5.0, 5.6)). On 4.x and 5.6+, clamping
-            # breaks Accelerate's gradient-sync optimization (every micro-batch
-            # synchronizes across DDP ranks). Force-clamp anyway by setting
-            # UNSLOTH_FORCE_ACCEL_GA_CLAMP=1.
+            # [unsloth-perf #9] Keep the existing GA clamp unless a user
+            # explicitly opts out. The previous version-based skip was not
+            # backed by an in-repo regression test and silently removed a
+            # correctness workaround on common Accelerate releases.
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
                     accelerator is not None
                     and getattr(accelerator, "gradient_accumulation_steps", 1) > 1
                 ):
+                    _skip = os.environ.get("UNSLOTH_SKIP_ACCEL_GA_CLAMP", "0") == "1"
                     try:
                         import accelerate as _accel
-                        _av = Version(_accel.__version__)
-                        _needs_clamp = (
-                            Version("5.0.0") <= _av < Version("5.6.0")
-                        )
+                        _accelerate_version = getattr(_accel, "__version__", "?")
                     except Exception:
-                        _needs_clamp = True  # fail-safe: keep old behavior
-                    _forced = os.environ.get("UNSLOTH_FORCE_ACCEL_GA_CLAMP", "0") == "1"
-                    if _needs_clamp or _forced:
+                        _accelerate_version = "?"
+                    if not _skip:
                         if not getattr(Trainer, "_unsloth_ga_clamp_print_done", False):
                             print(
                                 f"[unsloth-perf #9] Accelerate GA clamp ACTIVE "
-                                f"(accelerate={getattr(_accel, '__version__', '?')}, "
-                                f"forced={_forced})"
+                                f"(accelerate={_accelerate_version})"
                             )
                             Trainer._unsloth_ga_clamp_print_done = True
                         accelerator.gradient_accumulation_steps = 1
@@ -2408,8 +2403,9 @@ def patch_gradient_accumulation_fix(Trainer):
                         if not getattr(Trainer, "_unsloth_ga_clamp_print_done", False):
                             print(
                                 f"[unsloth-perf #9] Accelerate GA clamp SKIPPED "
-                                f"(accelerate={getattr(_accel, '__version__', '?')}, "
-                                f"ga_steps={accelerator.gradient_accumulation_steps})"
+                                f"(accelerate={_accelerate_version}, "
+                                f"ga_steps={accelerator.gradient_accumulation_steps}, "
+                                f"UNSLOTH_SKIP_ACCEL_GA_CLAMP=1)"
                             )
                             Trainer._unsloth_ga_clamp_print_done = True
             except Exception:
