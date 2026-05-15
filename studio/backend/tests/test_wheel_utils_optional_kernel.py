@@ -66,9 +66,12 @@ def test_direct_wheel_success_returns_true_and_skips_pypi(monkeypatch):
         "test_kernel-1.0.0+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
     assert "test-kernel==1.0.0" not in calls[0]
+    assert "--no-deps" not in calls[0]
+    assert "--upgrade" not in calls[0]
+    assert "--reinstall" not in calls[0]
 
 
-def test_direct_wheel_installs_declared_non_torch_dependencies(monkeypatch):
+def test_direct_wheel_lets_installer_resolve_wheel_dependencies(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
@@ -89,19 +92,19 @@ def test_direct_wheel_installs_declared_non_torch_dependencies(monkeypatch):
         is True
     )
 
-    assert calls[0][:6] == [
+    assert calls[0][:5] == [
         "uv",
         "pip",
         "install",
         "--python",
         sys.executable,
-        "--no-deps",
     ]
-    assert calls[0][-2] == "einops"
+    assert "--no-deps" not in calls[0]
+    assert "einops" not in calls[0]
     assert calls[0][-1].endswith(".whl")
 
 
-def test_direct_wheel_dependencies_are_used_on_pip_fallback(monkeypatch):
+def test_direct_wheel_pip_fallback_resolves_wheel_dependencies(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
@@ -124,12 +127,16 @@ def test_direct_wheel_dependencies_are_used_on_pip_fallback(monkeypatch):
         is True
     )
 
-    assert calls[1][:5] == [sys.executable, "-m", "pip", "install", "--no-deps"]
-    assert calls[1][-2] == "einops"
+    assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
+    assert "--no-deps" not in calls[1]
+    assert "--upgrade" not in calls[1]
+    assert "--force-reinstall" not in calls[1]
+    assert "--ignore-installed" not in calls[1]
+    assert "einops" not in calls[1]
     assert calls[1][-1].endswith(".whl")
 
 
-def test_mamba_wheel_installs_pypi_dependencies_without_torch(monkeypatch):
+def test_mamba_wheel_uses_only_direct_wheel_requirement(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
@@ -150,23 +157,15 @@ def test_mamba_wheel_installs_pypi_dependencies_without_torch(monkeypatch):
         is True
     )
 
-    assert calls[0][:6] == [
+    assert calls[0][:5] == [
         "uv",
         "pip",
         "install",
         "--python",
         sys.executable,
-        "--no-deps",
     ]
-    assert calls[0][-7:-1] == [
-        "triton",
-        "ninja",
-        "einops",
-        "transformers",
-        "packaging",
-        "setuptools>=61.0.0",
-    ]
-    assert "torch" not in calls[0]
+    assert "--no-deps" not in calls[0]
+    assert calls[0].count(calls[0][-1]) == 1
     assert calls[0][-1].endswith(".whl")
 
 
@@ -226,23 +225,6 @@ def test_missing_direct_wheel_with_fallback_runs_pypi_install(monkeypatch):
 
 def test_flash_linear_attention_spec_is_pypi_only():
     assert wheel_utils.FLASH_LINEAR_ATTN_SPEC.build_wheel_url(_env()) is None
-
-
-def test_optional_kernel_wheel_dependency_specs():
-    assert wheel_utils.CAUSAL_CONV1D_SPEC.wheel_dependency_specs == (
-        "packaging",
-        "ninja",
-    )
-    assert wheel_utils.MAMBA_SSM_SPEC.wheel_dependency_specs == (
-        "triton",
-        "ninja",
-        "einops",
-        "transformers",
-        "packaging",
-        "setuptools>=61.0.0",
-    )
-    assert wheel_utils.FLASH_ATTN_SPEC.wheel_dependency_specs == ("einops",)
-    assert wheel_utils.FLASH_LINEAR_ATTN_SPEC.wheel_dependency_specs == ()
 
 
 def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
@@ -366,5 +348,7 @@ def test_direct_wheel_tries_uv_then_pip(monkeypatch):
 
     assert calls[0][0] == "uv"
     assert calls[0][1:3] == ["pip", "install"]
+    assert "--no-deps" not in calls[0]
     assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
+    assert "--no-deps" not in calls[1]
     assert calls[1][-1] == calls[0][-1]
