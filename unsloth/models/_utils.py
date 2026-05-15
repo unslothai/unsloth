@@ -493,9 +493,7 @@ def resolve_attention_implementation(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
-    supports_flex_attention = _supports_flex_attention(
-        model_class, config, model_type
-    )
+    supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
     flash_attention_disabled = disable_reason is not None
 
