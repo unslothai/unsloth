@@ -60,6 +60,11 @@ const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
 const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
+// Cadence for re-fetching the container list while the section is
+// mounted. OpenAI's container TTL flips at minute granularity, so 30s
+// is fast enough that an expired container loses its ACTIVE pill within
+// half a minute without hammering /v1/containers.
+const REFRESH_POLL_MS = 30_000;
 
 function ageLabel(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "";
@@ -116,6 +121,12 @@ export function OpenAICodeExecSection({
   // creates more confusion than it solves. Refreshing the page resets
   // the tombstone naturally.
   const [tombstones, setTombstones] = useState<Set<string>>(() => new Set());
+  // Target row for the destructive confirmation dialog. Held in state
+  // (rather than blocking with window.confirm) so the dialog sits inside
+  // the settings sheet instead of a native browser alert.
+  const [pendingDelete, setPendingDelete] =
+    useState<OpenAIContainerSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const thread = useLiveQuery(
     async () => (activeThreadId ? db.threads.get(activeThreadId) : undefined),
@@ -363,6 +374,8 @@ export function OpenAICodeExecSection({
         `Delete failed: ${err instanceof Error ? err.message : "Unknown"}`,
       );
     } finally {
+      setDeleting(false);
+      setPendingDelete(null);
       // Always refresh so a stale list entry (e.g. container deleted
       // elsewhere, or already expired) is purged from the UI even when
       // the delete call itself errored.
@@ -449,10 +462,15 @@ export function OpenAICodeExecSection({
         </span>
         {isLoading && visibleContainers.length === 0 ? (
           <Skeleton className="h-16 w-full" />
-        ) : visibleContainers.length > 0 ? (
-          <ul className="flex flex-col gap-1 max-h-44 overflow-auto">
-            {visibleContainers.map((c) => {
-              const isActive = c.id === activeContainerId;
+        ) : sortedContainers.length > 0 ? (
+          <ul className="flex max-h-52 flex-col gap-1 overflow-auto">
+            {sortedContainers.map((c) => {
+              const running = isContainerRunning(c);
+              const isActive = running && c.id === displayActiveId;
+              const ttlMinutes = c.expiresAfterMinutes ?? DEFAULT_TTL_MINUTES;
+              const canActivate =
+                activeThreadId != null && !isActive && running;
+              const statusLabel = !running ? (c.status ?? "expired") : null;
               return (
                 <li
                   key={c.id}
