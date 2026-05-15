@@ -240,7 +240,7 @@ export function OpenAICodeExecSection({
           modelType: "base",
         });
         await db.threads.update(activeThreadId, {
-          openaiCodeExecContainerId: candidateId,
+          openaiCodeExecContainerId: candidate.id,
         });
       } catch {
         // Best-effort; the chat-adapter will inherit/create on send.
@@ -466,6 +466,14 @@ export function OpenAICodeExecSection({
                   onClick={() => {
                     if (canActivate) void onPick(c.id);
                   }}
+                  onKeyDown={(e) => {
+                    if (!canActivate) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void onPick(c.id);
+                    }
+                  }}
+                  tabIndex={canActivate ? 0 : undefined}
                   role={canActivate ? "button" : undefined}
                   aria-pressed={isActive}
                   title={
