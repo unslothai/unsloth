@@ -679,8 +679,14 @@ export function ChatPage(): ReactElement {
       preferredEffort,
       effortLevels,
     );
+    // Default to "medium" on every external model switch rather than
+    // carrying over the prior model's effort value (often "xhigh" after a
+    // previous session). Users can still pick another level explicitly
+    // via the Think dropdown.
     const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? clampedEffort
+      ? effortLevels.includes("medium")
+        ? "medium"
+        : clampedEffort
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
@@ -824,8 +830,11 @@ export function ChatPage(): ReactElement {
           preferredEffort,
           effortLevels,
         );
+        // Same medium-default policy as the useEffect path above.
         const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? clampedEffort
+          ? effortLevels.includes("medium")
+            ? "medium"
+            : clampedEffort
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless the
         // user is staying on openrouter/free — otherwise the chip would
