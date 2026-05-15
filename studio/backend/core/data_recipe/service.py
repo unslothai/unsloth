@@ -171,6 +171,25 @@ def _validate_recipe_runtime_support(
         raise ValueError("Add a Provider connection block before running this recipe.")
 
 
+_STDIO_MCP_OPT_IN_ENV = "UNSLOTH_STUDIO_ALLOW_STDIO_MCP"
+
+
+def _stdio_mcp_enabled() -> bool:
+    """Return True if local stdio MCP providers are explicitly opted into.
+
+    Local stdio MCP providers spawn an arbitrary subprocess whose command,
+    arguments, and environment all come from the recipe payload. Recipe
+    payloads are accepted from any client that can reach the Studio API
+    (including the local UI), so silently honouring stdio entries lets a
+    recipe author execute arbitrary commands on the host running Studio
+    (CWE-78). Require the operator to opt in explicitly via
+    ``UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1`` before we build such a provider.
+    """
+    return os.environ.get(_STDIO_MCP_OPT_IN_ENV, "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def build_mcp_providers(
     recipe: dict[str, Any],
 ) -> list:
@@ -182,6 +201,13 @@ def build_mcp_providers(
             continue
         provider_type = provider.get("provider_type")
         if provider_type == "stdio":
+            # Refuse to materialise a stdio provider unless the operator
+            # has explicitly opted in. The command/args/env fields are
+            # attacker-controllable via the recipe payload and are passed
+            # straight to a subprocess by data_designer, so honouring
+            # them by default is a remote-code-execution sink (CWE-78).
+            if not _stdio_mcp_enabled():
+                continue
             env = provider.get("env")
             if not isinstance(env, dict):
                 env = {}
