@@ -1793,19 +1793,21 @@ class TestWorkerWindowsRocmPatches:
         must force BNB_ROCM_VERSION=72 before any ML library is imported so that
         bitsandbytes loads libbitsandbytes_rocm72.dll.
         """
-        source = _WORKER_PATH.read_text(encoding="utf-8")
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
         assert "BNB_ROCM_VERSION" in source
         assert '"72"' in source
 
     def test_bnb_rocm_version_set_before_ml_imports(self):
         """BNB_ROCM_VERSION must appear in section 1f, before section 2 ML imports."""
-        source = _WORKER_PATH.read_text(encoding="utf-8")
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
         idx_bnb = source.find("BNB_ROCM_VERSION")
         # Use the specific section-2 marker that appears in the worker process
         # entry-point function (not the trainer helper which has its own "# ── 2.").
         idx_sec2 = source.find("# ── 2. Now import ML libraries")
         assert idx_bnb != -1, "BNB_ROCM_VERSION not found in worker.py"
-        assert idx_sec2 != -1, "'# ── 2. Now import ML libraries' marker not found in worker.py"
+        assert (
+            idx_sec2 != -1
+        ), "'# ── 2. Now import ML libraries' marker not found in worker.py"
         assert idx_bnb < idx_sec2, (
             "BNB_ROCM_VERSION must be set before section 2 ML imports "
             f"(found at {idx_bnb}, section 2 at {idx_sec2})"
