@@ -16,13 +16,7 @@ export interface ExternalProviderConfig {
   availableModels?: string[];
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
-  /**
-   * Self-hosted servers (currently vLLM) advertise no reasoning capability
-   * over the OpenAI-compatible API — the toggle only surfaces in the chat
-   * panel when the user confirms the loaded model is a reasoning model.
-   * When set, the chat-adapter forwards `enable_thinking` so the backend
-   * threads it onto vLLM's `chat_template_kwargs`.
-   */
+  /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -36,12 +30,8 @@ export function supportsProviderPromptCaching(
   return providerType != null && PROMPT_CACHING_PROVIDER_TYPES.has(providerType);
 }
 
-/**
- * Which provider types expose an opt-in "this server runs a reasoning
- * model" toggle on their connection config. vLLM only for now — its
- * OpenAI-compatible endpoint can't tell us whether the loaded model
- * supports `enable_thinking`, so the user pins it explicitly.
- */
+// Provider types that expose the connection-level "reasoning model"
+// toggle. vLLM's OpenAI-compat endpoint doesn't advertise this per model.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(

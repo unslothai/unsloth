@@ -424,23 +424,11 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 }
 
 export interface ExternalReasoningResolveOptions {
-  /**
-   * Self-hosted providers (vLLM) expose no reasoning metadata over their
-   * OpenAI-compatible endpoint. When the user has flagged the connection
-   * as a reasoning model via the provider config, treat it as supporting
-   * a toggleable `enable_thinking` so the chat panel renders the Think
-   * pill and the adapter forwards the toggle through `chat_template_kwargs`.
-   */
+  /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
 }
 
-/**
- * Connection-level opt-in for providers whose OpenAI-compatible API
- * can't advertise reasoning support per model (currently vLLM). When
- * the user has flagged the server as a reasoning model in the provider
- * config, return a toggleable `enable_thinking` capability set so the
- * chat panel shows the Think pill regardless of model id.
- */
+// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
