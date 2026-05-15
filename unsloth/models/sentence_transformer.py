@@ -2291,7 +2291,9 @@ def _patch_st_trainer_load_from_checkpoint():
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
         return
-    if getattr(SentenceTransformerTrainer, "_unsloth_load_from_checkpoint_patched", False):
+    if getattr(
+        SentenceTransformerTrainer, "_unsloth_load_from_checkpoint_patched", False
+    ):
         return
     if not hasattr(SentenceTransformerTrainer, "_load_from_checkpoint"):
         return
@@ -2320,8 +2322,10 @@ def _patch_st_trainer_load_from_checkpoint():
         if not getattr(mod0, "_unsloth_st_managed", False):
             return _original(self, checkpoint_path)
 
-        if not any(os.path.isfile(os.path.join(checkpoint_path, fn))
-                   for fn in ("adapter_model.safetensors", "adapter_model.bin")):
+        if not any(
+            os.path.isfile(os.path.join(checkpoint_path, fn))
+            for fn in ("adapter_model.safetensors", "adapter_model.bin")
+        ):
             return _original(self, checkpoint_path)
 
         adapter_name = getattr(inner, "active_adapter", None)
@@ -2329,7 +2333,9 @@ def _patch_st_trainer_load_from_checkpoint():
             adapter_name = inner.active_adapters()
         if isinstance(adapter_name, (list, tuple, set)):
             if len(adapter_name) != 1:
-                raise RuntimeError("Unsloth: Cannot resume multiple active PEFT adapters.")
+                raise RuntimeError(
+                    "Unsloth: Cannot resume multiple active PEFT adapters."
+                )
             adapter_name = next(iter(adapter_name))
         adapter_name = adapter_name or "default"
         if adapter_name not in getattr(inner, "peft_config", {}):
@@ -2340,7 +2346,8 @@ def _patch_st_trainer_load_from_checkpoint():
         )
         unexpected = list(getattr(load_result, "unexpected_keys", []) or [])
         missing = [
-            x for x in (getattr(load_result, "missing_keys", []) or [])
+            x
+            for x in (getattr(load_result, "missing_keys", []) or [])
             if f".{adapter_name}." in x or x.endswith(f".{adapter_name}")
         ]
         if unexpected or missing:
@@ -2372,13 +2379,17 @@ def _patch_st_trainer_load_from_checkpoint():
             if saved_type and not saved_type.endswith(f".{module_cls.__name__}"):
                 raise RuntimeError(f"Unsloth: Checkpoint module {idx} type mismatch.")
             module_path = entry.get("path")
-            module_dir = os.path.abspath(os.path.join(root, os.fspath(module_path or "")))
+            module_dir = os.path.abspath(
+                os.path.join(root, os.fspath(module_path or ""))
+            )
             try:
                 inside_root = os.path.commonpath([root, module_dir]) == root
             except ValueError:
                 inside_root = False
             if not module_path or not inside_root or not os.path.isdir(module_dir):
-                raise RuntimeError(f"Unsloth: Bad checkpoint module path for index {idx}.")
+                raise RuntimeError(
+                    f"Unsloth: Bad checkpoint module path for index {idx}."
+                )
             if not hasattr(module_cls, "load"):
                 raise RuntimeError(f"Unsloth: Module {idx} cannot be reloaded.")
             fresh = module_cls.load(module_dir)
