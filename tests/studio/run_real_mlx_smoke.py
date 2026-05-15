@@ -278,15 +278,10 @@ def cmd_train(args) -> int:
             optim = "adamw",
             weight_decay = 0.0,
             max_grad_norm = 1.0,
-            # Explicitly disable the new per-element clip introduced in
-            # #5340 (default max_grad_value=5.0). When both are set the
-            # MLX trainer silently drops max_grad_norm in favour of the
-            # per-element clip, but +-5.0 is far too loose for this
-            # 270M LoRA setup -- losses diverge after step 4 and the
-            # model never memorises "Unsloth!" (verified via the CUDA
-            # mirror at scripts/cuda_mlx_mirror_sim.py). Pinning
-            # max_grad_value=0 makes the smoke depend on the same
-            # max_grad_norm=1.0 the test was originally written for.
+            # Disable per-element clip so the trainer uses max_grad_norm.
+            # No value converges in 7 steps at seed=3407 (5.0 diverges,
+            # 1.0 stalls ~3.2); only norm clip drops loss <0.01 and
+            # emits "Unsloth!". See scripts/cuda_mlx_*.
             max_grad_value = 0.0,
             logging_steps = 1,
             max_seq_length = 64,
