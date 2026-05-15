@@ -206,7 +206,8 @@ jobs:
             'numpy<3' pytest==9.0.3 pytest-asyncio httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
-            'peft>=0.18,<0.20' 'accelerate>=0.34,<2'
+            'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
+            ipython
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu \
             'torch>=2.4,<2.11' 'torchvision<0.26'
