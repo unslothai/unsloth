@@ -28,8 +28,20 @@ def _drive(coro):
 
 
 def _mock_http_client(monkeypatch, handler):
+    """Wire `handler` for both the shared `_http_client` AND any
+    per-call `httpx.AsyncClient(...)` instances. delete_openai_container
+    intentionally creates a fresh AsyncClient (see comment in
+    external_provider.delete_openai_container) so the test must
+    also intercept that constructor."""
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    real_async_client = httpx.AsyncClient
+
+    def _patched_async_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(ep_mod.httpx, "AsyncClient", _patched_async_client)
 
 
 def _make_client() -> ExternalProviderClient:
