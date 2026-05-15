@@ -115,19 +115,20 @@ export function OpenAICodeExecSection({
   }, [refresh]);
 
   // Auto-bind the active thread to the most-recently-active container
-  // when the thread has none set. Mirrors the chat-adapter's cross-
-  // thread inheritance so the picker shows the same default the
-  // backend would use, and so the user doesn't have to manually
-  // re-pick on every new thread. Sorting by `lastActiveAt` lines up
-  // with what feels "most recent" from the user's perspective. The
-  // user can still pick "Auto-create per thread" explicitly to start
-  // fresh.
+  // whenever the thread has none set and at least one container exists
+  // on the user's OpenAI account. Sorting by `lastActiveAt` matches
+  // what feels "most recent" from the user's perspective.
   //
-  // Dexie's `update()` returns 0 affected rows when the thread record
-  // is not yet persisted (empty-state composer, no message sent). We
-  // silently ignore that here because auto-bind is best-effort; the
-  // user-initiated `onPick` below surfaces the same condition as a
-  // toast so the user understands why the picker didn't stick.
+  // We eagerly materialize the thread row via `ensureThreadRecord` so
+  // the bind actually lands in Dexie before the user has sent a first
+  // message. This does NOT create anything at OpenAI — only a local
+  // ThreadRecord — so it does not bypass the user's expectation that
+  // a fresh OpenAI container is not created until first send.
+  //
+  // If `containers` is empty (no OpenAI containers exist yet), this
+  // effect short-circuits: the picker renders an empty-state hint and
+  // the chat-adapter's lazy-create path will mint the first container
+  // on first send.
   useEffect(() => {
     if (!activeThreadId || activeContainerId || containers.length === 0) {
       return;
@@ -137,11 +138,19 @@ export function OpenAICodeExecSection({
     );
     const candidate = sorted[0];
     if (!candidate) return;
-    void db.threads
-      .update(activeThreadId, {
-        openaiCodeExecContainerId: candidate.id,
-      })
-      .catch(() => {});
+    void (async () => {
+      try {
+        await ensureThreadRecord({
+          threadId: activeThreadId,
+          modelType: "base",
+        });
+        await db.threads.update(activeThreadId, {
+          openaiCodeExecContainerId: candidate.id,
+        });
+      } catch {
+        // Best-effort; the chat-adapter will inherit/create on send.
+      }
+    })();
   }, [activeThreadId, activeContainerId, containers]);
 
   const ttlValue = provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES;
@@ -154,24 +163,21 @@ export function OpenAICodeExecSection({
   };
 
   const onPick = async (value: string) => {
-    if (!activeThreadId) return;
-    const next = value === AUTO_OPTION_VALUE ? null : value;
-    // The thread row is normally materialized on first send by the
-    // chat adapter. When the user picks a container before sending the
-    // first message, the row does not exist yet and Dexie's `update`
-    // returns 0 rows — the selection would silently no-op and the
-    // picker would snap back to "Auto-create per thread". Eagerly
-    // create the row so the user can pin a container up front.
-    // modelType "base" is correct here: the settings sheet that hosts
-    // this section is only rendered in single-thread mode, where the
-    // chat-page passes modelType="base" into ChatRuntimeProvider.
+    if (!activeThreadId || !value) return;
+    // value is always a container id now — the "Auto-create per thread"
+    // option has been removed in favour of always defaulting to the
+    // most-recently-active container. The chat-adapter still handles
+    // the no-containers-exist case (lazy-create on first send).
+    //
+    // ensureThreadRecord materializes the thread row eagerly (modelType
+    // "base" — settings sheet is single-thread-mode only) so the update
+    // actually lands when the user hasn't sent a message yet.
     try {
       await ensureThreadRecord({ threadId: activeThreadId, modelType: "base" });
       const affected = await db.threads.update(activeThreadId, {
-        openaiCodeExecContainerId: next,
+        openaiCodeExecContainerId: value,
       });
       if (affected === 0) {
-        // Defensive: ensureThreadRecord should have written the row.
         toast.error("Could not update thread.");
       }
     } catch (err) {
@@ -290,20 +296,38 @@ export function OpenAICodeExecSection({
             />
           </Button>
         </div>
-        <select
-          value={activeContainerId ?? AUTO_OPTION_VALUE}
-          onChange={(e) => onPick(e.target.value)}
-          disabled={!activeThreadId}
-          className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 text-sm font-medium shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-        >
-          <option value={AUTO_OPTION_VALUE}>Auto-create per thread</option>
-          {containers.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name ?? "(unnamed)"} · {c.id.slice(0, 14)}…
-              {c.lastActiveAt ? ` · active ${ageLabel(c.lastActiveAt)}` : ""}
-            </option>
-          ))}
-        </select>
+        {/* When no containers exist yet, render a disabled placeholder
+            instead of the picker. The first one is created by the
+            chat-adapter on first send (lazy-create) and will appear
+            here after the next refresh. */}
+        {containers.length === 0 ? (
+          <div className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 flex items-center text-sm text-muted-foreground">
+            (none yet — will be created on first send)
+          </div>
+        ) : (
+          <select
+            value={activeContainerId ?? ""}
+            onChange={(e) => onPick(e.target.value)}
+            disabled={!activeThreadId}
+            className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 text-sm font-medium shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          >
+            {/* Empty placeholder option only renders while the
+                auto-bind effect is in flight (activeContainerId still
+                null). React requires a matching <option> for the
+                controlled value, so we render a hidden one. */}
+            {activeContainerId === null ? (
+              <option value="" disabled hidden>
+                Selecting most recent…
+              </option>
+            ) : null}
+            {containers.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name ?? "(unnamed)"} · {c.id.slice(0, 14)}…
+                {c.lastActiveAt ? ` · active ${ageLabel(c.lastActiveAt)}` : ""}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Container list with delete actions — labeled and visually
