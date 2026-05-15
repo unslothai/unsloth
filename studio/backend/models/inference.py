@@ -593,6 +593,17 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
+    enable_prompt_caching: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
+            "attaches cache_control={type:ephemeral} to the system block so the "
+            "static prefix is reused across turns. On OpenAI cloud, caching is "
+            "automatic for prompts >=1024 tokens and this flag is informational. "
+            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
+            "vllm, local, etc.). Treated as enabled when omitted."
+        ),
+    )
 
 
 # ── Streaming response chunks ────────────────────────────────────

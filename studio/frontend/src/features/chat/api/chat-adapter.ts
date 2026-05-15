@@ -28,6 +28,8 @@ import {
   getExternalProviderApiKey,
   loadExternalProviders,
   parseExternalModelId,
+  supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -35,6 +37,7 @@ import {
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
@@ -741,13 +744,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       if (isExternalRequest && !externalProvider) {
         toast.error("External provider not found.", {
-          description: "Open API Providers and re-add this provider.",
+          description: "Open Connections and re-add this provider.",
         });
         throw new Error("External provider not found.");
       }
       if (isExternalRequest && !externalApiKey) {
         toast.error("Missing API key for selected external provider.", {
-          description: "Open API Providers and set the API key again.",
+          description: "Open Connections and set the API key again.",
         });
         throw new Error("Missing external provider API key.");
       }
@@ -928,10 +931,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
-        const externalBackendProviderType =
-          externalProvider?.providerType === "custom"
-            ? "openai"
-            : externalProvider?.providerType;
+        const externalBackendProviderType = toExternalBackendProviderType(
+          externalProvider?.providerType,
+        );
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
@@ -942,6 +944,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
                 externalSelection.modelId,
+                {
+                  isReasoningProvider:
+                    externalProvider.isReasoningModel === true,
+                },
               )
             : {
                 supportsReasoning,
@@ -1005,6 +1011,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
+              // Built-in web search: when the user has the Search toggle
+              // on AND the active provider supports a server-side
+              // web_search tool (currently OpenAI's /v1/responses), pass
+              // the enable_tools shorthand. Backend translates
+              // enabled_tools=["web_search"] into the provider's tool
+              // schema — for OpenAI that's `tools: [{type:"web_search"}]`
+              // on the Responses body, see _stream_openai_responses.
+              ...(toolsEnabled &&
+              providerSupportsBuiltinWebSearch(externalProvider.providerType)
+                ? {
+                    enable_tools: true,
+                    enabled_tools: ["web_search"],
+                  }
+                : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -1013,6 +1033,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 forceRefreshPublicKey,
               ),
               provider_base_url: externalProvider.baseUrl || null,
+              ...(supportsProviderPromptCaching(externalProvider.providerType)
+                ? {
+                    enable_prompt_caching:
+                      externalProvider.enablePromptCaching ?? true,
+                  }
+                : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
                   ? externalReasoningEnabled
