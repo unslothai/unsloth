@@ -45,7 +45,7 @@ def _output_dir_from_resume_checkpoint(
     return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
-_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 16384
+_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
 
 
@@ -114,10 +114,10 @@ def _install_train_time_optional_kernels(
             continue
         if spec is MAMBA_SSM_SPEC:
             logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-        if spec is FLASH_ATTN_SPEC and has_blackwell_gpu():
+        if spec in (FLASH_ATTN_SPEC, FLASH_LINEAR_ATTN_SPEC) and has_blackwell_gpu():
             _send_status(
                 event_queue,
-                "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+                f"Skipping {spec.display_name} install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
             )
             continue
         installed = install_optional_kernel(

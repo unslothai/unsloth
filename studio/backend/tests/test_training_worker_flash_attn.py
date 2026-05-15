@@ -22,19 +22,20 @@ def _record_train_time_installs(monkeypatch):
         calls.append((spec, kwargs))
         return True
 
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     monkeypatch.setattr(worker, "install_optional_kernel", fake_install)
     return calls
 
 
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    assert worker._should_try_runtime_flash_attn_install(16384) is False
+    assert worker._should_try_runtime_flash_attn_install(32768) is False
     assert worker._should_try_runtime_flash_attn_install(
-        16385
+        32769
     ) is sys.platform.startswith("linux")
 
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
-    assert worker._should_try_runtime_flash_attn_install(16385) is False
+    assert worker._should_try_runtime_flash_attn_install(32769) is False
 
 
 def test_causal_conv1d_models_also_trigger_fla(monkeypatch):
@@ -88,7 +89,7 @@ def test_ssm_models_trigger_mamba(monkeypatch):
     assert MAMBA_SSM_SPEC in specs
 
 
-def test_runtime_flash_attn_uses_strictly_greater_than_16k(monkeypatch):
+def test_runtime_flash_attn_uses_strictly_greater_than_32k(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     calls = _record_train_time_installs(monkeypatch)
@@ -96,7 +97,7 @@ def test_runtime_flash_attn_uses_strictly_greater_than_16k(monkeypatch):
     worker._install_train_time_optional_kernels(
         event_queue = [],
         model_name = "unsloth/Llama-3.1-8B",
-        max_seq_length = 16384,
+        max_seq_length = 32768,
     )
 
     assert [spec for spec, _ in calls] == []
@@ -104,7 +105,7 @@ def test_runtime_flash_attn_uses_strictly_greater_than_16k(monkeypatch):
     worker._install_train_time_optional_kernels(
         event_queue = [],
         model_name = "unsloth/Llama-3.1-8B",
-        max_seq_length = 16385,
+        max_seq_length = 32769,
     )
 
     specs = [spec for spec, _ in calls]
@@ -122,7 +123,7 @@ def test_train_time_installs_allow_pypi_fallback(monkeypatch):
     worker._install_train_time_optional_kernels(
         event_queue = [],
         model_name = "tiiuae/Falcon-H1-0.5B-Instruct",
-        max_seq_length = 16385,
+        max_seq_length = 32769,
     )
 
     assert calls
@@ -148,7 +149,7 @@ def test_train_time_flash_attn_failure_is_non_fatal_and_warns(monkeypatch):
     worker._install_train_time_optional_kernels(
         event_queue = [],
         model_name = "unsloth/Llama-3.1-8B",
-        max_seq_length = 16385,
+        max_seq_length = 32769,
     )
 
     if sys.platform.startswith("linux"):
@@ -165,7 +166,7 @@ def test_runtime_flash_attn_skip_env_avoids_install(monkeypatch):
     worker._install_train_time_optional_kernels(
         event_queue = [],
         model_name = "unsloth/Llama-3.1-8B",
-        max_seq_length = 16385,
+        max_seq_length = 32769,
     )
 
     install_mock.assert_not_called()
@@ -187,7 +188,7 @@ def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
     worker._install_train_time_optional_kernels(
         event_queue = [],
         model_name = "unsloth/Llama-3.1-8B",
-        max_seq_length = 16385,
+        max_seq_length = 32769,
     )
 
     if sys.platform.startswith("linux"):
@@ -197,3 +198,57 @@ def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
     else:
         install_mock.assert_not_called()
         assert statuses == []
+
+
+def test_flash_linear_attention_skips_on_blackwell_but_causal_conv1d_runs(
+    monkeypatch,
+):
+    statuses: list[str] = []
+    calls = _record_train_time_installs(monkeypatch)
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+
+    worker._install_train_time_optional_kernels(
+        event_queue = [],
+        model_name = "unsloth/Qwen3-Next-8B",
+        max_seq_length = 2048,
+    )
+
+    assert [spec for spec, _ in calls] == [CAUSAL_CONV1D_SPEC]
+    assert len(statuses) == 1
+    assert "flash-linear-attention" in statuses[0]
+    assert "Blackwell" in statuses[0]
+
+
+def test_blackwell_does_not_block_causal_conv1d_or_mamba(monkeypatch):
+    statuses: list[str] = []
+    calls = _record_train_time_installs(monkeypatch)
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+
+    worker._install_train_time_optional_kernels(
+        event_queue = [],
+        model_name = "tiiuae/Falcon-H1-0.5B-Instruct",
+        max_seq_length = 32769,
+    )
+
+    specs = [spec for spec, _ in calls]
+    assert CAUSAL_CONV1D_SPEC in specs
+    assert MAMBA_SSM_SPEC in specs
+    assert FLASH_LINEAR_ATTN_SPEC not in specs
+    assert FLASH_ATTN_SPEC not in specs
+    assert any("flash-linear-attention" in message for message in statuses)
+    if sys.platform.startswith("linux"):
+        assert any("flash-attn" in message for message in statuses)
