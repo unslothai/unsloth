@@ -41,7 +41,7 @@ _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
         prefixes = ("claude-opus-4-7",),
         kind = "adaptive",
-        efforts = ("none", "low", "medium", "high", "xhigh"),
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
     _AnthropicThinkingSpec(
         prefixes = ("claude-opus-4-6", "claude-sonnet-4-6"),
@@ -141,6 +141,34 @@ def _apply_mistral_reasoning_controls(
 _http_client = httpx.AsyncClient()
 
 
+def _build_kimi_tool_end(
+    synthetic_chunk_fn: Any,
+    tool_call_id: str,
+    citations: list[dict[str, str]],
+) -> str:
+    """Format Kimi web_search citations into the tool_end payload.
+
+    Same shape parseSourcesFromResult on the frontend expects for the
+    other built-in web_search providers: `Title: ...\\nURL: ...\\n
+    Snippet: ...\\n---\\n...`. If no citations were emitted, fall back
+    to a generic "(search complete)" string so the UI still shows the
+    tool card transitioning to a completed state.
+    """
+    blocks: list[str] = []
+    for cit in citations:
+        line = f"Title: {cit['title']}\nURL: {cit['url']}"
+        if cit.get("snippet"):
+            line += f"\nSnippet: {cit['snippet']}"
+        blocks.append(line)
+    return synthetic_chunk_fn(
+        {
+            "type": "tool_end",
+            "tool_call_id": tool_call_id,
+            "result": "\n---\n".join(blocks) if blocks else "(search complete)",
+        }
+    )
+
+
 class ExternalProviderClient:
     """Async proxy for OpenAI-compatible external LLM APIs."""
 
@@ -199,6 +227,7 @@ class ExternalProviderClient:
         top_k: Optional[int] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
+        enabled_tools: Optional[list[str]] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -222,6 +251,7 @@ class ExternalProviderClient:
                 top_k,
                 enable_thinking,
                 reasoning_effort,
+                enabled_tools,
             ):
                 yield line
             return
@@ -240,6 +270,28 @@ class ExternalProviderClient:
                 max_tokens,
                 enable_thinking,
                 reasoning_effort,
+                enabled_tools,
+            ):
+                yield line
+            return
+
+        # Kimi's $web_search is a builtin_function that requires a client
+        # round-trip: the first call returns a tool_calls envelope with
+        # function.arguments populated; the caller echoes those arguments
+        # back as a role=tool message; the second call streams the final
+        # answer with the search incorporated. The doc also mandates
+        # disabling thinking while $web_search is active. Route to a
+        # dedicated helper so the default OAI-compat path stays single-pass.
+        #   https://platform.kimi.ai/docs/guide/use-web-search
+        if (
+            self.provider_type == "kimi"
+            and enabled_tools
+            and "web_search" in enabled_tools
+        ):
+            async for line in self._stream_kimi_web_search(
+                messages,
+                model,
+                max_tokens,
             ):
                 yield line
             return
@@ -317,6 +369,29 @@ class ExternalProviderClient:
                 else:
                     body["reasoning"] = {"enabled": False}
 
+            # OpenRouter web-search plugin — universal shape that works
+            # for every model id, including the `openrouter/free` and
+            # `openrouter/auto` meta-routers. Documented at
+            #   https://openrouter.ai/docs/guides/features/plugins/web-search
+            # The `:online` model-suffix shortcut is "exactly equivalent
+            # to" this plugin per the same doc, but only works on
+            # concrete model ids — meta-routers reject the suffix.
+            # `plugins: [{id: "web"}]` works everywhere, no model id
+            # rewrite needed, and idempotent if some future call site
+            # adds the entry first.
+            if enabled_tools and "web_search" in enabled_tools:
+                plugins = list(body.get("plugins") or [])
+                if not any(
+                    isinstance(p, dict) and p.get("id") == "web" for p in plugins
+                ):
+                    plugins.append({"id": "web"})
+                body["plugins"] = plugins
+                logger.info(
+                    "OpenRouter web_search: attached plugins=[{id: 'web'}] "
+                    "(model=%s)",
+                    body.get("model"),
+                )
+
         url = f"{self.base_url}/chat/completions"
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
@@ -362,6 +437,94 @@ class ExternalProviderClient:
                 # error" in the UI with no trail on the server side.
                 event_counts: dict[str, int] = {}
                 chosen_model: Optional[str] = None
+                # Web-search tool-card synthesis for OpenRouter. The gateway
+                # doesn't emit structured web_search_call events — citations
+                # come back as `annotations` of type=url_citation on delta /
+                # message objects. Mirror the OpenAI/Anthropic UX by yielding
+                # a synthetic tool_start at stream open and tool_end at
+                # stream close with the collected citation list.
+                web_search_active = (
+                    self.provider_type == "openrouter"
+                    and bool(enabled_tools)
+                    and "web_search" in (enabled_tools or [])
+                )
+                web_search_tool_id = "openrouter_web_search"
+                web_search_citations: list[dict[str, str]] = []
+                web_search_tool_started = False
+                web_search_tool_ended = False
+
+                def _emit_synthetic_tool_event(payload: dict[str, Any]) -> str:
+                    chunk = {
+                        "id": f"chatcmpl-{self.provider_type}-synthetic",
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "_toolEvent": payload,
+                    }
+                    return f"data: {_json.dumps(chunk)}"
+
+                def _record_or_url_citation(payload: Any) -> None:
+                    if not isinstance(payload, dict):
+                        return
+                    if payload.get("type") != "url_citation":
+                        return
+                    # OpenRouter (and OpenAI Chat Completions web_search)
+                    # nest the citation under url_citation; some variants
+                    # ship the fields flat on the annotation itself. Accept
+                    # both.
+                    cit = payload.get("url_citation")
+                    if not isinstance(cit, dict):
+                        cit = payload
+                    url = cit.get("url", "") if isinstance(cit, dict) else ""
+                    if not url or not isinstance(url, str):
+                        return
+                    if any(c["url"] == url for c in web_search_citations):
+                        return
+                    title = cit.get("title") or url
+                    snippet = cit.get("content") or cit.get("snippet") or ""
+                    web_search_citations.append(
+                        {
+                            "url": url,
+                            "title": title,
+                            "snippet": snippet if isinstance(snippet, str) else "",
+                        }
+                    )
+
+                def _build_web_search_tool_end() -> str:
+                    blocks: list[str] = []
+                    for cit in web_search_citations:
+                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                        if cit.get("snippet"):
+                            line += f"\nSnippet: {cit['snippet']}"
+                        blocks.append(line)
+                    return _emit_synthetic_tool_event(
+                        {
+                            "type": "tool_end",
+                            "tool_call_id": web_search_tool_id,
+                            "result": (
+                                "\n---\n".join(blocks)
+                                if blocks
+                                else "(search complete)"
+                            ),
+                        }
+                    )
+
+                if web_search_active:
+                    yield _emit_synthetic_tool_event(
+                        {
+                            "type": "tool_start",
+                            "tool_name": "web_search",
+                            "tool_call_id": web_search_tool_id,
+                            "arguments": {},
+                        }
+                    )
+                    web_search_tool_started = True
+
                 try:
                     while True:
                         try:
@@ -374,6 +537,17 @@ class ExternalProviderClient:
                             data_str = line[len("data:") :].strip()
                             if data_str == "[DONE]":
                                 event_counts["done"] = event_counts.get("done", 0) + 1
+                                # Emit synthetic tool_end with collected
+                                # citations BEFORE forwarding [DONE], so the
+                                # tool-card transitions to "complete" in the
+                                # UI before the stream closes.
+                                if (
+                                    web_search_active
+                                    and web_search_tool_started
+                                    and not web_search_tool_ended
+                                ):
+                                    yield _build_web_search_tool_end()
+                                    web_search_tool_ended = True
                             elif data_str:
                                 try:
                                     parsed = _json.loads(data_str)
@@ -406,17 +580,52 @@ class ExternalProviderClient:
                                         parsed.get("model"), str
                                     ):
                                         chosen_model = parsed["model"]
+                                    # When the user has web_search on, scan
+                                    # every chunk's delta and message
+                                    # objects for url_citation annotations.
+                                    # Different OpenRouter upstreams place
+                                    # them in different spots.
+                                    if web_search_active:
+                                        choices = parsed.get("choices") or []
+                                        if isinstance(choices, list):
+                                            for choice in choices:
+                                                if not isinstance(choice, dict):
+                                                    continue
+                                                for envelope in (
+                                                    choice.get("delta"),
+                                                    choice.get("message"),
+                                                ):
+                                                    if not isinstance(envelope, dict):
+                                                        continue
+                                                    for ann in (
+                                                        envelope.get("annotations")
+                                                        or []
+                                                    ):
+                                                        _record_or_url_citation(ann)
                         yield line
+                    # Stream ended without [DONE] (some upstreams just close
+                    # the connection). Emit tool_end so the card doesn't
+                    # stay in "running" forever.
+                    if (
+                        web_search_active
+                        and web_search_tool_started
+                        and not web_search_tool_ended
+                    ):
+                        yield _build_web_search_tool_end()
+                        web_search_tool_ended = True
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
                     logger.info(
-                        "%s stream complete (model=%s, chosen=%s, events=%s)",
+                        "%s stream complete (model=%s, chosen=%s, "
+                        "web_search_requested=%s, citations=%s, events=%s)",
                         self.provider_type,
                         model,
                         chosen_model,
+                        web_search_active,
+                        len(web_search_citations),
                         event_counts,
                     )
                     await response.aclose()
@@ -444,6 +653,384 @@ class ExternalProviderClient:
                 self.provider_type,
             )
 
+    async def _stream_kimi_web_search(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: Optional[int],
+    ) -> AsyncGenerator[str, None]:
+        """
+        Kimi $web_search round-trip.
+
+        Wire flow (per https://platform.kimi.ai/docs/guide/use-web-search):
+          1. POST messages with tools=[{type: "builtin_function",
+             function: {name: "$web_search"}}] and thinking=disabled.
+          2. Stream the first response — accumulate function.arguments
+             across tool_call deltas until finish_reason="tool_calls".
+             Do NOT forward those tool_call chunks to the client (they
+             are an internal protocol step, not user-visible output).
+          3. Build a second request: original messages + the assistant
+             message carrying the tool_calls + a role=tool message that
+             echoes the same arguments back verbatim (per Kimi docs,
+             the caller "just needs to submit tool_call.function.arguments
+             to Kimi as they are" — the server actually runs the search).
+          4. Stream the second response — that is the final answer the
+             user sees, with search results already incorporated.
+
+        We synthesize tool_start (with the parsed query) when step (2)
+        completes, and tool_end (with any url_citation annotations the
+        second stream emits) before [DONE], so the chat UI shows the
+        same web-search tool card as the other providers.
+        """
+        url = f"{self.base_url}/chat/completions"
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            # $web_search forbids thinking; sending the toggle silently
+            # would have the server reject the request with 400.
+            "thinking": {"type": "disabled"},
+            "tools": [
+                {"type": "builtin_function", "function": {"name": "$web_search"}}
+            ],
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+
+        # Strip body fields the Kimi registry declares unusable
+        # (temperature/top_p — see body_omit in providers.py).
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        for field in provider_info.get("body_omit", ()):
+            body.pop(field, None)
+
+        tool_call_id = "kimi_web_search"
+        synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
+
+        def _synthetic_chunk(payload: dict[str, Any]) -> str:
+            chunk = {
+                "id": synthetic_id,
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+                "_toolEvent": payload,
+            }
+            return f"data: {_json.dumps(chunk)}"
+
+        logger.info(
+            "Kimi $web_search round-trip starting (model=%s, url=%s)",
+            model,
+            url,
+        )
+
+        # ---- First call: collect the model's $web_search tool_call ----
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        try:
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Kimi first-call returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                lines_gen = response.aiter_lines().__aiter__()
+                try:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        if not line.strip() or not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:") :].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            parsed = _json.loads(data_str)
+                        except Exception:
+                            continue
+                        for choice in parsed.get("choices") or []:
+                            if not isinstance(choice, dict):
+                                continue
+                            delta = choice.get("delta") or {}
+                            for tc in delta.get("tool_calls") or []:
+                                if not isinstance(tc, dict):
+                                    continue
+                                idx = tc.get("index", 0)
+                                slot = tool_calls_acc.setdefault(
+                                    idx,
+                                    {
+                                        "id": tc.get("id") or f"call_{idx}",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    },
+                                )
+                                if tc.get("id"):
+                                    slot["id"] = tc["id"]
+                                fn = tc.get("function") or {}
+                                if fn.get("name"):
+                                    slot["function"]["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    slot["function"]["arguments"] += fn["arguments"]
+                            if choice.get("finish_reason") == "tool_calls":
+                                break
+                except GeneratorExit:
+                    await response.aclose()
+                    await lines_gen.aclose()
+                    raise
+                finally:
+                    await response.aclose()
+                    await lines_gen.aclose()
+        except httpx.HTTPError as exc:
+            logger.error("Kimi first-call HTTP error: %s", exc)
+            yield _error_sse_line(
+                502,
+                f"Error communicating with kimi: {exc}",
+                self.provider_type,
+            )
+            return
+
+        # If the model decided not to search, fall back to a plain
+        # streaming call without the builtin tool. That mirrors the UX
+        # of every other provider when web_search is on but the model
+        # didn't actually need it.
+        search_calls = [
+            tc
+            for tc in tool_calls_acc.values()
+            if tc["function"]["name"] == "$web_search"
+        ]
+        if not search_calls:
+            logger.info(
+                "Kimi $web_search: model did not invoke search; "
+                "falling back to plain stream"
+            )
+            fallback_body = dict(body)
+            fallback_body.pop("tools", None)
+            try:
+                async with _http_client.stream(
+                    "POST",
+                    url,
+                    json = fallback_body,
+                    headers = self._auth_headers(),
+                    timeout = self._stream_timeout,
+                ) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        error_text = error_body.decode("utf-8", errors = "replace")
+                        logger.error(
+                            "Kimi fallback returned %d: %s",
+                            response.status_code,
+                            error_text[:500],
+                        )
+                        yield _error_sse_line(
+                            response.status_code, error_text, self.provider_type
+                        )
+                        return
+                    # Manual __anext__ loop instead of `async for` — see the
+                    # comment in stream_chat_completion for the Python 3.13 +
+                    # httpcore 1.0.x GeneratorExit interaction this avoids.
+                    lines_gen = response.aiter_lines().__aiter__()
+                    try:
+                        while True:
+                            try:
+                                line = await lines_gen.__anext__()
+                            except StopAsyncIteration:
+                                break
+                            if line.strip():
+                                yield line
+                    except GeneratorExit:
+                        await response.aclose()
+                        await lines_gen.aclose()
+                        raise
+                    finally:
+                        await response.aclose()
+                        await lines_gen.aclose()
+            except httpx.HTTPError as exc:
+                logger.error("Kimi fallback HTTP error: %s", exc)
+                yield _error_sse_line(
+                    502,
+                    f"Error communicating with kimi: {exc}",
+                    self.provider_type,
+                )
+            return
+
+        # Synthesize tool_start with the parsed search query so the
+        # chat UI's web-search card shows "Searching for: ...".
+        first_args_raw = search_calls[0]["function"]["arguments"] or "{}"
+        try:
+            first_args = _json.loads(first_args_raw)
+        except Exception:
+            first_args = {}
+        # Log the raw arguments so we can confirm the server actually
+        # ran the search. The shape is documented loosely but in practice
+        # the model emits `{"search_result":{"search_id":...},
+        # "usage":{"total_tokens":N}}` — an opaque receipt where N is the
+        # token cost of the injected search context. The query string is
+        # NOT present; Kimi runs the search server-side during the first
+        # call and bakes the results straight into the model's context.
+        logger.info(
+            "Kimi $web_search: %d tool_call(s), args[0]=%s",
+            len(search_calls),
+            first_args_raw[:500],
+        )
+        first_args_search_tokens: Optional[int] = None
+        if isinstance(first_args, dict):
+            usage_block = first_args.get("usage")
+            if isinstance(usage_block, dict):
+                tok = usage_block.get("total_tokens")
+                if isinstance(tok, int):
+                    first_args_search_tokens = tok
+        yield _synthetic_chunk(
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": tool_call_id,
+                "arguments": first_args if isinstance(first_args, dict) else {},
+            }
+        )
+        # Kimi's search has already executed server-side by the time the
+        # first call returns (the tool_call envelope encodes the search
+        # result reference, not a query for us to dispatch). Emit
+        # tool_end NOW so the UI's web-search card transitions to
+        # "complete" before the second call starts streaming the
+        # answer, instead of after — otherwise the card sits in
+        # "running" all the way through the answer streaming and the
+        # user perceives the model answering before search finishes.
+        yield _build_kimi_tool_end(_synthetic_chunk, tool_call_id, [])
+
+        # ---- Second call: echo the tool_calls back and stream answer ----
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": list(tool_calls_acc.values()),
+        }
+        tool_msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "name": tc["function"]["name"],
+                "content": tc["function"]["arguments"],
+            }
+            for tc in tool_calls_acc.values()
+        ]
+        followup_body = dict(body)
+        followup_body["messages"] = list(messages) + [assistant_msg] + tool_msgs
+        # Ask the SSE stream to include a final `usage` block so we can
+        # see prompt_tokens (which jumps to thousands when the server
+        # injects search context). Without this, OpenAI-compat streams
+        # omit usage entirely. Kimi follows the same convention.
+        followup_body["stream_options"] = {"include_usage": True}
+        # Keep the tool definition on the second call so the model can
+        # decide to search again mid-turn if needed. Kimi's doc shows
+        # the same tools array on every step.
+
+        try:
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = followup_body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Kimi second-call returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                lines_gen = response.aiter_lines().__aiter__()
+                # Diagnostics: latch usage.prompt_tokens from the final
+                # chunk. The Kimi docs say search results count toward
+                # prompt_tokens, so a big value here is direct evidence
+                # the server actually injected results into context.
+                last_usage: Optional[dict[str, Any]] = None
+                annotation_shapes: set[str] = set()
+                try:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        if not line.strip():
+                            continue
+                        if line.startswith("data:"):
+                            data_str = line[len("data:") :].strip()
+                            if data_str and data_str != "[DONE]":
+                                try:
+                                    parsed = _json.loads(data_str)
+                                except Exception:
+                                    parsed = None
+                                if isinstance(parsed, dict):
+                                    usage = parsed.get("usage")
+                                    if isinstance(usage, dict):
+                                        last_usage = usage
+                                    # Scan annotations only for diagnostics —
+                                    # Kimi today doesn't emit url_citation, but
+                                    # if a future model version starts to we'll
+                                    # see the type name in the final log line
+                                    # and can wire it into the tool_end payload.
+                                    for choice in parsed.get("choices") or []:
+                                        if not isinstance(choice, dict):
+                                            continue
+                                        for envelope in (
+                                            choice.get("delta"),
+                                            choice.get("message"),
+                                        ):
+                                            if not isinstance(envelope, dict):
+                                                continue
+                                            for ann in (
+                                                envelope.get("annotations") or []
+                                            ):
+                                                if isinstance(ann, dict):
+                                                    annotation_shapes.add(
+                                                        str(ann.get("type") or "?")
+                                                    )
+                        yield line
+                except GeneratorExit:
+                    await response.aclose()
+                    await lines_gen.aclose()
+                    raise
+                finally:
+                    logger.info(
+                        "Kimi $web_search complete (model=%s, "
+                        "search_ctx_tokens=%s, annotation_types=%s, "
+                        "prompt_tokens=%s, completion_tokens=%s)",
+                        model,
+                        first_args_search_tokens,
+                        sorted(annotation_shapes) or None,
+                        (last_usage or {}).get("prompt_tokens"),
+                        (last_usage or {}).get("completion_tokens"),
+                    )
+                    await response.aclose()
+                    await lines_gen.aclose()
+        except httpx.HTTPError as exc:
+            logger.error("Kimi second-call HTTP error: %s", exc)
+            yield _error_sse_line(
+                502,
+                f"Error communicating with kimi: {exc}",
+                self.provider_type,
+            )
+
     async def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -454,6 +1041,7 @@ class ExternalProviderClient:
         top_k: Optional[int] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
+        enabled_tools: Optional[list[str]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -602,6 +1190,25 @@ class ExternalProviderClient:
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
 
+        # Anthropic server-side web_search — see
+        #   https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
+        # The tool type is date-pinned (web_search_20250305 today) and
+        # Anthropic dispatches search calls server-side, returning
+        # server_tool_use + web_search_tool_result blocks in the SSE
+        # stream, plus url-citation annotations on text deltas. We
+        # translate all of that into our local _toolEvent shape so the
+        # chat UI renders web_search exactly like OpenAI's path.
+        if enabled_tools and "web_search" in enabled_tools:
+            anthropic_tools = list(body.get("tools") or [])
+            anthropic_tools.append(
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 5,
+                }
+            )
+            body["tools"] = anthropic_tools
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -659,6 +1266,17 @@ class ExternalProviderClient:
                 # "no thinking content" — distinguishes "Anthropic never sent
                 # thinking_delta" from "frontend didn't render the chunks".
                 event_counts: dict[str, int] = {}
+                # web_search state. Anthropic emits the query inside an
+                # `input_json_delta` stream on a `server_tool_use` content
+                # block, then a separate `web_search_tool_result` block
+                # with the URL list. Unlike OpenAI we get per-call results
+                # directly, so each tool card carries its own citations.
+                # `current_server_tool_use`: {id, name, partial_json_buffer}
+                # `current_result_block`: {tool_use_id, results}
+                # Both go to None when the matching content_block_stop fires.
+                current_server_tool_use: Optional[dict[str, Any]] = None
+                current_result_block: Optional[dict[str, Any]] = None
+                web_search_calls: dict[str, dict[str, Any]] = {}
 
                 def _content_chunk(text: str) -> str:
                     chunk = {
@@ -673,6 +1291,37 @@ class ExternalProviderClient:
                         ],
                     }
                     return f"data: {_json.dumps(chunk)}"
+
+                def _emit_tool_event(payload: dict[str, Any]) -> str:
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "_toolEvent": payload,
+                    }
+                    return f"data: {_json.dumps(chunk)}"
+
+                def _format_web_search_results(
+                    results: list[Any],
+                ) -> str:
+                    blocks: list[str] = []
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        if r.get("type") != "web_search_result":
+                            continue
+                        url = r.get("url", "")
+                        title = r.get("title") or url
+                        if not url:
+                            continue
+                        blocks.append(f"Title: {title}\nURL: {url}")
+                    return "\n---\n".join(blocks)
 
                 try:
                     while True:
@@ -702,7 +1351,39 @@ class ExternalProviderClient:
                             key = event_type or "<unknown>"
                         event_counts[key] = event_counts.get(key, 0) + 1
 
-                        if event_type == "content_block_delta":
+                        if event_type == "content_block_start":
+                            content_block = event.get("content_block") or {}
+                            block_type = content_block.get("type")
+                            if (
+                                block_type == "server_tool_use"
+                                and content_block.get("name") == "web_search"
+                            ):
+                                tool_use_id = content_block.get("id", "") or (
+                                    f"ws_{len(web_search_calls)}"
+                                )
+                                current_server_tool_use = {
+                                    "id": tool_use_id,
+                                    "buffer": "",
+                                }
+                                web_search_calls[tool_use_id] = {
+                                    "query": "",
+                                    "results": [],
+                                }
+                            elif block_type == "web_search_tool_result":
+                                tool_use_id = content_block.get("tool_use_id", "")
+                                # Anthropic sometimes ships the full results
+                                # list on the start event; sometimes deltas
+                                # follow. Capture whatever is present and
+                                # finalize on content_block_stop.
+                                content = content_block.get("content") or []
+                                current_result_block = {
+                                    "tool_use_id": tool_use_id,
+                                    "results": list(content)
+                                    if isinstance(content, list)
+                                    else [],
+                                }
+
+                        elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
                             delta_type = delta.get("type")
                             if delta_type == "thinking_delta":
@@ -730,16 +1411,79 @@ class ExternalProviderClient:
                                 text = delta.get("text", "")
                                 if text:
                                     yield _content_chunk(text)
+                                # Citations on text deltas are attached
+                                # per-call by Anthropic via the
+                                # `web_search_tool_result` block; we don't
+                                # need to scrape them off the text events.
+                            elif (
+                                delta_type == "input_json_delta"
+                                and current_server_tool_use is not None
+                            ):
+                                # Streamed partial_json carrying the search
+                                # query. Buffer until content_block_stop.
+                                current_server_tool_use["buffer"] += delta.get(
+                                    "partial_json", ""
+                                )
                             # signature_delta and any other delta types are
                             # intentionally skipped — they carry trust /
                             # verification metadata, not user-visible content.
 
                         elif event_type == "content_block_stop":
-                            # Close the <think> tag when the thinking block
-                            # ends, in case no text_delta follows (e.g.
-                            # display=omitted on Claude 4.7, or thinking-only
-                            # turns).
-                            if thinking_open:
+                            if current_server_tool_use is not None:
+                                # End of the server_tool_use block — parse the
+                                # accumulated input_json into a query and
+                                # emit tool_start. The matching tool_end fires
+                                # later when the web_search_tool_result block
+                                # closes with the actual results.
+                                buffer = current_server_tool_use["buffer"]
+                                query = ""
+                                if buffer:
+                                    try:
+                                        parsed = _json.loads(buffer)
+                                        if isinstance(parsed, dict):
+                                            q = parsed.get("query", "")
+                                            if isinstance(q, str):
+                                                query = q
+                                    except Exception:
+                                        query = ""
+                                tool_use_id = current_server_tool_use["id"]
+                                if tool_use_id in web_search_calls:
+                                    web_search_calls[tool_use_id]["query"] = query
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "web_search",
+                                        "tool_call_id": tool_use_id,
+                                        "arguments": (
+                                            {"query": query} if query else {}
+                                        ),
+                                    }
+                                )
+                                current_server_tool_use = None
+                            elif current_result_block is not None:
+                                # End of a web_search_tool_result — emit
+                                # tool_end carrying the search results as
+                                # Title:/URL: blocks. parseSourcesFromResult
+                                # on the frontend lifts these into source
+                                # pills at message tail.
+                                tool_use_id = current_result_block["tool_use_id"]
+                                results = current_result_block["results"]
+                                if tool_use_id in web_search_calls:
+                                    web_search_calls[tool_use_id]["results"] = results
+                                result_text = _format_web_search_results(results)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": tool_use_id,
+                                        "result": (result_text or "(search complete)"),
+                                    }
+                                )
+                                current_result_block = None
+                            elif thinking_open:
+                                # Close the <think> tag when the thinking block
+                                # ends, in case no text_delta follows (e.g.
+                                # display=omitted on Claude 4.7, or thinking-
+                                # only turns).
                                 yield _content_chunk("</think>")
                                 thinking_open = False
 
@@ -778,16 +1522,30 @@ class ExternalProviderClient:
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
-                    # Surface per-event-type counts so reports of "no
-                    # reasoning panel content" can be triaged at a glance:
-                    # zero `content_block_delta:thinking_delta` entries
-                    # means Anthropic skipped thinking for this prompt
-                    # (adaptive can choose to); non-zero means thinking
-                    # arrived and we wrapped it — any visual gap is then
-                    # on the frontend.
+                    # Surface per-event-type counts + web_search summary so
+                    # reports of "no reasoning panel content" / "Search
+                    # didn't do anything" can be triaged at a glance.
+                    web_search_requested = bool(
+                        enabled_tools and "web_search" in enabled_tools
+                    )
+                    web_search_invocations = len(web_search_calls)
+                    total_results = sum(
+                        len(sc.get("results") or []) for sc in web_search_calls.values()
+                    )
+                    queries = [
+                        sc["query"]
+                        for sc in web_search_calls.values()
+                        if sc.get("query")
+                    ]
                     logger.info(
-                        "Anthropic stream event counts (model=%s): %s",
+                        "Anthropic stream complete (model=%s, "
+                        "web_search_requested=%s, web_search_invocations=%s, "
+                        "results=%s, queries=%s, events=%s)",
                         model,
+                        web_search_requested,
+                        web_search_invocations,
+                        total_results,
+                        queries,
                         event_counts,
                     )
                     await response.aclose()
@@ -824,6 +1582,7 @@ class ExternalProviderClient:
         max_tokens: Optional[int],
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
+        enabled_tools: Optional[list[str]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -918,6 +1677,20 @@ class ExternalProviderClient:
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
 
+        # OpenAI server-side tools — see
+        #   https://developers.openai.com/api/docs/guides/tools
+        # The frontend's Search button maps to the unified
+        # enabled_tools=["web_search"] shorthand; translate that into the
+        # Responses-API tool schema. Other built-in tools (file_search,
+        # code_interpreter, image_generation, computer_use_preview) can be
+        # added with the same pattern when we surface their toggles.
+        if enabled_tools:
+            tools_array: list[dict[str, Any]] = []
+            if "web_search" in enabled_tools:
+                tools_array.append({"type": "web_search"})
+            if tools_array:
+                body["tools"] = tools_array
+
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
 
@@ -950,6 +1723,64 @@ class ExternalProviderClient:
                 done_emitted = False
                 reasoning_open = False
                 reasoning_emitted = False
+                # Per-call state for OpenAI's server-side web_search tool. Mapped
+                # back into our local _toolEvent shape so the existing chat-UI
+                # renderer surfaces web_search the same way it does for local
+                # tool calls: a "Searching…" tool-call card, then a `tool_end`
+                # carrying citations formatted as
+                #   Title: …\nURL: …\nSnippet: …\n---\n…
+                # blocks (which the frontend's parseSourcesFromResult lifts
+                # into source content parts at end of stream).
+                # web_search_calls preserves insertion order so we can apply
+                # the aggregated citation list onto the *last* call's
+                # tool_end — that's the one the frontend's source-pill
+                # extraction reads (parseSourcesFromResult flatMaps every
+                # web_search result, so a single non-empty result is enough
+                # to surface all sources at message tail).
+                # OpenAI emits url_citation annotations on text deltas, not
+                # per call — there's no wire field linking a citation back
+                # to a specific search invocation. Hence the shared list.
+                # web_search_calls: { item_id -> {query} }
+                web_search_calls: dict[str, dict[str, Any]] = {}
+                all_url_citations: list[dict[str, str]] = []
+
+                def _emit_tool_event(payload: dict[str, Any]) -> str:
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": None,
+                            }
+                        ],
+                        "_toolEvent": payload,
+                    }
+                    return f"data: {_json.dumps(chunk)}"
+
+                def _record_url_citation(payload: dict[str, Any]) -> None:
+                    """Append a url_citation onto the shared all_url_citations
+                    list. Dedup by URL — the same source can be cited multiple
+                    times across deltas. We do NOT try to attribute citations
+                    to individual web_search_call invocations because OpenAI's
+                    annotation events don't carry that linkage."""
+                    if payload.get("type") != "url_citation":
+                        return
+                    url = payload.get("url", "")
+                    if not url:
+                        return
+                    if any(c["url"] == url for c in all_url_citations):
+                        return
+                    title = payload.get("title") or url
+                    snippet = payload.get("snippet") or payload.get("quote") or ""
+                    all_url_citations.append(
+                        {
+                            "url": url,
+                            "title": title,
+                            "snippet": snippet,
+                        }
+                    )
 
                 def _extract_reasoning_text(payload: Any) -> str:
                     if payload is None:
@@ -1023,13 +1854,39 @@ class ExternalProviderClient:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
                                 yield _chunk_with_text(delta_text)
+                            # Some API versions inline url citations on the
+                            # delta event itself rather than as a separate
+                            # response.output_text.annotation.added event.
+                            for ann in event.get("annotations") or []:
+                                if isinstance(ann, dict):
+                                    _record_url_citation(ann)
 
-                        elif event_type == "response.output_item.done":
+                        elif event_type == "response.output_text.annotation.added":
+                            ann = event.get("annotation")
+                            if isinstance(ann, dict):
+                                _record_url_citation(ann)
+
+                        elif event_type == "response.output_item.added":
+                            # Track the call early but do NOT emit tool_start
+                            # yet — action.query is not reliably populated on
+                            # added across OpenAI API versions, and the
+                            # frontend's tool_start is a one-shot push (no
+                            # update mechanism). Wait for output_item.done.
                             item = event.get("item", {})
                             if (
                                 isinstance(item, dict)
-                                and item.get("type") == "reasoning"
+                                and item.get("type") == "web_search_call"
                             ):
+                                item_id = item.get("id", "") or (
+                                    f"ws_{len(web_search_calls)}"
+                                )
+                                web_search_calls.setdefault(item_id, {"query": ""})
+
+                        elif event_type == "response.output_item.done":
+                            item = event.get("item", {})
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "reasoning":
                                 summary_text = _extract_reasoning_text(
                                     item.get("summary")
                                 )
@@ -1039,6 +1896,46 @@ class ExternalProviderClient:
                                         reasoning_open = True
                                     yield _chunk_with_text(summary_text)
                                     reasoning_emitted = True
+                            elif item.get("type") == "web_search_call":
+                                # done is the canonical place to read the
+                                # query, so emit both tool_start and tool_end
+                                # here. Frontend then renders a card per call
+                                # with the proper "Searching: <query>" label.
+                                # Citations are aggregated separately and the
+                                # *last* call's result is overwritten at
+                                # response.completed with the citation list
+                                # (so the source-pill extraction at message
+                                # tail surfaces them once).
+                                item_id = item.get("id", "") or (
+                                    f"ws_{len(web_search_calls)}"
+                                )
+                                action = item.get("action")
+                                query = (
+                                    action.get("query", "")
+                                    if isinstance(action, dict)
+                                    else ""
+                                )
+                                web_search_calls[item_id] = {"query": query}
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "web_search",
+                                        "tool_call_id": item_id,
+                                        "arguments": (
+                                            {"query": query} if query else {}
+                                        ),
+                                    }
+                                )
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": item_id,
+                                        # Empty result — the last call gets
+                                        # overwritten with citations at
+                                        # response.completed.
+                                        "result": "",
+                                    }
+                                )
 
                         elif isinstance(event_type, str) and "reasoning" in event_type:
                             reasoning_delta = _extract_reasoning_text(event)
@@ -1053,6 +1950,32 @@ class ExternalProviderClient:
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
+                            # Apply the aggregated citation list onto the
+                            # *last* web_search call by overwriting its
+                            # tool_end result. The frontend's
+                            # parseSourcesFromResult flatMaps every
+                            # web_search tool-call result, so a single
+                            # non-empty result is enough to surface the
+                            # whole source-pill set at the message tail —
+                            # no need to fan out across every card (which
+                            # would just duplicate the same pills).
+                            if web_search_calls and all_url_citations:
+                                last_id = list(web_search_calls.keys())[-1]
+                                blocks: list[str] = []
+                                for cit in all_url_citations:
+                                    line = (
+                                        f"Title: {cit['title']}\n" f"URL: {cit['url']}"
+                                    )
+                                    if cit.get("snippet"):
+                                        line += f"\nSnippet: {cit['snippet']}"
+                                    blocks.append(line)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": last_id,
+                                        "result": "\n---\n".join(blocks),
+                                    }
+                                )
                             chunk = {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -1070,6 +1993,29 @@ class ExternalProviderClient:
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
+                            # Same backfill as response.completed — apply
+                            # whatever citations we managed to gather
+                            # before truncation onto the last call. All
+                            # earlier tool cards already have their proper
+                            # query + empty placeholder result from the
+                            # output_item.done emissions above.
+                            if web_search_calls and all_url_citations:
+                                last_id = list(web_search_calls.keys())[-1]
+                                blocks = []
+                                for cit in all_url_citations:
+                                    line = (
+                                        f"Title: {cit['title']}\n" f"URL: {cit['url']}"
+                                    )
+                                    if cit.get("snippet"):
+                                        line += f"\nSnippet: {cit['snippet']}"
+                                    blocks.append(line)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": last_id,
+                                        "result": "\n---\n".join(blocks),
+                                    }
+                                )
                             chunk = {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -1103,6 +2049,31 @@ class ExternalProviderClient:
                     await lines_gen.aclose()
                     raise
                 finally:
+                    # Summarise what the model actually did this turn so
+                    # support reports of "I clicked Search and got nothing"
+                    # can be triaged at a glance: was the tool requested,
+                    # did OpenAI invoke it, and how many sources came back?
+                    web_search_requested = bool(
+                        enabled_tools and "web_search" in enabled_tools
+                    )
+                    web_search_invocations = len(web_search_calls)
+                    total_citations = len(all_url_citations)
+                    queries = [
+                        sc["query"]
+                        for sc in web_search_calls.values()
+                        if sc.get("query")
+                    ]
+                    logger.info(
+                        "OpenAI Responses stream complete (model=%s, "
+                        "web_search_requested=%s, web_search_invocations=%s, "
+                        "citations=%s, queries=%s, reasoning_emitted=%s)",
+                        model,
+                        web_search_requested,
+                        web_search_invocations,
+                        total_citations,
+                        queries,
+                        reasoning_emitted,
+                    )
                     await response.aclose()
                     await lines_gen.aclose()
 
