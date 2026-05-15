@@ -29,7 +29,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -90,6 +90,26 @@ export function OpenAICodeExecSection({
     [activeThreadId],
   );
   const activeContainerId = thread?.openaiCodeExecContainerId ?? null;
+
+  // Containers sorted newest-first by lastActiveAt so the dropdown's
+  // default (auto-bind target) shows up first.
+  const sortedContainers = useMemo(
+    () =>
+      [...containers].sort(
+        (a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0),
+      ),
+    [containers],
+  );
+
+  // What the dropdown should display right now. We decouple this from
+  // `activeContainerId` (which is whatever is in Dexie) so the user
+  // immediately sees the most-recent container by name when there is
+  // no thread binding yet, rather than a "Selecting most recent…"
+  // placeholder while the auto-bind effect's async write propagates
+  // back through useLiveQuery. The auto-bind effect still writes the
+  // bind to Dexie so the chat adapter sees it on send.
+  const displayedContainerId =
+    activeContainerId ?? sortedContainers[0]?.id ?? null;
 
   const refresh = useCallback(async () => {
     if (!apiKey) return;
@@ -205,12 +225,24 @@ export function OpenAICodeExecSection({
       setCreateOpen(false);
       await refresh();
       // Auto-bind the just-created container to the active thread.
+      // ensureThreadRecord first so the bind lands even when the user
+      // creates a container before sending the first message — without
+      // it, db.threads.update silently affects 0 rows and the chat
+      // adapter falls back to cross-thread inheritance / lazy-create,
+      // which can pick a stale container that fails with "container
+      // does not exist" on the first turn.
       if (activeThreadId) {
-        void db.threads
-          .update(activeThreadId, {
+        try {
+          await ensureThreadRecord({
+            threadId: activeThreadId,
+            modelType: "base",
+          });
+          await db.threads.update(activeThreadId, {
             openaiCodeExecContainerId: created.id,
-          })
-          .catch(() => {});
+          });
+        } catch {
+          /* best-effort; toast above already confirmed creation */
+        }
       }
     } catch (err) {
       toast.error(
@@ -300,27 +332,18 @@ export function OpenAICodeExecSection({
             instead of the picker. The first one is created by the
             chat-adapter on first send (lazy-create) and will appear
             here after the next refresh. */}
-        {containers.length === 0 ? (
+        {sortedContainers.length === 0 ? (
           <div className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 flex items-center text-sm text-muted-foreground">
             (none yet — will be created on first send)
           </div>
         ) : (
           <select
-            value={activeContainerId ?? ""}
+            value={displayedContainerId ?? sortedContainers[0].id}
             onChange={(e) => onPick(e.target.value)}
             disabled={!activeThreadId}
             className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 text-sm font-medium shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           >
-            {/* Empty placeholder option only renders while the
-                auto-bind effect is in flight (activeContainerId still
-                null). React requires a matching <option> for the
-                controlled value, so we render a hidden one. */}
-            {activeContainerId === null ? (
-              <option value="" disabled hidden>
-                Selecting most recent…
-              </option>
-            ) : null}
-            {containers.map((c) => (
+            {sortedContainers.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name ?? "(unnamed)"} · {c.id.slice(0, 14)}…
                 {c.lastActiveAt ? ` · active ${ageLabel(c.lastActiveAt)}` : ""}
