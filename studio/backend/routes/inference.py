@@ -1716,8 +1716,15 @@ async def list_openai_containers(
                 status_code = 502,
                 detail = f"Failed to reach OpenAI: {exc}",
             )
+        # OpenAI keeps expired containers in /v1/containers indefinitely
+        # with status="expired" — they're effectively dead but still
+        # listed. Hide them so the picker only shows usable containers.
         return ListOpenAIContainersResponse(
-            containers = [_summarize_container(c) for c in raw if isinstance(c, dict)],
+            containers = [
+                _summarize_container(c)
+                for c in raw
+                if isinstance(c, dict) and c.get("status") != "expired"
+            ],
         )
     finally:
         await client.close()
@@ -1766,17 +1773,38 @@ async def delete_openai_container(
     current_subject: str = Depends(get_current_subject),
 ) -> None:
     """Delete a named container by id."""
+    logger.info(
+        "openai_container_delete.request subject=%s container_id=%s base_url=%s",
+        current_subject,
+        body.container_id,
+        body.provider_base_url,
+    )
     client = _resolve_openai_cloud_client(body)
     try:
         try:
             await client.delete_openai_container(body.container_id)
+            logger.info(
+                "openai_container_delete.success container_id=%s",
+                body.container_id,
+            )
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            logger.warning(
+                "openai_container_delete.openai_rejected container_id=%s status=%s body=%s",
+                body.container_id,
+                exc.response.status_code if exc.response else None,
+                detail,
+            )
             raise HTTPException(
                 status_code = exc.response.status_code if exc.response else 502,
                 detail = f"OpenAI rejected /containers delete: {detail}",
             )
         except httpx.HTTPError as exc:
+            logger.warning(
+                "openai_container_delete.transport_error container_id=%s error=%s",
+                body.container_id,
+                exc,
+            )
             raise HTTPException(
                 status_code = 502,
                 detail = f"Failed to reach OpenAI: {exc}",

@@ -115,7 +115,10 @@ export async function deleteOpenAIContainer(
       }),
     },
   );
-  if (!response.ok && response.status !== 204) {
+  // 404 = container already gone (deleted elsewhere, or expired-then-purged).
+  // Treat as idempotent success so a stale list entry doesn't surface as a
+  // confusing error — the caller will refresh and the entry will disappear.
+  if (!response.ok && response.status !== 204 && response.status !== 404) {
     throw new Error(await parseError(response));
   }
 }

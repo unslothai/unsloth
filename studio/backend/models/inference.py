@@ -650,11 +650,11 @@ class CreateOpenAIContainerBody(OpenAIContainerRequest):
     ttl_minutes: int = Field(
         20,
         ge = 1,
-        le = 10080,  # 1 week
+        le = 20,
         description = (
             "Idle-timeout TTL the new container will inherit (anchor="
-            "last_active_at). OpenAI's default is 20; we cap at one "
-            "week as a safety bound."
+            "last_active_at). OpenAI hard-caps this at 20 minutes and "
+            "rejects larger values with integer_above_max_value."
         ),
     )
 

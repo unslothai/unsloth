@@ -2870,7 +2870,17 @@ class ExternalProviderClient:
         response.raise_for_status()
         data = response.json()
         containers = data.get("data") if isinstance(data, dict) else None
-        return list(containers) if isinstance(containers, list) else []
+        result = list(containers) if isinstance(containers, list) else []
+        logger.info(
+            "openai_container_list.response count=%s items=%s",
+            len(result),
+            [
+                {"id": c.get("id"), "status": c.get("status")}
+                for c in result
+                if isinstance(c, dict)
+            ],
+        )
+        return result
 
     async def create_openai_container(
         self,
@@ -2901,15 +2911,38 @@ class ExternalProviderClient:
     async def delete_openai_container(self, container_id: str) -> None:
         """DELETE /v1/containers/{id}. 404s are surfaced as HTTPError.
 
+        Uses a fresh httpx client (not the shared ``_http_client``) so
+        connection-pool state from earlier chat requests cannot
+        interfere — observed in the wild that DELETEs over the shared
+        pool returned ``deleted: true`` while the container persisted
+        in subsequent /containers list calls, even though the same
+        DELETE issued from a fresh client genuinely removed it.
+
         Verifies the response body reports ``deleted: true``. OpenAI
         returns a 2xx ``deleted: true`` body even when the request is
         silently rejected (e.g. missing OpenAI-Beta header), so a
         status-only check is not sufficient.
         """
-        response = await _http_client.delete(
-            f"{self.base_url}/containers/{container_id}",
-            headers = self._container_headers(),
-            timeout = self._timeout,
+        url = f"{self.base_url}/containers/{container_id}"
+        headers = self._container_headers()
+        logger.info(
+            "openai_container_delete.outbound url=%s has_auth=%s openai_beta=%s",
+            url,
+            "Authorization" in headers,
+            headers.get("OpenAI-Beta"),
+        )
+        async with httpx.AsyncClient(timeout = self._timeout) as fresh_client:
+            response = await fresh_client.delete(url, headers = headers)
+        logger.info(
+            "openai_container_delete.response status=%s cf_ray=%s "
+            "request_id=%s organization=%s project=%s processing_ms=%s body=%s",
+            response.status_code,
+            response.headers.get("cf-ray"),
+            response.headers.get("x-request-id"),
+            response.headers.get("openai-organization"),
+            response.headers.get("openai-project"),
+            response.headers.get("openai-processing-ms"),
+            response.text[:300],
         )
         response.raise_for_status()
         try:
