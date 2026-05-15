@@ -141,6 +141,34 @@ def _apply_mistral_reasoning_controls(
 _http_client = httpx.AsyncClient()
 
 
+def _build_kimi_tool_end(
+    synthetic_chunk_fn: Any,
+    tool_call_id: str,
+    citations: list[dict[str, str]],
+) -> str:
+    """Format Kimi web_search citations into the tool_end payload.
+
+    Same shape parseSourcesFromResult on the frontend expects for the
+    other built-in web_search providers: `Title: ...\\nURL: ...\\n
+    Snippet: ...\\n---\\n...`. If no citations were emitted, fall back
+    to a generic "(search complete)" string so the UI still shows the
+    tool card transitioning to a completed state.
+    """
+    blocks: list[str] = []
+    for cit in citations:
+        line = f"Title: {cit['title']}\nURL: {cit['url']}"
+        if cit.get("snippet"):
+            line += f"\nSnippet: {cit['snippet']}"
+        blocks.append(line)
+    return synthetic_chunk_fn(
+        {
+            "type": "tool_end",
+            "tool_call_id": tool_call_id,
+            "result": "\n---\n".join(blocks) if blocks else "(search complete)",
+        }
+    )
+
+
 class ExternalProviderClient:
     """Async proxy for OpenAI-compatible external LLM APIs."""
 
@@ -243,6 +271,27 @@ class ExternalProviderClient:
                 enable_thinking,
                 reasoning_effort,
                 enabled_tools,
+            ):
+                yield line
+            return
+
+        # Kimi's $web_search is a builtin_function that requires a client
+        # round-trip: the first call returns a tool_calls envelope with
+        # function.arguments populated; the caller echoes those arguments
+        # back as a role=tool message; the second call streams the final
+        # answer with the search incorporated. The doc also mandates
+        # disabling thinking while $web_search is active. Route to a
+        # dedicated helper so the default OAI-compat path stays single-pass.
+        #   https://platform.kimi.ai/docs/guide/use-web-search
+        if (
+            self.provider_type == "kimi"
+            and enabled_tools
+            and "web_search" in enabled_tools
+        ):
+            async for line in self._stream_kimi_web_search(
+                messages,
+                model,
+                max_tokens,
             ):
                 yield line
             return
@@ -601,6 +650,341 @@ class ExternalProviderClient:
             yield _error_sse_line(
                 502,
                 f"Error communicating with {self.provider_type}: {exc}",
+                self.provider_type,
+            )
+
+    async def _stream_kimi_web_search(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: Optional[int],
+    ) -> AsyncGenerator[str, None]:
+        """
+        Kimi $web_search round-trip.
+
+        Wire flow (per https://platform.kimi.ai/docs/guide/use-web-search):
+          1. POST messages with tools=[{type: "builtin_function",
+             function: {name: "$web_search"}}] and thinking=disabled.
+          2. Stream the first response — accumulate function.arguments
+             across tool_call deltas until finish_reason="tool_calls".
+             Do NOT forward those tool_call chunks to the client (they
+             are an internal protocol step, not user-visible output).
+          3. Build a second request: original messages + the assistant
+             message carrying the tool_calls + a role=tool message that
+             echoes the same arguments back verbatim (per Kimi docs,
+             the caller "just needs to submit tool_call.function.arguments
+             to Kimi as they are" — the server actually runs the search).
+          4. Stream the second response — that is the final answer the
+             user sees, with search results already incorporated.
+
+        We synthesize tool_start (with the parsed query) when step (2)
+        completes, and tool_end (with any url_citation annotations the
+        second stream emits) before [DONE], so the chat UI shows the
+        same web-search tool card as the other providers.
+        """
+        url = f"{self.base_url}/chat/completions"
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            # $web_search forbids thinking; sending the toggle silently
+            # would have the server reject the request with 400.
+            "thinking": {"type": "disabled"},
+            "tools": [
+                {"type": "builtin_function", "function": {"name": "$web_search"}}
+            ],
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+
+        # Strip body fields the Kimi registry declares unusable
+        # (temperature/top_p — see body_omit in providers.py).
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        for field in provider_info.get("body_omit", ()):
+            body.pop(field, None)
+
+        tool_call_id = "kimi_web_search"
+        synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
+
+        def _synthetic_chunk(payload: dict[str, Any]) -> str:
+            chunk = {
+                "id": synthetic_id,
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+                "_toolEvent": payload,
+            }
+            return f"data: {_json.dumps(chunk)}"
+
+        logger.info(
+            "Kimi $web_search round-trip starting (model=%s, url=%s)",
+            model,
+            url,
+        )
+
+        # ---- First call: collect the model's $web_search tool_call ----
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        try:
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Kimi first-call returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                lines_gen = response.aiter_lines().__aiter__()
+                try:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        if not line.strip() or not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:") :].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            parsed = _json.loads(data_str)
+                        except Exception:
+                            continue
+                        for choice in parsed.get("choices") or []:
+                            if not isinstance(choice, dict):
+                                continue
+                            delta = choice.get("delta") or {}
+                            for tc in delta.get("tool_calls") or []:
+                                if not isinstance(tc, dict):
+                                    continue
+                                idx = tc.get("index", 0)
+                                slot = tool_calls_acc.setdefault(
+                                    idx,
+                                    {
+                                        "id": tc.get("id") or f"call_{idx}",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    },
+                                )
+                                if tc.get("id"):
+                                    slot["id"] = tc["id"]
+                                fn = tc.get("function") or {}
+                                if fn.get("name"):
+                                    slot["function"]["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    slot["function"]["arguments"] += fn["arguments"]
+                            if choice.get("finish_reason") == "tool_calls":
+                                break
+                except GeneratorExit:
+                    await response.aclose()
+                    await lines_gen.aclose()
+                    raise
+                finally:
+                    await response.aclose()
+                    await lines_gen.aclose()
+        except httpx.HTTPError as exc:
+            logger.error("Kimi first-call HTTP error: %s", exc)
+            yield _error_sse_line(
+                502,
+                f"Error communicating with kimi: {exc}",
+                self.provider_type,
+            )
+            return
+
+        # If the model decided not to search, fall back to a plain
+        # streaming call without the builtin tool. That mirrors the UX
+        # of every other provider when web_search is on but the model
+        # didn't actually need it.
+        search_calls = [
+            tc
+            for tc in tool_calls_acc.values()
+            if tc["function"]["name"] == "$web_search"
+        ]
+        if not search_calls:
+            logger.info(
+                "Kimi $web_search: model did not invoke search; "
+                "falling back to plain stream"
+            )
+            fallback_body = dict(body)
+            fallback_body.pop("tools", None)
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = fallback_body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Kimi fallback returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        yield line
+            return
+
+        # Synthesize tool_start with the parsed search query so the
+        # chat UI's web-search card shows "Searching for: ...".
+        first_args_raw = search_calls[0]["function"]["arguments"] or "{}"
+        try:
+            first_args = _json.loads(first_args_raw)
+        except Exception:
+            first_args = {}
+        yield _synthetic_chunk(
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": tool_call_id,
+                "arguments": first_args if isinstance(first_args, dict) else {},
+            }
+        )
+
+        # ---- Second call: echo the tool_calls back and stream answer ----
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": list(tool_calls_acc.values()),
+        }
+        tool_msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "name": tc["function"]["name"],
+                "content": tc["function"]["arguments"],
+            }
+            for tc in tool_calls_acc.values()
+        ]
+        followup_body = dict(body)
+        followup_body["messages"] = list(messages) + [assistant_msg] + tool_msgs
+        # Keep the tool definition on the second call so the model can
+        # decide to search again mid-turn if needed. Kimi's doc shows
+        # the same tools array on every step.
+        citations: list[dict[str, str]] = []
+
+        def _record_citation(payload: Any) -> None:
+            if not isinstance(payload, dict):
+                return
+            if payload.get("type") != "url_citation":
+                return
+            cit = payload.get("url_citation")
+            if not isinstance(cit, dict):
+                cit = payload
+            url_ = cit.get("url", "") if isinstance(cit, dict) else ""
+            if not url_ or not isinstance(url_, str):
+                return
+            if any(c["url"] == url_ for c in citations):
+                return
+            title = cit.get("title") or url_
+            snippet = cit.get("content") or cit.get("snippet") or ""
+            citations.append(
+                {
+                    "url": url_,
+                    "title": title,
+                    "snippet": snippet if isinstance(snippet, str) else "",
+                }
+            )
+
+        try:
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = followup_body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Kimi second-call returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                lines_gen = response.aiter_lines().__aiter__()
+                tool_ended = False
+                try:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        if not line.strip():
+                            continue
+                        if line.startswith("data:"):
+                            data_str = line[len("data:") :].strip()
+                            if data_str == "[DONE]":
+                                if not tool_ended:
+                                    yield _build_kimi_tool_end(
+                                        _synthetic_chunk, tool_call_id, citations
+                                    )
+                                    tool_ended = True
+                            elif data_str:
+                                try:
+                                    parsed = _json.loads(data_str)
+                                except Exception:
+                                    parsed = None
+                                if isinstance(parsed, dict):
+                                    for choice in parsed.get("choices") or []:
+                                        if not isinstance(choice, dict):
+                                            continue
+                                        for envelope in (
+                                            choice.get("delta"),
+                                            choice.get("message"),
+                                        ):
+                                            if not isinstance(envelope, dict):
+                                                continue
+                                            for ann in (
+                                                envelope.get("annotations") or []
+                                            ):
+                                                _record_citation(ann)
+                        yield line
+                    if not tool_ended:
+                        yield _build_kimi_tool_end(
+                            _synthetic_chunk, tool_call_id, citations
+                        )
+                        tool_ended = True
+                except GeneratorExit:
+                    await response.aclose()
+                    await lines_gen.aclose()
+                    raise
+                finally:
+                    logger.info(
+                        "Kimi $web_search complete (model=%s, citations=%s)",
+                        model,
+                        len(citations),
+                    )
+                    await response.aclose()
+                    await lines_gen.aclose()
+        except httpx.HTTPError as exc:
+            logger.error("Kimi second-call HTTP error: %s", exc)
+            yield _error_sse_line(
+                502,
+                f"Error communicating with kimi: {exc}",
                 self.provider_type,
             )
 
