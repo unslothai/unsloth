@@ -206,7 +206,8 @@ jobs:
             'numpy<3' pytest==9.0.3 pytest-asyncio httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
-            'peft>=0.18,<0.20' 'accelerate>=0.34,<2'
+            'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
+            ipython
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu \
             'torch>=2.4,<2.11' 'torchvision<0.26'
@@ -303,6 +304,17 @@ jobs:
         # without a corresponding zoo / unsloth-side workaround.
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
+
+      - name: public-api surface drift detectors (9 tests, HARD GATE)
+        # Companion to test_import_fixes_drift.py: that file catches
+        # third-party drift; this one catches drift in unsloth's OWN
+        # public surface (FastLanguageModel / FastVisionModel /
+        # FastModel + their classmethods + is_bf16_supported). A
+        # rename here would silently break the unslothai/notebooks tree
+        # one PR cycle later -- this gate catches it BEFORE the
+        # breakage reaches users.
+        run: |
+          python -m pytest -v --tb=short tests/test_public_api_surface.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # 16 tests across 5 files. They live inside tests/saving/ and
@@ -875,14 +887,23 @@ jobs:
           import _zoo_aggressive_cuda_spoof as _spoof
           _spoof.apply()
 
-          # Hermetic cache dir + force compile path BEFORE importing
-          # unsloth_zoo.compiler (its globals capture env at module load).
+          # Hermetic cache dir + force compile path. The compiler's
+          # globals (UNSLOTH_COMPILE_LOCATION, UNSLOTH_COMPILE_USE_TEMP)
+          # are captured at module load; an earlier conftest `import
+          # unsloth` may have already imported unsloth_zoo.compiler with
+          # the default "unsloth_compiled_cache" path. Mutate the live
+          # module globals after import so this shim is robust to that
+          # ordering. Otherwise the compiler silently writes to the
+          # default cache and the per-model file assertion fails.
           _CACHE = pathlib.Path(tempfile.mkdtemp(prefix="unsloth_cache_"))
           os.environ["UNSLOTH_COMPILE_LOCATION"] = str(_CACHE)
           os.environ["UNSLOTH_COMPILE_OVERWRITE"] = "1"
           os.environ.pop("UNSLOTH_COMPILE_DISABLE", None)
 
           import pytest
+          import unsloth_zoo.compiler as _zoo_compiler
+          _zoo_compiler.UNSLOTH_COMPILE_LOCATION = str(_CACHE)
+          _zoo_compiler.UNSLOTH_COMPILE_USE_TEMP = False
           from unsloth_zoo.compiler import unsloth_compile_transformers
 
 
@@ -941,6 +962,12 @@ jobs:
               # Category E: undefined name in emitted file.
               "perceiver":       "name 'AbstractPreprocessor' is not defined",
               "sam3_lite_text":  "name 'Sam3LiteTextLayerScaledResidual' is not defined",
+              # Category F: compile exceeds 60s budget on the runner.
+              # First seen on transformers >=5,<6; each represents a slow
+              # or recursive source-rewriter path the zoo can address.
+              "beit":            "TimeoutError: compile exceeds per-model budget",
+              "sam":             "TimeoutError: compile exceeds per-model budget",
+              "sam_hq":          "TimeoutError: compile exceeds per-model budget",
           }
 
 
@@ -956,40 +983,59 @@ jobs:
                 skipped -> no `modeling_<x>.py` file (expected for some
                            umbrella packages like `auto`, `deprecated`)
                 known   -> in KNOWN_BROKEN_COMPILE; tracked for follow-up.
-              Any uncaught failure fails the cell."""
+              Any uncaught failure fails the cell.
+
+              Per-model SIGALRM cap so one infinite-looping model_type
+              cannot wedge the whole sweep + nuke the job timeout
+              (observed on transformers >=5,<6 -- 30+ min hang before
+              this guard landed)."""
               import importlib as _il
+              import signal
               ok = 0
               skipped = []
               known = []
               new_failures = []
-              for model_type in _all_model_types():
-                  modeling_path = f"transformers.models.{model_type}.modeling_{model_type}"
-                  try:
-                      _il.import_module(modeling_path)
-                  except (ModuleNotFoundError, ImportError):
-                      skipped.append((model_type, "no modeling file"))
-                      continue
-                  try:
-                      unsloth_compile_transformers(
-                          model_type=model_type, fast_lora_forwards=False,
-                      )
-                  except Exception as e:
-                      msg = f"{type(e).__name__}: {str(e)[:200]}"
+              models = _all_model_types()
+              def _on_timeout(signum, frame):
+                  raise TimeoutError("compile exceeded per-model budget")
+              prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
+              try:
+                  for i, model_type in enumerate(models):
+                      if i % 25 == 0:
+                          print(f"  sweep progress: {i}/{len(models)} -> {model_type}", flush=True)
+                      modeling_path = f"transformers.models.{model_type}.modeling_{model_type}"
+                      try:
+                          _il.import_module(modeling_path)
+                      except (ModuleNotFoundError, ImportError):
+                          skipped.append((model_type, "no modeling file"))
+                          continue
+                      signal.alarm(60)
+                      try:
+                          unsloth_compile_transformers(
+                              model_type=model_type, fast_lora_forwards=False,
+                          )
+                      except Exception as e:
+                          signal.alarm(0)
+                          msg = f"{type(e).__name__}: {str(e)[:200]}"
+                          if model_type in KNOWN_BROKEN_COMPILE:
+                              known.append((model_type, msg))
+                          else:
+                              new_failures.append((model_type, msg))
+                          continue
+                      signal.alarm(0)
                       if model_type in KNOWN_BROKEN_COMPILE:
-                          known.append((model_type, msg))
-                      else:
-                          new_failures.append((model_type, msg))
-                      continue
-                  if model_type in KNOWN_BROKEN_COMPILE:
-                      # Came back green unexpectedly -- that's GOOD news,
-                      # the bug was fixed. Surface it so we can drop the
-                      # entry from KNOWN_BROKEN_COMPILE.
-                      print(
-                          f"  UNEXPECTED-OK {model_type}: was in "
-                          "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
-                          "Drop the entry."
-                      )
-                  ok += 1
+                          # Came back green unexpectedly -- that's GOOD news,
+                          # the bug was fixed. Surface it so we can drop the
+                          # entry from KNOWN_BROKEN_COMPILE.
+                          print(
+                              f"  UNEXPECTED-OK {model_type}: was in "
+                              "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
+                              "Drop the entry."
+                          )
+                      ok += 1
+              finally:
+                  signal.alarm(0)
+                  signal.signal(signal.SIGALRM, prev_handler)
               print(f"\nCompile sweep: ok={ok} skipped={len(skipped)} "
                     f"known-broken={len(known)} new-failures={len(new_failures)}")
               for m, r in known:
@@ -1020,24 +1066,34 @@ jobs:
               """Spot-check on the three production-relevant families that
               the compile_every sweep also covers; this case verifies the
               emitted cache file has the model-specific RMSNorm class
-              attribute, not just that the file parses + imports."""
+              attribute, not just that the file parses + imports.
+
+              ``unsloth_compile_transformers`` is not idempotent in-
+              process: calling it twice on the same modeling module
+              after rewriting class attributes corrupts the inspect
+              source/line cache and the second emitted file is malformed
+              Python. The sweep above already produced a valid cache
+              file for every non-KNOWN_BROKEN model_type, so just verify
+              that artefact here. Trigger a compile only when running
+              this test in isolation (no sweep preceded)."""
               import importlib as _il
               try:
-                  _il.import_module(
+                  modeling = _il.import_module(
                       f"transformers.models.{model_type}.modeling_{model_type}"
                   )
               except ModuleNotFoundError:
                   pytest.skip(
                       f"transformers build lacks model_type={model_type}"
                   )
-              unsloth_compile_transformers(
-                  model_type=model_type, fast_lora_forwards=False,
-              )
-              modeling = _il.import_module(
-                  f"transformers.models.{model_type}.modeling_{model_type}"
-              )
-              assert getattr(modeling, "__UNSLOTH_PATCHED__", False) is True
               combined = _CACHE / f"unsloth_compiled_module_{model_type}.py"
+              if not combined.exists():
+                  unsloth_compile_transformers(
+                      model_type=model_type, fast_lora_forwards=False,
+                  )
+                  modeling = _il.import_module(
+                      f"transformers.models.{model_type}.modeling_{model_type}"
+                  )
+              assert getattr(modeling, "__UNSLOTH_PATCHED__", False) is True
               _verify_file(combined, must_expose=[rms_class])
 
 

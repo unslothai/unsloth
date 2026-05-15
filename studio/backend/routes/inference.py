@@ -1595,6 +1595,8 @@ async def _proxy_to_external_provider(
             top_k = payload.top_k,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
+            enabled_tools = payload.enabled_tools,
+            enable_prompt_caching = payload.enable_prompt_caching,
             stream = payload.stream,
         )
         try:

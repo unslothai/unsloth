@@ -2367,8 +2367,20 @@ class LlamaCppBackend:
                 if not Path(mmproj_path).is_file():
                     logger.warning(f"mmproj file not found: {mmproj_path}")
                 else:
-                    cmd.extend(["--mmproj", mmproj_path])
-                    logger.info(f"Using mmproj for vision: {mmproj_path}")
+                    # #5347 guard for paths that bypass detect_mmproj_file.
+                    from utils.models.model_config import (
+                        mmproj_matches_model_family,
+                    )
+
+                    if not mmproj_matches_model_family(model_path, mmproj_path):
+                        logger.warning(
+                            f"Skipping mmproj with mismatched family: "
+                            f"model={Path(model_path).name}, "
+                            f"mmproj={Path(mmproj_path).name}"
+                        )
+                    else:
+                        cmd.extend(["--mmproj", mmproj_path])
+                        logger.info(f"Using mmproj for vision: {mmproj_path}")
 
             # Option C: add --api-key for direct client access when enabled
             import os as _os
@@ -3747,7 +3759,7 @@ class LlamaCppBackend:
 
                                 except json.JSONDecodeError:
                                     logger.debug(
-                                        f"Skipping malformed SSE line: " f"{line[:100]}"
+                                        f"Skipping malformed SSE line: {line[:100]}"
                                     )
                             if _stream_done:
                                 break  # exit outer for

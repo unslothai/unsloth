@@ -224,6 +224,7 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
+  enable_prompt_caching?: boolean | null;
 }
 
 export interface OpenAIChatDelta {
