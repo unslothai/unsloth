@@ -89,23 +89,31 @@ export function customProviderDisplayName(
 export function customProviderBaseUrlPlaceholder(
   providerType: string | null | undefined,
 ): string {
-  if (!providerType) return CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS.custom;
+  if (!providerType) {
+    return CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE];
+  }
   return (
     CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[providerType] ??
-    CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS.custom
+    CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE]
   );
 }
 
 export function customProviderModelIdsPlaceholder(
   providerType: string | null | undefined,
 ): string {
-  if (!providerType) return CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS.custom;
+  if (!providerType) {
+    return CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE];
+  }
   return (
     CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[providerType] ??
-    CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS.custom
+    CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE]
   );
 }
 
+export function toExternalBackendProviderType(providerType: string): string;
+export function toExternalBackendProviderType(
+  providerType: null | undefined,
+): undefined;
 export function toExternalBackendProviderType(
   providerType: string | null | undefined,
 ): string | undefined {

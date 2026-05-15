@@ -470,10 +470,6 @@ export function ChatProvidersSettings({
       return;
     }
     const backendProviderType = toExternalBackendProviderType(providerType);
-    if (!backendProviderType) {
-      toast.error("Choose a provider first.");
-      return;
-    }
     const selectedRegistryEntry = registryByType.get(backendProviderType);
     const displayName = isCustomProvider
       ? customProviderName.trim() || customProviderDisplayName(providerType)
