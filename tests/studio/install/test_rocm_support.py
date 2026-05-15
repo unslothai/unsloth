@@ -846,6 +846,28 @@ class TestHardwareRocmFlag:
         assert '"cuda"' in func_body
         assert '"rocm"' in func_body
 
+    def test_distributed_stubs_cover_is_torchelastic_launched(self):
+        """_determine_attention_impl_for_gpu_estimate must stub is_torchelastic_launched.
+
+        resolve_attention_implementation calls is_torchelastic_launched() on
+        Windows ROCm where torch.distributed ships without that helper, causing
+        a warning: 'module torch.distributed has no attribute is_torchelastic_launched'.
+        """
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text(encoding = "utf-8")
+        assert "is_torchelastic_launched" in source
+
+    def test_distributed_stubs_cover_core_helpers(self):
+        """_determine_attention_impl_for_gpu_estimate must stub the four core distributed helpers."""
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
+        source = hw_path.read_text(encoding = "utf-8")
+        for attr in ("is_initialized", "is_available", "get_rank", "get_world_size"):
+            assert attr in source, f"distributed stub for '{attr}' missing from hardware.py"
+
 
 # =============================================================================
 # TEST: tokenizer_utils.py -- error message

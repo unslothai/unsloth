@@ -958,6 +958,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
             ("is_available", lambda: False),
             ("get_rank", lambda: 0),
             ("get_world_size", lambda: 1),
+            ("is_torchelastic_launched", lambda: False),
         ):
             if not hasattr(_td, _attr):
                 setattr(_td, _attr, _stub)
