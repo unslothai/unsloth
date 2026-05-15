@@ -1716,8 +1716,15 @@ async def list_openai_containers(
                 status_code = 502,
                 detail = f"Failed to reach OpenAI: {exc}",
             )
+        # OpenAI keeps expired containers in /v1/containers indefinitely
+        # with status="expired" — they're effectively dead but still
+        # listed. Hide them so the picker only shows usable containers.
         return ListOpenAIContainersResponse(
-            containers = [_summarize_container(c) for c in raw if isinstance(c, dict)],
+            containers = [
+                _summarize_container(c)
+                for c in raw
+                if isinstance(c, dict) and c.get("status") != "expired"
+            ],
         )
     finally:
         await client.close()

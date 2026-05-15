@@ -237,7 +237,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&
       raw.openaiContainerTtlMinutes >= 1
-        ? Math.min(raw.openaiContainerTtlMinutes, 10080)
+        ? Math.min(raw.openaiContainerTtlMinutes, 20)
         : undefined,
   };
 }

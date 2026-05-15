@@ -49,7 +49,7 @@ import { ensureThreadRecord } from "../runtime-provider";
 const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
-const TTL_MAX = 10080; // one week — matches backend bound
+const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
 
 function ageLabel(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "";
@@ -223,7 +223,6 @@ export function OpenAICodeExecSection({
       toast.success(`Created container ${name}`);
       setCreateName("");
       setCreateOpen(false);
-      await refresh();
       // Auto-bind the just-created container to the active thread.
       // ensureThreadRecord first so the bind lands even when the user
       // creates a container before sending the first message — without
@@ -250,6 +249,10 @@ export function OpenAICodeExecSection({
       );
     } finally {
       setCreating(false);
+      // Refresh even on failure: the request may have partially succeeded
+      // server-side (created container, lost response), and a re-fetch
+      // keeps the picker in sync with OpenAI's actual state.
+      await refresh();
     }
   };
 
@@ -277,11 +280,15 @@ export function OpenAICodeExecSection({
         ),
       );
       toast.success(`Deleted container ${name || id}`);
-      await refresh();
     } catch (err) {
       toast.error(
         `Delete failed: ${err instanceof Error ? err.message : "Unknown"}`,
       );
+    } finally {
+      // Always refresh so a stale list entry (e.g. container deleted
+      // elsewhere, or already expired) is purged from the UI even when
+      // the delete call itself errored.
+      await refresh();
     }
   };
 
@@ -293,7 +300,7 @@ export function OpenAICodeExecSection({
           htmlFor="openai-container-ttl"
           className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg"
         >
-          New-container idle timeout (min)
+          New-container idle timeout (min, max 20)
         </label>
         <Input
           id="openai-container-ttl"
