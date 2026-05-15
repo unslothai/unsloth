@@ -2911,6 +2911,13 @@ class ExternalProviderClient:
     async def delete_openai_container(self, container_id: str) -> None:
         """DELETE /v1/containers/{id}. 404s are surfaced as HTTPError.
 
+        Uses a fresh httpx client (not the shared ``_http_client``) so
+        connection-pool state from earlier chat requests cannot
+        interfere — observed in the wild that DELETEs over the shared
+        pool returned ``deleted: true`` while the container persisted
+        in subsequent /containers list calls, even though the same
+        DELETE issued from a fresh client genuinely removed it.
+
         Verifies the response body reports ``deleted: true``. OpenAI
         returns a 2xx ``deleted: true`` body even when the request is
         silently rejected (e.g. missing OpenAI-Beta header), so a
@@ -2924,11 +2931,8 @@ class ExternalProviderClient:
             "Authorization" in headers,
             headers.get("OpenAI-Beta"),
         )
-        response = await _http_client.delete(
-            url,
-            headers = headers,
-            timeout = self._timeout,
-        )
+        async with httpx.AsyncClient(timeout = self._timeout) as fresh_client:
+            response = await fresh_client.delete(url, headers = headers)
         logger.info(
             "openai_container_delete.response status=%s body=%s",
             response.status_code,
