@@ -1140,18 +1140,19 @@ class ExternalProviderClient:
             body["temperature"] = temperature
         if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k
+        # Anthropic only caches a prefix when at least one cache_control
+        # marker is attached to it — the frontend defaults
+        # enable_prompt_caching to True for Anthropic, so treat `None` the
+        # same as True here (callers that don't set the flag still get
+        # caching). Pass False explicitly to opt out.
+        prompt_caching_enabled = enable_prompt_caching is not False
+
         if system:
-            # Anthropic only caches a prefix when at least one cache_control
-            # marker is attached to it — the frontend defaults
-            # enable_prompt_caching to True for Anthropic, so treat `None` the
-            # same as True here (callers that don't set the flag still get
-            # caching). Pass False explicitly to opt out. Marker sits on the
-            # system block because the system prompt is the most stable
-            # prefix across turns in this chat path; tools and message-level
-            # caching are intentionally not added here.
-            if enable_prompt_caching is False:
-                body["system"] = system
-            else:
+            if prompt_caching_enabled:
+                # System block is the most stable prefix across turns, so
+                # it gets its own breakpoint. Skipped when system is
+                # empty — there's nothing to cache, and an empty marker
+                # is a no-op.
                 body["system"] = [
                     {
                         "type": "text",
@@ -1159,6 +1160,41 @@ class ExternalProviderClient:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ]
+            else:
+                body["system"] = system
+
+        if prompt_caching_enabled and filtered:
+            # Second breakpoint at the end of the conversation. Anthropic
+            # caches the longest matching prefix up to a cache_control
+            # marker; placing one on the latest message means turn N+1
+            # rehydrates everything up through turn N from cache instead
+            # of recomputing it. This is what makes caching actually work
+            # when the system prompt is empty or shorter than Anthropic's
+            # ~1024-token cache floor — the conversation history carries
+            # the bulk of the input tokens. Anthropic allows up to 4
+            # breakpoints per request; we use at most 2 (system + tail).
+            last_msg = filtered[-1]
+            content = last_msg.get("content")
+            if isinstance(content, str):
+                last_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            elif isinstance(content, list) and content:
+                # Don't mutate the caller's list. Rebuild the tail with
+                # cache_control attached to the final block so an
+                # upstream image-bearing turn still cleanly slots into
+                # the cache as part of the conversational prefix.
+                head = list(content[:-1])
+                tail = content[-1]
+                if isinstance(tail, dict):
+                    head.append({**tail, "cache_control": {"type": "ephemeral"}})
+                else:
+                    head.append(tail)
+                last_msg["content"] = head
         thinking_spec = _anthropic_thinking_spec(model)
         allowed_efforts = (
             thinking_spec.efforts
