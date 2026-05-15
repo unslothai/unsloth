@@ -229,6 +229,16 @@ type ChatRuntimeStore = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   supportsTools: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * web_search tool (OpenAI's /v1/responses today). Distinct from
+   * `supportsTools` — that flag governs the local tool runtime (Code,
+   * python sandbox, our DuckDuckGo web_search). This one only enables
+   * the chat composer's Search pill for external models and leaves
+   * the Code pill disabled, because external providers do not give
+   * us code execution. Local models keep `supportsTools` only.
+   */
+  supportsBuiltinWebSearch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   toolStatus: string | null;
@@ -320,6 +330,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   supportsPreserveThinking: false,
   preserveThinking: loadBool(PRESERVE_THINKING_KEY, false),
   supportsTools: false,
+  supportsBuiltinWebSearch: false,
   toolsEnabled: false,
   codeToolsEnabled: false,
   toolStatus: null,
@@ -430,6 +441,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsPreserveThinking: false,
       supportsTools: false,
+      supportsBuiltinWebSearch: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       toolStatus: null,

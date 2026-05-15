@@ -304,6 +304,9 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
@@ -351,7 +354,19 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const toolsDisabled = !modelLoaded || !supportsTools;
+  // Two-pill gating: Search pill lights up when the runtime has either
+  // a local tool runtime (supportsTools, gives us our Code/python + local
+  // web_search) OR a server-side web_search the provider runs for us
+  // (supportsBuiltinWebSearch, currently just OpenAI's /v1/responses).
+  // Code pill is gated on `supportsTools` only — external providers
+  // never give us code execution, so the pill must stay disabled even
+  // when Search is available.
+  const searchDisabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  const codeDisabled = !modelLoaded || !supportsTools;
+  // Backwards-compatible alias for any other call site that may still
+  // reference `toolsDisabled` (rare; both pills used it before).
+  const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -845,10 +860,10 @@ export function SharedComposer({
           )}
           <button
             type="button"
-            disabled={toolsDisabled}
+            disabled={searchDisabled}
             onClick={() => setToolsEnabled(!toolsEnabled)}
             className="composer-pill-btn"
-            data-active={toolsEnabled && !toolsDisabled ? "true" : "false"}
+            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
             <GlobeIcon className="size-3.5" />
@@ -856,10 +871,10 @@ export function SharedComposer({
           </button>
           <button
             type="button"
-            disabled={toolsDisabled}
+            disabled={codeDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
-            data-active={codeToolsEnabled && !toolsDisabled ? "true" : "false"}
+            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
             <CodeToggleIcon className="size-3.5" />

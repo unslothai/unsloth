@@ -698,13 +698,16 @@ export function ChatPage(): ReactElement {
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // Mirror the model-switch handler — external models without a
-      // built-in web-search tool keep the Search button disabled, and
-      // OpenAI external models start with the toggle off (opt-in).
-      supportsTools: supportsBuiltinWebSearch,
-      ...(supportsBuiltinWebSearch
-        ? {}
-        : { toolsEnabled: false, codeToolsEnabled: false }),
+      // External models never give us a local tool runtime (no Code
+      // execution, no python sandbox), so `supportsTools` must be
+      // false — that's what gates the Code pill in the composer.
+      // `supportsBuiltinWebSearch` is the separate flag that lets the
+      // Search pill light up for providers (currently just OpenAI) who
+      // run web_search server-side.
+      supportsTools: false,
+      supportsBuiltinWebSearch,
+      toolsEnabled: false,
+      codeToolsEnabled: false,
     });
   }, [externalProviders, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -859,7 +862,12 @@ export function ChatPage(): ReactElement {
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          supportsTools: supportsBuiltinWebSearch,
+          // External models have no local tool runtime → supportsTools=false
+          // keeps the Code pill greyed out. supportsBuiltinWebSearch is the
+          // separate flag the composer reads to light up the Search pill
+          // when the provider offers a server-side web_search tool.
+          supportsTools: false,
+          supportsBuiltinWebSearch,
           // Force off by default whenever an external model is picked —
           // user can opt in by clicking the Search button. Mirrors the
           // user-facing requirement that web search is not implicit.
