@@ -229,6 +229,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -253,6 +254,7 @@ class ExternalProviderClient:
                 enable_thinking,
                 reasoning_effort,
                 enabled_tools,
+                enable_prompt_caching,
             ):
                 yield line
             return
@@ -272,6 +274,7 @@ class ExternalProviderClient:
                 enable_thinking,
                 reasoning_effort,
                 enabled_tools,
+                enable_prompt_caching,
             ):
                 yield line
             return
@@ -1043,6 +1046,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1129,7 +1133,24 @@ class ExternalProviderClient:
         ):
             body["top_k"] = top_k
         if system:
-            body["system"] = system
+            # Anthropic only caches a prefix when at least one cache_control
+            # marker is attached to it — the frontend defaults
+            # enable_prompt_caching to True for Anthropic, so treat `None` the
+            # same as True here (callers that don't set the flag still get
+            # caching). Pass False explicitly to opt out. Marker sits on the
+            # system block because the system prompt is the most stable
+            # prefix across turns in this chat path; tools and message-level
+            # caching are intentionally not added here.
+            if enable_prompt_caching is False:
+                body["system"] = system
+            else:
+                body["system"] = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
         thinking_spec = _anthropic_thinking_spec(model)
         allowed_efforts = (
             thinking_spec.efforts
@@ -1584,6 +1605,7 @@ class ExternalProviderClient:
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
         enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -1684,6 +1706,19 @@ class ExternalProviderClient:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
+
+        # Prompt caching on /v1/responses is automatic and free, but the
+        # default in-memory policy only survives ~5-10 min of inactivity
+        # (up to ~1 hr). Opt into the 24-hour retention policy so a chat
+        # left idle overnight still hits the cache on the next turn.
+        # Pricing is identical to in_memory per OpenAI's docs. Studio's
+        # OpenAI model picker is registry-scoped to gpt-5.x / o3 / gpt-4.5,
+        # all of which accept this parameter — gpt-5.5+ already defaults
+        # to "24h" and rejects "in_memory", so setting it explicitly is a
+        # safe no-op there too. Pass False explicitly to fall back to the
+        # model's default retention.
+        if enable_prompt_caching is not False:
+            body["prompt_cache_retention"] = "24h"
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools
