@@ -72,12 +72,12 @@ def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
             return _METADATA_CACHE[key]
     result = _parse_gguf_header(path)
     with _CACHE_LOCK:
-        if len(_METADATA_CACHE) >= _CACHE_MAX_ENTRIES:
-            # Arbitrary eviction: header reads are cheap, true LRU not needed.
+        # Arbitrary eviction; header reads are cheap so true LRU is overkill.
+        while len(_METADATA_CACHE) >= _CACHE_MAX_ENTRIES:
             try:
                 _METADATA_CACHE.pop(next(iter(_METADATA_CACHE)))
             except StopIteration:
-                pass
+                break
         _METADATA_CACHE[key] = result
     return result
 
