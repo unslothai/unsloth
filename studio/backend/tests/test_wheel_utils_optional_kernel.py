@@ -128,11 +128,8 @@ def test_flash_linear_attention_spec_is_pypi_only():
 
 def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
     _patch_missing_package(monkeypatch)
-    monkeypatch.setattr(
-        wheel_utils,
-        "url_exists",
-        lambda url: (_ for _ in ()).throw(AssertionError("url_exists called")),
-    )
+    url_exists = mock.Mock(side_effect = AssertionError("url_exists called"))
+    monkeypatch.setattr(wheel_utils, "url_exists", url_exists)
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: None)
     calls: list[list[str]] = []
 
@@ -163,15 +160,13 @@ def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
     assert "--no-deps" not in calls[0]
     assert "--no-build-isolation" not in calls[0]
     assert "--no-cache-dir" not in calls[0]
+    url_exists.assert_not_called()
 
 
 def test_flash_linear_attention_fallback_runs_plain_uv_install(monkeypatch):
     _patch_missing_package(monkeypatch)
-    monkeypatch.setattr(
-        wheel_utils,
-        "url_exists",
-        lambda url: (_ for _ in ()).throw(AssertionError("url_exists called")),
-    )
+    url_exists = mock.Mock(side_effect = AssertionError("url_exists called"))
+    monkeypatch.setattr(wheel_utils, "url_exists", url_exists)
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
     calls: list[list[str]] = []
 
@@ -202,6 +197,7 @@ def test_flash_linear_attention_fallback_runs_plain_uv_install(monkeypatch):
     ]
     assert "--no-deps" not in calls[0]
     assert "--no-build-isolation" not in calls[0]
+    url_exists.assert_not_called()
 
 
 def test_already_importable_package_returns_true_without_install(monkeypatch):

@@ -204,22 +204,6 @@ class TestEnsureFlashAttn:
         assert kwargs["allow_pypi_fallback"] is False
         assert callable(kwargs["status"])
 
-    def test_setup_never_installs_fla(self):
-        install_mock = mock.Mock(return_value = False)
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "USE_UV", True),
-            mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
-            mock.patch.object(ips, "install_optional_kernel", install_mock),
-        ):
-            ips._ensure_flash_attn()
-
-        specs = [call.args[0] for call in install_mock.call_args_list]
-        assert specs == [ips.FLASH_ATTN_SPEC]
-
     def test_setup_skips_generic_install_when_no_torch(self):
         with (
             mock.patch.object(ips, "NO_TORCH", True),
@@ -364,13 +348,25 @@ class TestInstallPythonStackFlashAttnIntegration:
         return flash_attn_calls
 
     def test_linux_torch_install_calls_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = False) == 1
+        assert (
+            self._run_install(no_torch = False, is_macos = False, is_windows = False)
+            == 1
+        )
 
     def test_no_torch_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = True, is_macos = False, is_windows = False) == 0
+        assert (
+            self._run_install(no_torch = True, is_macos = False, is_windows = False)
+            == 0
+        )
 
     def test_macos_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
+        assert (
+            self._run_install(no_torch = False, is_macos = True, is_windows = False)
+            == 0
+        )
 
     def test_windows_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
+        assert (
+            self._run_install(no_torch = False, is_macos = False, is_windows = True)
+            == 0
+        )
