@@ -1291,7 +1291,7 @@ def run_training_process(
             pass
 
     # ── 1f. Windows ROCm runtime patches ──
-    # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm 7.12 Windows),
+    # torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm ≤ 7.12 Windows),
     # causing 0xC0000005 (access violation) during training.
     #
     # Root cause: the JitDecomp autograd decomposition system (NOT torch.compile)
@@ -1300,9 +1300,12 @@ def run_training_process(
     # JitDecomp, so we must also override the CUDA dispatch key for _grouped_mm
     # with a safe Python fallback.
     #
-    # Verified on torch==2.10.0+rocm7.12.0:
-    #   torch.library.Library("aten","IMPL").impl("_grouped_mm", fn, "CUDA")
-    #   correctly overrides the HIP kernel and the call succeeds.
+    # Fixed in AMD's wheel: torch==2.11.0+rocm7.13.0 — the 3-D batch and grouped
+    # (with offs) variants of _grouped_mm now have working HIP kernels on gfx1200.
+    # We gate the dispatch override on HIP < 7.13 so users on the fixed wheel get
+    # the real GPU kernel rather than our Python fallback.
+    #
+    # Verified: null on torch==2.10.0+rocm7.12.0; fixed on torch==2.11.0+rocm7.13.0.
     #
     # Schema: _grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None,
     #                     Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor
@@ -1362,76 +1365,101 @@ def run_training_process(
                     _bnb_rocm_ver,
                 )
 
-            # Patch _grouped_mm CUDA dispatch with a safe Python mm fallback.
-            try:
-                import warnings as _warnings
-
-                _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
-
-                def _grouped_mm_safe_impl(
-                    self, mat2, offs = None, bias = None, out_dtype = None
-                ):
-                    """Safe fallback for _grouped_mm on gfx1200 (null HIP kernel)."""
-                    _t = _torch_for_rocm
-                    if offs is None:
-                        # Simple case: plain matrix multiply.
-                        result = _t.mm(self.contiguous(), mat2.contiguous())
-                    else:
-                        # Grouped case: offs[i] is the exclusive end-row of group i
-                        # in `self`; mat2 may be 3-D (num_groups, K, N) or 2-D.
-                        offs_list = offs.tolist()
-                        pieces = []
-                        prev = 0
-                        for idx, end in enumerate(offs_list):
-                            end = int(end)
-                            a_part = self[prev:end].contiguous()
-                            if mat2.dim() == 3:
-                                b_part = mat2[idx].contiguous()
-                            else:
-                                b_part = mat2.contiguous()
-                            pieces.append(_t.mm(a_part, b_part))
-                            prev = end
-                        # Include any trailing rows not covered by offs
-                        if prev < self.shape[0]:
-                            a_tail = self[prev:].contiguous()
-                            b_tail = (
-                                mat2[-1].contiguous()
-                                if mat2.dim() == 3
-                                else mat2.contiguous()
-                            )
-                            pieces.append(_t.mm(a_tail, b_tail))
-                        result = (
-                            _t.cat(pieces, dim = 0)
-                            if pieces
-                            else _t.zeros(
-                                0,
-                                mat2.shape[-1],
-                                device = self.device,
-                                dtype = self.dtype,
-                            )
-                        )
-                    if bias is not None:
-                        result = result + bias
-                    if out_dtype is not None:
-                        result = result.to(out_dtype)
-                    elif result.dtype != self.dtype:
-                        result = result.to(self.dtype)
-                    return result
-
-                with _warnings.catch_warnings():
-                    _warnings.simplefilter("ignore")
-                    _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
-
-                _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
-                logger.info(
-                    "Windows ROCm: patched _grouped_mm CUDA dispatch "
-                    "(null HIP kernel on gfx1200 bypassed with safe mm fallback)"
+            # Parse HIP version for the kernel-fix gate below.
+            # torch.version.hip can be "7.13.99004", "7.2.0", etc.
+            # We only need major.minor for the comparison.
+            def _hip_ver_at_least(major: int, minor: int) -> bool:
+                _hip_str = getattr(
+                    getattr(_torch_for_rocm, "version", None), "hip", None
                 )
-            except Exception as _patch_exc:
-                logger.warning(
-                    "Windows ROCm: could not patch _grouped_mm — "
-                    "training may crash with 0xC0000005: %s",
-                    _patch_exc,
+                if not _hip_str:
+                    return False
+                try:
+                    _parts = [int(x) for x in str(_hip_str).split(".")[:2]]
+                    return (_parts[0], _parts[1]) >= (major, minor)
+                except (ValueError, IndexError):
+                    return False
+
+            # _grouped_mm HIP kernel was null on gfx1200 in ROCm ≤ 7.12,
+            # causing 0xC0000005.  AMD fixed it in ROCm 7.13 (torch 2.11+).
+            # Only install the Python fallback on the affected versions so users
+            # on 7.13+ get the real GPU kernel for MoE workloads.
+            if not _hip_ver_at_least(7, 13):
+                try:
+                    import warnings as _warnings
+
+                    _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
+
+                    def _grouped_mm_safe_impl(
+                        self, mat2, offs = None, bias = None, out_dtype = None
+                    ):
+                        """Python mm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
+                        _t = _torch_for_rocm
+                        if offs is None:
+                            # Simple case: plain matrix multiply.
+                            result = _t.mm(self.contiguous(), mat2.contiguous())
+                        else:
+                            # Grouped case: offs[i] is the exclusive end-row of
+                            # group i in `self`; mat2 may be 3-D or 2-D.
+                            offs_list = offs.tolist()
+                            pieces = []
+                            prev = 0
+                            for idx, end in enumerate(offs_list):
+                                end = int(end)
+                                a_part = self[prev:end].contiguous()
+                                if mat2.dim() == 3:
+                                    b_part = mat2[idx].contiguous()
+                                else:
+                                    b_part = mat2.contiguous()
+                                pieces.append(_t.mm(a_part, b_part))
+                                prev = end
+                            # Include any trailing rows not covered by offs
+                            if prev < self.shape[0]:
+                                a_tail = self[prev:].contiguous()
+                                b_tail = (
+                                    mat2[-1].contiguous()
+                                    if mat2.dim() == 3
+                                    else mat2.contiguous()
+                                )
+                                pieces.append(_t.mm(a_tail, b_tail))
+                            result = (
+                                _t.cat(pieces, dim = 0)
+                                if pieces
+                                else _t.zeros(
+                                    0,
+                                    mat2.shape[-1],
+                                    device = self.device,
+                                    dtype = self.dtype,
+                                )
+                            )
+                        if bias is not None:
+                            result = result + bias
+                        if out_dtype is not None:
+                            result = result.to(out_dtype)
+                        elif result.dtype != self.dtype:
+                            result = result.to(self.dtype)
+                        return result
+
+                    with _warnings.catch_warnings():
+                        _warnings.simplefilter("ignore")
+                        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
+                    logger.info(
+                        "Windows ROCm: patched _grouped_mm CUDA dispatch "
+                        "(null HIP kernel on gfx1200, ROCm ≤ 7.12 — "
+                        "bypassed with Python mm fallback)"
+                    )
+                except Exception as _patch_exc:
+                    logger.warning(
+                        "Windows ROCm: could not patch _grouped_mm — "
+                        "training may crash with 0xC0000005: %s",
+                        _patch_exc,
+                    )
+            else:
+                logger.info(
+                    "Windows ROCm: HIP >= 7.13 — _grouped_mm kernel is functional, "
+                    "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──

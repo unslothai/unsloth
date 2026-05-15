@@ -1884,6 +1884,41 @@ class TestWorkerWindowsRocmPatches:
         # Must gate on HIP version — code uses getattr chain: "version" and "hip"
         assert '"version"' in source and '"hip"' in source
 
+    def test_hip_ver_at_least_helper_defined(self):
+        """_hip_ver_at_least helper must be defined inside the Windows ROCm block."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        assert "def _hip_ver_at_least(major: int, minor: int)" in source
+
+    def test_grouped_mm_patch_gated_on_hip_lt_713(self):
+        """_grouped_mm patch must be skipped on HIP >= 7.13 (AMD fixed the bug in ROCm 7.13)."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        # The guard must call _hip_ver_at_least with exactly (7, 13)
+        assert "_hip_ver_at_least(7, 13)" in source
+        # The patch must be inside the `if not` branch (negated guard)
+        assert "if not _hip_ver_at_least(7, 13):" in source
+
+    def test_grouped_mm_hip_713_skip_message_present(self):
+        """worker.py must log a message when skipping the patch on HIP >= 7.13."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        assert "HIP >= 7.13" in source
+        assert "7.13" in source
+
+    def test_grouped_mm_patch_else_branch_present(self):
+        """An else branch must follow the _hip_ver_at_least gate (skip path for 7.13+)."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        # There must be an else: after the if not _hip_ver_at_least(7, 13): block
+        gate_idx = source.find("if not _hip_ver_at_least(7, 13):")
+        assert gate_idx != -1, "Version gate not found in worker.py"
+        # The else: branch must appear after the gate
+        else_idx = source.find("else:", gate_idx)
+        assert else_idx != -1, "else: branch after _hip_ver_at_least gate not found"
+
+    def test_hip_ver_at_least_handles_amd_version_format(self):
+        """_hip_ver_at_least must split on '.' and compare only major.minor (handles '7.13.99004')."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        # Must split the version string and take the first two parts
+        assert 'split(".")[:2]' in source or ".split('.')[:2]" in source
+
 
 # =============================================================================
 # TEST: install_python_stack.py -- _ROCM_TORCH_PKG_SPECS mapping
