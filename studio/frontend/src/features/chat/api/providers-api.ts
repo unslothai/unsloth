@@ -176,8 +176,15 @@ export async function updateProviderConfig(
 
 async function withApiKeyEncryptionRetry<T>(
   plaintextApiKey: string,
-  call: (encryptedApiKey: string) => Promise<T>,
+  call: (encryptedApiKey: string | null) => Promise<T>,
 ): Promise<T> {
+  // Allow callers to pass an empty key for self-hosted local providers
+  // (llama.cpp / vLLM / Ollama). The backend treats a missing
+  // ``encrypted_api_key`` as "no auth header" rather than failing
+  // decryption on an empty ciphertext.
+  if (!plaintextApiKey) {
+    return await call(null);
+  }
   try {
     const encrypted = await encryptProviderApiKey(plaintextApiKey, false);
     return await call(encrypted);

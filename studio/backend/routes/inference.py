@@ -1554,15 +1554,19 @@ async def _proxy_to_external_provider(
             detail = f"Unknown provider type: {provider_type}",
         )
 
-    # Decrypt the API key
-    try:
-        api_key = decrypt_api_key(payload.encrypted_api_key)
-    except Exception as exc:
-        logger.warning("external_provider.decrypt_failed", error = str(exc))
-        raise HTTPException(
-            status_code = 400,
-            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
-        )
+    # Decrypt the API key when present. The key is optional for self-hosted
+    # local providers (llama.cpp / vLLM / Ollama); the client downstream
+    # omits the Authorization header when ``api_key`` is empty.
+    api_key = ""
+    if payload.encrypted_api_key:
+        try:
+            api_key = decrypt_api_key(payload.encrypted_api_key)
+        except Exception as exc:
+            logger.warning("external_provider.decrypt_failed", error = str(exc))
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+            )
 
     model = payload.external_model or payload.model
     if model == "default":
@@ -1646,7 +1650,12 @@ async def openai_chat_completions(
     - Other models → Unsloth/transformers via InferenceBackend
     """
     # ── External provider routing ────────────────────────────────
-    if payload.encrypted_api_key and (payload.provider_id or payload.provider_type):
+    # ``encrypted_api_key`` is optional: self-hosted custom providers
+    # (llama.cpp / vLLM / Ollama) frequently run without auth, and the
+    # connection dialog explicitly marks the key as optional for them.
+    # Route on provider identity alone — the proxy below skips auth
+    # headers when no key is supplied.
+    if payload.provider_id or payload.provider_type:
         return await _proxy_to_external_provider(payload, request)
 
     llama_backend = get_llama_cpp_backend()

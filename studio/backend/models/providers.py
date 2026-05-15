@@ -95,8 +95,10 @@ class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
 
     provider_type: str = Field(..., description = "Provider type from the registry")
-    encrypted_api_key: str = Field(
-        ..., description = "RSA-encrypted, base64-encoded API key"
+    # Optional: self-hosted custom providers (llama.cpp / vLLM / Ollama) often
+    # run without auth. The route skips decryption + the auth header when omitted.
+    encrypted_api_key: Optional[str] = Field(
+        None, description = "RSA-encrypted, base64-encoded API key (optional for local providers)"
     )
     base_url: Optional[str] = Field(
         None, description = "Custom base URL (overrides registry default)"
@@ -110,8 +112,10 @@ class ProviderTestRequest(BaseModel):
     """Request to test connectivity to an external provider."""
 
     provider_type: str = Field(..., description = "Provider type from the registry")
-    encrypted_api_key: str = Field(
-        ..., description = "RSA-encrypted, base64-encoded API key"
+    # Optional: self-hosted custom providers (llama.cpp / vLLM / Ollama) often
+    # run without auth. The route skips decryption + the auth header when omitted.
+    encrypted_api_key: Optional[str] = Field(
+        None, description = "RSA-encrypted, base64-encoded API key (optional for local providers)"
     )
     base_url: Optional[str] = Field(
         None, description = "Custom base URL (overrides registry default)"

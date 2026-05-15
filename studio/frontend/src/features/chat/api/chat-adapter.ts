@@ -26,6 +26,7 @@ import type {
 } from "../types/api";
 import {
   getExternalProviderApiKey,
+  isCustomProviderType,
   loadExternalProviders,
   parseExternalModelId,
   supportsProviderPromptCaching,
@@ -748,7 +749,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
         throw new Error("External provider not found.");
       }
-      if (isExternalRequest && !externalApiKey) {
+      // Self-hosted custom providers (llama.cpp / vLLM / Ollama) frequently
+      // run without auth — the connection dialog already marks the key as
+      // optional for them. Only block hosted providers when the key is missing.
+      const externalProviderIsCustom = externalProvider
+        ? isCustomProviderType(externalProvider.providerType)
+        : false;
+      if (isExternalRequest && !externalApiKey && !externalProviderIsCustom) {
         toast.error("Missing API key for selected external provider.", {
           description: "Open Connections and set the API key again.",
         });
@@ -1028,10 +1035,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
-              encrypted_api_key: await encryptProviderApiKey(
-                externalApiKey,
-                forceRefreshPublicKey,
-              ),
+              // Encrypt only when there's actually a key to send; the
+              // backend skips auth headers when ``encrypted_api_key`` is
+              // omitted (used for local llama.cpp / vLLM / Ollama).
+              ...(externalApiKey
+                ? {
+                    encrypted_api_key: await encryptProviderApiKey(
+                      externalApiKey,
+                      forceRefreshPublicKey,
+                    ),
+                  }
+                : {}),
               provider_base_url: externalProvider.baseUrl || null,
               ...(supportsProviderPromptCaching(externalProvider.providerType)
                 ? {

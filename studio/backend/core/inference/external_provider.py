@@ -201,17 +201,24 @@ class ExternalProviderClient:
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = None)
 
     def _auth_headers(self) -> dict[str, str]:
-        """Build authentication headers using the provider's registry config."""
+        """Build authentication headers using the provider's registry config.
+
+        For self-hosted local providers (llama.cpp / vLLM / Ollama) the API key
+        is optional — the dialog explicitly labels it that way. Skip the
+        auth header entirely when no key is supplied so we don't send an
+        empty ``Bearer `` value, which httpx rejects with
+        ``Illegal header value b'Bearer '`` and which would otherwise look
+        like a malformed auth attempt to strict upstreams.
+        """
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
 
-        headers = {
-            "Content-Type": "application/json",
-            auth_header: f"{auth_prefix}{self.api_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge any provider-specific extra headers (e.g. anthropic-version, OpenRouter attribution)
         headers.update(provider_info.get("extra_headers", {}))
         return headers
