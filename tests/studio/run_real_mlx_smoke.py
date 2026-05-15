@@ -296,11 +296,16 @@ def cmd_train(args) -> int:
             args = config,
         )
 
-        def _on_step(step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens):
+        def _on_step(step, total, loss, lr, tok_s, peak_gb, elapsed,
+                     num_tokens, grad_norm = None):
             losses_per_step.append(round(float(loss), 4))
+            grad_text = (
+                f"  grad={grad_norm:.4f}"
+                if grad_norm is not None else ""
+            )
             print(
                 f"  step {step}/{total}  loss={loss:.4f}  lr={lr:.2e}  "
-                f"tok/s={tok_s:.0f}  peak={peak_gb:.2f}GB",
+                f"tok/s={tok_s:.0f}  peak={peak_gb:.2f}GB{grad_text}",
                 flush = True,
             )
 
