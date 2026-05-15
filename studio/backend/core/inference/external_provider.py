@@ -2870,7 +2870,17 @@ class ExternalProviderClient:
         response.raise_for_status()
         data = response.json()
         containers = data.get("data") if isinstance(data, dict) else None
-        return list(containers) if isinstance(containers, list) else []
+        result = list(containers) if isinstance(containers, list) else []
+        logger.info(
+            "openai_container_list.response count=%s items=%s",
+            len(result),
+            [
+                {"id": c.get("id"), "status": c.get("status")}
+                for c in result
+                if isinstance(c, dict)
+            ],
+        )
+        return result
 
     async def create_openai_container(
         self,
