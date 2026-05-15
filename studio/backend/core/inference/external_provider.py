@@ -308,25 +308,6 @@ class ExternalProviderClient:
         # the user picked one) or a bare {enabled: true}. A small set of
         # known routes rejects explicit disable with 400 ("Reasoning is
         # mandatory for this endpoint ..."), so only those omit "off".
-        # Mistral built-in web_search connector — see
-        #   https://docs.mistral.ai/capabilities/agents/connectors/websearch
-        # Supported on mistral-large/medium/small and magistral families
-        # (and gradually on more). Sending the tool on a model that
-        # doesn't support it surfaces a 400 from upstream, which the
-        # outer error log already captures.
-        if (
-            self.provider_type == "mistral"
-            and enabled_tools
-            and "web_search" in enabled_tools
-        ):
-            mistral_tools = list(body.get("tools") or [])
-            if not any(
-                isinstance(t, dict) and t.get("type") == "web_search"
-                for t in mistral_tools
-            ):
-                mistral_tools.append({"type": "web_search"})
-            body["tools"] = mistral_tools
-
         if self.provider_type == "openrouter":
             normalized_or_model = model.strip().lower()
             if reasoning_effort in ("low", "medium", "high"):

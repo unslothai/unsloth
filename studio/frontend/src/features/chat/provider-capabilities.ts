@@ -92,18 +92,16 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  *   - OpenAI:     `tools: [{type: "web_search"}]` on /v1/responses
  *   - Anthropic:  `tools: [{type: "web_search_20250305", name: "web_search",
  *                           max_uses: 5}]` on /v1/messages
- *   - Mistral:    `tools: [{type: "web_search"}]` on /v1/chat/completions
- *                 (connector docs:
- *                  https://docs.mistral.ai/capabilities/agents/connectors/websearch).
- *                 Supported on mistral-large/medium/small/magistral —
- *                 unsupported models 400 the request.
- *   - OpenRouter: rewrites the model id to append `:online` (the router's
- *                 universal web-search shortcut). Skipped for the
- *                 `openrouter/free` meta-router where `:online` is not a
- *                 valid suffix.
+ *   - OpenRouter: `plugins: [{id: "web"}]` on /v1/chat/completions (the
+ *                 router's universal web-search shape; works for every
+ *                 underlying model including the `openrouter/free` router).
  *
- * Gemini's grounded-search and Kimi's $web_search can be added with the
- * same pattern when matching backend translation lands.
+ * Mistral is intentionally excluded: their `web_search` connector lives on
+ * the Agents API (`/v1/agents` + `/v1/conversations`), not chat completions,
+ * and returns `"WebSearchTool connector is not supported"` if injected into
+ * /v1/chat/completions. Wiring it would require a dedicated Agents streaming
+ * path. Gemini's grounded-search and Kimi's $web_search can be added with
+ * the same pattern when matching backend translation lands.
  */
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
@@ -111,7 +109,6 @@ export function providerSupportsBuiltinWebSearch(
   return (
     providerType === "openai" ||
     providerType === "anthropic" ||
-    providerType === "mistral" ||
     providerType === "openrouter"
   );
 }
