@@ -186,7 +186,10 @@ def _stdio_mcp_enabled() -> bool:
     ``UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1`` before we build such a provider.
     """
     return os.environ.get(_STDIO_MCP_OPT_IN_ENV, "0").strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
