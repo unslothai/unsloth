@@ -901,6 +901,9 @@ class ExternalProviderClient:
         # to wrap, and the chat reasoning panel stays blank. Always pair
         # an explicit effort with summary except for the explicit "off"
         # case (effort: "none"), where summaries are pointless.
+        summary_unsupported = bool(
+            _OPENAI_REASONING_SUMMARY_UNSUPPORTED.match(model.strip().lower())
+        )
         if reasoning_effort in (
             "minimal",
             "low",
@@ -910,12 +913,14 @@ class ExternalProviderClient:
             "xhigh",
         ):
             body["reasoning"] = {"effort": reasoning_effort}
-            if not _OPENAI_REASONING_SUMMARY_UNSUPPORTED.match(model.strip().lower()):
+            if not summary_unsupported:
                 body["reasoning"]["summary"] = "auto"
         elif reasoning_effort == "none" or enable_thinking is False:
             body["reasoning"] = {"effort": "none"}
         elif enable_thinking is True:
-            body["reasoning"] = {"effort": "medium", "summary": "auto"}
+            body["reasoning"] = {"effort": "medium"}
+            if not summary_unsupported:
+                body["reasoning"]["summary"] = "auto"
         if instructions_parts:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
