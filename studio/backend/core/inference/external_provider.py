@@ -2934,8 +2934,14 @@ class ExternalProviderClient:
         async with httpx.AsyncClient(timeout = self._timeout) as fresh_client:
             response = await fresh_client.delete(url, headers = headers)
         logger.info(
-            "openai_container_delete.response status=%s body=%s",
+            "openai_container_delete.response status=%s cf_ray=%s "
+            "request_id=%s organization=%s project=%s processing_ms=%s body=%s",
             response.status_code,
+            response.headers.get("cf-ray"),
+            response.headers.get("x-request-id"),
+            response.headers.get("openai-organization"),
+            response.headers.get("openai-project"),
+            response.headers.get("openai-processing-ms"),
             response.text[:300],
         )
         response.raise_for_status()
