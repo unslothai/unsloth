@@ -38,6 +38,7 @@ Mirrors the unsloth-zoo / unsloth drift-detector skeleton:
 shape, ``pytest.fail("DRIFT DETECTED: ...")`` (never ``pytest.skip``) on
 regression so the matrix cell goes red.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -62,9 +63,7 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
     except (TypeError, ValueError):
         return True, set()
     params = sig.parameters
-    has_var_kw = any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
+    has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
     if has_var_kw:
         return True, set()
     missing = kwargs - set(params)
@@ -102,8 +101,13 @@ def test_fast_language_model_from_pretrained_kwargs():
 def test_fast_language_model_get_peft_model_kwargs():
     unsloth = pytest.importorskip("unsloth")
     required = {
-        "r", "lora_alpha", "lora_dropout", "target_modules", "bias",
-        "use_gradient_checkpointing", "random_state",
+        "r",
+        "lora_alpha",
+        "lora_dropout",
+        "target_modules",
+        "bias",
+        "use_gradient_checkpointing",
+        "random_state",
     }
     ok, missing = _accepts(unsloth.FastLanguageModel.get_peft_model, required)
     if not ok:
@@ -136,21 +140,22 @@ def test_fast_vision_model_class_and_methods():
         )
     cls = unsloth.FastVisionModel
     missing = [
-        m for m in ("from_pretrained", "get_peft_model", "for_inference", "for_training")
+        m
+        for m in ("from_pretrained", "get_peft_model", "for_inference", "for_training")
         if not callable(getattr(cls, m, None))
     ]
     if missing:
-        pytest.fail(
-            f"DRIFT DETECTED: FastVisionModel is missing methods {missing}."
-        )
+        pytest.fail(f"DRIFT DETECTED: FastVisionModel is missing methods {missing}.")
 
 
 def test_fast_vision_model_get_peft_model_vision_kwargs():
     """Vision-specific kwargs the notebooks pass on the vision LoRA path."""
     unsloth = pytest.importorskip("unsloth")
     required = {
-        "finetune_vision_layers", "finetune_language_layers",
-        "finetune_attention_modules", "finetune_mlp_modules",
+        "finetune_vision_layers",
+        "finetune_language_layers",
+        "finetune_attention_modules",
+        "finetune_mlp_modules",
     }
     ok, missing = _accepts(unsloth.FastVisionModel.get_peft_model, required)
     if not ok:
@@ -173,13 +178,12 @@ def test_fast_model_class_and_methods():
             "unified entry point used by 100+ notebooks would crash."
         )
     missing = [
-        m for m in ("from_pretrained", "get_peft_model")
+        m
+        for m in ("from_pretrained", "get_peft_model")
         if not callable(getattr(unsloth.FastModel, m, None))
     ]
     if missing:
-        pytest.fail(
-            f"DRIFT DETECTED: FastModel is missing methods {missing}."
-        )
+        pytest.fail(f"DRIFT DETECTED: FastModel is missing methods {missing}.")
 
 
 def test_fast_model_from_pretrained_kwargs():
