@@ -1664,6 +1664,20 @@ def _resolve_openai_cloud_client(
             status_code = 400,
             detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
         )
+    # Fingerprint the decrypted key so we can compare against the one the
+    # user expects (without ever logging the full secret). Last-4 only,
+    # plus length and prefix-kind ("sk-proj-" vs "sk-").
+    kind = (
+        "sk-proj-"
+        if api_key.startswith("sk-proj-")
+        else ("sk-" if api_key.startswith("sk-") else "other")
+    )
+    logger.info(
+        "openai_container.api_key_fingerprint kind=%s len=%s last4=%s",
+        kind,
+        len(api_key),
+        api_key[-4:] if len(api_key) >= 4 else "<short>",
+    )
     return ExternalProviderClient(
         provider_type = "openai",
         base_url = base_url,
