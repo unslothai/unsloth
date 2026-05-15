@@ -975,8 +975,18 @@ class ExternalProviderClient:
                 #   Title: …\nURL: …\nSnippet: …\n---\n…
                 # blocks (which the frontend's parseSourcesFromResult lifts
                 # into source content parts at end of stream).
-                # web_search_calls: { item_id -> {query, citations: [{url,title}, ...]} }
+                # web_search_calls preserves insertion order so we can apply
+                # the aggregated citation list onto the *last* call's
+                # tool_end — that's the one the frontend's source-pill
+                # extraction reads (parseSourcesFromResult flatMaps every
+                # web_search result, so a single non-empty result is enough
+                # to surface all sources at message tail).
+                # OpenAI emits url_citation annotations on text deltas, not
+                # per call — there's no wire field linking a citation back
+                # to a specific search invocation. Hence the shared list.
+                # web_search_calls: { item_id -> {query} }
                 web_search_calls: dict[str, dict[str, Any]] = {}
+                all_url_citations: list[dict[str, str]] = []
 
                 def _emit_tool_event(payload: dict[str, Any]) -> str:
                     chunk = {
@@ -994,27 +1004,27 @@ class ExternalProviderClient:
                     return f"data: {_json.dumps(chunk)}"
 
                 def _record_url_citation(payload: dict[str, Any]) -> None:
-                    """Append a url_citation annotation onto the most-recent
-                    web_search_call's citations (dedupe by URL)."""
+                    """Append a url_citation onto the shared all_url_citations
+                    list. Dedup by URL — the same source can be cited multiple
+                    times across deltas. We do NOT try to attribute citations
+                    to individual web_search_call invocations because OpenAI's
+                    annotation events don't carry that linkage."""
                     if payload.get("type") != "url_citation":
                         return
                     url = payload.get("url", "")
-                    if not url or not web_search_calls:
+                    if not url:
+                        return
+                    if any(c["url"] == url for c in all_url_citations):
                         return
                     title = payload.get("title") or url
                     snippet = payload.get("snippet") or payload.get("quote") or ""
-                    for item_id in reversed(list(web_search_calls.keys())):
-                        cits = web_search_calls[item_id]["citations"]
-                        if any(c["url"] == url for c in cits):
-                            return
-                        cits.append(
-                            {
-                                "url": url,
-                                "title": title,
-                                "snippet": snippet,
-                            }
-                        )
-                        return
+                    all_url_citations.append(
+                        {
+                            "url": url,
+                            "title": title,
+                            "snippet": snippet,
+                        }
+                    )
 
                 def _extract_reasoning_text(payload: Any) -> str:
                     if payload is None:
@@ -1101,6 +1111,11 @@ class ExternalProviderClient:
                                 _record_url_citation(ann)
 
                         elif event_type == "response.output_item.added":
+                            # Track the call early but do NOT emit tool_start
+                            # yet — action.query is not reliably populated on
+                            # added across OpenAI API versions, and the
+                            # frontend's tool_start is a one-shot push (no
+                            # update mechanism). Wait for output_item.done.
                             item = event.get("item", {})
                             if (
                                 isinstance(item, dict)
@@ -1109,24 +1124,7 @@ class ExternalProviderClient:
                                 item_id = item.get("id", "") or (
                                     f"ws_{len(web_search_calls)}"
                                 )
-                                action = item.get("action")
-                                query = (
-                                    action.get("query", "")
-                                    if isinstance(action, dict)
-                                    else ""
-                                )
-                                web_search_calls[item_id] = {
-                                    "query": query,
-                                    "citations": [],
-                                }
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_start",
-                                        "tool_name": "web_search",
-                                        "tool_call_id": item_id,
-                                        "arguments": {"query": query} if query else {},
-                                    }
-                                )
+                                web_search_calls.setdefault(item_id, {"query": ""})
 
                         elif event_type == "response.output_item.done":
                             item = event.get("item", {})
@@ -1143,18 +1141,45 @@ class ExternalProviderClient:
                                     yield _chunk_with_text(summary_text)
                                     reasoning_emitted = True
                             elif item.get("type") == "web_search_call":
-                                # Late-arriving query (some API versions only
-                                # ship action.query on the done event, not on
-                                # added). Backfill so tool_end carries the
-                                # right args even when added fired empty.
-                                item_id = item.get("id", "")
+                                # done is the canonical place to read the
+                                # query, so emit both tool_start and tool_end
+                                # here. Frontend then renders a card per call
+                                # with the proper "Searching: <query>" label.
+                                # Citations are aggregated separately and the
+                                # *last* call's result is overwritten at
+                                # response.completed with the citation list
+                                # (so the source-pill extraction at message
+                                # tail surfaces them once).
+                                item_id = item.get("id", "") or (
+                                    f"ws_{len(web_search_calls)}"
+                                )
                                 action = item.get("action")
-                                if (
-                                    item_id in web_search_calls
-                                    and isinstance(action, dict)
-                                    and action.get("query")
-                                ):
-                                    web_search_calls[item_id]["query"] = action["query"]
+                                query = (
+                                    action.get("query", "")
+                                    if isinstance(action, dict)
+                                    else ""
+                                )
+                                web_search_calls[item_id] = {"query": query}
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "web_search",
+                                        "tool_call_id": item_id,
+                                        "arguments": (
+                                            {"query": query} if query else {}
+                                        ),
+                                    }
+                                )
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": item_id,
+                                        # Empty result — the last call gets
+                                        # overwritten with citations at
+                                        # response.completed.
+                                        "result": "",
+                                    }
+                                )
 
                         elif isinstance(event_type, str) and "reasoning" in event_type:
                             reasoning_delta = _extract_reasoning_text(event)
@@ -1169,29 +1194,30 @@ class ExternalProviderClient:
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
-                            # Close out every web_search_call with a tool_end
-                            # carrying the citations gathered from text
-                            # annotations. The frontend's source-extraction
-                            # step (parseSourcesFromResult) reads the result
-                            # string as Title:/URL:/Snippet: blocks joined
-                            # by `\n---\n`.
-                            for item_id, sc in web_search_calls.items():
+                            # Apply the aggregated citation list onto the
+                            # *last* web_search call by overwriting its
+                            # tool_end result. The frontend's
+                            # parseSourcesFromResult flatMaps every
+                            # web_search tool-call result, so a single
+                            # non-empty result is enough to surface the
+                            # whole source-pill set at the message tail —
+                            # no need to fan out across every card (which
+                            # would just duplicate the same pills).
+                            if web_search_calls and all_url_citations:
+                                last_id = list(web_search_calls.keys())[-1]
                                 blocks: list[str] = []
-                                for cit in sc["citations"]:
-                                    line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                                for cit in all_url_citations:
+                                    line = (
+                                        f"Title: {cit['title']}\n" f"URL: {cit['url']}"
+                                    )
                                     if cit.get("snippet"):
                                         line += f"\nSnippet: {cit['snippet']}"
                                     blocks.append(line)
-                                result_text = (
-                                    "\n---\n".join(blocks)
-                                    if blocks
-                                    else "(no sources cited)"
-                                )
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_end",
-                                        "tool_call_id": item_id,
-                                        "result": result_text,
+                                        "tool_call_id": last_id,
+                                        "result": "\n---\n".join(blocks),
                                     }
                                 )
                             chunk = {
@@ -1211,27 +1237,27 @@ class ExternalProviderClient:
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
-                            # Close out any open web_search tool-call cards
-                            # with whatever citations we managed to gather
-                            # before the truncation so the UI does not show
-                            # a perpetual "running" state.
-                            for item_id, sc in web_search_calls.items():
-                                blocks: list[str] = []
-                                for cit in sc["citations"]:
-                                    line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                            # Same backfill as response.completed — apply
+                            # whatever citations we managed to gather
+                            # before truncation onto the last call. All
+                            # earlier tool cards already have their proper
+                            # query + empty placeholder result from the
+                            # output_item.done emissions above.
+                            if web_search_calls and all_url_citations:
+                                last_id = list(web_search_calls.keys())[-1]
+                                blocks = []
+                                for cit in all_url_citations:
+                                    line = (
+                                        f"Title: {cit['title']}\n" f"URL: {cit['url']}"
+                                    )
                                     if cit.get("snippet"):
                                         line += f"\nSnippet: {cit['snippet']}"
                                     blocks.append(line)
-                                result_text = (
-                                    "\n---\n".join(blocks)
-                                    if blocks
-                                    else "(search incomplete)"
-                                )
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_end",
-                                        "tool_call_id": item_id,
-                                        "result": result_text,
+                                        "tool_call_id": last_id,
+                                        "result": "\n---\n".join(blocks),
                                     }
                                 )
                             chunk = {
@@ -1275,9 +1301,7 @@ class ExternalProviderClient:
                         enabled_tools and "web_search" in enabled_tools
                     )
                     web_search_invocations = len(web_search_calls)
-                    total_citations = sum(
-                        len(sc["citations"]) for sc in web_search_calls.values()
-                    )
+                    total_citations = len(all_url_citations)
                     queries = [
                         sc["query"]
                         for sc in web_search_calls.values()
