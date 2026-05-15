@@ -371,9 +371,7 @@ def cmd_train(args) -> int:
     # don't gate on it -- the post_train_loss assertion above is the
     # real memorisation gate, and the lora / merged / gguf reload paths
     # below each have their own soft-checked generation assertion.
-    metrics["in_memory_generation_has_expected"] = (
-        EXPECT_IN_OUTPUT in in_mem_out
-    )
+    metrics["in_memory_generation_has_expected"] = EXPECT_IN_OUTPUT in in_mem_out
     if EXPECT_IN_OUTPUT not in in_mem_out:
         print(
             f"  [WARN] in-memory completion did not contain "
@@ -527,9 +525,9 @@ def cmd_reload(args) -> int:
     else:
         # Fallback when train_metrics.json wasn't found (older
         # workdir layouts): keep the original gibberish gate.
-        assert EXPECT_IN_OUTPUT in out, (
-            f"reload {args.format!r} produced gibberish for {PROMPT!r}: {out!r}"
-        )
+        assert (
+            EXPECT_IN_OUTPUT in out
+        ), f"reload {args.format!r} produced gibberish for {PROMPT!r}: {out!r}"
 
     metrics["final_peak_gpu_gb"] = round(_peak_gpu_gb(), 3)
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
