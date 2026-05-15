@@ -51,6 +51,17 @@ const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
 const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
 
+// How long a just-deleted container id stays hidden from the picker,
+// even if OpenAI's /containers list keeps returning it. OpenAI's DELETE
+// returns {"deleted": true} but the list endpoint can keep showing the
+// container for several minutes (replica lag or in-use silent no-op —
+// undocumented behavior, see PR fix/delete-openai-container). The
+// tombstone makes the UI feel responsive regardless of when list
+// catches up. Cleared on a 30s sweep so the picker recovers on its
+// own if OpenAI eventually shows the delete propagated.
+const DELETE_TOMBSTONE_MS = 5 * 60 * 1000;
+const TOMBSTONE_SWEEP_MS = 30 * 1000;
+
 function ageLabel(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "";
   const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
@@ -84,6 +95,11 @@ export function OpenAICodeExecSection({
   const [createTtl, setCreateTtl] = useState<number>(
     provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES,
   );
+  // id → unix-ms expiry. Entries past expiry are dropped by the sweep
+  // effect below.
+  const [tombstones, setTombstones] = useState<Map<string, number>>(
+    () => new Map(),
+  );
 
   const thread = useLiveQuery(
     async () => (activeThreadId ? db.threads.get(activeThreadId) : undefined),
@@ -91,14 +107,26 @@ export function OpenAICodeExecSection({
   );
   const activeContainerId = thread?.openaiCodeExecContainerId ?? null;
 
+  // Hide just-deleted containers even if OpenAI's list still returns them.
+  // This is the single chokepoint — every downstream view (sorted picker,
+  // auto-bind candidate, all-containers list) derives from visibleContainers.
+  const visibleContainers = useMemo(() => {
+    if (tombstones.size === 0) return containers;
+    const now = Date.now();
+    return containers.filter((c) => {
+      const expiry = tombstones.get(c.id);
+      return !expiry || expiry <= now;
+    });
+  }, [containers, tombstones]);
+
   // Containers sorted newest-first by lastActiveAt so the dropdown's
   // default (auto-bind target) shows up first.
   const sortedContainers = useMemo(
     () =>
-      [...containers].sort(
+      [...visibleContainers].sort(
         (a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0),
       ),
-    [containers],
+    [visibleContainers],
   );
 
   // What the dropdown should display right now. We decouple this from
@@ -150,10 +178,14 @@ export function OpenAICodeExecSection({
   // the chat-adapter's lazy-create path will mint the first container
   // on first send.
   useEffect(() => {
-    if (!activeThreadId || activeContainerId || containers.length === 0) {
+    if (
+      !activeThreadId ||
+      activeContainerId ||
+      visibleContainers.length === 0
+    ) {
       return;
     }
-    const sorted = [...containers].sort(
+    const sorted = [...visibleContainers].sort(
       (a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0),
     );
     const candidate = sorted[0];
@@ -171,7 +203,30 @@ export function OpenAICodeExecSection({
         // Best-effort; the chat-adapter will inherit/create on send.
       }
     })();
-  }, [activeThreadId, activeContainerId, containers]);
+  }, [activeThreadId, activeContainerId, visibleContainers]);
+
+  // Sweep expired tombstones so the picker recovers on its own if
+  // OpenAI's list eventually shows the delete propagated (or simply
+  // outlives the tombstone window). No-op if nothing's expired —
+  // avoids spurious re-renders.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTombstones((prev) => {
+        if (prev.size === 0) return prev;
+        const now = Date.now();
+        let changed = false;
+        const next = new Map(prev);
+        for (const [id, expiry] of prev) {
+          if (expiry <= now) {
+            next.delete(id);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, TOMBSTONE_SWEEP_MS);
+    return () => clearInterval(interval);
+  }, []);
 
   const ttlValue = provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES;
 
@@ -270,6 +325,13 @@ export function OpenAICodeExecSection({
         { apiKey, baseUrl: provider.baseUrl || null },
         id,
       );
+      // Tombstone the id so the picker hides it immediately even if
+      // OpenAI's list keeps returning it for a while.
+      setTombstones((prev) => {
+        const next = new Map(prev);
+        next.set(id, Date.now() + DELETE_TOMBSTONE_MS);
+        return next;
+      });
       // Clear any thread bindings pointing at the now-deleted id.
       const affected = await db.threads
         .filter((t) => t.openaiCodeExecContainerId === id)
@@ -367,11 +429,11 @@ export function OpenAICodeExecSection({
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
           All containers
         </span>
-        {isLoading && containers.length === 0 ? (
+        {isLoading && visibleContainers.length === 0 ? (
           <Skeleton className="h-16 w-full" />
-        ) : containers.length > 0 ? (
+        ) : visibleContainers.length > 0 ? (
           <ul className="flex flex-col gap-1 max-h-44 overflow-auto">
-            {containers.map((c) => {
+            {visibleContainers.map((c) => {
               const isActive = c.id === activeContainerId;
               return (
                 <li
