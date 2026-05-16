@@ -2348,5 +2348,73 @@ class TestSetupShGccInstallDir:
         assert "gcc install dir" in source or "GCC_INSTALL_DIR" in source
 
 
+# =============================================================================
+# TEST: main.py -- BNB_ROCM_VERSION server startup + distributed stubs
+# =============================================================================
+
+_MAIN_PY_PATH     = PACKAGE_ROOT / "studio" / "backend" / "main.py"
+_HARDWARE_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+
+
+class TestServerStartupRocmFixes:
+    """Verify main.py sets BNB_ROCM_VERSION before any bitsandbytes import and
+    hardware.py injects torch._C._distributed_c10d stubs before torch.distributed."""
+
+    # ── BNB_ROCM_VERSION in server process ────────────────────────────────────
+
+    def test_main_py_sets_bnb_rocm_version(self):
+        """main.py must set BNB_ROCM_VERSION in the server process before imports."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        assert "BNB_ROCM_VERSION" in source
+
+    def test_main_py_bnb_detection_scoped_to_win32(self):
+        """main.py BNB_ROCM_VERSION logic must be inside the win32 platform guard."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        win32_idx = source.find('sys.platform == "win32"')
+        bnb_idx   = source.find("BNB_ROCM_VERSION")
+        assert win32_idx != -1 and bnb_idx != -1
+        assert win32_idx < bnb_idx
+
+    def test_main_py_bnb_dll_detection_uses_glob(self):
+        """main.py must scan for libbitsandbytes_rocm*.dll to find the right version."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        assert "libbitsandbytes_rocm" in source
+
+    def test_main_py_bnb_falls_back_to_72(self):
+        """main.py must fall back to BNB_ROCM_VERSION='72' when no DLL is found."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        assert '"72"' in source or "'72'" in source
+
+    def test_main_py_bnb_only_set_when_not_already_in_env(self):
+        """main.py must not override an existing BNB_ROCM_VERSION env var."""
+        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
+        assert '"BNB_ROCM_VERSION" not in os.environ' in source
+
+    # ── torch._C._distributed_c10d stubs in hardware.py ──────────────────────
+
+    def test_hardware_py_injects_distributed_c10d_stub(self):
+        """hardware.py must inject torch._C._distributed_c10d into sys.modules."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert "_distributed_c10d" in source
+
+    def test_hardware_py_stub_injected_before_distributed_import(self):
+        """The sys.modules stub must be injected BEFORE import torch.distributed."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        c10d_idx = source.find("_distributed_c10d")
+        dist_idx = source.find("import torch.distributed")
+        assert c10d_idx != -1 and dist_idx != -1
+        assert c10d_idx < dist_idx
+
+    def test_hardware_py_stub_uses_types_moduletype(self):
+        """hardware.py must create the stub with types.ModuleType."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert "ModuleType" in source
+
+    def test_hardware_py_stub_scoped_to_win32(self):
+        """hardware.py distributed stub injection must be gated on win32."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert 'platform == "win32"' in source or "win32" in source
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

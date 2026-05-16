@@ -946,10 +946,23 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
     import copy as _copy
 
-    # torch.distributed is incomplete on Windows ROCm — it ships without the
-    # process-group helpers (is_initialized, is_available, etc.).
-    # resolve_attention_implementation (unsloth) calls is_initialized()
-    # unconditionally, so patch any missing attrs before importing it.
+    # torch.distributed is incomplete on Windows ROCm — torch._C is a C
+    # extension (not a package), so Python cannot import the submodule
+    # torch._C._distributed_c10d that torch.distributed depends on.
+    # Inject an empty stub into sys.modules BEFORE importing torch.distributed
+    # so the import succeeds, then patch the missing process-group helpers.
+    import sys as _sys
+    import types as _types
+
+    if _sys.platform == "win32":
+        for _c10d_name in (
+            "torch._C._distributed_c10d",
+            "torch._C._distributed_autograd",
+            "torch._C._distributed_rpc",
+        ):
+            if _c10d_name not in _sys.modules:
+                _sys.modules[_c10d_name] = _types.ModuleType(_c10d_name)
+
     try:
         import torch.distributed as _td
 

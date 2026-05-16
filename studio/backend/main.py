@@ -47,6 +47,32 @@ if sys.platform == "win32":
     _add_rocm_dll_dirs()
     del _add_rocm_dll_dirs
 
+    # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
+    # bitsandbytes on Windows ROCm tries to load libbitsandbytes_rocm<ver>.dll
+    # where <ver> comes from torch.version.hip (e.g. "7.13..." → "713").
+    # The installed BNB wheel ships rocm72.dll (not rocm713.dll), so without
+    # this the server process crashes with "Configured ROCm binary not found".
+    # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
+    # before any import that pulls in bitsandbytes (mirrors worker.py logic).
+    if "BNB_ROCM_VERSION" not in os.environ:
+        import glob as _glob
+        _bnb_rocm_ver = None
+        try:
+            import importlib.util as _ilu
+            _bnb_spec = _ilu.find_spec("bitsandbytes")
+            if _bnb_spec and _bnb_spec.origin:
+                _pkg_dir = os.path.dirname(_bnb_spec.origin)
+                _dlls = _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll"))
+                import re as _re_bnb
+                for _dll in sorted(_dlls):
+                    _m = _re_bnb.search(r"libbitsandbytes_rocm(\d+)\.dll", _dll)
+                    if _m:
+                        _bnb_rocm_ver = _m.group(1)
+                        break
+        except Exception:
+            pass
+        os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver or "72"
+
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).
 _backend_dir = str(_Path(__file__).parent)
