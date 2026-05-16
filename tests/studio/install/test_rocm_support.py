@@ -2260,7 +2260,7 @@ class TestHipSdkDetectedSubstep:
 # =============================================================================
 
 _INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
-_SETUP_SH_PATH   = PACKAGE_ROOT / "studio" / "setup.sh"
+_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
 
 
 class TestStrixRocm71Override:
