@@ -52,6 +52,13 @@ def is_hip():
 
 @functools.cache
 def get_device_type():
+    # Test-only CPU fallback. Short-circuits the detection chain so the
+    # rest of the function -- and every DEVICE_TYPE == "cuda" branch in
+    # the codebase -- behaves identically to a real CUDA host. The env
+    # var is read exactly once per process because get_device_type is
+    # @functools.cache'd, so production hosts pay no runtime cost.
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return "cuda"
     if _IS_MLX:
         return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
@@ -63,10 +70,6 @@ def get_device_type():
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            # Test-only CPU fallback. The env var is read exactly once per
-            # process because get_device_type is @functools.cache'd.
-            if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
-                return "cuda"
             raise NotImplementedError(
                 "Unsloth cannot find any torch accelerator? You need a GPU."
             )
@@ -77,8 +80,6 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
-        return "cuda"
     raise NotImplementedError(
         "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
     )
