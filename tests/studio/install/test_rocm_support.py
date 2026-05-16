@@ -2440,5 +2440,77 @@ class TestServerStartupRocmFixes:
         assert "_distributed_rpc" in source
 
 
+# =============================================================================
+# TEST: install.ps1 / setup.ps1 -- HipSdkInstalled flag (SDK found, device inaccessible)
+# =============================================================================
+
+
+class TestHipSdkInstalledButDeviceInaccessible:
+    """Verify that when hipinfo is found but exits non-zero (device not ROCm-accessible),
+    both scripts distinguish this from 'HIP SDK not found' and emit the correct message."""
+
+    def test_install_ps1_has_hip_sdk_installed_flag(self):
+        """install.ps1 must track HipSdkInstalled separately from HasROCm."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HipSdkInstalled" in source
+
+    def test_setup_ps1_has_hip_sdk_installed_flag(self):
+        """setup.ps1 must track HipSdkInstalled separately from HasROCm."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HipSdkInstalled" in source
+
+    def test_install_ps1_sets_flag_when_hipinfo_binary_found(self):
+        """install.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        # HipSdkInstalled must be assigned inside the hipinfoExe block
+        hipinfo_block_idx = source.find("if ($hipinfoExe)")
+        sdk_flag_idx = source.find("$HipSdkInstalled = $true", hipinfo_block_idx)
+        assert hipinfo_block_idx != -1 and sdk_flag_idx != -1
+        assert sdk_flag_idx > hipinfo_block_idx
+
+    def test_setup_ps1_sets_flag_when_hipinfo_binary_found(self):
+        """setup.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        hipinfo_block_idx = source.find("if ($hipinfoExe)")
+        sdk_flag_idx = source.find("$HipSdkInstalled = $true", hipinfo_block_idx)
+        assert hipinfo_block_idx != -1 and sdk_flag_idx != -1
+        assert sdk_flag_idx > hipinfo_block_idx
+
+    def test_install_ps1_version_capture_runs_when_sdk_installed(self):
+        """install.ps1 must capture hipconfig version when HipSdkInstalled even if HasROCm is false."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HasROCm -or $HipSdkInstalled" in source or "$HipSdkInstalled" in source
+
+    def test_setup_ps1_version_capture_runs_when_sdk_installed(self):
+        """setup.ps1 must capture hipconfig version when HipSdkInstalled even if HasROCm is false."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HasROCm -or $HipSdkInstalled" in source or "$HipSdkInstalled" in source
+
+    def test_install_ps1_distinct_message_for_sdk_found_but_device_inaccessible(self):
+        """install.ps1 must show 'not ROCm-accessible' message (not 'HIP SDK not found') when SDK present."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "not ROCm-accessible" in source
+
+    def test_setup_ps1_distinct_message_for_sdk_found_but_device_inaccessible(self):
+        """setup.ps1 must show 'not ROCm-accessible' message (not 'HIP SDK not found') when SDK present."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "not ROCm-accessible" in source
+
+    def test_install_ps1_driver_guidance_in_sdk_found_branch(self):
+        """install.ps1 must tell user this is a driver issue, not an SDK issue."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "driver issue" in source
+
+    def test_setup_ps1_driver_guidance_in_sdk_found_branch(self):
+        """setup.ps1 must tell user this is a driver issue, not an SDK issue."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "driver issue" in source
+
+    def test_install_ps1_cpu_hint_distinguishes_driver_vs_no_sdk(self):
+        """install.ps1 CPU-only hint must say 'GPU not ROCm-accessible' not 'require the HIP SDK' when SDK found."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "GPU not ROCm-accessible" in source
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

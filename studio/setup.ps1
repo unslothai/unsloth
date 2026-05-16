@@ -684,6 +684,7 @@ if (-not $HasNvidiaSmi) {
 }
 # ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
 $HasROCm = $false
+$HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
 $script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
@@ -708,6 +709,7 @@ if (-not $HasNvidiaSmi) {
         }
     }
     if ($hipinfoExe) {
+        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
@@ -807,8 +809,10 @@ if (-not $HasNvidiaSmi) {
             }
         }
     }
-    # Capture ROCm version early for display and wheel selection
-    if ($HasROCm) {
+    # Capture ROCm version early for display and wheel selection.
+    # Run whenever the HIP SDK binary is present, not just when the device is accessible --
+    # hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+    if ($HasROCm -or $HipSdkInstalled) {
         $script:ROCmVersion = $null
         $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
         if (-not $hipConfigExe) {
@@ -853,6 +857,16 @@ if ($HasNvidiaSmi) {
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
+    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+    $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
+    Write-Host ""
+    step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
+    substep "       This is a driver issue, not an SDK issue." "Yellow"
+    substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
+    substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
 } elseif ($ROCmGpuLabel) {
     Write-Host ""
     step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
