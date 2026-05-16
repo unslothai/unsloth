@@ -1746,6 +1746,36 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# ── Strix Halo / Strix Point: force rocm7.2 wheels, bypass Radeon repo ───────
+# gfx1151 (Strix Halo) and gfx1150 (Strix Point) have a ROCm 7.1 driver bug
+# that causes a segfault in torch._grouped_mm (moe_utils.py line 167).
+# The Radeon repo now ships cp313 wheels for rocm-rel-7.1, so when
+# _amd_gpu_radeon=true the installer silently lands on the broken combo.
+# Detect these GPUs when TORCH_INDEX_URL is rocm7.1 and override to rocm7.2.
+case "$TORCH_INDEX_URL" in
+    */rocm7.1|*/rocm7.1.*)
+        _strix_gfx=""
+        if command -v rocminfo >/dev/null 2>&1; then
+            _strix_gfx=$(rocminfo 2>/dev/null | grep -oE 'gfx1151|gfx1150' | head -1)
+        fi
+        if [ -z "$_strix_gfx" ] && command -v amd-smi >/dev/null 2>&1; then
+            _strix_gfx=$(amd-smi list 2>/dev/null | grep -oE 'gfx1151|gfx1150' | head -1)
+        fi
+        if [ -n "$_strix_gfx" ]; then
+            echo "" >&2
+            echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2
+            echo "  [WARN] ROCm 7.1 wheels are broken for gfx1150/gfx1151 (moe_utils.py:167)" >&2
+            echo "  [WARN] Overriding to rocm7.2 PyTorch index to avoid the driver bug" >&2
+            echo "  [WARN] Upgrade ROCm to 7.2+ to silence this warning:" >&2
+            echo "  [WARN]   https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+            echo "" >&2
+            _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+            TORCH_INDEX_URL="${_base%/}/rocm7.2"
+            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            _amd_gpu_radeon=false
+        fi
+        ;;
+esac
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
 if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
     _TAURI_TORCH_INDEX_FAMILY="radeon"

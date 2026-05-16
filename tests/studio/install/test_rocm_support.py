@@ -2255,5 +2255,98 @@ class TestHipSdkDetectedSubstep:
         assert "ROCmVersionFull" in source and "rocm" in source
 
 
+# =============================================================================
+# TEST: install.sh -- Strix Halo rocm7.1 → rocm7.2 override
+# =============================================================================
+
+_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
+_SETUP_SH_PATH   = PACKAGE_ROOT / "studio" / "setup.sh"
+
+
+class TestStrixRocm71Override:
+    """Verify install.sh skips Radeon repo and forces rocm7.2 for gfx1151/gfx1150
+    when ROCm 7.1 would otherwise be selected (known _grouped_mm segfault)."""
+
+    def test_strix_gfx_detection_in_install_sh(self):
+        """install.sh must detect gfx1151 and gfx1150 for the override."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assert "gfx1151" in source and "gfx1150" in source
+
+    def test_rocm71_override_to_rocm72_in_install_sh(self):
+        """install.sh must override TORCH_INDEX_URL from rocm7.1 to rocm7.2 for Strix."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # The override must explicitly reference rocm7.2 in context with Strix detection
+        assert "rocm7.2" in source
+        assert "_strix_gfx" in source
+
+    def test_radeon_repo_bypassed_for_strix_in_install_sh(self):
+        """install.sh must set _amd_gpu_radeon=false when Strix + ROCm 7.1 detected."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # After Strix detection the Radeon repo flag must be disabled
+        assert "_amd_gpu_radeon=false" in source
+
+    def test_strix_override_warns_with_moe_utils_reference(self):
+        """install.sh must emit a [WARN] mentioning the moe_utils segfault."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assert "moe_utils" in source or "_grouped_mm" in source
+
+    def test_strix_override_only_fires_on_rocm71(self):
+        """install.sh must scope the Strix override to rocm7.1 only (not rocm7.2+)."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # The Strix guard must be inside a rocm7.1 case branch
+        strix_idx = source.find("_strix_gfx")
+        assert strix_idx != -1
+        # Look back for the rocm7.1 pattern within 600 chars before _strix_gfx
+        context_before = source[max(0, strix_idx - 600) : strix_idx]
+        assert "rocm7.1" in context_before
+
+    def test_torch_constraint_updated_for_rocm72(self):
+        """install.sh must update TORCH_CONSTRAINT to allow torch>=2.11 when forcing rocm7.2."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # TORCH_CONSTRAINT must be set inside the Strix override block
+        assert "TORCH_CONSTRAINT" in source and "2.11" in source
+
+
+# =============================================================================
+# TEST: setup.sh -- gcc-install-dir fix for Ubuntu 24.04 + ROCm 7.x clang-20
+# =============================================================================
+
+
+class TestSetupShGccInstallDir:
+    """Verify setup.sh applies the --gcc-install-dir flag when building llama.cpp
+    with HIP on Ubuntu 24.04+ to work around ROCm 7.x clang-20 header path bug."""
+
+    def test_gcc_install_dir_search_loop_present(self):
+        """setup.sh must iterate gcc versions 14→11 to find one with C++ headers."""
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "_GCC_INSTALL_DIR" in source
+        assert "/usr/lib/gcc/x86_64-linux-gnu" in source
+
+    def test_gcc_install_dir_checks_include_dir(self):
+        """setup.sh must check that the gcc dir has an 'include' subdirectory."""
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "include" in source and "_GCC_INSTALL_DIR" in source
+
+    def test_gcc_install_dir_appended_to_cmake_hip_flags(self):
+        """setup.sh must pass --gcc-install-dir via CMAKE_HIP_FLAGS."""
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "CMAKE_HIP_FLAGS" in source
+        assert "gcc-install-dir" in source
+
+    def test_gcc_install_dir_only_applied_in_hip_build_block(self):
+        """The --gcc-install-dir fix must only apply in the HIP/ROCm build branch."""
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        # GGML_HIP=ON must appear before gcc-install-dir in the source
+        hip_idx = source.find("GGML_HIP=ON")
+        gcc_idx = source.find("gcc-install-dir")
+        assert hip_idx != -1 and gcc_idx != -1
+        assert hip_idx < gcc_idx
+
+    def test_gcc_install_dir_logs_substep(self):
+        """setup.sh must print a substep when the gcc install dir is resolved."""
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "gcc install dir" in source or "GCC_INSTALL_DIR" in source
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

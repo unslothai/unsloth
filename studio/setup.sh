@@ -1034,6 +1034,27 @@ else
 
                 _BUILD_DESC="building (ROCm)"
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
+
+                # ROCm 7.x ships clang-20 which on Ubuntu 24.04+ defaults to the
+                # highest-numbered gcc lib dir (/usr/lib/gcc/x86_64-linux-gnu/14/)
+                # which contains runtime objects but NOT C++ headers, causing:
+                #   fatal error: 'cstdlib' file not found
+                # Find the newest gcc install dir that actually has both the
+                # runtime dir AND /usr/include/c++/<ver> headers, then pass it
+                # to clang via --gcc-install-dir so HIP builds succeed.
+                _GCC_INSTALL_DIR=""
+                for _gcc_ver in 14 13 12 11; do
+                    if [ -d "/usr/lib/gcc/x86_64-linux-gnu/$_gcc_ver/include" ] && \
+                       [ -d "/usr/include/c++/$_gcc_ver" ]; then
+                        _GCC_INSTALL_DIR="/usr/lib/gcc/x86_64-linux-gnu/$_gcc_ver"
+                        break
+                    fi
+                done
+                if [ -n "$_GCC_INSTALL_DIR" ]; then
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_HIP_FLAGS=--gcc-install-dir=$_GCC_INSTALL_DIR"
+                    substep "ROCm HIP gcc install dir: $_GCC_INSTALL_DIR"
+                fi
+
                 export ROCM_PATH="$ROCM_ROOT"
                 export HIP_PATH="$ROCM_ROOT"
 
