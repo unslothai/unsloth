@@ -668,7 +668,14 @@ jobs:
   json-images:
     name: JSON, images
     runs-on: macos-14
-    timeout-minutes: 30
+    # 45 min, not 30. The job downloads ~4 GB on a cache miss
+    # (3 GB gemma-4 GGUF + ~1 GB mmproj) over shared macos-14 NAT,
+    # plus Studio install + boot + JSON/image smoke. The previous
+    # 30 min cap timed out cache-miss runs mid-download (run
+    # 25950714888 / PR #5430). Once the cache is warm it lands in
+    # ~10 min; the headroom only matters on the first run after a
+    # cache key bump (v1->v2 in #5459).
+    timeout-minutes: 45
     env:
       GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
       # Linux smoke uses UD-IQ3_XXS, but on Mac Metal that gemma-4
