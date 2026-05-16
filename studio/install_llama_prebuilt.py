@@ -1304,7 +1304,7 @@ def direct_linux_release_plan(
         # If the host glibc is too old, validate_prebuilt_attempts will fail
         # the lemonade attempt and we fall through to the source build.
         lemonade_choice = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = bundle.upstream_tag
+            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
         )
         if lemonade_choice is not None:
             attempts.append(lemonade_choice)
@@ -1358,7 +1358,7 @@ def direct_upstream_release_plan(
             )
         if host.has_rocm and not host.has_usable_nvidia:
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "windows", "windows-hip", llama_tag = release_tag
+                host, "windows", "windows-hip", llama_tag = requested_tag
             )
             if lemonade_choice is not None:
                 attempts.append(lemonade_choice)
