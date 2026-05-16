@@ -93,10 +93,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
 
       # Save partial caches on cancel/timeout -- hf download resumes by
       # content hash. `outcome != skipped` keeps cache-hit a no-op.
@@ -343,10 +342,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       # Save partial caches on cancel; next run resumes via content hash.
       - name: Save GGUF model file
@@ -668,14 +666,7 @@ jobs:
   json-images:
     name: JSON, images
     runs-on: macos-14
-    # 45 min, not 30. The job downloads ~4 GB on a cache miss
-    # (3 GB gemma-4 GGUF + ~1 GB mmproj) over shared macos-14 NAT,
-    # plus Studio install + boot + JSON/image smoke. The previous
-    # 30 min cap timed out cache-miss runs mid-download (run
-    # 25950714888 / PR #5430). Once the cache is warm it lands in
-    # ~10 min; the headroom only matters on the first run after a
-    # cache key bump (v1->v2 in #5459).
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
       # Linux smoke uses UD-IQ3_XXS, but on Mac Metal that gemma-4
@@ -732,13 +723,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache &
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache &
           MODEL_PID=$!
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$MMPROJ_FILE" --local-dir gguf-cache &
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE" gguf-cache &
           MMPROJ_PID=$!
           wait "$MODEL_PID"
           wait "$MMPROJ_PID"

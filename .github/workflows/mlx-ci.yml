@@ -302,15 +302,10 @@ jobs:
           "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
 
           mkdir -p /tmp/ggufs
-          python -c "
-          from huggingface_hub import hf_hub_download
-          p = hf_hub_download(
-              'unsloth/gemma-3-270m-it-GGUF',
-              'gemma-3-270m-it-Q4_K_M.gguf',
-              local_dir = '/tmp/ggufs',
-          )
-          print('downloaded:', p)
-          "
+          bash .github/scripts/hf-download-with-retry.sh \
+            'unsloth/gemma-3-270m-it-GGUF' \
+            'gemma-3-270m-it-Q4_K_M.gguf' \
+            /tmp/ggufs
 
           PORT=18080
           echo "=== starting llama-server on 127.0.0.1:$PORT ==="
