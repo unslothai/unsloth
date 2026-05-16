@@ -50,6 +50,7 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
@@ -716,6 +717,11 @@ export function ChatPage(): ReactElement {
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
     );
+    const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+      provider?.providerType,
+      selection.modelId,
+      provider?.baseUrl,
+    );
     // Kimi's k2.6/k2.5 default to thinking enabled on the server side
     // (per https://platform.kimi.ai/docs/models). Mirror that default
     // in the UI so the Think pill comes up clicked when the user picks
@@ -748,14 +754,16 @@ export function ChatPage(): ReactElement {
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models never give us a local tool runtime (no Code
-      // execution, no python sandbox), so `supportsTools` must be
-      // false — that's what gates the Code pill in the composer.
-      // `supportsBuiltinWebSearch` is the separate flag that lets the
-      // Search pill light up for providers (currently just OpenAI) who
-      // run web_search server-side.
+      // External models never give us a local tool runtime (no
+      // python sandbox), so `supportsTools` must be false. The two
+      // `supportsBuiltin*` flags pick up the slack for providers that
+      // run the tool server-side: `supportsBuiltinWebSearch` lights
+      // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
+      // `supportsBuiltinCodeExecution` lights up the Code pill
+      // (Anthropic Claude 4.x only, today).
       supportsTools: false,
       supportsBuiltinWebSearch,
+      supportsBuiltinCodeExecution,
       toolsEnabled: searchOnByDefault,
       codeToolsEnabled: false,
     });
@@ -915,6 +923,11 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
         );
+        const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
+        );
         // See sibling useEffect above: Kimi's k2.x default to thinking
         // enabled, so the Think pill comes up clicked. Search pill stays
         // off by default; mutual exclusion flips them via the composer.
@@ -946,12 +959,15 @@ export function ChatPage(): ReactElement {
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools=false
-          // keeps the Code pill greyed out. supportsBuiltinWebSearch is the
-          // separate flag the composer reads to light up the Search pill
-          // when the provider offers a server-side web_search tool.
+          // External models have no local tool runtime → supportsTools
+          // stays false. The two supportsBuiltin* flags carry the
+          // server-side capability info for each pill:
+          //   - Search → providerSupportsBuiltinWebSearch
+          //   - Code   → providerSupportsBuiltinCodeExecution
+          //              (Anthropic Claude 4.x only, today)
           supportsTools: false,
           supportsBuiltinWebSearch,
+          supportsBuiltinCodeExecution,
           toolsEnabled: searchOnByDefault,
           codeToolsEnabled: false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),

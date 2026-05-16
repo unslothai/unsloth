@@ -66,6 +66,8 @@ import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type ExternalProviderConfig,
+  getExternalProviderApiKey,
+  parseExternalModelId,
   supportsProviderPromptCaching,
 } from "./external-providers";
 import {
@@ -84,9 +86,11 @@ import {
   toPresetParams,
   type Preset,
 } from "./presets/preset-policy";
+import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   getExternalMinOutputTokens,
+  providerSupportsBuiltinCodeExecution,
   type ProviderCapabilities,
 } from "./provider-capabilities";
 import type { InferenceParams } from "./types/runtime";
@@ -675,6 +679,21 @@ export function ChatSettingsPanel({
     supportsProviderPromptCaching(activeExternalProvider.providerType);
   const promptCachingEnabled =
     activeExternalProvider?.enablePromptCaching !== false;
+  const externalSelection = currentCheckpoint
+    ? parseExternalModelId(currentCheckpoint)
+    : null;
+  const showOpenAICodeExecSection =
+    activeExternalProvider != null &&
+    providerSupportsBuiltinCodeExecution(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+      activeExternalProvider.baseUrl,
+    ) &&
+    activeExternalProvider.providerType === "openai";
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const openAiApiKeyForSection = activeExternalProvider
+    ? getExternalProviderApiKey(activeExternalProvider.id) || null
+    : null;
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
@@ -1181,6 +1200,17 @@ export function ChatSettingsPanel({
                 aria-label="Enable prompt caching"
               />
             </div>
+          </CollapsibleSection>
+        ) : null}
+
+        {showOpenAICodeExecSection && activeExternalProvider ? (
+          <CollapsibleSection label="Code Execution" defaultOpen={false}>
+            <OpenAICodeExecSection
+              provider={activeExternalProvider}
+              apiKey={openAiApiKeyForSection}
+              activeThreadId={activeThreadId}
+              onProviderChange={(p) => onExternalProviderChange?.(p)}
+            />
           </CollapsibleSection>
         ) : null}
 

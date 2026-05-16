@@ -176,8 +176,12 @@ export async function updateProviderConfig(
 
 async function withApiKeyEncryptionRetry<T>(
   plaintextApiKey: string,
-  call: (encryptedApiKey: string) => Promise<T>,
+  call: (encryptedApiKey: string | null) => Promise<T>,
 ): Promise<T> {
+  // Empty key (local providers): skip RSA round-trip and let the backend omit auth.
+  if (!plaintextApiKey) {
+    return await call(null);
+  }
   try {
     const encrypted = await encryptProviderApiKey(plaintextApiKey, false);
     return await call(encrypted);

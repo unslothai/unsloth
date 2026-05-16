@@ -13,6 +13,7 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
+import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -750,9 +751,18 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers have no local tool runtime, but Anthropic's
+  // Claude 4.x dispatches code_execution_20250825 server-side. The
+  // chat-page resolver stashes that capability in the runtime store
+  // (next to supportsBuiltinWebSearch). Mirror of shared-composer's
+  // codeDisabled so this pill lights up in active threads too.
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const disabled = !(modelLoaded && supportsTools);
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
@@ -946,6 +956,7 @@ const AssistantMessage: FC = () => {
                 web_search: WebSearchToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
+                code_execution: CodeExecutionToolUI,
               },
               Fallback: ToolFallback,
             },

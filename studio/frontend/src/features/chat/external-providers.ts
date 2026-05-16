@@ -18,6 +18,13 @@ export interface ExternalProviderConfig {
   enablePromptCaching?: boolean;
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
+  /**
+   * Default idle-timeout (in minutes) for newly created OpenAI shell
+   * containers. Pre-fills the "Create container" dialog and is the
+   * TTL the auto-create-per-thread path POSTs to /v1/containers with.
+   * OpenAI's hard default is 20. Only meaningful for OpenAI cloud.
+   */
+  openaiContainerTtlMinutes?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -226,6 +233,12 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
+    openaiContainerTtlMinutes:
+      providerType === "openai" &&
+      typeof raw.openaiContainerTtlMinutes === "number" &&
+      raw.openaiContainerTtlMinutes >= 1
+        ? Math.min(raw.openaiContainerTtlMinutes, 20)
+        : undefined,
   };
 }
 

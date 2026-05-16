@@ -200,14 +200,18 @@ async def test_provider(
             detail = f"Unknown provider type: {payload.provider_type}",
         )
 
-    try:
-        api_key = decrypt_api_key(payload.encrypted_api_key)
-    except Exception as exc:
-        logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
-        raise HTTPException(
-            status_code = 400,
-            detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
-        )
+    api_key = ""
+    if payload.encrypted_api_key:
+        try:
+            api_key = decrypt_api_key(payload.encrypted_api_key)
+        except Exception as exc:
+            logger.warning(
+                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
+            )
 
     base_url = payload.base_url or info["base_url"]
     client = ExternalProviderClient(
@@ -265,14 +269,18 @@ async def list_provider_models(
             detail = f"Unknown provider type: {payload.provider_type}",
         )
 
-    try:
-        api_key = decrypt_api_key(payload.encrypted_api_key)
-    except Exception as exc:
-        logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
-        raise HTTPException(
-            status_code = 400,
-            detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
-        )
+    api_key = ""
+    if payload.encrypted_api_key:
+        try:
+            api_key = decrypt_api_key(payload.encrypted_api_key)
+        except Exception as exc:
+            logger.warning(
+                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
+            )
 
     if info.get("model_list_mode") == "curated":
         return [
