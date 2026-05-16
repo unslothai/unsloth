@@ -228,10 +228,24 @@ def _detect_rocm_version() -> tuple[int, int] | None:
 
 
 def _detect_windows_gfx_arch() -> str | None:
-    """Return the gcnArchName from hipinfo on Windows (e.g. 'gfx1200'), or None."""
+    """Return the gcnArchName from hipinfo on Windows (e.g. 'gfx1200'), or None.
+
+    Resolves hipinfo via PATH first, then HIP_PATH\\bin and ROCM_PATH\\bin as
+    fallbacks -- the AMD HIP SDK installer sets these env vars but does not
+    always add the bin dir to the system PATH.
+    """
     import re
 
     hipinfo = shutil.which("hipinfo")
+    if not hipinfo:
+        # Fallback: AMD HIP SDK sets HIP_PATH / ROCM_PATH even when bin isn't on PATH
+        for _env_var in ("HIP_PATH", "ROCM_PATH"):
+            _root = os.environ.get(_env_var)
+            if _root:
+                _candidate = os.path.join(_root, "bin", "hipinfo.exe")
+                if os.path.isfile(_candidate):
+                    hipinfo = _candidate
+                    break
     if not hipinfo:
         return None
     try:

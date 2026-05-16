@@ -54,7 +54,11 @@ if sys.platform == "win32":
     # this the server process crashes with "Configured ROCm binary not found".
     # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
     # before any import that pulls in bitsandbytes (mirrors worker.py logic).
-    if "BNB_ROCM_VERSION" not in os.environ:
+    # Guard: only set on ROCm hosts (HIP_PATH/ROCM_PATH present) -- setting
+    # BNB_ROCM_VERSION on a Windows CUDA machine makes bitsandbytes look for a
+    # ROCm DLL that doesn't exist and fail to initialise the CUDA backend.
+    _is_rocm_host = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
+    if _is_rocm_host and "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
 
         _bnb_rocm_ver = None

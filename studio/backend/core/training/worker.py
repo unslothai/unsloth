@@ -1248,7 +1248,13 @@ def run_training_process(
 
     sys.meta_path.append(_StubSubpackageFinder())
 
-    if sys.platform == "win32":
+    # Only stub torchao on Windows ROCm hosts -- on Windows CUDA (NVIDIA) torchao
+    # is real and shadowing it breaks torchao-based quantization paths.
+    # HIP_PATH / ROCM_PATH are set by the AMD HIP SDK installer on ROCm machines.
+    _is_win32_rocm = sys.platform == "win32" and bool(
+        os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH")
+    )
+    if _is_win32_rocm:
         # Seed torchao top-level + key submodules; the finder handles the rest.
         for _tao_name in (
             "torchao",
