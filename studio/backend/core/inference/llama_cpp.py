@@ -1946,6 +1946,35 @@ class LlamaCppBackend:
             logger.warning(f"Could not download mmproj: {e}")
             return None
 
+    def _resolve_launch_mmproj_path(
+        self,
+        *,
+        model_path: str,
+        mmproj_path: Optional[str],
+    ) -> Optional[str]:
+        """Return mmproj_path iff it exists on disk AND matches the model family.
+
+        Returns None if mmproj_path is None, missing on disk, or family-mismatched.
+        """
+        if not mmproj_path:
+            return None
+
+        mmproj = Path(mmproj_path)
+        if not mmproj.is_file():
+            logger.warning(f"mmproj file not found: {mmproj_path}")
+            return None
+
+        from utils.models.model_config import mmproj_matches_model_family
+
+        if not mmproj_matches_model_family(model_path, str(mmproj)):
+            logger.warning(
+                f"mmproj does not match model family: model={Path(model_path).name} "
+                f"mmproj={mmproj.name}"
+            )
+            return None
+
+        return str(mmproj)
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     def load_model(
@@ -2212,6 +2241,21 @@ class LlamaCppBackend:
                 gpu_indices, use_fit = None, True
                 effective_ctx = n_ctx  # fall back to original
 
+            launch_mmproj_path = self._resolve_launch_mmproj_path(
+                model_path = model_path,
+                mmproj_path = mmproj_path,
+            )
+            # Need both: a resolved mmproj AND the model's config flag
+            # saying vision. A stray mmproj that happens to pass the
+            # family-name heuristic shouldn't flip a non-VLM GGUF into
+            # "I do images now."
+            effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+            if is_vision and not effective_is_vision:
+                logger.warning(
+                    "Vision-capable GGUF loaded without a usable mmproj; "
+                    "image input will be disabled for this session"
+                )
+
             cmd = [
                 binary,
                 "-m",
@@ -2290,7 +2334,7 @@ class LlamaCppBackend:
             normalized_spec = (
                 speculative_type.lower().strip() if speculative_type else None
             )
-            if normalized_spec and normalized_spec != "off" and not is_vision:
+            if normalized_spec and normalized_spec != "off" and not effective_is_vision:
                 if normalized_spec == "default":
                     cmd.append("--spec-default")
                     self._speculative_type = "default"
@@ -2363,24 +2407,9 @@ class LlamaCppBackend:
                 )
                 logger.info(f"Reasoning model: {reasoning_kw} by default")
 
-            if mmproj_path:
-                if not Path(mmproj_path).is_file():
-                    logger.warning(f"mmproj file not found: {mmproj_path}")
-                else:
-                    # #5347 guard for paths that bypass detect_mmproj_file.
-                    from utils.models.model_config import (
-                        mmproj_matches_model_family,
-                    )
-
-                    if not mmproj_matches_model_family(model_path, mmproj_path):
-                        logger.warning(
-                            f"Skipping mmproj with mismatched family: "
-                            f"model={Path(model_path).name}, "
-                            f"mmproj={Path(mmproj_path).name}"
-                        )
-                    else:
-                        cmd.extend(["--mmproj", mmproj_path])
-                        logger.info(f"Using mmproj for vision: {mmproj_path}")
+            if launch_mmproj_path:
+                cmd.extend(["--mmproj", launch_mmproj_path])
+                logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
 
             # Option C: add --api-key for direct client access when enabled
             import os as _os
@@ -2563,7 +2592,7 @@ class LlamaCppBackend:
                     self._hf_variant = None
             else:
                 self._hf_variant = None
-            self._is_vision = is_vision
+            self._is_vision = effective_is_vision
             self._model_identifier = model_identifier
 
             # Store the effective (possibly capped) context separately.

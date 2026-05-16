@@ -42,6 +42,7 @@ import {
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -771,6 +772,36 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
+
+      // Defense in depth. VisionImageAdapter.add() should already have
+      // caught this, but if an image slipped past (toast dismissed,
+      // store race, manual append), block here so we don't hand the
+      // server a request it'll reject mid-stream.
+      let currentUserMessage: RunMessage | undefined;
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        if (messages[i]?.role === "user") {
+          currentUserMessage = messages[i];
+          break;
+        }
+      }
+      const currentUserHasImage = currentUserMessage
+        ? findLatestUserImageBase64([currentUserMessage]) !== undefined
+        : false;
+      if (currentUserHasImage) {
+        const activeModel = runtime.models.find(
+          (m) => m.id === params.checkpoint,
+        );
+        const imageGateReason = getImageInputUnavailableReason({
+          activeModel,
+          isExternalModel: isExternalRequest,
+          loadedIsMultimodal: runtime.loadedIsMultimodal,
+          modelLoaded: !!params.checkpoint && !runtime.modelLoading,
+        });
+        if (imageGateReason) {
+          toast.error(imageGateReason);
+          throw new Error(imageGateReason);
+        }
+      }
       // Clear pending audio from store after extracting (consumed on send)
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;

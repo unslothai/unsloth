@@ -32,9 +32,11 @@ import {
   useRef,
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
+import { toast } from "sonner";
 import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
+import { parseExternalModelId } from "./external-providers";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
 import {
@@ -42,6 +44,7 @@ import {
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
+import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 const DEFAULT_SUGGESTIONS = [
   {
@@ -78,6 +81,22 @@ class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const state = useChatRuntimeStore.getState();
+    const checkpoint = state.params.checkpoint;
+    const activeModel = state.models.find((m) => m.id === checkpoint);
+    const isExternalModel = parseExternalModelId(checkpoint) !== null;
+    const modelLoaded = !!checkpoint && !state.modelLoading;
+    const unavailableReason = getImageInputUnavailableReason({
+      activeModel,
+      isExternalModel,
+      loadedIsMultimodal: state.loadedIsMultimodal,
+      modelLoaded,
+    });
+    if (unavailableReason) {
+      toast.error(unavailableReason);
+      throw new Error(unavailableReason);
+    }
+
     const maxSize = 20 * 1024 * 1024;
     if (file.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");

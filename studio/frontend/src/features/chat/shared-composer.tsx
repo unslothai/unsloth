@@ -14,6 +14,8 @@ import {
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isMultimodalResponse } from "./types/api";
+import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -286,11 +288,13 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
+  const models = useChatRuntimeStore((s) => s.models);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -315,6 +319,13 @@ export function SharedComposer({
     (s) => s.lastOpenRouterChosenModel,
   );
   const externalSelection = parseExternalModelId(checkpoint);
+  const isExternalModel = externalSelection !== null;
+  const imageUnavailableReason = getImageInputUnavailableReason({
+    activeModel,
+    isExternalModel,
+    loadedIsMultimodal,
+    modelLoaded,
+  });
   const selectedExternalProvider =
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
@@ -411,6 +422,7 @@ export function SharedComposer({
   const addFiles = useCallback((files: FileList | null) => {
     if (!files?.length) return;
     const next: PendingImage[] = [];
+    let droppedImageForUnavailable = false;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file) continue;
@@ -425,10 +437,17 @@ export function SharedComposer({
       // Handle image files
       if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
       if (file.size > MAX_IMAGE_SIZE) continue;
+      if (imageUnavailableReason) {
+        droppedImageForUnavailable = true;
+        continue;
+      }
       next.push({ id: crypto.randomUUID(), file });
     }
+    if (droppedImageForUnavailable && imageUnavailableReason) {
+      toast.error(imageUnavailableReason);
+    }
     setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore]);
+  }, [setPendingAudioStore, imageUnavailableReason]);
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
@@ -443,6 +462,38 @@ export function SharedComposer({
     if (composingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
+
+    const hasCompareHandles = Boolean(
+      handlesRef.current["model1"] || handlesRef.current["model2"],
+    );
+    const isGeneralizedCompare =
+      hasCompareHandles && Boolean(model1?.id || model2?.id);
+
+    if (pendingImages.length > 0) {
+      // Compare needs a per-target check. The global
+      // imageUnavailableReason follows whichever model was loaded last in
+      // this chat, which is rarely model1 or model2, and on a fresh
+      // compare neither has loaded yet.
+      const compareTargetReason = (
+        sel: CompareModelSelection | undefined,
+      ): string | null => {
+        if (!sel) return null;
+        const target = models.find((m) => m.id === sel.id);
+        if (!target) return null;
+        if (target.isVision) return null;
+        const suffix = target.isGguf
+          ? " with a valid mmproj before attaching images."
+          : " before attaching images.";
+        return `${target.name || target.id} cannot accept images. Load a vision-capable model${suffix}`;
+      };
+      const blockReason = isGeneralizedCompare
+        ? compareTargetReason(model1) || compareTargetReason(model2)
+        : imageUnavailableReason;
+      if (blockReason) {
+        toast.error(blockReason);
+        return;
+      }
+    }
 
     const content: CompareMessagePart[] = [];
     for (const { file } of pendingImages) {
@@ -468,8 +519,6 @@ export function SharedComposer({
     textareaRef.current?.focus();
 
     // Generalized compare: load each model before dispatching to its side
-    const hasCompareHandles = Boolean(handlesRef.current["model1"] || handlesRef.current["model2"]);
-    const isGeneralizedCompare = hasCompareHandles && Boolean(model1?.id || model2?.id);
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
       const maxSeqLength = store.params.maxSeqLength;
@@ -530,6 +579,7 @@ export function SharedComposer({
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          loadedIsMultimodal: isMultimodalResponse(resp),
         });
         return resp.status;
       }
@@ -699,7 +749,13 @@ export function SharedComposer({
             variant="ghost"
             size="icon"
             className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (imageUnavailableReason) {
+                toast.error(imageUnavailableReason);
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
             aria-label="Add Attachment"
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />

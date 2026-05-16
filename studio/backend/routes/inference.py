@@ -684,7 +684,7 @@ async def load_model(
                 display_name = model_log_label
                 if native_grant_backed
                 else config.display_name,
-                is_vision = config.is_vision,
+                is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
