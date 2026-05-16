@@ -2072,8 +2072,9 @@ class TestStrixHaloGfxArchDetection:
         for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
             source = path.read_text(encoding = "utf-8")
             # The regex pattern used to match gfx arches
-            assert "gfx\\d+" in source or r"gfx\d+" in source, \
-                f"gfx arch regex not found in {path.name}"
+            assert (
+                "gfx\\d+" in source or r"gfx\d+" in source
+            ), f"gfx arch regex not found in {path.name}"
 
 
 if __name__ == "__main__":
