@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -26,6 +28,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.wheel_utils import (
     CAUSAL_CONV1D_SPEC,
     FLASH_ATTN_SPEC,
@@ -47,6 +50,9 @@ def _output_dir_from_resume_checkpoint(
 
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
+_TILELANG_PACKAGE_VERSION = "0.1.8"
+_APACHE_TVM_FFI_PACKAGE_VERSION = "0.1.9"
+_TILELANG_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_TILELANG_INSTALL"
 
 
 def _model_needs_causal_conv1d_and_fla(model_name: str) -> bool:
@@ -87,12 +93,89 @@ def _model_needs_mamba(model_name: str) -> bool:
     return any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS)
 
 
+_TILELANG_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+)
+
+
+def _model_needs_tilelang(model_name: str) -> bool:
+    return any(sub in model_name.lower() for sub in _TILELANG_MODEL_SUBSTRINGS)
+
+
 def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
     if os.getenv(_FLASH_ATTN_SKIP_ENV) == "1":
         return False
     if max_seq_length <= _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
     return sys.platform.startswith("linux")
+
+
+def _ensure_tilelang_backend(
+    event_queue: Any,
+    *,
+    model_name: str,
+    blackwell: bool | None = None,
+) -> bool:
+    if os.getenv(_TILELANG_SKIP_ENV) == "1":
+        return False
+    if not _model_needs_tilelang(model_name):
+        return False
+    is_blackwell = blackwell if blackwell is not None else has_blackwell_gpu()
+    if is_blackwell:
+        return False
+
+    try:
+        import tilelang  # noqa: F401
+        import tvm_ffi  # noqa: F401
+
+        logger.info("tilelang + apache-tvm-ffi already installed")
+        return True
+    except ImportError:
+        pass
+
+    specs = [
+        f"apache-tvm-ffi=={_APACHE_TVM_FFI_PACKAGE_VERSION}",
+        f"tilelang=={_TILELANG_PACKAGE_VERSION}",
+    ]
+    _send_status(
+        event_queue,
+        (
+            f"Installing TileLang backend ("
+            f"apache-tvm-ffi=={_APACHE_TVM_FFI_PACKAGE_VERSION}, "
+            f"tilelang=={_TILELANG_PACKAGE_VERSION}) for FLA fast path..."
+        ),
+    )
+
+    if shutil.which("uv"):
+        cmd = ["uv", "pip", "install", "--python", sys.executable, *specs]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", *specs]
+
+    result = subprocess.run(
+        cmd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        env = child_env_without_native_path_secret(),
+    )
+    if result.returncode == 0:
+        logger.info("Installed TileLang backend for FLA fast path")
+        return True
+
+    logger.warning(
+        "TileLang backend install failed (continuing without it):\n%s",
+        result.stdout,
+    )
+    _send_status(
+        event_queue,
+        "TileLang backend install failed; continuing on the FLA Triton path",
+    )
+    return False
 
 
 def _install_train_time_optional_kernels(
@@ -102,11 +185,19 @@ def _install_train_time_optional_kernels(
     max_seq_length: int,
 ) -> None:
     needs_causal_conv1d = _model_needs_causal_conv1d_and_fla(model_name)
+    blackwell: bool | None = None
+    fla_installed = False
+
+    def is_blackwell() -> bool:
+        nonlocal blackwell
+        if blackwell is None:
+            blackwell = has_blackwell_gpu()
+        return blackwell
+
     optional_installs = (
         (needs_causal_conv1d, CAUSAL_CONV1D_SPEC),
         (needs_causal_conv1d, FLASH_LINEAR_ATTN_SPEC),
         (_model_needs_mamba(model_name), MAMBA_SSM_SPEC),
-        (_should_try_runtime_flash_attn_install(max_seq_length), FLASH_ATTN_SPEC),
     )
 
     for should_install, spec in optional_installs:
@@ -114,7 +205,7 @@ def _install_train_time_optional_kernels(
             continue
         if spec is MAMBA_SSM_SPEC:
             logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-        if spec in (FLASH_ATTN_SPEC, FLASH_LINEAR_ATTN_SPEC) and has_blackwell_gpu():
+        if spec in (FLASH_ATTN_SPEC, FLASH_LINEAR_ATTN_SPEC) and is_blackwell():
             _send_status(
                 event_queue,
                 f"Skipping {spec.display_name} install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
@@ -127,7 +218,31 @@ def _install_train_time_optional_kernels(
             allow_pypi_fallback = True,
             status = lambda message: _send_status(event_queue, message),
         )
-        if spec is FLASH_ATTN_SPEC and not installed:
+        if spec is FLASH_LINEAR_ATTN_SPEC:
+            fla_installed = installed
+
+    if fla_installed:
+        _ensure_tilelang_backend(
+            event_queue,
+            model_name = model_name,
+            blackwell = is_blackwell(),
+        )
+
+    if _should_try_runtime_flash_attn_install(max_seq_length):
+        if is_blackwell():
+            _send_status(
+                event_queue,
+                f"Skipping {FLASH_ATTN_SPEC.display_name} install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+            )
+            return
+        installed = install_optional_kernel(
+            FLASH_ATTN_SPEC,
+            python_executable = sys.executable,
+            use_uv = True,
+            allow_pypi_fallback = True,
+            status = lambda message: _send_status(event_queue, message),
+        )
+        if not installed:
             _send_status(event_queue, "Continuing without flash-attn")
 
 
