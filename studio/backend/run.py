@@ -270,6 +270,8 @@ def run_server(
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
+    api_max_concurrency: int | None = None,
+    api_queue_policy: str | None = None,
 ):
     """
     Start the FastAPI server.
@@ -281,6 +283,8 @@ def run_server(
         silent: Suppress startup messages
         api_only: Run API server only, no frontend serving (for Tauri desktop app)
         llama_parallel_slots: Number of parallel slots for llama-server
+        api_max_concurrency: Maximum concurrent API inference requests
+        api_queue_policy: "wait" to queue overflow requests or "reject" for HTTP 429
 
     Note:
         Signal handlers are NOT registered here so that embedders
@@ -297,9 +301,13 @@ def run_server(
         except Exception:
             pass
 
-    # Set env var BEFORE importing main so CORS middleware picks it up
+    # Set env vars BEFORE importing main so middleware/CORS read them at import time.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
+    if api_max_concurrency is not None:
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
+    if api_queue_policy is not None:
+        os.environ["UNSLOTH_API_QUEUE_POLICY"] = str(api_queue_policy)
 
     import nest_asyncio
 
@@ -374,6 +382,10 @@ def run_server(
     # to the ASGI request scope or request.base_url.
     app.state.server_port = port if port and port > 0 else None
     app.state.llama_parallel_slots = llama_parallel_slots
+    if api_max_concurrency is not None:
+        app.state.api_max_concurrency = api_max_concurrency
+    if api_queue_policy is not None:
+        app.state.api_queue_policy = api_queue_policy
 
     # Expose a shutdown callable via app.state before the server can accept
     # requests so /api/shutdown is available as soon as readiness is published.
@@ -468,11 +480,28 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    parser.add_argument(
+        "--api-max-concurrency",
+        type = int,
+        default = None,
+        help = "Maximum concurrent inference requests (default: UNSLOTH_API_MAX_CONCURRENCY or 1)",
+    )
+    parser.add_argument(
+        "--api-queue-policy",
+        choices = ["wait", "reject"],
+        default = None,
+        help = "How to handle requests above --api-max-concurrency (default: wait)",
+    )
 
     args = parser.parse_args()
 
     kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        api_max_concurrency = args.api_max_concurrency,
+        api_queue_policy = args.api_queue_policy,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

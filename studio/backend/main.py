@@ -430,6 +430,21 @@ app.add_middleware(
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
 )
 
+from utils.api_concurrency import (  # noqa: E402
+    InferenceConcurrencyMiddleware,
+    parse_api_max_concurrency,
+    parse_api_queue_policy,
+)
+
+_api_max_concurrency = parse_api_max_concurrency()
+_api_queue_policy = parse_api_queue_policy()
+app.state.api_max_concurrency = _api_max_concurrency
+app.state.api_queue_policy = _api_queue_policy
+app.add_middleware(
+    InferenceConcurrencyMiddleware,
+    max_concurrency = _api_max_concurrency,
+    queue_policy = _api_queue_policy,
+)
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
