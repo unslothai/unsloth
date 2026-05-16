@@ -31,7 +31,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # Shared robustness helpers live next to this script. Tests run as
 # plain `python tests/studio/playwright_extra_ui.py` (not via pytest /
@@ -299,7 +299,10 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # Detect chat-only mode: /api/health.chat_only is the source of truth.
-    # In chat-only mode, /studio + /export redirect to /chat.
+    # The field is part of the unauthenticated launcher contract so the
+    # SPA's first-load router can decide whether to redirect /studio +
+    # /export to /chat *before* any bearer exists. Bearered or not, the
+    # field is always present on a healthy backend.
     health_resp = evaluate_fetch(
         page,
         f"{BASE}/api/health",
@@ -309,8 +312,18 @@ with sync_playwright() as p:
         fail(f"/api/health wedged: {health_resp['error']!r}")
         sys.exit(1)
     health = health_resp.get("body") or {}
-    chat_only = bool(health.get("chat_only"))
-    info(f"chat_only mode: {chat_only}")
+    if "chat_only" not in health:
+        # Defensive: an older Studio build without the launcher-contract
+        # patch may omit chat_only when called unauthenticated. Default
+        # to non-chat-only and log so the probe is not silently wrong.
+        chat_only = False
+        info(
+            "WARN /api/health did not return chat_only; defaulting to "
+            "chat_only=False (older Studio build)"
+        )
+    else:
+        chat_only = bool(health.get("chat_only"))
+        info(f"chat_only mode: {chat_only}")
 
     # ─────────────────────────────────────────────────────
     # 1. Compare tab.
@@ -506,7 +519,29 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step(f"Studio route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
-    page.wait_for_timeout(1500)
+    # Don't rely on a fixed timeout for hydration -- the training runtime
+    # makes API calls on mount and the tabs are gated on hasHydratedRuntime.
+    # Wait for the loading placeholder to clear by polling for either the
+    # Configure tab or the redirected URL (chat_only).
+    try:
+        page.wait_for_function(
+            """
+            () => {
+                if (!location.pathname.startsWith('/studio')) return true;
+                const loading = Array.from(document.querySelectorAll('div'))
+                    .find(d => d.textContent && d.textContent.includes('Loading training runtime'));
+                if (loading) return false;
+                const tabs = document.querySelectorAll('[role="tab"]');
+                return tabs.length >= 3;
+            }
+            """,
+            timeout = 30_000,
+        )
+    except PlaywrightTimeoutError:
+        info(
+            "/studio hydration didn't complete in 30s; continuing with whatever rendered"
+        )
+    page.wait_for_timeout(500)
     shoot("08-studio")
     if chat_only:
         if "/studio" in page.url:
@@ -516,16 +551,57 @@ with sync_playwright() as p:
         else:
             info(f"OK chat-only redirected /studio -> {page.url}")
     else:
-        for tab_name in ("Configure", "Current run", "History"):
-            tab = page.get_by_role(
-                "tab", name = re.compile(rf"^\s*{tab_name}\s*$", re.I)
+        # Tabs render with disabled={!showTrainingView} on "Current Run",
+        # so during CI smoke (no run hydrated) it has disabled-aria. We
+        # match on accessible name regardless of disabled state. The
+        # frontend's accessible label is "Current Run" (title case) --
+        # the regex is already case-insensitive so either rendering is OK.
+        for tab_name in ("Configure", "Current Run", "History"):
+            try:
+                tab = page.get_by_role(
+                    "tab", name = re.compile(rf"^\s*{tab_name}\s*$", re.I)
+                ).first
+                if tab.count() == 0:
+                    # Fallback: bare button text (some Radix versions
+                    # render the trigger without role="tab" until the
+                    # tabs are activated). Look at any element whose
+                    # accessible name matches.
+                    tab = page.get_by_text(
+                        re.compile(rf"^\s*{tab_name}\s*$", re.I), exact = False
+                    ).first
+                if tab.count() == 0:
+                    soft_fail(f"tab '{tab_name}' not found in /studio")
+                else:
+                    info(f"OK tab '{tab_name}' visible")
+            except Exception as exc:
+                soft_fail(f"tab '{tab_name}' query failed: {exc!r}")
+        # data-tour anchors live inside the Configure TabsContent.
+        # Click Configure first so the sections are mounted before we look
+        # for the anchors. This matches what a user sees when they land
+        # on /studio for the first time.
+        try:
+            configure_tab = page.get_by_role(
+                "tab", name = re.compile(r"^\s*configure\s*$", re.I)
             ).first
-            if tab.count() == 0:
-                soft_fail(f"tab '{tab_name}' not found in /studio")
-            else:
-                info(f"OK tab '{tab_name}' visible")
+            if configure_tab.count() > 0:
+                configure_tab.click(timeout = 5_000)
+                page.wait_for_timeout(300)
+        except Exception as exc:
+            info(f"Configure-tab click warning (continuing): {exc!r}")
         for anchor in ("studio-model", "studio-dataset", "studio-params"):
             el = page.locator(f'[data-tour="{anchor}"]').first
+            if el.count() == 0:
+                # Give the lazy-mounted sections a final 3s grace window
+                # before reporting missing -- shadcn ParamsSection
+                # measures its container after first paint and may flip
+                # the data-tour attribute on a later render tick.
+                try:
+                    page.wait_for_selector(
+                        f'[data-tour="{anchor}"]', timeout = 3_000, state = "attached"
+                    )
+                    el = page.locator(f'[data-tour="{anchor}"]').first
+                except PlaywrightTimeoutError:
+                    pass
             if el.count() == 0:
                 soft_fail(f"[data-tour='{anchor}'] not found")
             else:

@@ -7,6 +7,7 @@ Authentication API routes
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+import logging
 import threading
 import time
 from collections import deque
@@ -140,11 +141,31 @@ async def logout(
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
 ) -> Response:
-    """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
+    """Revoke refresh tokens for the subject; the access token is stateless and expires on its own.
+
+    The revoke must succeed for the response to be 204 -- otherwise a caller
+    would be told "logged out" while a stolen refresh token stayed live in
+    the database. We surface a 500 with a generic message when the storage
+    layer fails so callers (and operators) notice and retry / investigate.
+    """
     try:
         storage.revoke_user_refresh_tokens(current_subject)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Log structured detail but keep the response opaque -- we don't want
+        # to leak DB internals (file path, lock contention, etc.) to clients.
+        try:
+            logger = logging.getLogger(__name__)
+            logger.error(
+                "logout: refresh-token revocation failed for subject=%s: %r",
+                current_subject,
+                exc,
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = "Failed to revoke refresh tokens",
+        )
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:

@@ -118,9 +118,40 @@ class TestUntrustedHostBlock:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
-    def test_dynamic_url_not_statically_blocked(self):
-        # Static AST cannot resolve runtime URLs; bash blocklist is the fallback.
-        _ok('import requests; url = "https://example.com/"; requests.get(url)')
+    def test_simple_variable_url_resolved_and_blocked(self):
+        # Static AST resolves ``u = "..."; requests.get(u)`` by following the
+        # assignment, so metadata / untrusted hosts are caught even when the
+        # URL is staged into a local. Before this hardening pass the
+        # variable-URL path was treated as opaque and slipped through.
+        _blocked(
+            "import requests\n" 'url = "https://example.com/"\n' "requests.get(url)",
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+        _blocked(
+            "import requests\n"
+            'url = "http://169.254.169.254/latest/meta-data/"\n'
+            "requests.get(url)",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_constant_fstring_url_resolved(self):
+        # f-string URLs that fold to a constant should still be checked.
+        _blocked(
+            "import requests\n"
+            'host = "169.254.169.254"\n'
+            'requests.get(f"http://{host}/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_truly_dynamic_url_marked_opaque(self):
+        # Genuinely runtime-computed URLs (input, env var, network) are
+        # reported as opaque so the static checker stays honest -- the
+        # bash blocklist + cloud-metadata IP block at OS layer cover the
+        # rest, but the AST can no longer say "looks fine to me".
+        _blocked(
+            "import os, requests\n" 'requests.get(os.environ["WEBHOOK"])',
+            expect_phrase = "network call target is computed at runtime",
+        )
 
 
 class TestHostNormalization:
@@ -218,6 +249,105 @@ class TestUploadDenylist:
         _ok(
             "import requests\n"
             'requests.post("https://api.weather.gov/lookup", json={"k": "v"})'
+        )
+
+
+class TestImportAliasResolution:
+    """Aliased / from-imported network APIs must obey the same policy.
+
+    Pre-hardening, ``import requests as r`` and ``from requests import get``
+    bypassed the prefix check because the visitor matched on the literal
+    "requests.<method>" FQ at the call site. The new visitor tracks
+    aliases at import time and rewrites the call's FQ before policy eval.
+    """
+
+    def test_module_alias_metadata_blocked(self):
+        _blocked(
+            'import requests as r; r.get("http://169.254.169.254/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_module_alias_untrusted_blocked(self):
+        _blocked(
+            'import requests as r; r.get("https://example.com/")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_module_alias_trusted_passes(self):
+        _ok('import requests as r; r.get("https://en.wikipedia.org/wiki/Foo")')
+
+    def test_from_import_metadata_blocked(self):
+        _blocked(
+            'from requests import get\nget("http://metadata.google.internal/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_from_import_aliased_blocked(self):
+        _blocked(
+            "from requests import get as fetch\n"
+            'fetch("http://169.254.169.254/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_from_import_trusted_passes(self):
+        _ok(
+            "from urllib.request import urlopen\n"
+            'urlopen("https://en.wikipedia.org/wiki/Foo")'
+        )
+
+    def test_nested_module_alias_blocked(self):
+        _blocked(
+            "import urllib.request as ur\n"
+            'ur.urlopen("http://169.254.169.254/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+
+class TestSessionObjectMethods:
+    """``s = requests.Session(); s.get(url)`` must obey the host policy.
+
+    The visitor tracks session-shaped constructor assignments so method
+    calls on the bound variable become egress-equivalent.
+    """
+
+    def test_requests_session_get_metadata_blocked(self):
+        _blocked(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.get("http://169.254.169.254/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_requests_session_get_untrusted_blocked(self):
+        _blocked(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.get("https://example.com/")',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    def test_requests_session_post_upload_blocked(self):
+        _blocked(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.post("https://huggingface.co/api/repos/upload", '
+            'files={"f": open("x.bin", "rb")})',
+            expect_phrase = "Blocked: file upload disallowed in sandbox",
+        )
+
+    def test_requests_session_trusted_passes(self):
+        _ok(
+            "import requests\n"
+            "s = requests.Session()\n"
+            's.get("https://en.wikipedia.org/wiki/Foo")'
+        )
+
+    def test_httpx_client_metadata_blocked(self):
+        _blocked(
+            "import httpx\n"
+            "c = httpx.Client()\n"
+            'c.get("http://169.254.169.254/latest/")',
+            expect_phrase = "Blocked: cloud-metadata host",
         )
 
 

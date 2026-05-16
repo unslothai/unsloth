@@ -392,6 +392,14 @@ ContentPart = Annotated[
 # ── Messages ─────────────────────────────────────────────────────
 
 
+# Prefix used by ChatMessage._validate_role_shape when synthesising a
+# placeholder tool_call_id for the frontend's second-round POST (which
+# drops the streamed id). Route handlers detect this prefix and rewrite
+# the id to the matching preceding assistant tool_call id before
+# passthrough, preserving correlation.
+TOOL_CALL_ID_SYNTH_PREFIX = "call_studio_synth_"
+
+
 class ChatMessage(BaseModel):
     """
     A single message in the conversation.
@@ -434,11 +442,18 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             if not self.tool_call_id:
-                # Frontend's second-round POST drops the streamed id;
-                # synthesise one so the request round-trips.
+                # Frontend's second-round POST drops the streamed id. Mark
+                # the synthetic id with a recognisable prefix so the route
+                # handler can rewrite it to the matching preceding
+                # assistant tool_call id before passthrough -- a random
+                # id breaks correlation and OpenAI-compatible backends
+                # reject "tool result not referenced by any tool_call".
+                # See ``_pair_orphan_tool_ids`` in routes/inference.py.
                 import secrets as _secrets
 
-                self.tool_call_id = f"call_{_secrets.token_hex(8)}"
+                self.tool_call_id = (
+                    f"{TOOL_CALL_ID_SYNTH_PREFIX}{_secrets.token_hex(8)}"
+                )
             if not self.content:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":

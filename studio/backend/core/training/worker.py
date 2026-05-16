@@ -764,6 +764,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
+    # Publish the resolved output dir immediately so the parent process
+    # can clean up checkpoint-* dirs if the run is cancelled before a
+    # "complete" event ever fires (force-kill / cancel-no-save).
+    _send("run_started", output_dir = output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
@@ -1540,6 +1544,16 @@ def run_training_process(
             output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        # Publish the resolved output dir immediately. The parent's pump
+        # loop reads "run_started" and stores _output_dir so cancel paths
+        # that force-kill before a "complete" event can still clean up
+        # checkpoint-* directories under outputs_root.
+        try:
+            event_queue.put(
+                {"type": "run_started", "output_dir": output_dir, "ts": time.time()}
+            )
+        except Exception:
+            pass
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):

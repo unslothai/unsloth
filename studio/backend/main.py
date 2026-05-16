@@ -276,15 +276,31 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
+    # script-src is 'self' plus an optional per-response nonce, never
+    # 'unsafe-inline'. The frontend bundle is self-hosted; the nonce is
+    # only used to whitelist the bootstrap-injection block when present
+    # (gated behind UNSLOTH_STUDIO_INJECT_BOOTSTRAP). Skipping
+    # 'unsafe-inline' for scripts forces any XSS payload to land in an
+    # external file under our origin, which is itself locked down.
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
+    # connect-src allows same-origin plus the Hugging Face Hub endpoints
+    # the frontend hits directly (model + dataset pickers in
+    # use-hf-model-search / use-hf-dataset-search) and HF's CDN
+    # subdomains used for blob fetches / file metadata. Without these
+    # origins, browser-served Studio loses the pickers and the user
+    # cannot search/select any model or dataset.
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
         "https://t1.gstatic.com https://t2.gstatic.com "
-        "https://t3.gstatic.com; "
-        "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+        "https://t3.gstatic.com https://huggingface.co "
+        "https://cdn-avatars.huggingface.co; "
+        "connect-src 'self' https://huggingface.co "
+        "https://*.huggingface.co https://cdn-lfs.huggingface.co "
+        "https://cdn-lfs.hf.co https://hf.co https://*.hf.co "
+        "https://datasets-server.huggingface.co; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
@@ -494,10 +510,50 @@ app.include_router(
 
 @app.get("/api/health")
 async def health_check(request: Request):
-    """Liveness only; full diagnostic dict gated on a valid bearer."""
+    """Health probe; sensitive diagnostic dict gated on a valid bearer.
+
+    Three audiences read this endpoint:
+
+    1. Generic liveness probes -- want only ``status``/``timestamp``.
+    2. Launcher/preflight code that cannot present a bearer token
+       (``install.sh::_check_health``, ``studio/src-tauri/src/preflight``,
+       ``run_studio_browser_test`` orchestrator). They match on
+       ``service``, ``studio_root_id`` and the desktop capability flags
+       so they can confirm "this is the Studio I just installed". These
+       fields are non-sensitive identity / capability advertisements --
+       the install path itself is hex-hashed into ``studio_root_id`` so
+       the path is never leaked.
+    3. Authenticated admins / Tauri command surfaces -- want the full
+       diagnostic dict including ``version``, ``studio_version``,
+       ``device_type``, ``chat_only``, ``desktop_owner`` and so on.
+
+    Returning the legacy identity fields unauthenticated keeps the
+    launcher contract working without exposing version strings or
+    device-shape introspection to drive-by callers.
+    """
     minimal = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+        # Launcher / preflight contract: stable identity + capability bits.
+        # Safe to expose unauthenticated -- studio_root_id is a hex digest
+        # of the install path, the desktop flags and chat_only are
+        # non-sensitive feature-shape booleans (same category as
+        # ``supports_desktop_auth``).
+        #
+        # chat_only is part of the contract because the SPA's first-load
+        # router needs it to decide whether to redirect /studio + /export
+        # to /chat *before* any bearer is available; the Playwright UI
+        # tests rely on the same signal so they don't have to maintain a
+        # heuristic ("did the URL change after goto?"). Withholding it
+        # broke the Windows + Linux UI smokes and the change-password
+        # bootstrap flow.
+        "service": "Unsloth UI Backend",
+        "studio_root_id": _studio_root_id(),
+        "chat_only": _hw_module.CHAT_ONLY,
+        "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
+        "supports_desktop_auth": True,
+        "supports_desktop_backend_ownership": True,
     }
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
@@ -522,17 +578,16 @@ async def health_check(request: Request):
     device_type = platform_map.get(sys.platform, sys.platform)
     return {
         **minimal,
-        "service": "Unsloth UI Backend",
+        # Sensitive diagnostic fields. Gated on a valid bearer because:
+        # - version / studio_version reveal patch-level CVE exposure;
+        # - device_type reveals the training-vs-inference shape;
+        # - desktop_owner reveals which UID/process owns the desktop lease;
+        # - native_path_leases_supported reveals filesystem capability.
+        # chat_only is intentionally NOT gated; see the comment on the
+        # ``minimal`` dict above.
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
-        "chat_only": _hw_module.CHAT_ONLY,
-        "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
-        "supports_desktop_auth": True,
-        "supports_desktop_backend_ownership": True,
-        # Hex digest of the install path; launchers reject sibling Studios on the same port.
-        "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }

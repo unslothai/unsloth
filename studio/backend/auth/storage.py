@@ -480,11 +480,44 @@ def save_refresh_token(
         conn.close()
 
 
+_RETURNING_SUPPORTED: Optional[bool] = None
+
+
+def _supports_returning() -> bool:
+    """Feature-detect SQLite ``DELETE ... RETURNING`` support (SQLite 3.35+).
+
+    Cached after first probe. Older system SQLite (e.g. Ubuntu 20.04, RHEL 8,
+    some Windows builds) ships SQLite < 3.35 and raises ``OperationalError``
+    when ``RETURNING`` is parsed. We fall back to a transactional
+    ``SELECT`` + ``DELETE`` whose atomicity is enforced by checking the
+    rowcount of the ``DELETE`` (a concurrent winner returns rowcount=0).
+    """
+    global _RETURNING_SUPPORTED
+    if _RETURNING_SUPPORTED is not None:
+        return _RETURNING_SUPPORTED
+    try:
+        import sqlite3 as _sqlite3
+
+        ver = getattr(_sqlite3, "sqlite_version_info", (0, 0, 0))
+        if ver >= (3, 35, 0):
+            _RETURNING_SUPPORTED = True
+            return True
+    except Exception:
+        pass
+    _RETURNING_SUPPORTED = False
+    return False
+
+
 def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
     """Atomically validate-and-delete a refresh token for single-use rotation.
 
-    DELETE RETURNING fuses validate and delete into one statement so two
-    concurrent refresh requests cannot both consume the same token.
+    On SQLite 3.35+ we use ``DELETE ... RETURNING`` which fuses validate and
+    delete into one statement so two concurrent refresh requests cannot both
+    consume the same token. On older SQLite the helper falls back to
+    ``SELECT`` + ``DELETE`` inside a single transaction; the ``DELETE``'s
+    ``rowcount`` is then the source of truth (a concurrent winner returns 0,
+    so the loser correctly sees ``None``). Either way the contract is
+    "at most one caller succeeds per token".
     """
     token_hash = _hash_token(token)
     now = datetime.now(timezone.utc).isoformat()
@@ -494,17 +527,51 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
             (now,),
         )
+        if _supports_returning():
+            try:
+                cur = conn.execute(
+                    """
+                    DELETE FROM refresh_tokens
+                    WHERE token_hash = ? AND expires_at >= ?
+                    RETURNING username, is_desktop
+                    """,
+                    (token_hash, now),
+                )
+                row = cur.fetchone()
+                conn.commit()
+                if row is None:
+                    return None
+                return row["username"], bool(row["is_desktop"])
+            except Exception:
+                # Some Python builds advertise sqlite_version_info >= 3.35
+                # while bundling an older amalgamation; flip the cache so we
+                # never retry the RETURNING path on this process and let the
+                # SELECT+DELETE path handle the rest.
+                global _RETURNING_SUPPORTED
+                _RETURNING_SUPPORTED = False
+                conn.rollback()
+        # Fallback: SELECT then DELETE with rowcount check. The DELETE's
+        # rowcount is the canonical "did I win the race" signal -- two
+        # concurrent callers can both SELECT the row, but only one DELETE
+        # will return rowcount=1; the other gets 0 and must report failure.
         cur = conn.execute(
             """
-            DELETE FROM refresh_tokens
+            SELECT id, username, is_desktop FROM refresh_tokens
             WHERE token_hash = ? AND expires_at >= ?
-            RETURNING username, is_desktop
             """,
             (token_hash, now),
         )
         row = cur.fetchone()
-        conn.commit()
         if row is None:
+            conn.commit()
+            return None
+        del_cur = conn.execute(
+            "DELETE FROM refresh_tokens WHERE id = ?",
+            (row["id"],),
+        )
+        conn.commit()
+        if del_cur.rowcount != 1:
+            # Another caller consumed it between our SELECT and DELETE.
             return None
         return row["username"], bool(row["is_desktop"])
     finally:

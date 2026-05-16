@@ -1091,6 +1091,16 @@ def _check_signal_escape_patterns(code: str):
         "requests.head",
         "requests.request",
         "requests.Session",
+        # Session-bound methods. The visitor's _resolve_fq synthesises
+        # ``requests.Session.<method>`` / ``requests.sessions.Session.<method>``
+        # / ``httpx.Client.<method>`` etc. when the receiver is a variable
+        # bound to a session constructor; the prefix entries below make
+        # those synthesised names match.
+        "requests.Session.",
+        "requests.sessions.Session.",
+        "httpx.Client.",
+        "httpx.AsyncClient.",
+        "aiohttp.ClientSession.",
         "http.client.HTTPConnection",
         "http.client.HTTPSConnection",
         "httpx.get",
@@ -1109,11 +1119,31 @@ def _check_signal_escape_patterns(code: str):
         "requests.patch",
         "requests.delete",
         "requests.request",
+        "requests.Session.post",
+        "requests.Session.put",
+        "requests.Session.patch",
+        "requests.Session.delete",
+        "requests.Session.request",
+        "requests.sessions.Session.post",
+        "requests.sessions.Session.put",
+        "requests.sessions.Session.patch",
+        "requests.sessions.Session.delete",
+        "requests.sessions.Session.request",
         "httpx.post",
         "httpx.put",
         "httpx.patch",
         "httpx.delete",
         "httpx.request",
+        "httpx.Client.post",
+        "httpx.Client.put",
+        "httpx.Client.patch",
+        "httpx.Client.delete",
+        "httpx.Client.request",
+        "httpx.AsyncClient.post",
+        "httpx.AsyncClient.put",
+        "httpx.AsyncClient.patch",
+        "httpx.AsyncClient.delete",
+        "httpx.AsyncClient.request",
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -1334,16 +1364,223 @@ def _check_signal_escape_patterns(code: str):
             and node.func.attr in _UPLOAD_HF_METHODS
         )
 
+    # Modules whose top-level / class-level functions are HTTP egress.
+    # Used to resolve aliases (``import requests as r``) and named imports
+    # (``from requests import get``) back to a canonical FQ name so the
+    # prefix check below still fires. Listed once so both ``visit_Import``
+    # and ``visit_ImportFrom`` agree on what's network-relevant.
+    _NETWORK_MODULES = frozenset(
+        {
+            "socket",
+            "urllib",
+            "urllib.request",
+            "urllib3",
+            "requests",
+            "httpx",
+            "aiohttp",
+            "http",
+            "http.client",
+        }
+    )
+    # Symbols imported from a network module whose call is itself an
+    # egress (``from requests import get; get("http://...")``).
+    _NETWORK_FROM_NAMES = frozenset(
+        {
+            "get",
+            "post",
+            "put",
+            "delete",
+            "patch",
+            "head",
+            "request",
+            "Session",
+            "urlopen",
+            "urlretrieve",
+            "create_connection",
+            "getaddrinfo",
+            "HTTPConnection",
+            "HTTPSConnection",
+            "Client",
+            "AsyncClient",
+            "ClientSession",
+        }
+    )
+    # Session/Client method names that perform HTTP egress. A literal
+    # call on any variable bound to a session-shaped constructor
+    # (``s = requests.Session(); s.get(...)``) becomes egress-equivalent.
+    _SESSION_METHOD_NAMES = frozenset(
+        {"get", "post", "put", "delete", "patch", "head", "request", "send"}
+    )
+    # Constructor calls that produce a session/client object whose
+    # method calls become egress.
+    _SESSION_CONSTRUCTOR_FQS = frozenset(
+        {
+            "requests.Session",
+            "requests.sessions.Session",
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+        }
+    )
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def __init__(self):
+            super().__init__()
+            # alias -> canonical module name. Populated by visit_Import
+            # so ``import requests as r`` lets us map ``r`` -> ``requests``.
+            self._module_aliases: dict[str, str] = {}
+            # local name -> canonical FQ. Populated by visit_ImportFrom
+            # so ``from requests import get as fetch`` maps ``fetch`` ->
+            # ``requests.get``.
+            self._symbol_aliases: dict[str, str] = {}
+            # variable -> literal-string value, for simple assignments.
+            # Lets ``u = "http://169.254.169.254"; requests.get(u)`` resolve.
+            self._string_vars: dict[str, str] = {}
+            # variable -> session constructor FQ; lets
+            # ``s = requests.Session(); s.get(url)`` register as egress.
+            self._session_vars: dict[str, str] = {}
+
+        # ── Import tracking ─────────────────────────────────────
+        def visit_Import(self, node):
+            for alias in node.names:
+                target = alias.asname or alias.name
+                # ``import requests`` -> aliases["requests"] = "requests";
+                # ``import requests as r`` -> aliases["r"] = "requests".
+                self._module_aliases[target] = alias.name
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            mod = node.module or ""
+            if mod in _NETWORK_MODULES:
+                for alias in node.names:
+                    target = alias.asname or alias.name
+                    if alias.name in _NETWORK_FROM_NAMES:
+                        # Build the canonical FQ name; ``from requests
+                        # import get`` -> aliases["get"] = "requests.get".
+                        self._symbol_aliases[target] = f"{mod}.{alias.name}"
+            self.generic_visit(node)
+
+        # ── Variable tracking (literal string + session constructor) ──
+        def visit_Assign(self, node):
+            # Track simple ``name = "literal"`` and
+            # ``name = requests.Session()``.
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                value = node.value
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    self._string_vars[name] = value.value
+                elif isinstance(value, ast.JoinedStr):
+                    # f-string: only resolve when every part is a constant
+                    # or a tracked string variable. Otherwise treat as
+                    # opaque so we don't accept a partly-dynamic URL.
+                    parts: list[str] = []
+                    ok = True
+                    for piece in value.values:
+                        if isinstance(piece, ast.Constant) and isinstance(
+                            piece.value, str
+                        ):
+                            parts.append(piece.value)
+                        elif (
+                            isinstance(piece, ast.FormattedValue)
+                            and isinstance(piece.value, ast.Name)
+                            and piece.value.id in self._string_vars
+                        ):
+                            parts.append(self._string_vars[piece.value.id])
+                        else:
+                            ok = False
+                            break
+                    if ok:
+                        self._string_vars[name] = "".join(parts)
+                elif isinstance(value, ast.Call):
+                    fq = self._resolve_fq(value)
+                    if fq in _SESSION_CONSTRUCTOR_FQS:
+                        self._session_vars[name] = fq
+            self.generic_visit(node)
+
+        # ── FQ resolution helpers ────────────────────────────────
+        def _resolve_fq(self, call_node: ast.Call) -> str:
+            """Return the canonical FQ name for a Call's target.
+
+            ``requests.get(...)`` -> ``"requests.get"``;
+            ``r.get(...)`` where ``r=requests`` -> ``"requests.get"``;
+            ``fetch(...)`` where ``from requests import get as fetch``
+            -> ``"requests.get"``;
+            ``s.get(...)`` where ``s = requests.Session()`` ->
+            ``"requests.Session.get"`` (a synthetic prefix that the
+            prefix-check below treats as egress).
+            """
+            func = call_node.func
+            # Bare name: ``get(...)`` -- check symbol aliases first
+            # (``from requests import get`` -> ``"requests.get"``).
+            if isinstance(func, ast.Name):
+                return self._symbol_aliases.get(func.id, func.id)
+            if isinstance(func, ast.Attribute):
+                parts: list[str] = [func.attr]
+                cur = func.value
+                while isinstance(cur, ast.Attribute):
+                    parts.insert(0, cur.attr)
+                    cur = cur.value
+                if isinstance(cur, ast.Name):
+                    head = cur.id
+                    # If head is a session-bound variable, synthesise a
+                    # prefixable FQ (e.g. ``"requests.Session.get"``).
+                    if (
+                        head in self._session_vars
+                        and parts
+                        and parts[-1] in _SESSION_METHOD_NAMES
+                    ):
+                        return f"{self._session_vars[head]}.{parts[-1]}"
+                    # Map the head through module-alias table.
+                    resolved_head = self._module_aliases.get(head, head)
+                    return ".".join([resolved_head, *parts])
+            return ""
+
+        def _resolve_url_arg(self, expr: ast.AST) -> "tuple[str | None, str | None]":
+            """Return (url_string, host_string) for a call argument.
+
+            Resolves literal strings, simple variable assignments to
+            literals, and f-strings that fold to a constant. Returns
+            ``(None, None)`` for opaque / dynamic expressions, which the
+            caller must treat as "host not statically verifiable" rather
+            than "allowed".
+            """
+            url: "str | None" = None
+            host: "str | None" = None
+            if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+                url = expr.value
+            elif isinstance(expr, ast.Name) and expr.id in self._string_vars:
+                url = self._string_vars[expr.id]
+            elif isinstance(expr, ast.JoinedStr):
+                parts: list[str] = []
+                ok = True
+                for piece in expr.values:
+                    if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                        parts.append(piece.value)
+                    elif (
+                        isinstance(piece, ast.FormattedValue)
+                        and isinstance(piece.value, ast.Name)
+                        and piece.value.id in self._string_vars
+                    ):
+                        parts.append(self._string_vars[piece.value.id])
+                    else:
+                        ok = False
+                        break
+                if ok:
+                    url = "".join(parts)
+            elif isinstance(expr, ast.Tuple) and expr.elts:
+                e0 = expr.elts[0]
+                if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
+                    host = e0.value
+                elif isinstance(e0, ast.Name) and e0.id in self._string_vars:
+                    host = self._string_vars[e0.id]
+            if url and host is None:
+                m = re.match(r"^\w+://([^/?#]+)", url)
+                if m:
+                    host = m.group(1)
+            return url, host
+
         def visit_Call(self, node):
-            parts: list[str] = []
-            cur = node.func
-            while isinstance(cur, ast.Attribute):
-                parts.insert(0, cur.attr)
-                cur = cur.value
-            if isinstance(cur, ast.Name):
-                parts.insert(0, cur.id)
-            fq = ".".join(parts) if parts else ""
+            fq = self._resolve_fq(node)
 
             if _method_call_is_hf_upload(node):
                 network_calls.append(
@@ -1360,14 +1597,7 @@ def _check_signal_escape_patterns(code: str):
                 and node.func.attr == "connect"
                 and node.args
             ):
-                a0 = node.args[0]
-                host_lit = None
-                if isinstance(a0, ast.Tuple) and a0.elts:
-                    e0 = a0.elts[0]
-                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                        host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                _, host_lit = self._resolve_url_arg(node.args[0])
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -1402,23 +1632,40 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
+                # 2) Extract host: literal URL, variable holding a literal,
+                #    constant-folded f-string, or (host, port) tuple.
                 host_arg = None
-                url_arg = None
                 if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
-
-                if host_arg:
+                    _, host_arg = self._resolve_url_arg(node.args[0])
+                # Also accept keyword form: requests.get(url="...") /
+                # requests.request("GET", url="...").
+                if host_arg is None:
+                    for kw in node.keywords or []:
+                        if kw.arg in ("url", "host", "uri") and kw.value is not None:
+                            _, host_arg = self._resolve_url_arg(kw.value)
+                            if host_arg:
+                                break
+                # Special case: requests.request(method, url, ...) -- the
+                # URL is the second positional arg, not the first.
+                if host_arg is None and fq.endswith(".request") and len(node.args) >= 2:
+                    _, host_arg = self._resolve_url_arg(node.args[1])
+                if host_arg is None and node.args:
+                    # The argument was opaque (variable, computed, etc.).
+                    # Recording opaque calls keeps the static checker
+                    # honest: a dynamic URL can hit the metadata endpoint
+                    # at runtime, and we cannot prove otherwise.
+                    network_calls.append(
+                        {
+                            "type": "opaque_url_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network call target is computed at runtime; "
+                                "static analysis cannot verify the host. Pass a "
+                                "literal URL pointing at an allowlisted host."
+                            ),
+                        }
+                    )
+                elif host_arg:
                     if _is_metadata_host(host_arg):
                         network_calls.append(
                             {
@@ -1534,23 +1781,58 @@ def _check_code_safety(code: str) -> str | None:
 
 
 def _kill_process_tree(proc) -> None:
-    """SIGKILL the setsid process group; fall back to single-pid kill."""
+    """Terminate the subprocess and any children spawned via setsid.
+
+    Linux / macOS: SIGKILL the process group so bash-backgrounded
+    grandchildren actually die (paired with ``os.setsid()`` in
+    ``_sandbox_preexec``).
+
+    Windows: ``os.getpgid`` / ``os.killpg`` do not exist; calling them
+    would raise ``AttributeError`` and the sandbox supervisor would skip
+    the kill entirely, leaving runaway tool processes. We instead use
+    ``proc.kill()``, which Popen implements on Windows via
+    ``TerminateProcess(handle, 1)``. Children spawned with
+    ``CREATE_NEW_PROCESS_GROUP`` are reaped via ``taskkill /T`` as a
+    best-effort fallback.
+    """
     if proc.poll() is not None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
-    if pgid is not None:
+    # Unix process-group kill -- only available on platforms that expose
+    # os.getpgid / os.killpg (Linux, macOS, *BSD). hasattr() is the
+    # canonical guard; checking sys.platform alone misses Cygwin /
+    # WSL-on-Windows which expose both APIs.
+    if hasattr(os, "getpgid") and hasattr(os, "killpg"):
         try:
-            os.killpg(pgid, signal.SIGKILL)
-            return
-        except (ProcessLookupError, PermissionError):
-            pass
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+        if pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    # Windows / fallback: kill the direct child, then taskkill its tree.
     try:
         proc.kill()
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         pass
+    if sys.platform == "win32":
+        # Best-effort tree kill on Windows. We don't await taskkill -- if
+        # the binary is missing or fails we still already killed the
+        # immediate child above.
+        try:
+            import subprocess as _subprocess
+
+            _subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout = _subprocess.DEVNULL,
+                stderr = _subprocess.DEVNULL,
+                timeout = 5,
+                check = False,
+            )
+        except Exception:
+            pass
 
 
 def _cancel_watcher(proc, cancel_event, poll_interval = 0.2):

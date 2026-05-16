@@ -147,6 +147,11 @@ class TrainingBackend:
         # Job metadata
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
+        # Resolved run dir (set on the worker's first "run_started" event).
+        # Used by force_terminate / _cleanup_cancelled_checkpoints to
+        # delete intermediate checkpoint-* dirs when a run is cancelled
+        # before the worker emits "complete" (or with output_dir=None).
+        self._active_run_dir: Optional[str] = None
 
         # DB persistence
         self._metric_buffer: list[dict] = []
@@ -313,6 +318,7 @@ class TrainingBackend:
         self.eval_step_history.clear()
         self.eval_enabled = False
         self._output_dir = None
+        self._active_run_dir = None
         self._metric_buffer.clear()
         self._run_finalized = False
         self._db_run_created = False
@@ -365,7 +371,11 @@ class TrainingBackend:
                 self._proc.terminate()
             proc = self._proc
             cancelled = self._cancel_requested
-            output_dir = self._output_dir
+            # Prefer the active run dir set by "run_started" (always
+            # populated for any run that reached worker startup), and
+            # fall back to _output_dir if a "complete" event resolved
+            # a different artifact dir later.
+            cleanup_dir = self._active_run_dir or self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -378,15 +388,21 @@ class TrainingBackend:
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
 
+        # Re-snapshot in case "run_started" landed AFTER our first lock
+        # window (worker started in parallel with the cancel). Use the
+        # newer value if available; never downgrade a populated path.
+        with self._lock:
+            cleanup_dir = self._active_run_dir or self._output_dir or cleanup_dir
+
         # Drop checkpoint-* dirs on explicit cancel only; stop-and-save
         # keeps its artifacts.
-        if cancelled and output_dir:
+        if cancelled and cleanup_dir:
             try:
-                _cleanup_cancelled_checkpoints(output_dir)
+                _cleanup_cancelled_checkpoints(cleanup_dir)
             except Exception:
                 logger.exception(
                     "Failed to clean up cancelled-run checkpoints under %s",
-                    output_dir,
+                    cleanup_dir,
                 )
 
     def is_training_active(self) -> bool:
@@ -679,6 +695,18 @@ class TrainingBackend:
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
+
+            elif etype == "run_started":
+                # Captured as soon as the worker resolves the run dir,
+                # well before any "complete" event. Cancel-and-reset
+                # paths that force-kill the worker before completion
+                # still see _active_run_dir set here, so
+                # _cleanup_cancelled_checkpoints can drop checkpoint-*
+                # under outputs_root. Distinct from _output_dir, which
+                # only tracks "saved-artifact" dirs (None on cancel-no-save).
+                run_dir = event.get("output_dir")
+                if run_dir:
+                    self._active_run_dir = run_dir
 
             elif etype == "complete":
                 self._progress.is_training = False

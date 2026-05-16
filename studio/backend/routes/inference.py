@@ -3826,6 +3826,7 @@ async def anthropic_messages(
         payload.system,
     )
     openai_messages = _drop_empty_assistant_sentinels(openai_messages)
+    openai_messages = _pair_orphan_tool_ids(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
@@ -4564,6 +4565,78 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _pair_orphan_tool_ids(messages: list[dict]) -> list[dict]:
+    """Rewrite synthesised tool_call_ids to match a preceding assistant tool_call.
+
+    The frontend's second-round POST sometimes drops the streamed
+    ``tool_call_id`` on a ``role="tool"`` message. ChatMessage's
+    validator synthesises a placeholder with the ``call_studio_synth_``
+    prefix so the request shape passes, but a random id breaks
+    OpenAI-compatible backends which require the tool result to
+    reference an announced assistant tool_call. Here we backfill the
+    real id by:
+
+      1. Walking the message list forward and queueing
+         unmatched assistant ``tool_calls`` ids per FIFO.
+      2. When we hit a synthesised ``role="tool"`` message, pop the
+         oldest unmatched id and rewrite ``tool_call_id`` in place.
+      3. Falling back to leaving the synthetic id intact when no
+         preceding assistant tool_call is available -- the upstream
+         backend will then reject the request explicitly instead of
+         silently mismatching.
+
+    Idempotent: messages without synth ids and messages whose ids
+    already match the announced tool_calls are passed through unchanged.
+    """
+    # Local import keeps this module's import graph stable; the constant
+    # lives in models.inference next to the validator that emits it.
+    from models.inference import TOOL_CALL_ID_SYNTH_PREFIX
+
+    # Queue of unmatched assistant tool_call ids, in announce order.
+    pending_ids: list[str] = []
+    # Map of synth_id -> real_id so a single message list can be
+    # re-applied (or applied to a copy without mutating the original).
+    rewrites: dict[str, str] = {}
+    # Track real ids that already had a matching role="tool" result so
+    # they are not handed to a later synth message.
+    consumed: set[str] = set()
+
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                tcid = tc.get("id") if isinstance(tc, dict) else None
+                if tcid:
+                    pending_ids.append(tcid)
+        elif role == "tool":
+            tcid = m.get("tool_call_id")
+            if isinstance(tcid, str) and tcid.startswith(TOOL_CALL_ID_SYNTH_PREFIX):
+                # Pop the oldest unconsumed announced id, if any.
+                while pending_ids:
+                    candidate = pending_ids.pop(0)
+                    if candidate not in consumed:
+                        rewrites[tcid] = candidate
+                        consumed.add(candidate)
+                        break
+            elif isinstance(tcid, str) and tcid:
+                consumed.add(tcid)
+
+    if not rewrites:
+        return messages
+
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "tool":
+            tcid = m.get("tool_call_id")
+            if isinstance(tcid, str) and tcid in rewrites:
+                new = dict(m)
+                new["tool_call_id"] = rewrites[tcid]
+                out.append(new)
+                continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -4583,6 +4656,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     messages = _drop_empty_assistant_sentinels(
         [m.model_dump(exclude_none = True) for m in payload.messages]
     )
+    messages = _pair_orphan_tool_ids(messages)
 
     if not payload.image_base64:
         return messages

@@ -228,18 +228,49 @@ def health_app(tmp_path, monkeypatch):
 
 
 class TestHealthAuthGate:
-    def test_no_auth_returns_minimal_payload(self, health_app):
+    """Pin the launcher contract.
+
+    The post-PR-5375 follow-up re-published the launcher-essential
+    identity fields (``service``, ``studio_root_id``, the desktop
+    protocol bits) in the unauthenticated payload so install.sh's
+    ``_check_health``, Tauri's ``preflight/backend.rs`` and the
+    browser-test orchestrator can confirm "this is my Studio" before
+    a bearer exists. The diagnostic fields (``version`` /
+    ``device_type`` / ``chat_only`` / ``desktop_owner`` /
+    ``native_path_leases_supported``) stay gated on a valid bearer.
+    """
+
+    UNAUTH_KEYS = {
+        "status",
+        "timestamp",
+        "service",
+        "studio_root_id",
+        "chat_only",
+        "desktop_protocol_version",
+        "desktop_manageability_version",
+        "supports_desktop_auth",
+        "supports_desktop_backend_ownership",
+    }
+    GATED_KEYS = ("version", "device_type", "native_path_leases_supported")
+
+    def test_no_auth_returns_launcher_payload(self, health_app):
         c = TestClient(health_app)
         r = c.get("/api/health")
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "healthy"
         assert "timestamp" in body
-        for forbidden in ("version", "device_type", "studio_root_id"):
-            assert forbidden not in body
+        # Launcher contract must be present so install.sh / Tauri
+        # preflight can identify this Studio without authenticating.
+        missing = self.UNAUTH_KEYS - set(body)
+        assert not missing, f"unauth /api/health missing {sorted(missing)}"
+        for forbidden in self.GATED_KEYS:
+            assert forbidden not in body, f"unauth /api/health leaked {forbidden!r}"
 
-    def test_invalid_bearer_returns_minimal_payload(self, health_app):
-        # Regression: calling the async dep without await made any Bearer header pass.
+    def test_invalid_bearer_returns_launcher_payload(self, health_app):
+        # Regression: calling the async dep without await made any
+        # Bearer header pass. The fix awaits the dep and falls back to
+        # the unauthenticated payload on any decode failure.
         c = TestClient(health_app)
         r = c.get(
             "/api/health",
@@ -248,8 +279,12 @@ class TestHealthAuthGate:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "healthy"
-        for forbidden in ("version", "device_type", "studio_root_id"):
-            assert forbidden not in body
+        missing = self.UNAUTH_KEYS - set(body)
+        assert not missing, f"invalid-bearer /api/health missing {sorted(missing)}"
+        for forbidden in self.GATED_KEYS:
+            assert (
+                forbidden not in body
+            ), f"invalid-bearer /api/health leaked {forbidden!r}"
 
     def test_valid_bearer_returns_full_payload(self, health_app):
         from auth import storage
