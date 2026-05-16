@@ -201,7 +201,9 @@ def test_simple_policy_plans_lemonade_for_windows_hip_host():
         "assets": [],
     }
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
+        plan = direct_upstream_release_plan(
+            release, host, "ggml-org/llama.cpp", "latest"
+        )
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
     assert (
