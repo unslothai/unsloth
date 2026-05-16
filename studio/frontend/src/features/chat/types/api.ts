@@ -225,6 +225,16 @@ export interface OpenAIChatCompletionsRequest {
   encrypted_api_key?: string;
   provider_base_url?: string | null;
   enable_prompt_caching?: boolean | null;
+  /**
+   * OpenAI shell-tool container id captured from the prior response in
+   * this chat thread. When set and the Code pill is on, the backend
+   * routes the next /v1/responses call with
+   * `environment.type="container_reference"` so filesystem state
+   * persists across turns. Unset → backend uses
+   * `environment.type="container_auto"` and OpenAI creates a fresh
+   * container. Only meaningful for OpenAI cloud + gpt-5.5 family.
+   */
+  openai_code_exec_container_id?: string | null;
 }
 
 export interface OpenAIChatDelta {

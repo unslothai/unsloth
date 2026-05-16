@@ -73,8 +73,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -95,10 +93,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
 
       # Save partial caches on cancel/timeout -- hf download resumes by
       # content hash. `outcome != skipped` keeps cache-hit a no-op.
@@ -325,8 +322,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -347,10 +342,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       # Save partial caches on cancel; next run resumes via content hash.
       - name: Save GGUF model file
@@ -692,8 +686,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -731,13 +723,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir gguf-cache &
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache &
           MODEL_PID=$!
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$MMPROJ_FILE" --local-dir gguf-cache &
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE" gguf-cache &
           MMPROJ_PID=$!
           wait "$MODEL_PID"
           wait "$MMPROJ_PID"

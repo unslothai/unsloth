@@ -208,10 +208,11 @@ class ExternalProviderClient:
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
 
-        headers = {
-            "Content-Type": "application/json",
-            auth_header: f"{auth_prefix}{self.api_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        # Skip auth header when api_key is empty (optional for local providers);
+        # httpx rejects an empty `Bearer ` value as "Illegal header value".
+        if self.api_key:
+            headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge any provider-specific extra headers (e.g. anthropic-version, OpenRouter attribution)
         headers.update(provider_info.get("extra_headers", {}))
         return headers
@@ -236,6 +237,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
+        openai_code_exec_container_id: Optional[str] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -281,6 +283,7 @@ class ExternalProviderClient:
                 reasoning_effort,
                 enabled_tools,
                 enable_prompt_caching,
+                openai_code_exec_container_id,
             ):
                 yield line
             return
@@ -1284,6 +1287,33 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
+        # Anthropic server-side code execution — see
+        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
+        # `code_execution_20250825` runs Python + bash + str_replace
+        # file edits inside a 5 GB sandboxed container per request, with
+        # no internet access. The tool entry itself takes no extra
+        # parameters; on the SSE stream Anthropic emits two sub-tool
+        # names — `bash_code_execution` and
+        # `text_editor_code_execution` — wrapped in the standard
+        # server_tool_use / *_tool_result block shape. The matching
+        # beta header (`code-execution-2025-08-25`) is set further down
+        # in this function alongside the request headers.
+        # v1 wires the tool only; file uploads (container_upload
+        # content blocks and generated-file retrieval via the Files
+        # API) are a deliberate follow-up.
+        code_execution_enabled = bool(
+            enabled_tools and "code_execution" in enabled_tools
+        )
+        if code_execution_enabled:
+            anthropic_tools = list(body.get("tools") or [])
+            anthropic_tools.append(
+                {
+                    "type": "code_execution_20250825",
+                    "name": "code_execution",
+                }
+            )
+            body["tools"] = anthropic_tools
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -1313,12 +1343,29 @@ class ExternalProviderClient:
 
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
+        request_headers = self._auth_headers()
+        if code_execution_enabled:
+            # Anthropic accepts comma-separated beta features in a single
+            # `anthropic-beta` header. Merge our flag onto whatever the
+            # registry's extra_headers contributed (currently nothing on
+            # the beta axis, just anthropic-version) so future betas
+            # added at the registry level keep working.
+            existing_beta = request_headers.get("anthropic-beta", "").strip()
+            beta_parts = (
+                [p.strip() for p in existing_beta.split(",") if p.strip()]
+                if existing_beta
+                else []
+            )
+            if "code-execution-2025-08-25" not in beta_parts:
+                beta_parts.append("code-execution-2025-08-25")
+            request_headers["anthropic-beta"] = ",".join(beta_parts)
+
         try:
             async with _http_client.stream(
                 "POST",
                 url,
                 json = body,
-                headers = self._auth_headers(),
+                headers = request_headers,
                 timeout = self._stream_timeout,
             ) as response:
                 if response.status_code != 200:
@@ -1352,6 +1399,28 @@ class ExternalProviderClient:
                 current_server_tool_use: Optional[dict[str, Any]] = None
                 current_result_block: Optional[dict[str, Any]] = None
                 web_search_calls: dict[str, dict[str, Any]] = {}
+                # code_execution state. Anthropic's
+                # `code_execution_20250825` tool emits the same
+                # server_tool_use → *_tool_result block shape as
+                # web_search, but the server_tool_use carries one of
+                # two sub-tool names (`bash_code_execution` or
+                # `text_editor_code_execution`) and the result block
+                # type matches (`bash_code_execution_tool_result` /
+                # `text_editor_code_execution_tool_result`). Kept
+                # parallel to web_search state so the two paths don't
+                # collide when both pills are on in the same turn.
+                current_code_exec_use: Optional[dict[str, Any]] = None
+                current_code_exec_result: Optional[dict[str, Any]] = None
+                code_execution_calls: dict[str, dict[str, Any]] = {}
+                # Counts surfaced in the final log line so reports of
+                # "Code execution did nothing" can be triaged at a
+                # glance. generated_files_count is interesting for the
+                # future Files API PR — when bash creates files inside
+                # the container, they show up as file_id entries on
+                # bash_code_execution_result.content, and v1 drops
+                # them. Track the count so we know how often it would
+                # have mattered.
+                code_execution_generated_files = 0
                 # Cache usage tracking. message_start carries the input
                 # accounting (incl. cache_creation_input_tokens and
                 # cache_read_input_tokens); message_delta carries cumulative
@@ -1405,6 +1474,48 @@ class ExternalProviderClient:
                         blocks.append(f"Title: {title}\nURL: {url}")
                     return "\n---\n".join(blocks)
 
+                def _format_code_execution_result(
+                    inner: dict[str, Any],
+                ) -> str:
+                    """Render an Anthropic code-execution result block as
+                    the preformatted text payload the frontend's
+                    CodeExecutionToolUI displays inside a <pre>. Handles
+                    bash, text_editor (view/create/str_replace), and the
+                    matching error variants.
+                    """
+                    inner_type = inner.get("type") or ""
+                    if inner_type.endswith("_error"):
+                        return f"Error: {inner.get('error_code', 'unknown')}"
+                    if inner_type == "bash_code_execution_result":
+                        stdout = inner.get("stdout") or ""
+                        stderr = inner.get("stderr") or ""
+                        return_code = inner.get("return_code")
+                        parts: list[str] = []
+                        if stdout:
+                            parts.append(stdout)
+                        if stderr:
+                            parts.append(f"--- stderr ---\n{stderr}")
+                        if isinstance(return_code, int) and return_code != 0:
+                            parts.append(f"return_code: {return_code}")
+                        return "\n".join(parts) if parts else "(no output)"
+                    if inner_type == "text_editor_code_execution_result":
+                        # view: file content; create: is_file_update flag;
+                        # str_replace: diff `lines` list. The matching
+                        # server_tool_use carries the command + path, but
+                        # that's encoded into the tool_start arguments
+                        # already — here we only format the result body.
+                        if "lines" in inner and isinstance(inner.get("lines"), list):
+                            return "\n".join(str(line) for line in inner["lines"])
+                        if "is_file_update" in inner:
+                            return (
+                                "Updated" if inner.get("is_file_update") else "Created"
+                            )
+                        content_field = inner.get("content")
+                        if isinstance(content_field, str):
+                            return content_field
+                        return "(file operation complete)"
+                    return "(code execution complete)"
+
                 try:
                     while True:
                         try:
@@ -1446,9 +1557,10 @@ class ExternalProviderClient:
                         if event_type == "content_block_start":
                             content_block = event.get("content_block") or {}
                             block_type = content_block.get("type")
+                            block_name = content_block.get("name")
                             if (
                                 block_type == "server_tool_use"
-                                and content_block.get("name") == "web_search"
+                                and block_name == "web_search"
                             ):
                                 tool_use_id = content_block.get("id", "") or (
                                     f"ws_{len(web_search_calls)}"
@@ -1473,6 +1585,44 @@ class ExternalProviderClient:
                                     "results": list(content)
                                     if isinstance(content, list)
                                     else [],
+                                }
+                            elif block_type == "server_tool_use" and block_name in (
+                                "bash_code_execution",
+                                "text_editor_code_execution",
+                            ):
+                                tool_use_id = content_block.get("id", "") or (
+                                    f"ce_{len(code_execution_calls)}"
+                                )
+                                kind = (
+                                    "bash"
+                                    if block_name == "bash_code_execution"
+                                    else "text_editor"
+                                )
+                                current_code_exec_use = {
+                                    "id": tool_use_id,
+                                    "kind": kind,
+                                    "buffer": "",
+                                }
+                                code_execution_calls[tool_use_id] = {
+                                    "kind": kind,
+                                    "arguments": {},
+                                    "result": None,
+                                }
+                            elif block_type in (
+                                "bash_code_execution_tool_result",
+                                "text_editor_code_execution_tool_result",
+                            ):
+                                # Anthropic ships the full result content
+                                # on the start event for code-exec result
+                                # blocks (unlike web_search, which can
+                                # split across deltas). Capture it and
+                                # finalize on content_block_stop so the
+                                # ordering matches the web_search path.
+                                tool_use_id = content_block.get("tool_use_id", "")
+                                inner = content_block.get("content") or {}
+                                current_code_exec_result = {
+                                    "tool_use_id": tool_use_id,
+                                    "inner": inner if isinstance(inner, dict) else {},
                                 }
 
                         elif event_type == "content_block_delta":
@@ -1507,15 +1657,20 @@ class ExternalProviderClient:
                                 # per-call by Anthropic via the
                                 # `web_search_tool_result` block; we don't
                                 # need to scrape them off the text events.
-                            elif (
-                                delta_type == "input_json_delta"
-                                and current_server_tool_use is not None
-                            ):
-                                # Streamed partial_json carrying the search
-                                # query. Buffer until content_block_stop.
-                                current_server_tool_use["buffer"] += delta.get(
-                                    "partial_json", ""
-                                )
+                            elif delta_type == "input_json_delta":
+                                # Streamed partial_json carrying tool inputs
+                                # — the search query for web_search, or the
+                                # command/path/etc. for code execution.
+                                # Route to whichever buffer is open. The two
+                                # state slots are exclusive in practice
+                                # (Anthropic doesn't interleave tool input
+                                # streams), but checking both keeps the
+                                # dispatch robust if that ever changes.
+                                partial = delta.get("partial_json", "")
+                                if current_server_tool_use is not None:
+                                    current_server_tool_use["buffer"] += partial
+                                elif current_code_exec_use is not None:
+                                    current_code_exec_use["buffer"] += partial
                             # signature_delta and any other delta types are
                             # intentionally skipped — they carry trust /
                             # verification metadata, not user-visible content.
@@ -1571,6 +1726,68 @@ class ExternalProviderClient:
                                     }
                                 )
                                 current_result_block = None
+                            elif current_code_exec_use is not None:
+                                # End of a code-execution server_tool_use —
+                                # parse the buffered input_json into a
+                                # {command, path, ...} dict and emit
+                                # tool_start. The matching tool_end fires
+                                # on the result block's content_block_stop.
+                                buffer = current_code_exec_use["buffer"]
+                                parsed_args: dict[str, Any] = {}
+                                if buffer:
+                                    try:
+                                        parsed_obj = _json.loads(buffer)
+                                        if isinstance(parsed_obj, dict):
+                                            parsed_args = parsed_obj
+                                    except Exception:
+                                        parsed_args = {}
+                                tool_use_id = current_code_exec_use["id"]
+                                kind = current_code_exec_use["kind"]
+                                emit_args = {"kind": kind, **parsed_args}
+                                if tool_use_id in code_execution_calls:
+                                    code_execution_calls[tool_use_id]["arguments"] = (
+                                        emit_args
+                                    )
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "code_execution",
+                                        "tool_call_id": tool_use_id,
+                                        "arguments": emit_args,
+                                    }
+                                )
+                                current_code_exec_use = None
+                            elif current_code_exec_result is not None:
+                                # End of a code-execution result block —
+                                # format the inner result into the text
+                                # payload CodeExecutionToolUI renders.
+                                tool_use_id = current_code_exec_result["tool_use_id"]
+                                inner = current_code_exec_result["inner"]
+                                # Track generated-file count for the
+                                # follow-up Files API PR. v1 drops them.
+                                if isinstance(inner, dict):
+                                    file_blocks = inner.get("content")
+                                    if isinstance(file_blocks, list):
+                                        for entry in file_blocks:
+                                            if isinstance(entry, dict) and entry.get(
+                                                "file_id"
+                                            ):
+                                                code_execution_generated_files += 1
+                                result_text = _format_code_execution_result(
+                                    inner if isinstance(inner, dict) else {}
+                                )
+                                if tool_use_id in code_execution_calls:
+                                    code_execution_calls[tool_use_id]["result"] = (
+                                        result_text
+                                    )
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": tool_use_id,
+                                        "result": result_text,
+                                    }
+                                )
+                                current_code_exec_result = None
                             elif thinking_open:
                                 # Close the <think> tag when the thinking block
                                 # ends, in case no text_delta follows (e.g.
@@ -1638,10 +1855,20 @@ class ExternalProviderClient:
                     # instead. cache_creation tokens are billed at a
                     # small premium; cache_read tokens are billed at a
                     # discount.
+                    code_execution_invocations = len(code_execution_calls)
+                    code_execution_results = sum(
+                        1
+                        for c in code_execution_calls.values()
+                        if c.get("result") is not None
+                    )
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
                         "results=%s, queries=%s, "
+                        "code_execution_requested=%s, "
+                        "code_execution_invocations=%s, "
+                        "code_execution_results=%s, "
+                        "code_execution_generated_files=%s, "
                         "input_tokens=%s, output_tokens=%s, "
                         "cache_creation_input_tokens=%s, "
                         "cache_read_input_tokens=%s, events=%s)",
@@ -1650,6 +1877,10 @@ class ExternalProviderClient:
                         web_search_invocations,
                         total_results,
                         queries,
+                        code_execution_enabled,
+                        code_execution_invocations,
+                        code_execution_results,
+                        code_execution_generated_files,
                         last_usage.get("input_tokens"),
                         last_usage.get("output_tokens"),
                         last_usage.get("cache_creation_input_tokens"),
@@ -1692,6 +1923,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str],
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
+        openai_code_exec_container_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -1816,15 +2048,41 @@ class ExternalProviderClient:
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools
-        # The frontend's Search button maps to the unified
-        # enabled_tools=["web_search"] shorthand; translate that into the
-        # Responses-API tool schema. Other built-in tools (file_search,
-        # code_interpreter, image_generation, computer_use_preview) can be
-        # added with the same pattern when we surface their toggles.
+        #   https://developers.openai.com/api/docs/guides/tools-shell
+        # The frontend's Search/Code buttons map to the unified
+        # enabled_tools shorthand; translate that into the Responses-API
+        # tool schema. Other built-in tools (file_search,
+        # code_interpreter, image_generation, computer_use_preview) can
+        # be added with the same pattern when we surface their toggles.
+        code_execution_enabled_openai = bool(
+            enabled_tools and "code_execution" in enabled_tools and is_openai_cloud
+        )
         if enabled_tools:
             tools_array: list[dict[str, Any]] = []
             if "web_search" in enabled_tools:
                 tools_array.append({"type": "web_search"})
+            if code_execution_enabled_openai:
+                # `container_auto` lets OpenAI auto-create a fresh
+                # container per request; we capture the resulting
+                # container_id off the SSE stream and the chat-adapter
+                # persists it onto the thread record. Subsequent turns
+                # in the same thread pass it back as
+                # `openai_code_exec_container_id`, which we translate to
+                # `container_reference` here so the model sees
+                # filesystem state from prior turns. Container expires
+                # after ~20 min of inactivity per OpenAI's default
+                # policy — a stale id 400s, the chat-adapter clears it
+                # via container_invalidated, and the next turn falls
+                # back to auto-create.
+                shell_env: dict[str, Any]
+                if openai_code_exec_container_id:
+                    shell_env = {
+                        "type": "container_reference",
+                        "container_id": openai_code_exec_container_id,
+                    }
+                else:
+                    shell_env = {"type": "container_auto"}
+                tools_array.append({"type": "shell", "environment": shell_env})
             if tools_array:
                 body["tools"] = tools_array
 
@@ -1849,6 +2107,29 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
+                    # Detect stale-container errors so the frontend can
+                    # drop its persisted id. OpenAI doesn't pin an
+                    # error code in the public docs for this case, so
+                    # match a couple of likely substrings. If we sent
+                    # a container_reference and the response is 4xx
+                    # with any hint of "container not found / expired",
+                    # emit container_invalidated; the next turn will
+                    # fall back to container_auto.
+                    if (
+                        openai_code_exec_container_id
+                        and 400 <= response.status_code < 500
+                    ):
+                        lowered = error_text.lower()
+                        if "container" in lowered and (
+                            "expired" in lowered
+                            or "not_found" in lowered
+                            or "not found" in lowered
+                            or "no such container" in lowered
+                        ):
+                            yield (
+                                f"data: "
+                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
+                            )
                     yield _error_sse_line(
                         response.status_code, error_text, self.provider_type
                     )
@@ -1886,6 +2167,28 @@ class ExternalProviderClient:
                 # web_search_calls: { item_id -> {query} }
                 web_search_calls: dict[str, dict[str, Any]] = {}
                 all_url_citations: list[dict[str, str]] = []
+                # Shell-tool (code execution) state. OpenAI emits
+                # `shell_call` items (model requesting a command list)
+                # paired with `shell_call_output` items (execution
+                # results). We mirror the Anthropic code-execution UX
+                # by emitting one `_toolEvent` tool_start per
+                # shell_call and one tool_end per shell_call_output;
+                # they're linked via `shell_call_output.call_id`
+                # matching `shell_call.id`. Items are independent of
+                # web_search (different keyed map).
+                # shell_calls: { call_id -> {commands, output} }
+                shell_calls: dict[str, dict[str, Any]] = {}
+                # Container id captured from the response stream. When
+                # it differs from the inbound id, emit a synthetic
+                # `container_ready` _toolEvent so the frontend can
+                # persist it onto the thread record for the next turn.
+                # Where OpenAI surfaces it is documented loosely; we
+                # probe two known fields (response.container_id on
+                # response.completed, item.environment.container_id on
+                # shell_call output items) and latch the first one we
+                # see.
+                latched_container_id: Optional[str] = None
+                container_id_emitted = False
 
                 def _emit_tool_event(payload: dict[str, Any]) -> str:
                     chunk = {
@@ -1901,6 +2204,45 @@ class ExternalProviderClient:
                         "_toolEvent": payload,
                     }
                     return f"data: {_json.dumps(chunk)}"
+
+                def _format_shell_output(output: Any) -> str:
+                    """Render an OpenAI `shell_call_output.output` list
+                    as the preformatted text payload the frontend's
+                    CodeExecutionToolUI displays inside a <pre>. Each
+                    entry has stdout/stderr/outcome — concatenate them
+                    with a separator block per entry and append
+                    `return_code` / `(timeout)` annotations only when
+                    they convey information beyond "succeeded".
+                    """
+                    if not isinstance(output, list):
+                        return ""
+                    parts: list[str] = []
+                    for entry in output:
+                        if not isinstance(entry, dict):
+                            continue
+                        stdout = entry.get("stdout") or ""
+                        stderr = entry.get("stderr") or ""
+                        outcome = entry.get("outcome") or {}
+                        chunk_parts: list[str] = []
+                        if stdout:
+                            chunk_parts.append(stdout)
+                        if stderr:
+                            chunk_parts.append(f"--- stderr ---\n{stderr}")
+                        if isinstance(outcome, dict):
+                            outcome_type = outcome.get("type")
+                            if outcome_type == "exit":
+                                exit_code = outcome.get("exit_code")
+                                if isinstance(exit_code, int) and exit_code != 0:
+                                    chunk_parts.append(f"return_code: {exit_code}")
+                            elif outcome_type == "timeout":
+                                chunk_parts.append("(timeout)")
+                        if chunk_parts:
+                            parts.append("\n".join(chunk_parts))
+                    return (
+                        "\n--- next command ---\n".join(parts)
+                        if parts
+                        else "(no output)"
+                    )
 
                 def _record_url_citation(payload: dict[str, Any]) -> None:
                     """Append a url_citation onto the shared all_url_citations
@@ -2024,6 +2366,37 @@ class ExternalProviderClient:
                                     f"ws_{len(web_search_calls)}"
                                 )
                                 web_search_calls.setdefault(item_id, {"query": ""})
+                            # Shell-tool: register the call eagerly so
+                            # the matching shell_call_output can link
+                            # back even if `done` arrives out of order.
+                            # Also probe for container_id on the
+                            # environment field — when container_auto
+                            # auto-creates one, this is the first place
+                            # the new id might surface (OpenAI doesn't
+                            # promise this in docs, but the field is
+                            # cheap to scan and lets us emit
+                            # container_ready earlier than
+                            # response.completed).
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "shell_call"
+                            ):
+                                item_id = item.get("id", "") or (
+                                    f"sc_{len(shell_calls)}"
+                                )
+                                shell_calls.setdefault(
+                                    item_id,
+                                    {"commands": [], "output": None},
+                                )
+                                env = item.get("environment")
+                                if isinstance(env, dict):
+                                    probe = env.get("container_id") or env.get("id")
+                                    if (
+                                        isinstance(probe, str)
+                                        and probe.startswith("cntr_")
+                                        and latched_container_id is None
+                                    ):
+                                        latched_container_id = probe
 
                         elif event_type == "response.output_item.done":
                             item = event.get("item", {})
@@ -2079,6 +2452,65 @@ class ExternalProviderClient:
                                         "result": "",
                                     }
                                 )
+                            elif item.get("type") == "shell_call":
+                                # OpenAI ships the commands array on the
+                                # action field. Join them onto one
+                                # command string for the tool card —
+                                # the renderer is shared with Anthropic
+                                # bash, which only carries a single
+                                # `command`. Multiple commands in one
+                                # shell_call get joined with newlines so
+                                # they still render as one card.
+                                item_id = item.get("id", "") or (
+                                    f"sc_{len(shell_calls)}"
+                                )
+                                action = item.get("action") or {}
+                                commands = (
+                                    action.get("commands")
+                                    if isinstance(action, dict)
+                                    else None
+                                ) or []
+                                joined_command = (
+                                    "\n".join(str(c) for c in commands)
+                                    if isinstance(commands, list)
+                                    else ""
+                                )
+                                shell_calls.setdefault(
+                                    item_id,
+                                    {"commands": [], "output": None},
+                                )
+                                shell_calls[item_id]["commands"] = (
+                                    list(commands) if isinstance(commands, list) else []
+                                )
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "code_execution",
+                                        "tool_call_id": item_id,
+                                        "arguments": {
+                                            "kind": "bash",
+                                            "command": joined_command,
+                                        },
+                                    }
+                                )
+                            elif item.get("type") == "shell_call_output":
+                                # `call_id` links back to the shell_call's
+                                # `id`, which is what we used as the
+                                # tool_call_id on tool_start. Match on
+                                # call_id when present so the matching
+                                # card transitions to complete.
+                                call_id = item.get("call_id") or item.get("id") or ""
+                                output = item.get("output") or []
+                                if call_id in shell_calls:
+                                    shell_calls[call_id]["output"] = output
+                                result_text = _format_shell_output(output)
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": call_id,
+                                        "result": result_text,
+                                    }
+                                )
 
                         elif isinstance(event_type, str) and "reasoning" in event_type:
                             reasoning_delta = _extract_reasoning_text(event)
@@ -2096,6 +2528,39 @@ class ExternalProviderClient:
                             if reasoning_open:
                                 yield _chunk_with_text("</think>")
                                 reasoning_open = False
+                            # Probe response.container_id (top-level) and
+                            # response.container.id for the shell-tool
+                            # container id. OpenAI's docs don't pin the
+                            # exact field, so we scan both. Emit
+                            # `container_ready` only when the value
+                            # differs from the inbound one — no churn on
+                            # reuse.
+                            response_obj = event.get("response") or {}
+                            if isinstance(response_obj, dict):
+                                probe_id = response_obj.get("container_id")
+                                if not probe_id:
+                                    container_field = response_obj.get("container")
+                                    if isinstance(container_field, dict):
+                                        probe_id = container_field.get("id")
+                                if (
+                                    isinstance(probe_id, str)
+                                    and probe_id.startswith("cntr_")
+                                    and latched_container_id is None
+                                ):
+                                    latched_container_id = probe_id
+                            if (
+                                latched_container_id
+                                and not container_id_emitted
+                                and latched_container_id
+                                != openai_code_exec_container_id
+                            ):
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "container_ready",
+                                        "container_id": latched_container_id,
+                                    }
+                                )
+                                container_id_emitted = True
                             # Apply the aggregated citation list onto the
                             # *last* web_search call by overwriting its
                             # tool_end result. The frontend's
@@ -2226,10 +2691,19 @@ class ExternalProviderClient:
                         details = last_usage.get("input_tokens_details")
                         if isinstance(details, dict):
                             cached_input_tokens = details.get("cached_tokens")
+                    code_execution_requested = code_execution_enabled_openai
+                    code_execution_invocations = len(shell_calls)
+                    code_execution_results = sum(
+                        1 for sc in shell_calls.values() if sc.get("output") is not None
+                    )
                     logger.info(
                         "OpenAI Responses stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
                         "citations=%s, queries=%s, reasoning_emitted=%s, "
+                        "code_execution_requested=%s, "
+                        "code_execution_invocations=%s, "
+                        "code_execution_results=%s, "
+                        "container_id_in=%s, container_id_out=%s, "
                         "input_tokens=%s, output_tokens=%s, "
                         "cached_input_tokens=%s)",
                         model,
@@ -2238,6 +2712,11 @@ class ExternalProviderClient:
                         total_citations,
                         queries,
                         reasoning_emitted,
+                        code_execution_requested,
+                        code_execution_invocations,
+                        code_execution_results,
+                        openai_code_exec_container_id,
+                        latched_container_id,
                         (last_usage or {}).get("input_tokens"),
                         (last_usage or {}).get("output_tokens"),
                         cached_input_tokens,
@@ -2357,6 +2836,123 @@ class ExternalProviderClient:
                 exc,
             )
             raise
+
+    def _container_headers(self) -> dict[str, str]:
+        """Auth headers plus the OpenAI-Beta opt-in for /v1/containers.
+
+        OpenAI's containers API requires ``OpenAI-Beta: containers=v1``.
+        Without it, DELETE silently no-ops: the API returns 200 with a
+        ``{"deleted": true}`` body but does not actually remove the
+        container (verified 2026-05-15). The header is required for
+        list / create / delete to behave consistently.
+        """
+        headers = self._auth_headers()
+        headers["OpenAI-Beta"] = "containers=v1"
+        return headers
+
+    async def list_openai_containers(self) -> list[dict[str, Any]]:
+        """
+        GET /v1/containers on the user's OpenAI account.
+
+        Returns the raw container records (id, name, created_at,
+        last_active_at, expires_after, status). The route layer
+        reshapes these into the UI summary shape.
+
+        Only valid against api.openai.com — non-cloud OpenAI-compat
+        servers don't implement /v1/containers and would 404 here.
+        Caller is responsible for the is_openai_cloud guard.
+        """
+        response = await _http_client.get(
+            f"{self.base_url}/containers",
+            headers = self._container_headers(),
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        containers = data.get("data") if isinstance(data, dict) else None
+        result = list(containers) if isinstance(containers, list) else []
+        logger.info(
+            "openai_container_list.response count=%s items=%s",
+            len(result),
+            [
+                {"id": c.get("id"), "status": c.get("status")}
+                for c in result
+                if isinstance(c, dict)
+            ],
+        )
+        return result
+
+    async def create_openai_container(
+        self,
+        name: str,
+        ttl_minutes: int,
+    ) -> dict[str, Any]:
+        """
+        POST /v1/containers with ``expires_after.anchor="last_active_at"``.
+        ``ttl_minutes`` is the idle timeout — every API call that
+        touches the container resets the timer.
+        """
+        body = {
+            "name": name,
+            "expires_after": {
+                "anchor": "last_active_at",
+                "minutes": ttl_minutes,
+            },
+        }
+        response = await _http_client.post(
+            f"{self.base_url}/containers",
+            json = body,
+            headers = self._container_headers(),
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_openai_container(self, container_id: str) -> None:
+        """DELETE /v1/containers/{id}. 404s are surfaced as HTTPError.
+
+        Uses a fresh httpx client (not the shared ``_http_client``) so
+        connection-pool state from earlier chat requests cannot
+        interfere — observed in the wild that DELETEs over the shared
+        pool returned ``deleted: true`` while the container persisted
+        in subsequent /containers list calls, even though the same
+        DELETE issued from a fresh client genuinely removed it.
+
+        Verifies the response body reports ``deleted: true``. OpenAI
+        returns a 2xx ``deleted: true`` body even when the request is
+        silently rejected (e.g. missing OpenAI-Beta header), so a
+        status-only check is not sufficient.
+        """
+        url = f"{self.base_url}/containers/{container_id}"
+        headers = self._container_headers()
+        logger.info(
+            "openai_container_delete.outbound url=%s has_auth=%s openai_beta=%s",
+            url,
+            "Authorization" in headers,
+            headers.get("OpenAI-Beta"),
+        )
+        async with httpx.AsyncClient(timeout = self._timeout) as fresh_client:
+            response = await fresh_client.delete(url, headers = headers)
+        logger.info(
+            "openai_container_delete.response status=%s cf_ray=%s "
+            "request_id=%s organization=%s project=%s processing_ms=%s body=%s",
+            response.status_code,
+            response.headers.get("cf-ray"),
+            response.headers.get("x-request-id"),
+            response.headers.get("openai-organization"),
+            response.headers.get("openai-project"),
+            response.headers.get("openai-processing-ms"),
+            response.text[:300],
+        )
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if not (isinstance(payload, dict) and payload.get("deleted") is True):
+            raise httpx.HTTPError(
+                f"OpenAI did not confirm container deletion: {response.text[:200]}"
+            )
 
     async def close(self) -> None:
         """No-op — the underlying client is shared across requests."""

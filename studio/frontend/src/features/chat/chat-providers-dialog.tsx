@@ -188,6 +188,11 @@ export function ChatProvidersSettings({
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
   const isCustomProvider = isCustomProviderType(providerType);
+  // Ollama runs locally and does not require an API key. Hide the input
+  // entirely rather than just marking it optional so users aren't prompted
+  // for a credential the provider never uses.
+  const isOllamaProvider = providerType === "ollama";
+  const showApiKeyField = !isOllamaProvider;
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
@@ -241,13 +246,16 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed the registry's default_models for every provider — curated and
-    // remote alike. For remote-mode providers, loadModels() will replace
-    // this with the union of defaults + the live /models response once the
-    // user clicks "Load Models"; until then (or if the call fails — e.g.
-    // decryption issues during key rotation) the seeded list ensures
-    // curated picks like claude-haiku-4-5 are always reachable.
-    setAvailableModels([...entry.default_models]);
+    // Seed default_models only when the catalog is not fetched live:
+    // curated providers (catalog too large to enumerate, defaults are
+    // the suggestion shortlist) and Ollama (local, no API key — local
+    // /models stands in). Remote-mode cloud providers stay empty until
+    // the user clicks "Load available models" with a key, since
+    // different API tiers expose different catalogs and we don't want
+    // to advertise models the user can't actually call.
+    const seedDefaults =
+      entry.model_list_mode === "curated" || providerType === "ollama";
+    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
@@ -357,8 +365,11 @@ export function ChatProvidersSettings({
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry) {
-      // Keep first-open behavior consistent with provider re-selection.
-      setAvailableModels([...entry.default_models]);
+      const seedDefaults =
+        entry.model_list_mode === "curated" || providerType === "ollama";
+      if (seedDefaults) {
+        setAvailableModels([...entry.default_models]);
+      }
     }
     setPage("form");
   }
@@ -734,7 +745,10 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    if (!savedKey) {
+    // Ollama runs locally and never requires a key — fall through to the
+    // real connection check instead of prompting for credentials the form
+    // no longer exposes.
+    if (!savedKey && provider.providerType !== "ollama") {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -884,42 +898,44 @@ export function ChatProvidersSettings({
                 </Select>
               </div>
 
-              <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
-                <div className="flex min-w-0 flex-col gap-0.5">
-                  <Label
-                    htmlFor="provider-api-key"
-                    className="text-sm font-medium"
-                  >
-                    API key {isCustomProvider ? "(optional)" : ""}
-                  </Label>
-                  <p className="text-xs leading-snug text-muted-foreground">
-                    Stored locally.
-                  </p>
+              {showApiKeyField ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-api-key"
+                      className="text-sm font-medium"
+                    >
+                      API key {isCustomProvider ? "(optional)" : ""}
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Stored locally.
+                    </p>
+                  </div>
+                  <div className="relative min-w-0">
+                    <Input
+                      id="provider-api-key"
+                      type={showApiKey ? "text" : "password"}
+                      value={apiKey}
+                      onChange={(event) => setApiKey(event.target.value)}
+                      placeholder="Enter API key"
+                      className="h-9 pr-9 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((visible) => !visible)}
+                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                      aria-pressed={showApiKey}
+                    >
+                      {showApiKey ? (
+                        <Eye className="size-3.5" />
+                      ) : (
+                        <EyeOff className="size-3.5" />
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <div className="relative min-w-0">
-                  <Input
-                    id="provider-api-key"
-                    type={showApiKey ? "text" : "password"}
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    placeholder="Enter API key"
-                    className="h-9 pr-9 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((visible) => !visible)}
-                    className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label={showApiKey ? "Hide API key" : "Show API key"}
-                    aria-pressed={showApiKey}
-                  >
-                    {showApiKey ? (
-                      <Eye className="size-3.5" />
-                    ) : (
-                      <EyeOff className="size-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
+              ) : null}
 
               {isCustomProvider ? (
                 <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
