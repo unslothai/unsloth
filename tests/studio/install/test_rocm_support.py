@@ -1993,5 +1993,88 @@ class TestRocmTorchPkgSpecs:
             assert mapping.get(arch) == "gfx110X-all", f"{arch} missing from mapping"
 
 
+# =============================================================================
+# TEST: setup.ps1 / install.ps1 -- Strix Halo gfx arch detection
+# =============================================================================
+
+_SETUP_PS1_PATH = PACKAGE_ROOT / "studio" / "setup.ps1"
+_INSTALL_PS1_PATH = PACKAGE_ROOT / "install.ps1"
+
+
+class TestStrixHaloGfxArchDetection:
+    """Verify that setup.ps1 and install.ps1 have robust gfx arch detection
+    for Strix Halo / iGPU users who only have the HIP runtime (no hipinfo)."""
+
+    def test_amd_smi_static_asic_attempted_in_setup(self):
+        """setup.ps1 must try 'amd-smi static --asic' when list output lacks gfx arch."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "static --asic" in source
+
+    def test_amd_smi_static_asic_attempted_in_install(self):
+        """install.ps1 must try 'amd-smi static --asic' when list output lacks gfx arch."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "static --asic" in source
+
+    def test_env_var_override_in_setup(self):
+        """setup.ps1 must honour UNSLOTH_ROCM_GFX_ARCH as a manual arch override."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "UNSLOTH_ROCM_GFX_ARCH" in source
+
+    def test_env_var_override_in_install(self):
+        """install.ps1 must honour UNSLOTH_ROCM_GFX_ARCH as a manual arch override."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "UNSLOTH_ROCM_GFX_ARCH" in source
+
+    def test_name_arch_table_covers_strix_halo_in_setup(self):
+        """setup.ps1 name→arch table must map 890M / Strix Halo to gfx1151."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "gfx1151" in source
+        assert "890M" in source or "Strix Halo" in source
+
+    def test_name_arch_table_covers_strix_halo_in_install(self):
+        """install.ps1 name→arch table must map 890M / Strix Halo to gfx1151."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "gfx1151" in source
+        assert "890M" in source or "Strix Halo" in source
+
+    def test_name_arch_table_covers_strix_point_in_setup(self):
+        """setup.ps1 name→arch table must map 880M / Strix Point to gfx1150."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "gfx1150" in source
+        assert "880M" in source or "Strix Point" in source
+
+    def test_name_arch_table_covers_strix_point_in_install(self):
+        """install.ps1 name→arch table must map 880M / Strix Point to gfx1150."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "gfx1150" in source
+        assert "880M" in source or "Strix Point" in source
+
+    def test_name_arch_table_covers_rdna3_phoenix_in_setup(self):
+        """setup.ps1 name→arch table must map 780M / Phoenix to gfx1103."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "gfx1103" in source
+        assert "780M" in source or "Phoenix" in source
+
+    def test_wmi_does_not_set_hasrocm_in_setup(self):
+        """WMI block in setup.ps1 must NOT set $HasROCm = $true (no runtime confirmation)."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        # Find the WMI block and confirm HasROCm is not set inside it
+        wmi_idx = source.find("Win32_VideoController")
+        assert wmi_idx != -1, "WMI block not found in setup.ps1"
+        # The nearest HasROCm = $true must not appear between the WMI block
+        # and the closing brace of that if-block.  We check by confirming
+        # $HasROCm = $true does NOT appear within 300 chars of the WMI call.
+        wmi_context = source[wmi_idx : wmi_idx + 300]
+        assert "$HasROCm = $true" not in wmi_context
+
+    def test_gfx_arch_regex_parses_from_amd_smi_output(self):
+        """Both files must use the gfx\\d+[a-z]? regex to parse arch from amd-smi output."""
+        for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
+            source = path.read_text(encoding = "utf-8")
+            # The regex pattern used to match gfx arches
+            assert "gfx\\d+" in source or r"gfx\d+" in source, \
+                f"gfx arch regex not found in {path.name}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

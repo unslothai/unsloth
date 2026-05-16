@@ -703,7 +703,10 @@ if (-not $HasNvidiaSmi) {
             }
         } catch {}
     }
-    # amd-smi list fallback: look for "GPU: <digit>" data rows
+    # amd-smi fallback: HIP runtime present but hipinfo unavailable (no full HIP SDK).
+    # Confirms GPU visibility via 'list', then attempts 'static --asic' to extract
+    # the gfx arch that hipinfo would have provided.  Critical for Strix Halo
+    # (gfx1151) and other iGPUs where only the HIP runtime is installed.
     if (-not $HasROCm) {
         $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
         if ($amdSmiExe) {
@@ -711,12 +714,33 @@ if (-not $HasNvidiaSmi) {
                 $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
                 if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                     $HasROCm = $true
-                    $ROCmGpuLabel = "AMD ROCm"
+                    # Attempt 1: newer amd-smi versions embed the gfx arch in list output
+                    if ($smiOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
+                        $script:ROCmGfxArch = $Matches[1].ToLower()
+                        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    } else {
+                        # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
+                        # including the GFX target needed for wheel index selection.
+                        $smiAsicOut = ""
+                        try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
+                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
+                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                        } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
+                            $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                        } else {
+                            $ROCmGpuLabel = "AMD ROCm"
+                        }
+                    }
                 }
             } catch {}
         }
     }
-    # WMI fallback: AMD GPU in device list but no HIP SDK → guide the user
+    # WMI fallback: AMD GPU in device list but no HIP SDK → guide the user.
+    # WMI gives a marketing name (e.g. "AMD Radeon 890M") but never a gfx arch.
+    # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
+    # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
+    # so the name-based inference below can still attempt an arch lookup.
     if (-not $HasROCm) {
         try {
             $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
@@ -724,6 +748,40 @@ if (-not $HasNvidiaSmi) {
                 Select-Object -First 1
             if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
         } catch {}
+    }
+    # ── Arch resolution: env-var override → name inference ──────────────────
+    # Runs after all probe methods.  Covers users whose amd-smi version is too
+    # old to report the GFX target and who don't have hipinfo (HIP-runtime-only
+    # installs, common on Strix Halo / iGPU systems).
+    if ($HasROCm -and -not $script:ROCmGfxArch) {
+        # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
+        if ($env:UNSLOTH_ROCM_GFX_ARCH) {
+            $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+            substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
+        }
+        # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
+        #    Ordered most-specific first; first match wins.
+        elseif ($ROCmGpuLabel) {
+            $nameArchTable = @(
+                @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
+                @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
+                @{ P = "890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";        A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo)
+                @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" } # RDNA 3.5 iGPU (Strix Point)
+                @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                       A = "gfx1100" }  # RDNA 3 desktop
+                @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
+                @{ P = "780M|760M|740M|Phoenix";                               A = "gfx1103" }  # RDNA 3 iGPU (Phoenix)
+            )
+            foreach ($row in $nameArchTable) {
+                if ($ROCmGpuLabel -match $row.P) {
+                    $script:ROCmGfxArch = $row.A
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
+                    substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+                    break
+                }
+            }
+        }
     }
     # Capture ROCm version early for display and wheel selection
     if ($HasROCm) {
