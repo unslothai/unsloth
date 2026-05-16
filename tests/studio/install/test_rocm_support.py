@@ -2352,8 +2352,10 @@ class TestSetupShGccInstallDir:
 # TEST: main.py -- BNB_ROCM_VERSION server startup + distributed stubs
 # =============================================================================
 
-_MAIN_PY_PATH     = PACKAGE_ROOT / "studio" / "backend" / "main.py"
-_HARDWARE_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+_MAIN_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "main.py"
+_HARDWARE_PY_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+)
 
 
 class TestServerStartupRocmFixes:
@@ -2371,7 +2373,7 @@ class TestServerStartupRocmFixes:
         """main.py BNB_ROCM_VERSION logic must be inside the win32 platform guard."""
         source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
         win32_idx = source.find('sys.platform == "win32"')
-        bnb_idx   = source.find("BNB_ROCM_VERSION")
+        bnb_idx = source.find("BNB_ROCM_VERSION")
         assert win32_idx != -1 and bnb_idx != -1
         assert win32_idx < bnb_idx
 

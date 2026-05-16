@@ -56,14 +56,17 @@ if sys.platform == "win32":
     # before any import that pulls in bitsandbytes (mirrors worker.py logic).
     if "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
+
         _bnb_rocm_ver = None
         try:
             import importlib.util as _ilu
+
             _bnb_spec = _ilu.find_spec("bitsandbytes")
             if _bnb_spec and _bnb_spec.origin:
                 _pkg_dir = os.path.dirname(_bnb_spec.origin)
                 _dlls = _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll"))
                 import re as _re_bnb
+
                 for _dll in sorted(_dlls):
                     _m = _re_bnb.search(r"libbitsandbytes_rocm(\d+)\.dll", _dll)
                     if _m:
