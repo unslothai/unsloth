@@ -1339,8 +1339,12 @@ shell.Run cmd, 0, False
             if ($hipConfigExe) {
                 try {
                     $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
-                    if ($LASTEXITCODE -eq 0 -and $hipVerOut -match '(\d+\.\d+)') {
-                        $ROCmVersion = $Matches[1]
+                    if ($LASTEXITCODE -eq 0) {
+                        $hipVerLine = ($hipVerOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+                        if ($hipVerLine -match '(\d+\.\d+)') {
+                            $ROCmVersion     = $Matches[1]
+                            $ROCmVersionFull = $hipVerLine
+                        }
                     }
                 } catch {}
             }
@@ -1362,6 +1366,9 @@ shell.Run cmd, 0, False
         step "gpu" "NVIDIA GPU detected"
     } elseif ($HasROCm) {
         step "gpu" $ROCmGpuLabel
+        $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+        substep "HIP SDK: $hipSdkPath"
+        if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
     } elseif ($ROCmGpuLabel) {
         step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"

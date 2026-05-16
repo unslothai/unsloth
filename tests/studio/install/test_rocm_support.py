@@ -2200,5 +2200,60 @@ class TestHipSdkEnvPathResolution:
         )
 
 
+# =============================================================================
+# TEST: HIP SDK detected substep -- path + hipconfig version shown in terminal
+# =============================================================================
+
+
+class TestHipSdkDetectedSubstep:
+    """Verify that both scripts print HIP SDK path and full hipconfig version
+    as substeps under the gpu step when AMD ROCm is successfully detected."""
+
+    def test_setup_prints_hip_sdk_path_substep(self):
+        """setup.ps1 must print an 'HIP SDK:' substep showing the resolved path."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP SDK:" in source
+
+    def test_install_prints_hip_sdk_path_substep(self):
+        """install.ps1 must print an 'HIP SDK:' substep showing the resolved path."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP SDK:" in source
+
+    def test_setup_shows_hipconfig_full_version(self):
+        """setup.ps1 must capture and display the full hipconfig version string."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCmVersionFull" in source or "hipconfig:" in source
+
+    def test_install_shows_hipconfig_full_version(self):
+        """install.ps1 must capture and display the full hipconfig version string."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCmVersionFull" in source or "hipconfig:" in source
+
+    def test_setup_captures_full_version_not_just_major_minor(self):
+        """setup.ps1 must store the raw hipconfig output line, not just major.minor."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCmVersionFull" in source
+
+    def test_install_captures_full_version_not_just_major_minor(self):
+        """install.ps1 must store the raw hipconfig output line, not just major.minor."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCmVersionFull" in source
+
+    def test_setup_uses_hip_path_or_rocm_path_for_sdk_display(self):
+        """setup.ps1 HIP SDK path substep must check HIP_PATH then ROCM_PATH."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP_PATH" in source and "ROCM_PATH" in source
+
+    def test_install_uses_hip_path_or_rocm_path_for_sdk_display(self):
+        """install.ps1 HIP SDK path substep must check HIP_PATH then ROCM_PATH."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP_PATH" in source and "ROCM_PATH" in source
+
+    def test_setup_rocm_step_uses_full_version(self):
+        """setup.ps1 'rocm' step label must prefer the full version string."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCmVersionFull" in source and "rocm" in source
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
