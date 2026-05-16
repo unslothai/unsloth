@@ -651,7 +651,7 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "JS import snippet inside a Python fixture string is NOT a usage",
         "next-themes",
         "tests/studio/something.py",
-        'snippet = \'import x from "next-themes";\'',
+        "snippet = 'import x from \"next-themes\";'",
         None,
     ),
     ClassifyCase(
@@ -675,7 +675,7 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "JS import inside a YAML workflow is NOT classified as a JS usage",
         "next-themes",
         ".github/workflows/x.yml",
-        'run: echo \'import x from "next-themes";\'',
+        "run: echo 'import x from \"next-themes\";'",
         None,
     ),
     # HTML script/link must respect package-name boundaries: a

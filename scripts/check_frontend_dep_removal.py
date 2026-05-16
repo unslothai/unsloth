@@ -64,9 +64,7 @@ HTML_EXT = re.compile(r"\.(html|htm)$")
 TS_LIKE_EXT = re.compile(r"\.(ts|tsx|mts|cts|mdx)$")
 # Files where a removed package's CLI binary could be invoked (npx, bunx,
 # yarn dlx, pnpm exec, or a bare `pkg --flag` shell call).
-COMMAND_LIKE_EXT = re.compile(
-    r"(\.(ya?ml|sh|ps1|bat)$|(^|/)Dockerfile[^/]*$)"
-)
+COMMAND_LIKE_EXT = re.compile(r"(\.(ya?ml|sh|ps1|bat)$|(^|/)Dockerfile[^/]*$)")
 
 GREP_INCLUDES = [
     "--include=*.ts",
@@ -295,9 +293,7 @@ def classify(pkg: str, file: str, content: str) -> str | None:
         rf"<script[^>]*src\s*=\s*['\"][^'\"]*/{html_pkg}", content
     ):
         return "html_script"
-    if is_html and re.search(
-        rf"<link[^>]*href\s*=\s*['\"][^'\"]*/{html_pkg}", content
-    ):
+    if is_html and re.search(rf"<link[^>]*href\s*=\s*['\"][^'\"]*/{html_pkg}", content):
         return "html_link"
     # TypeScript triple-slash
     if is_ts and re.search(
