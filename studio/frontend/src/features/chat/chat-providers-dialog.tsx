@@ -68,6 +68,7 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
 ];
 const PROVIDER_FORM_DURATION = 0.2;
+const AUTO_LOAD_MODELS_DEBOUNCE_MS = 600;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found, please make sure API key is added and valid for this provider.";
 const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
@@ -246,17 +247,43 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed the registry's default_models for every provider — curated and
-    // remote alike. For remote-mode providers, loadModels() will replace
-    // this with the union of defaults + the live /models response once the
-    // user clicks "Load Models"; until then (or if the call fails — e.g.
-    // decryption issues during key rotation) the seeded list ensures
-    // curated picks like claude-haiku-4-5 are always reachable.
-    setAvailableModels([...entry.default_models]);
+    // Seed the registry's default_models only for providers where the
+    // catalog is not fetched live: curated providers (catalog too large
+    // to enumerate, defaults are the suggestion shortlist) and Ollama
+    // (local, no API key — defaults stand in until the local /models
+    // call returns). For remote-mode cloud providers, leave the list
+    // empty so the UI does not advertise models the user has not yet
+    // proven they can reach with a valid key — the auto-load effect
+    // (or manual "Load available models") fills it in once a key is
+    // supplied.
+    const seedDefaults =
+      entry.model_list_mode === "curated" || providerType === "ollama";
+    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
   }, [providerType, editingProviderId, registryByType]);
+
+  const loadModelsRef = useRef(loadModels);
+  loadModelsRef.current = loadModels;
+  useEffect(() => {
+    if (editingProviderId) return;
+    if (!providerType) return;
+    if (isCustomProvider || isCuratedModelList || isOllamaProvider) return;
+    if (!apiKey.trim()) return;
+    const handle = window.setTimeout(() => {
+      void loadModelsRef.current({ silent: true });
+    }, AUTO_LOAD_MODELS_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [
+    apiKey,
+    providerType,
+    baseUrlDraft,
+    editingProviderId,
+    isCustomProvider,
+    isCuratedModelList,
+    isOllamaProvider,
+  ]);
 
   const totalModels = useMemo(
     () =>
@@ -362,8 +389,15 @@ export function ChatProvidersSettings({
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry) {
-      // Keep first-open behavior consistent with provider re-selection.
-      setAvailableModels([...entry.default_models]);
+      // Mirrors the provider-change effect: only seed defaults when
+      // the catalog is not fetched live (curated catalogs and Ollama).
+      // Remote-mode cloud providers stay empty until the API key is
+      // supplied and /models is fetched.
+      const seedDefaults =
+        entry.model_list_mode === "curated" || providerType === "ollama";
+      if (seedDefaults) {
+        setAvailableModels([...entry.default_models]);
+      }
     }
     setPage("form");
   }
@@ -418,23 +452,26 @@ export function ChatProvidersSettings({
     return parseOptionalBaseUrl(trimmed);
   }
 
-  async function loadModels() {
+  async function loadModels(options: { silent?: boolean } = {}) {
+    const { silent = false } = options;
     if (!providerType) {
-      toast.error("Choose a provider first.");
+      if (!silent) toast.error("Choose a provider first.");
       return;
     }
     if (isCustomProvider) {
-      toast.info("This connection uses manual model IDs.");
+      if (!silent) toast.info("This connection uses manual model IDs.");
       return;
     }
     if (isCuratedModelList) {
-      toast.info(
-        "This provider has a very large model catalog. Use the suggestions and add model IDs manually — full list is not fetched.",
-      );
+      if (!silent) {
+        toast.info(
+          "This provider has a very large model catalog. Use the suggestions and add model IDs manually — full list is not fetched.",
+        );
+      }
       return;
     }
     if (!isCustomProvider && !apiKey.trim()) {
-      toast.error("Add an API key first.");
+      if (!silent) toast.error("Add an API key first.");
       return;
     }
     setModelsLoading(true);
@@ -473,8 +510,11 @@ export function ChatProvidersSettings({
       }
       setModelSearchQuery("");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Could not load models: ${message}`);
+      if (!silent) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        toast.error(`Could not load models: ${message}`);
+      }
     } finally {
       setModelsLoading(false);
     }
