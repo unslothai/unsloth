@@ -92,13 +92,15 @@ jobs:
       # paths as valid resolution targets for bare src/ imports.
       #
       # actions/checkout uses fetch-depth: 1 by default, so the base branch
-      # is not available locally. Fetch the single base commit we need so
-      # `git show origin/<base>:...` can resolve the pre-PR package.json.
+      # is not available locally. Fetch the single base commit with an
+      # explicit refspec so origin/<base> is reliably created (a bare
+      # `git fetch origin <ref>` only updates FETCH_HEAD in some configs).
       - name: Dependency removal safety check
         if: github.event_name == 'pull_request'
         working-directory: ${{ github.workspace }}
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
           python3 scripts/check_frontend_dep_removal.py \
             --base "origin/${{ github.base_ref }}" \
             --enumerate-dead

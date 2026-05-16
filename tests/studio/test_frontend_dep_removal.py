@@ -641,6 +641,87 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         'type C = import("react").ComponentType;',
         "dynamic_import",
     ),
+    # File-type gating (codex P1: JS classifiers must not fire on
+    # non-script files). Python fixtures and Markdown code blocks often
+    # contain literal JS-shaped strings for documentation or test data,
+    # so a bare `import x from "pkg"` inside a .py / .md / .sh / .yml is
+    # not a real npm usage.
+    ClassifyCase(
+        "U37",
+        "JS import snippet inside a Python fixture string is NOT a usage",
+        "next-themes",
+        "tests/studio/something.py",
+        'snippet = \'import x from "next-themes";\'',
+        None,
+    ),
+    ClassifyCase(
+        "U38",
+        "JS import snippet inside a Markdown code fence is NOT a usage",
+        "next-themes",
+        "docs/example.md",
+        '```ts\nimport x from "next-themes";\n```',
+        None,
+    ),
+    ClassifyCase(
+        "U39",
+        "JS import inside a shell script is NOT classified as a JS usage",
+        "next-themes",
+        "scripts/build.sh",
+        'echo "import x from \\"next-themes\\";"',
+        None,
+    ),
+    ClassifyCase(
+        "U40",
+        "JS import inside a YAML workflow is NOT classified as a JS usage",
+        "next-themes",
+        ".github/workflows/x.yml",
+        'run: echo \'import x from "next-themes";\'',
+        None,
+    ),
+    # HTML script/link must respect package-name boundaries: a
+    # `/node_modules/foo-extra/...` reference does NOT use `foo`.
+    ClassifyCase(
+        "U41",
+        "HTML <script src=...> with similar-prefix package is NOT a match",
+        "foo",
+        "index.html",
+        '<script src="/node_modules/foo-extra/dist/index.js"></script>',
+        None,
+    ),
+    ClassifyCase(
+        "U42",
+        "HTML <link href=...> with similar-prefix package is NOT a match",
+        "foo",
+        "index.html",
+        '<link rel="stylesheet" href="/node_modules/foo-extra/dist/style.css">',
+        None,
+    ),
+    ClassifyCase(
+        "U43",
+        "HTML <script src=...> with exact package match IS a match",
+        "foo",
+        "index.html",
+        '<script src="/node_modules/foo/dist/index.js"></script>',
+        "html_script",
+    ),
+    # CSS url() unquoted variant -- valid CSS, must classify the same
+    # as the quoted variant.
+    ClassifyCase(
+        "U44",
+        "CSS url() unquoted bare package path",
+        "katex",
+        "src/x.css",
+        "src: url(katex/dist/fonts/font.woff2);",
+        "css_url",
+    ),
+    ClassifyCase(
+        "U45",
+        "CSS url() quoted bare package path still works",
+        "katex",
+        "src/x.css",
+        'src: url("katex/dist/fonts/font.woff2");',
+        "css_url",
+    ),
 ]
 
 
