@@ -29,7 +29,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -43,7 +43,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { TrashIcon, RefreshCwIcon, PlusIcon } from "lucide-react";
 import {
   createOpenAIContainer,
@@ -55,6 +54,7 @@ import { db } from "../db";
 import type { ExternalProviderConfig } from "../external-providers";
 import { useLiveQuery } from "../db";
 import { ensureThreadRecord } from "../runtime-provider";
+import { InfoHint } from "../chat-settings-sheet";
 
 const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
@@ -111,9 +111,6 @@ export function OpenAICodeExecSection({
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createTtl, setCreateTtl] = useState<number>(
-    provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES,
-  );
   // Ids that have been deleted in this session. Once tombstoned, an id
   // stays hidden from the picker for the lifetime of the page — OpenAI's
   // /containers list can keep returning a freshly-deleted id for an
@@ -121,6 +118,22 @@ export function OpenAICodeExecSection({
   // creates more confusion than it solves. Refreshing the page resets
   // the tombstone naturally.
   const [tombstones, setTombstones] = useState<Set<string>>(() => new Set());
+  // Ids optimistically inserted after a successful create but not yet
+  // confirmed by a /v1/containers list response. OpenAI's list endpoint
+  // is eventually consistent — a freshly-created container can be absent
+  // for several seconds. We render the row immediately with a "Creating"
+  // pill, then drop it from this set once a refresh sees the id.
+  const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  // Ref mirror so `refresh()` can read the current pending set without
+  // re-binding when it changes (the callback is in a useEffect dep).
+  const pendingIdsRef = useRef<Set<string>>(pendingIds);
+  useEffect(() => {
+    pendingIdsRef.current = pendingIds;
+  }, [pendingIds]);
+  // One-shot follow-up refresh scheduled after a create, to catch the
+  // common case where the server list lags the create response by a few
+  // seconds. Tracked so we can clear it on unmount.
+  const pendingRetryRef = useRef<number | null>(null);
   // Target row for the destructive confirmation dialog. Held in state
   // (rather than blocking with window.confirm) so the dialog sits inside
   // the settings sheet instead of a native browser alert.
@@ -182,7 +195,24 @@ export function OpenAICodeExecSection({
         apiKey,
         baseUrl: provider.baseUrl || null,
       });
-      setContainers(list);
+      const serverIds = new Set(list.map((c) => c.id));
+      setContainers((prev) => {
+        // Preserve optimistic inserts the server hasn't acknowledged
+        // yet so they don't disappear on the reconciling refresh.
+        const orphans = prev.filter(
+          (c) => !serverIds.has(c.id) && pendingIdsRef.current.has(c.id),
+        );
+        return orphans.length > 0 ? [...orphans, ...list] : list;
+      });
+      setPendingIds((prev) => {
+        if (prev.size === 0) return prev;
+        const next = new Set(prev);
+        let changed = false;
+        for (const id of serverIds) {
+          if (next.delete(id)) changed = true;
+        }
+        return changed ? next : prev;
+      });
     } catch (err) {
       toast.error(
         `Failed to list containers: ${err instanceof Error ? err.message : "Unknown"}`,
@@ -213,6 +243,10 @@ export function OpenAICodeExecSection({
     return () => {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
+      if (pendingRetryRef.current != null) {
+        window.clearTimeout(pendingRetryRef.current);
+        pendingRetryRef.current = null;
+      }
     };
   }, [refresh]);
 
@@ -300,15 +334,43 @@ export function OpenAICodeExecSection({
       toast.error("Container name is required");
       return;
     }
+    // TTL inherits from the section-level "Idle timeout" control —
+    // there is no per-container override on the form. Read it at
+    // submit time so a last-second change to the TTL row applies.
+    const ttlMinutes =
+      provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES;
     setCreating(true);
     try {
       const created = await createOpenAIContainer(
         { apiKey, baseUrl: provider.baseUrl || null },
-        { name, ttlMinutes: createTtl },
+        { name, ttlMinutes },
       );
       toast.success(`Created container ${name}`);
       setCreateName("");
       setCreateOpen(false);
+      // Optimistic insert + "Creating" pill. OpenAI's /v1/containers
+      // list endpoint is eventually consistent and can omit the new
+      // container for several seconds — without this, the row only
+      // shows up on the next 30s poll or a manual refresh.
+      setContainers((prev) =>
+        prev.some((c) => c.id === created.id) ? prev : [created, ...prev],
+      );
+      setPendingIds((prev) => {
+        if (prev.has(created.id)) return prev;
+        const next = new Set(prev);
+        next.add(created.id);
+        return next;
+      });
+      // Follow-up refresh ~5s later to reconcile the optimistic row
+      // with the server's view once /v1/containers catches up. One
+      // shot; the regular poll covers any longer tail.
+      if (pendingRetryRef.current != null) {
+        window.clearTimeout(pendingRetryRef.current);
+      }
+      pendingRetryRef.current = window.setTimeout(() => {
+        pendingRetryRef.current = null;
+        void refresh();
+      }, 5000);
       // Auto-bind the just-created container to the active thread.
       // ensureThreadRecord first so the bind lands even when the user
       // creates a container before sending the first message — without
@@ -389,12 +451,18 @@ export function OpenAICodeExecSection({
     <div className="flex flex-col gap-3 pt-1">
       {/* TTL */}
       <div className="flex items-center justify-between gap-3">
-        <label
-          htmlFor="openai-container-ttl"
-          className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg"
-        >
-          New-container idle timeout (min, max 20)
-        </label>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <label
+            htmlFor="openai-container-ttl"
+            className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg"
+          >
+            Idle timeout
+          </label>
+          <InfoHint>
+            Minutes a newly-created container stays alive between calls.
+            OpenAI caps this at 20.
+          </InfoHint>
+        </div>
         <Input
           id="openai-container-ttl"
           type="number"
@@ -406,10 +474,9 @@ export function OpenAICodeExecSection({
         />
       </div>
 
-      {/* Single container list. The previously-separate "Active for
-          this thread" picker collapses into this list: clicking a row
-          binds it to the active thread, and the ACTIVE pill marks
-          which one. Avoids duplicating state across two controls. */}
+      {/* Single container list. Clicking a row binds it to the active
+          thread and the ACTIVE pill marks which one — no separate
+          picker needed. */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -428,45 +495,20 @@ export function OpenAICodeExecSection({
             />
           </Button>
         </div>
-        {/* When no containers exist yet, render a disabled placeholder
-            instead of the picker. The first one is created by the
-            chat-adapter on first send (lazy-create) and will appear
-            here after the next refresh. */}
         {sortedContainers.length === 0 ? (
-          <div className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 flex items-center text-sm text-muted-foreground">
-            (none yet — will be created on first send)
+          // Quiet placeholder with the same muted border as row cards
+          // so an empty section doesn't masquerade as an active control.
+          // The first container is minted by the chat-adapter on first
+          // send (lazy-create) and appears here after the next refresh.
+          <div className="flex h-9 w-full items-center rounded-md border border-dashed border-border/60 bg-muted/20 px-2 text-xs text-muted-foreground">
+            None yet - one will be created on first send.
           </div>
         ) : (
-          <select
-            value={displayedContainerId ?? sortedContainers[0].id}
-            onChange={(e) => onPick(e.target.value)}
-            disabled={!activeThreadId}
-            className="h-9 w-full rounded-md border border-primary/40 bg-background px-2 text-sm font-medium shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-          >
-            {sortedContainers.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name ?? "(unnamed)"} · {c.id.slice(0, 14)}…
-                {c.lastActiveAt ? ` · active ${ageLabel(c.lastActiveAt)}` : ""}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {/* Container list with delete actions — labeled and visually
-          quieter so it's clearly the "all containers, manage them"
-          area rather than the active selector above. */}
-      <div className="flex flex-col gap-1.5">
-        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          All containers
-        </span>
-        {isLoading && visibleContainers.length === 0 ? (
-          <Skeleton className="h-16 w-full" />
-        ) : sortedContainers.length > 0 ? (
           <ul className="flex max-h-52 flex-col gap-1 overflow-auto">
             {sortedContainers.map((c) => {
               const running = isContainerRunning(c);
               const isActive = running && c.id === displayActiveId;
+              const isPending = pendingIds.has(c.id);
               const ttlMinutes = c.expiresAfterMinutes ?? DEFAULT_TTL_MINUTES;
               const canActivate =
                 activeThreadId != null && !isActive && running;
@@ -510,7 +552,11 @@ export function OpenAICodeExecSection({
                       <span className="min-w-0 truncate font-medium">
                         {c.name ?? "(unnamed)"}
                       </span>
-                      {isActive ? (
+                      {isPending ? (
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Creating
+                        </span>
+                      ) : isActive ? (
                         <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium uppercase tracking-wider text-primary">
                           Active
                         </span>
@@ -548,69 +594,61 @@ export function OpenAICodeExecSection({
               );
             })}
           </ul>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            None yet — one will be created on first send.
-          </p>
         )}
       </div>
 
-      {/* Create new */}
+      {/* Create new — inline single-row edit that visually echoes a
+          container card. TTL is inherited from the section's top
+          "Idle timeout" control (no per-container override), which
+          keeps the form light and avoids a duplicated input. */}
       {createOpen ? (
-        <div className="flex flex-col gap-2 rounded-md border border-border/60 p-2">
+        <div className="flex items-center gap-1 rounded-md border border-border/60 bg-muted/20 px-1.5 py-1">
           <Input
-            placeholder="Container name (e.g. data-analysis)"
+            autoFocus
+            placeholder="Name"
             value={createName}
             onChange={(e) => setCreateName(e.target.value)}
-            className="h-8 text-sm"
-          />
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min={TTL_MIN}
-              max={TTL_MAX}
-              value={createTtl}
-              onChange={(e) => {
-                const n = parseInt(e.target.value, 10);
-                if (!Number.isNaN(n))
-                  setCreateTtl(Math.min(Math.max(n, TTL_MIN), TTL_MAX));
-              }}
-              className="h-8 w-24 text-sm"
-              aria-label="Idle timeout in minutes"
-            />
-            <span className="text-xs text-muted-foreground">min idle</span>
-            <div className="flex-1" />
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7"
-              onClick={() => {
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (createName.trim() && !creating && apiKey) {
+                  void onCreate();
+                }
+              } else if (e.key === "Escape") {
+                e.preventDefault();
                 setCreateOpen(false);
                 setCreateName("");
-              }}
-              disabled={creating}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              className="h-7"
-              onClick={() => void onCreate()}
-              disabled={creating || !createName.trim() || !apiKey}
-            >
-              Create
-            </Button>
-          </div>
+              }
+            }}
+            className="h-7 min-w-0 flex-1 border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-0"
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 shrink-0 px-2 text-xs"
+            onClick={() => {
+              setCreateOpen(false);
+              setCreateName("");
+            }}
+            disabled={creating}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            className="h-7 shrink-0 px-3 text-xs"
+            onClick={() => void onCreate()}
+            disabled={creating || !createName.trim() || !apiKey}
+          >
+            {creating ? "Creating…" : "Create"}
+          </Button>
         </div>
       ) : (
         <Button
           size="sm"
           variant="outline"
           className="h-8"
-          onClick={() => {
-            setCreateTtl(ttlValue);
-            setCreateOpen(true);
-          }}
+          onClick={() => setCreateOpen(true)}
           disabled={!apiKey}
         >
           <PlusIcon className="size-3.5 mr-1" />
