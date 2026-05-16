@@ -1273,16 +1273,23 @@ def direct_linux_release_plan(
         attempts.append(cpu_choice)
     if not attempts:
         raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+    approved_checksums = synthetic_checksums_for_release(
+        repo,
+        bundle.release_tag,
+        bundle.upstream_tag,
+    )
+    if (
+        DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets
+        and not is_release_tag_like(bundle.upstream_tag)
+    ):
+        approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
+        attempts = apply_approved_hashes(attempts, approved_checksums)
     return InstallReleasePlan(
         requested_tag = requested_tag,
         llama_tag = bundle.upstream_tag,
         release_tag = bundle.release_tag,
         attempts = attempts,
-        approved_checksums = synthetic_checksums_for_release(
-            repo,
-            bundle.release_tag,
-            bundle.upstream_tag,
-        ),
+        approved_checksums = approved_checksums,
     )
 
 
