@@ -2105,13 +2105,13 @@ class TestHipSdkEnvPathResolution:
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         assert "ROCM_PATH" in source
         # Confirm the fallback pattern: HIP_PATH ?? ROCM_PATH (or equivalent elseif)
-        assert ("ROCM_PATH" in source and "HIP_PATH" in source)
+        assert "ROCM_PATH" in source and "HIP_PATH" in source
 
     def test_install_checks_rocm_path_as_hipinfo_fallback(self):
         """install.ps1 must also check ROCM_PATH as a secondary hipinfo fallback."""
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
         assert "ROCM_PATH" in source
-        assert ("ROCM_PATH" in source and "HIP_PATH" in source)
+        assert "ROCM_PATH" in source and "HIP_PATH" in source
 
     def test_setup_resolves_hipinfo_via_bin_subdir(self):
         """setup.ps1 must join the env var root with 'bin\\hipinfo.exe'."""
