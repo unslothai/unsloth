@@ -773,21 +773,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
 
-      // Defense in depth. VisionImageAdapter.add() should already have
-      // caught this, but if an image slipped past (toast dismissed,
-      // store race, manual append), block here so we don't hand the
-      // server a request it'll reject mid-stream.
-      let currentUserMessage: RunMessage | undefined;
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        if (messages[i]?.role === "user") {
-          currentUserMessage = messages[i];
-          break;
-        }
-      }
-      const currentUserHasImage = currentUserMessage
-        ? findLatestUserImageBase64([currentUserMessage]) !== undefined
-        : false;
-      if (currentUserHasImage) {
+      // Block when ANY image is in the outbound payload (current or
+      // prior turns) and the loaded model can't process images. Keeps
+      // the gate simple: once a chat contains an image, a non-vision
+      // model can't respond — user starts a new chat to switch models.
+      if (imageBase64) {
         const activeModel = runtime.models.find(
           (m) => m.id === params.checkpoint,
         );
@@ -799,6 +789,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
+          // Flip the per-thread running flag on→off so the compare-mode
+          // waitForRunEnd resolves instead of hanging. This gate fires
+          // before the streaming path's setThreadRunning(true), so the
+          // wait promise would otherwise never settle.
+          const gatedThreadKey = resolvedThreadId || "__default";
+          runtime.setThreadRunning(gatedThreadKey, true);
+          runtime.setThreadRunning(gatedThreadKey, false);
           throw new Error(imageGateReason);
         }
       }

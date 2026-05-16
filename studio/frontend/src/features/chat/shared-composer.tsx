@@ -288,7 +288,6 @@ export function SharedComposer({
     const checkpoint = s.params.checkpoint;
     return s.models.find((m) => m.id === checkpoint);
   });
-  const models = useChatRuntimeStore((s) => s.models);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const modelLoaded = useChatRuntimeStore(
@@ -326,6 +325,13 @@ export function SharedComposer({
     loadedIsMultimodal,
     modelLoaded,
   });
+  const isCompareMode = Boolean(model1?.id || model2?.id);
+  // Attach-time gate. Compare mode defers to send: the catalog can lag
+  // behind a model's real capabilities (e.g., a GGUF whose mmproj
+  // arrives after the catalog snapshot), and we only sync the models[]
+  // entry after ensureModelLoaded runs at send time. Single mode uses
+  // the loaded model's runtime capability.
+  const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
   const selectedExternalProvider =
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
@@ -437,17 +443,17 @@ export function SharedComposer({
       // Handle image files
       if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
       if (file.size > MAX_IMAGE_SIZE) continue;
-      if (imageUnavailableReason) {
+      if (attachUnavailableReason) {
         droppedImageForUnavailable = true;
         continue;
       }
       next.push({ id: crypto.randomUUID(), file });
     }
-    if (droppedImageForUnavailable && imageUnavailableReason) {
-      toast.error(imageUnavailableReason);
+    if (droppedImageForUnavailable && attachUnavailableReason) {
+      toast.error(attachUnavailableReason);
     }
     setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore, imageUnavailableReason]);
+  }, [setPendingAudioStore, attachUnavailableReason]);
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
@@ -469,30 +475,13 @@ export function SharedComposer({
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id || model2?.id);
 
-    if (pendingImages.length > 0) {
-      // Compare needs a per-target check. The global
-      // imageUnavailableReason follows whichever model was loaded last in
-      // this chat, which is rarely model1 or model2, and on a fresh
-      // compare neither has loaded yet.
-      const compareTargetReason = (
-        sel: CompareModelSelection | undefined,
-      ): string | null => {
-        if (!sel) return null;
-        const target = models.find((m) => m.id === sel.id);
-        if (!target) return null;
-        if (target.isVision) return null;
-        const suffix = target.isGguf
-          ? " with a valid mmproj before attaching images."
-          : " before attaching images.";
-        return `${target.name || target.id} cannot accept images. Load a vision-capable model${suffix}`;
-      };
-      const blockReason = isGeneralizedCompare
-        ? compareTargetReason(model1) || compareTargetReason(model2)
-        : imageUnavailableReason;
-      if (blockReason) {
-        toast.error(blockReason);
-        return;
-      }
+    if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
+      // Single mode: the loaded model's runtime capability is known
+      // here. Compare mode defers — each ensureModelLoaded below sets
+      // loadedIsMultimodal for its side, and the chat-adapter's
+      // pre-stream gate runs per-side against that fresh state.
+      toast.error(imageUnavailableReason);
+      return;
     }
 
     const content: CompareMessagePart[] = [];
@@ -581,6 +570,34 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
         });
+        // Sync the models[] entry with the load response so the
+        // attach/send gates read fresh capabilities. /api/models/list
+        // can lag behind a model's actual state (e.g., a GGUF whose
+        // mmproj was downloaded after the catalog snapshot).
+        const currentModels = useChatRuntimeStore.getState().models;
+        const idx = currentModels.findIndex((m) => m.id === sel.id);
+        const synced = {
+          isVision: Boolean(resp.is_vision),
+          isGguf: Boolean(resp.is_gguf),
+          isAudio: Boolean(resp.is_audio),
+          audioType: resp.audio_type ?? null,
+          hasAudioInput: Boolean(resp.has_audio_input),
+        };
+        if (idx === -1) {
+          store.setModels([
+            ...currentModels,
+            {
+              id: sel.id,
+              name: resp.display_name ?? sel.id,
+              isLora: sel.isLora,
+              ...synced,
+            },
+          ]);
+        } else {
+          const next = [...currentModels];
+          next[idx] = { ...next[idx], ...synced };
+          store.setModels(next);
+        }
         return resp.status;
       }
 
@@ -750,10 +767,10 @@ export function SharedComposer({
             size="icon"
             className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
             onClick={() => {
-              if (imageUnavailableReason) {
-                toast.error(imageUnavailableReason);
-                return;
-              }
+              // The picker accepts both image and audio. Don't gate the
+              // button on image-availability — addFiles still filters
+              // image files per-file when the loaded model can't take
+              // them, while audio attach always works.
               fileInputRef.current?.click();
             }}
             aria-label="Add Attachment"
