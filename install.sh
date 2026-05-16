@@ -243,6 +243,9 @@ _tauri_torch_index_family() {
                 rocm[0-9]*.[0-9]*) echo "$_diag_family" ;;
                 *) echo "auto" ;;
             esac ;;
+        # AMD arch-specific index (e.g. repo.amd.com/rocm/whl/gfx1151/) --
+        # used for Strix Halo/Point where torch 2.11+rocm7.13 has the real fix.
+        *repo.amd.com/rocm/whl/gfx*|*rocm/whl/gfx*) echo "rocm7.13" ;;
         "") echo "none" ;;
         *) echo "auto" ;;
     esac
@@ -1765,12 +1768,16 @@ case "$TORCH_INDEX_URL" in
             echo "" >&2
             echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2
             echo "  [WARN] ROCm 7.1 wheels are broken for gfx1150/gfx1151 (moe_utils.py:167)" >&2
-            echo "  [WARN] Overriding to rocm7.2 PyTorch index to avoid the driver bug" >&2
-            echo "  [WARN] Upgrade ROCm to 7.2+ to silence this warning:" >&2
+            echo "  [WARN] Routing to AMD arch-specific index (torch 2.11+rocm7.13 has the real fix)" >&2
+            echo "  [WARN] Upgrade ROCm to 7.2+ to use the standard index:" >&2
             echo "  [WARN]   https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
             echo "" >&2
-            _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
-            TORCH_INDEX_URL="${_base%/}/rocm7.2"
+            # AMD's arch-specific index serves torch 2.11.0+rocm7.13.0 which has AMD's
+            # actual fix for the gfx1151/gfx1150 _grouped_mm kernel bug -- preferred
+            # over the pytorch.org rocm7.2 fallback because it exercises the real GPU
+            # kernel path. Set UNSLOTH_AMD_ROCM_MIRROR to override for air-gapped installs.
+            _amd_strix_base="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+            TORCH_INDEX_URL="${_amd_strix_base%/}/${_strix_gfx}/"
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
         fi

@@ -2264,25 +2264,30 @@ _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
 
 
 class TestStrixRocm71Override:
-    """Verify install.sh skips Radeon repo and forces rocm7.2 for gfx1151/gfx1150
-    when ROCm 7.1 would otherwise be selected (known _grouped_mm segfault)."""
+    """Verify install.sh skips Radeon repo and routes to AMD arch-specific index
+    for gfx1151/gfx1150 when ROCm 7.1 would otherwise be selected (known _grouped_mm segfault).
+    AMD's repo.amd.com/rocm/whl/gfx1151/ serves torch 2.11+rocm7.13 which has the real fix."""
 
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         assert "gfx1151" in source and "gfx1150" in source
 
-    def test_rocm71_override_to_rocm72_in_install_sh(self):
-        """install.sh must override TORCH_INDEX_URL from rocm7.1 to rocm7.2 for Strix."""
+    def test_rocm71_override_to_amd_arch_index_in_install_sh(self):
+        """install.sh must override TORCH_INDEX_URL to AMD arch-specific index for Strix."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The override must explicitly reference rocm7.2 in context with Strix detection
-        assert "rocm7.2" in source
+        # The override must route to AMD's arch-specific index (repo.amd.com/rocm/whl)
+        assert "repo.amd.com/rocm/whl" in source
         assert "_strix_gfx" in source
+        # The URL must incorporate the detected gfx arch so gfx1151 → .../gfx1151/
+        strix_idx = source.find("_amd_strix_base")
+        assert strix_idx != -1
+        ctx = source[strix_idx : strix_idx + 200]
+        assert "_strix_gfx" in ctx
 
     def test_radeon_repo_bypassed_for_strix_in_install_sh(self):
         """install.sh must set _amd_gpu_radeon=false when Strix + ROCm 7.1 detected."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # After Strix detection the Radeon repo flag must be disabled
         assert "_amd_gpu_radeon=false" in source
 
     def test_strix_override_warns_with_moe_utils_reference(self):
@@ -2293,18 +2298,27 @@ class TestStrixRocm71Override:
     def test_strix_override_only_fires_on_rocm71(self):
         """install.sh must scope the Strix override to rocm7.1 only (not rocm7.2+)."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The Strix guard must be inside a rocm7.1 case branch
         strix_idx = source.find("_strix_gfx")
         assert strix_idx != -1
         # Look back for the rocm7.1 pattern within 600 chars before _strix_gfx
         context_before = source[max(0, strix_idx - 600) : strix_idx]
         assert "rocm7.1" in context_before
 
-    def test_torch_constraint_updated_for_rocm72(self):
-        """install.sh must update TORCH_CONSTRAINT to allow torch>=2.11 when forcing rocm7.2."""
+    def test_torch_constraint_updated_for_strix_amd_index(self):
+        """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # TORCH_CONSTRAINT must be set inside the Strix override block
         assert "TORCH_CONSTRAINT" in source and "2.11" in source
+
+    def test_amd_rocm_mirror_env_var_respected(self):
+        """install.sh must honour UNSLOTH_AMD_ROCM_MIRROR for air-gapped installs."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assert "UNSLOTH_AMD_ROCM_MIRROR" in source
+
+    def test_tauri_family_recognises_amd_arch_url(self):
+        """_tauri_torch_index_family must return a rocm* family for AMD arch-specific URLs."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # The function must have a case branch for repo.amd.com/rocm/whl/gfx* URLs
+        assert "rocm/whl/gfx" in source
 
 
 # =============================================================================
