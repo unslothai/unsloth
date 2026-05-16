@@ -1044,6 +1044,82 @@ class FastBaseModel:
 
         verify_fp8_support_if_applicable(model_config)
 
+        # Resolve 4-bit + Gemma4 swap parameters once (shared by both load paths).
+        _user_qcfg = kwargs.get("quantization_config", None)
+        if isinstance(_user_qcfg, dict):
+            _qcfg_4bit = bool(_user_qcfg.get("load_in_4bit", False))
+            _qcfg_dtype = _user_qcfg.get("bnb_4bit_compute_dtype", None)
+            _qcfg_quant_type = _user_qcfg.get("bnb_4bit_quant_type", None)
+        elif _user_qcfg is not None:
+            _qcfg_4bit = bool(getattr(_user_qcfg, "load_in_4bit", False))
+            _qcfg_dtype = getattr(_user_qcfg, "bnb_4bit_compute_dtype", None)
+            _qcfg_quant_type = getattr(_user_qcfg, "bnb_4bit_quant_type", None)
+        else:
+            _qcfg_4bit = False
+            _qcfg_dtype = None
+            _qcfg_quant_type = None
+        if isinstance(_qcfg_dtype, str):
+            _qcfg_dtype_str = _qcfg_dtype.removeprefix("torch.")
+            _maybe_dtype = getattr(torch, _qcfg_dtype_str, None)
+            _qcfg_dtype = (
+                _maybe_dtype if isinstance(_maybe_dtype, torch.dtype) else None
+            )
+        _effective_load_in_4bit = bool(load_in_4bit) or _qcfg_4bit
+
+        def _maybe_swap_gemma4_moe_4bit(_target_model):
+            if not (_effective_load_in_4bit and not full_finetuning):
+                return
+            try:
+                from unsloth.models.gemma4_moe_4bit import (
+                    is_gemma4_moe_4bit_enabled,
+                    swap_gemma4_experts_to_per_expert_linear4bit,
+                )
+
+                if not is_gemma4_moe_4bit_enabled():
+                    return
+                if bnb_config is not None:
+                    _compute_dtype = bnb_config.bnb_4bit_compute_dtype
+                    _quant_type = getattr(bnb_config, "bnb_4bit_quant_type", "nf4")
+                else:
+                    _compute_dtype = (
+                        _qcfg_dtype if _qcfg_dtype is not None else torch.bfloat16
+                    )
+                    _quant_type = (
+                        _qcfg_quant_type if _qcfg_quant_type is not None else "nf4"
+                    )
+                _swapped = swap_gemma4_experts_to_per_expert_linear4bit(
+                    _target_model,
+                    compute_dtype = _compute_dtype,
+                    quant_type = _quant_type,
+                )
+                if _swapped > 0:
+                    print(
+                        f"Unsloth: swapped {_swapped} "
+                        f"Gemma4TextExperts module(s) to per-expert "
+                        f"Linear4bit (see "
+                        f"https://github.com/unslothai/unsloth/issues/5344)."
+                    )
+            except Exception as _e:
+                _partial = sum(
+                    1
+                    for _m in _target_model.modules()
+                    if getattr(_m, "_unsloth_gemma4_moe_4bit_swapped", False)
+                )
+                if _partial:
+                    raise RuntimeError(
+                        f"Unsloth: Gemma-4 MoE 4-bit swap failed after "
+                        f"converting {_partial} module(s); model is in a "
+                        f"mixed 4-bit/BF16 state. Reload the model to "
+                        f"recover. Original error: "
+                        f"{type(_e).__name__}: {_e}"
+                    ) from _e
+                warnings.warn(
+                    f"Unsloth: Gemma-4 MoE 4-bit swap failed: "
+                    f"{type(_e).__name__}: {_e}. Falling back to BF16 "
+                    f"experts. Unset UNSLOTH_GEMMA4_MOE_4BIT to silence.",
+                    stacklevel = 2,
+                )
+
         raise_handler = RaiseUninitialized()
         if not fast_inference:
             # Prevent load_in_fp8 from being forwarded into HF internal model loading
@@ -1068,6 +1144,8 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
+            _maybe_swap_gemma4_moe_4bit(model)
+
             # Guardrail: see _warn_if_quantization_silently_dropped + #5344.
             _warn_if_quantization_silently_dropped(
                 model,
@@ -1190,6 +1268,7 @@ class FastBaseModel:
                 bnb_config,
                 is_vision_model = is_vlm,
             )
+            _maybe_swap_gemma4_moe_4bit(model)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(
