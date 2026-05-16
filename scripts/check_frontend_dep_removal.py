@@ -624,9 +624,7 @@ def scripts_bin_refs(
                 continue
             pkg = bin_to_pkg.get(bin_name)
             if pkg:
-                refs.setdefault(pkg, []).append(
-                    f"scripts.{script_name}: {raw_cmd}"
-                )
+                refs.setdefault(pkg, []).append(f"scripts.{script_name}: {raw_cmd}")
     return refs
 
 
