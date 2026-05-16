@@ -65,6 +65,15 @@ MEDIUM = "MEDIUM"
 
 SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
+# Hard pin-blocks for publicly confirmed malicious PyPI versions.
+# Source: Socket.dev 2026-05-12 disclosure (Mini Shai-Hulud May-12 wave) and
+# earlier Semgrep / Endor reports for the `lightning` entries.
+BLOCKED_PYPI_VERSIONS: dict[str, set[str]] = {
+    "guardrails-ai": {"0.10.1"},
+    "mistralai": {"2.4.6"},
+    "lightning": {"2.6.2", "2.6.3"},
+}
+
 # ---------------------------------------------------------------------------
 # Pattern definitions
 # ---------------------------------------------------------------------------
@@ -336,6 +345,15 @@ RE_TOKEN_REGEX = re.compile(
     r"|\bglpat-[0-9A-Za-z_-]{20,}",  # GitLab PAT
 )
 
+# Mini Shai-Hulud May-12 2026 wave indicators. The dropper artifact name
+# `transformers.pyz` is high-confidence (no legit PyPI package ships a `.pyz`
+# named after `transformers`); the host + slogans are CRITICAL.
+RE_MAY12_IOC = re.compile(
+    r"(git-tanstack\.com|/tmp/transformers\.pyz|transformers\.pyz"
+    r"|With Love TeamPCP|We've been online over 2 hours)",
+    re.IGNORECASE,
+)
+
 # JavaScript-side obfuscation. The npm chalk/debug compromise and the
 # Lightning router_runtime.js use the same minifier-style hex-var name
 # pattern; a bundle full of `_0x1f2e3d` identifiers is a near-universal
@@ -529,6 +547,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
     has_temp_exec = bool(RE_TEMP_EXEC.search(content))
     has_c2_polling = bool(RE_C2_POLLING.search(content))
+    has_may12_ioc = bool(RE_MAY12_IOC.search(content))
 
     # ---------------------------------------------------------------
     # CRITICAL: combination patterns that strongly indicate malice
@@ -569,6 +588,18 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 filename,
                 "Writes to /tmp and executes (staged dropper)",
                 _extract_evidence(content, RE_TEMP_EXEC),
+            )
+        )
+
+    # May-12 Shai-Hulud IOC string in Python source.
+    if has_may12_ioc:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "May-12 Shai-Hulud IOC string present in Python file",
+                _extract_evidence(content, RE_MAY12_IOC),
             )
         )
 
@@ -1071,6 +1102,16 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
                 _extract_evidence(content, RE_WORKFLOW_INJECT),
             )
         )
+    if RE_MAY12_IOC.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "May-12 Shai-Hulud IOC string present in shell script",
+                _extract_evidence(content, RE_MAY12_IOC),
+            )
+        )
     return findings
 
 
@@ -1111,6 +1152,16 @@ def check_workflow_file(content: str, filename: str, package: str) -> list[Findi
                 _extract_evidence(content, RE_SHELL_DROPPER),
             )
         )
+    if RE_MAY12_IOC.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "May-12 Shai-Hulud IOC string present in workflow file",
+                _extract_evidence(content, RE_MAY12_IOC),
+            )
+        )
     return findings
 
 
@@ -1118,33 +1169,154 @@ def check_workflow_file(content: str, filename: str, package: str) -> list[Findi
 # Archive handling
 # ---------------------------------------------------------------------------
 
+# Tarbomb caps, mirrored from scripts/scan_npm_packages.py::safe_extract.
+# Refuses zip-of-death / tar-of-death archives so a hostile sdist or
+# wheel cannot exhaust memory or fill the temp dir before content
+# scanning even starts. Keep these constants in sync with the npm side;
+# we duplicate rather than import to keep `scan_packages.py` standalone.
+HARD_MAX_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB per member
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
+HARD_MAX_MEMBERS = 50_000  # entries per archive
+
+
+def _refuse_unsafe_member_name(name: str) -> str | None:
+    """Return a refusal reason for a member name, or None if safe.
+
+    Mirrors `scan_npm_packages.py::safe_extract` semantics: no absolute
+    paths, no `..` traversal segments. The caller is responsible for
+    checking the resolved path lands inside the extract root, but for
+    iter_archive_files we never write to disk so the name-shape check
+    plus the in-memory size cap is sufficient.
+    """
+    if name.startswith("/") or ".." in Path(name).parts:
+        return f"unsafe member name {name!r}"
+    return None
+
 
 def iter_archive_files(archive_path: str):
-    """Yield (filename, text_content) for every file in a wheel/sdist."""
+    """Yield (filename, text_content) for every file in a wheel/sdist.
+
+    Streams members with size + count caps applied at the member level
+    so a tarbomb / zipbomb cannot blow up the scanner's memory budget.
+    On cap breach we emit a `[WARN]` log and short-circuit the archive.
+    """
     path = Path(archive_path)
 
     if path.suffix == ".whl" or path.suffix == ".zip":
+        total = 0
+        count = 0
         with zipfile.ZipFile(path) as zf:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
+                count += 1
+                if count > HARD_MAX_MEMBERS:
+                    print(
+                        f"  [WARN] {path.name}: refused; member count "
+                        f"{count} exceeds cap {HARD_MAX_MEMBERS}",
+                        file = sys.stderr,
+                    )
+                    return
+                reason = _refuse_unsafe_member_name(info.filename)
+                if reason is not None:
+                    print(
+                        f"  [WARN] {path.name}: refused member ({reason})",
+                        file = sys.stderr,
+                    )
+                    continue
+                # Declared (uncompressed) size cap.
+                if info.file_size > HARD_MAX_FILE_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: skipped {info.filename!r} "
+                        f"(declared {info.file_size} > cap {HARD_MAX_FILE_BYTES})",
+                        file = sys.stderr,
+                    )
+                    continue
+                if total + info.file_size > HARD_MAX_TOTAL_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: cumulative bytes cap "
+                        f"{HARD_MAX_TOTAL_BYTES} hit at {info.filename!r}",
+                        file = sys.stderr,
+                    )
+                    return
                 try:
                     data = zf.read(info.filename)
+                    total += len(data)
                     text = data.decode("utf-8", errors = "replace")
                     yield info.filename, text
                 except Exception:
                     continue
 
     elif path.name.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")):
-        with tarfile.open(path) as tf:
-            for member in tf.getmembers():
+        total = 0
+        count = 0
+        # Streaming open so we never read the whole archive into memory.
+        with tarfile.open(path, mode = "r|*") as tf:
+            for member in tf:
+                count += 1
+                if count > HARD_MAX_MEMBERS:
+                    print(
+                        f"  [WARN] {path.name}: refused; member count "
+                        f"{count} exceeds cap {HARD_MAX_MEMBERS}",
+                        file = sys.stderr,
+                    )
+                    return
+                # Refuse symlinks / hardlinks / devices outright -- the
+                # scanner never writes them anyway, but tar parsers
+                # have historically dereferenced them on extract.
+                if member.issym() or member.islnk():
+                    print(
+                        f"  [WARN] {path.name}: refused link member "
+                        f"{member.name!r}",
+                        file = sys.stderr,
+                    )
+                    continue
+                if member.isdev() or member.isfifo():
+                    print(
+                        f"  [WARN] {path.name}: refused special member "
+                        f"{member.name!r}",
+                        file = sys.stderr,
+                    )
+                    continue
                 if not member.isfile():
                     continue
+                reason = _refuse_unsafe_member_name(member.name)
+                if reason is not None:
+                    print(
+                        f"  [WARN] {path.name}: refused member ({reason})",
+                        file = sys.stderr,
+                    )
+                    continue
+                declared = max(member.size, 0)
+                if declared > HARD_MAX_FILE_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: skipped {member.name!r} "
+                        f"(declared {declared} > cap {HARD_MAX_FILE_BYTES})",
+                        file = sys.stderr,
+                    )
+                    continue
+                if total + declared > HARD_MAX_TOTAL_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: cumulative bytes cap "
+                        f"{HARD_MAX_TOTAL_BYTES} hit at {member.name!r}",
+                        file = sys.stderr,
+                    )
+                    return
                 try:
                     f = tf.extractfile(member)
                     if f is None:
                         continue
-                    data = f.read()
+                    # Bound the read so a tar header that lies about
+                    # size cannot OOM us.
+                    data = f.read(HARD_MAX_FILE_BYTES + 1)
+                    if len(data) > HARD_MAX_FILE_BYTES:
+                        print(
+                            f"  [WARN] {path.name}: body of "
+                            f"{member.name!r} exceeded declared cap",
+                            file = sys.stderr,
+                        )
+                        continue
+                    total += len(data)
                     text = data.decode("utf-8", errors = "replace")
                     yield member.name, text
                 except Exception:
@@ -1154,26 +1326,48 @@ def iter_archive_files(archive_path: str):
 
 
 def scan_archive(archive_path: str, package: str) -> list[Finding]:
-    """Scan all files in an archive for malicious patterns."""
-    findings = []
-    for filename, content in iter_archive_files(archive_path):
-        lower = filename.lower()
-        if lower.endswith(".pth"):
-            findings.extend(check_pth_file(content, filename, package))
-        elif lower.endswith(".py"):
-            findings.extend(check_py_file(content, filename, package))
-        elif lower.endswith((".js", ".mjs", ".cjs", ".ts")):
-            # Lightning 2.6.x hid its real payload in a 14.8 MB
-            # router_runtime.js inside a Python wheel. Without this
-            # branch we'd have only seen the small Python loader.
-            findings.extend(check_js_file(content, filename, package))
-        elif lower.endswith((".sh", ".bash")):
-            findings.extend(check_shell_file(content, filename, package))
-        elif "/.github/workflows/" in lower and lower.endswith((".yml", ".yaml")):
-            # Shai-Hulud / ForceMemo plant their own GHA workflow.
-            # A workflow file inside a *PyPI package* is on its own
-            # already a yellow flag; pattern-match the worm signatures.
-            findings.extend(check_workflow_file(content, filename, package))
+    """Scan all files in an archive for malicious patterns.
+
+    A corrupted archive container (truncated wheel, bad gzip header,
+    etc.) used to be silently skipped by an ``except Exception: continue``
+    inside ``iter_archive_files``. Per the silent-failure hardening
+    (SF1) it now emits a CRITICAL ``archive_corrupted`` finding so the
+    main loop counts and surfaces it rather than reporting "0 findings".
+    """
+    findings: list[Finding] = []
+    try:
+        for filename, content in iter_archive_files(archive_path):
+            lower = filename.lower()
+            if lower.endswith(".pth"):
+                findings.extend(check_pth_file(content, filename, package))
+            elif lower.endswith(".py"):
+                findings.extend(check_py_file(content, filename, package))
+            elif lower.endswith((".js", ".mjs", ".cjs", ".ts")):
+                # Lightning 2.6.x hid its real payload in a 14.8 MB
+                # router_runtime.js inside a Python wheel. Without this
+                # branch we'd have only seen the small Python loader.
+                findings.extend(check_js_file(content, filename, package))
+            elif lower.endswith((".sh", ".bash")):
+                findings.extend(check_shell_file(content, filename, package))
+            elif "/.github/workflows/" in lower and lower.endswith((".yml", ".yaml")):
+                # Shai-Hulud / ForceMemo plant their own GHA workflow.
+                # A workflow file inside a *PyPI package* is on its own
+                # already a yellow flag; pattern-match the worm signatures.
+                findings.extend(check_workflow_file(content, filename, package))
+    except (zipfile.BadZipFile, tarfile.TarError, EOFError, OSError) as exc:
+        # The archive cannot be opened or is structurally broken. A
+        # benign wheel/sdist always opens; a malformed one is either a
+        # transport corruption (treat as scan failure) or a deliberate
+        # attempt to bypass scanners that swallow archive errors.
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                os.path.basename(archive_path),
+                "archive_corrupted",
+                f"{type(exc).__name__}: {exc}"[:240],
+            )
+        )
     return findings
 
 
@@ -1182,33 +1376,120 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
+_RE_PYPI_SPEC_VERSION = re.compile(r"==\s*([A-Za-z0-9_.\-+!]+)")
+
+
+def _check_blocked_pypi_versions(
+    specs: list[str],
+) -> tuple[list[str], list[Finding]]:
+    """Filter ``specs`` against ``BLOCKED_PYPI_VERSIONS``.
+
+    Returns ``(safe_specs, findings)``. Each blocked spec emits a CRITICAL
+    ``Finding`` and is removed from the returned spec list so the caller
+    never fetches the malicious tarball. Specs without an ``==X.Y.Z`` pin
+    pass through unchanged -- pip will resolve them at download time and
+    the existing scanners will catch the payload via the IOC regexes.
+    """
+    safe: list[str] = []
+    findings: list[Finding] = []
+    for spec in specs:
+        name = _extract_pkg_name(spec).lower()
+        blocked = BLOCKED_PYPI_VERSIONS.get(name, set())
+        if not blocked:
+            safe.append(spec)
+            continue
+        m = _RE_PYPI_SPEC_VERSION.search(spec)
+        version = m.group(1) if m else None
+        if version is not None and version in blocked:
+            findings.append(
+                Finding(
+                    CRITICAL,
+                    f"{name}=={version}",
+                    "<spec>",
+                    "blocked-known-malicious",
+                    f"{name}=={version} is on the BLOCKED_PYPI_VERSIONS list",
+                )
+            )
+            # Drop the spec; do not download.
+            continue
+        safe.append(spec)
+    return safe, findings
+
+
+def _pip_download_env() -> dict[str, str]:
+    """Return a scrubbed environment for invoking `pip download`.
+
+    Hostile shells / CI configs can override the index with PIP_INDEX_URL,
+    PIP_EXTRA_INDEX_URL, or a user `pip.conf`. We strip every PIP_*
+    override and route the resolver explicitly at PyPI. PIP_CONFIG_FILE
+    is forced to /dev/null so a stray ~/.pip/pip.conf with an
+    extra-index-url cannot bypass the pin.
+    """
+    env = {**os.environ}
+    # Drop any user override.
+    for key in [k for k in env if k.startswith("PIP_")]:
+        env.pop(key, None)
+    env["PIP_INDEX_URL"] = "https://pypi.org/simple"
+    env["PIP_EXTRA_INDEX_URL"] = ""
+    env["PIP_CONFIG_FILE"] = "/dev/null"
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    return env
+
+
+# Pip resolver flags shared by both download branches. Pinning the
+# index URL on the CLI is belt + braces with the env scrub above.
+# `--no-build-isolation` is deliberately NOT set; we never invoke
+# setup.py at all because of `--only-binary :all:`.
+_PIP_DOWNLOAD_PIN_FLAGS = [
+    "--index-url",
+    "https://pypi.org/simple",
+    "--only-binary",
+    ":all:",
+]
+
+
+# Strip any character that could escape `dest` via `os.path.join`. This
+# is the last line of defence before `pkg_dir = os.path.join(dest, ...)`
+# so a spec like `../../etc/foo==1.0` cannot land outside the temp tree.
+_RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
+
+
 def download_packages(
     specs: list[str],
     dest: str,
     *,
     with_deps: bool = False,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[str]]:
     """Download packages to dest using pip download. NEVER installs.
 
-    Returns list of (spec_or_name, filepath) for every downloaded archive.
+    Returns ``(results, download_errors)`` where ``results`` is a list of
+    ``(spec_or_name, filepath)`` for every downloaded archive and
+    ``download_errors`` is a list of one-line transport-failure summaries.
+    A non-empty ``download_errors`` MUST cause the caller to exit non-zero
+    even if no findings were produced; a silent ``0 findings, scan
+    incomplete`` is the bug class this return-shape was widened to fix.
 
     When with_deps=True, downloads the full transitive dependency tree
     in a single pip invocation (all archives land in one flat dir).
     When with_deps=False (default), downloads each spec individually
     with --no-deps.
     """
-    results = []
+    results: list[tuple[str, str]] = []
+    download_errors: list[str] = []
+    env = _pip_download_env()
 
     if with_deps:
         # Single pip download call for all specs + their transitive deps.
-        # --no-build-isolation and --no-binary :none: are NOT used --
-        # pip download only fetches wheels/sdists, never executes them.
+        # `--only-binary :all:` refuses sdists so we never execute a
+        # setup.py just to learn dependency metadata; combined with the
+        # scrubbed env, pip is wired hard at pypi.org.
         os.makedirs(dest, exist_ok = True)
         cmd = [
             sys.executable,
             "-m",
             "pip",
             "download",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
             "--dest",
             dest,
         ] + specs
@@ -1218,14 +1499,18 @@ def download_packages(
                 capture_output = True,
                 text = True,
                 timeout = 600,  # transitive resolution can be slow
+                env = env,
             )
             if proc.returncode != 0:
-                print(
-                    f"  [ERROR] pip download (with deps) failed: {proc.stderr.strip()[:500]}",
-                    file = sys.stderr,
+                msg = (
+                    f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
                 )
+                print(f"  [ERROR] {msg}", file = sys.stderr)
+                download_errors.append(msg)
         except subprocess.TimeoutExpired:
-            print(f"  [ERROR] pip download (with deps) timed out", file = sys.stderr)
+            msg = "pip download (with deps) timed out"
+            print(f"  [ERROR] {msg}", file = sys.stderr)
+            download_errors.append(msg)
 
         # Collect every archive that landed in dest
         for fname in sorted(os.listdir(dest)):
@@ -1236,9 +1521,11 @@ def download_packages(
                 results.append((pkg_name, fpath))
     else:
         for spec in specs:
-            pkg_dir = os.path.join(
-                dest, spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0]
-            )
+            raw_name = _extract_pkg_name(spec)
+            # Sanitize before joining into `dest` so a hostile spec
+            # cannot path-traverse out of the destination directory.
+            safe_name = _RE_PKG_NAME_SANITIZE.sub("_", raw_name) or "_pkg"
+            pkg_dir = os.path.join(dest, safe_name)
             os.makedirs(pkg_dir, exist_ok = True)
             cmd = [
                 sys.executable,
@@ -1246,6 +1533,7 @@ def download_packages(
                 "pip",
                 "download",
                 "--no-deps",
+                *_PIP_DOWNLOAD_PIN_FLAGS,
                 "--dest",
                 pkg_dir,
                 spec,
@@ -1256,15 +1544,20 @@ def download_packages(
                     capture_output = True,
                     text = True,
                     timeout = 120,
+                    env = env,
                 )
                 if proc.returncode != 0:
-                    print(
-                        f"  [ERROR] pip download failed for {spec}: {proc.stderr.strip()}",
-                        file = sys.stderr,
+                    msg = (
+                        f"pip download failed for {spec}: "
+                        f"{proc.stderr.strip()[:500]}"
                     )
+                    print(f"  [ERROR] {msg}", file = sys.stderr)
+                    download_errors.append(msg)
                     continue
             except subprocess.TimeoutExpired:
-                print(f"  [ERROR] pip download timed out for {spec}", file = sys.stderr)
+                msg = f"pip download timed out for {spec}"
+                print(f"  [ERROR] {msg}", file = sys.stderr)
+                download_errors.append(msg)
                 continue
 
             # Find downloaded file(s)
@@ -1272,7 +1565,7 @@ def download_packages(
                 fpath = os.path.join(pkg_dir, fname)
                 if os.path.isfile(fpath):
                     results.append((spec, fpath))
-    return results
+    return results, download_errors
 
 
 # ---------------------------------------------------------------------------
@@ -1586,6 +1879,13 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
     """Apply line-level updates to a requirements file.
 
     updates: {line_num (1-indexed): new_line_text}
+
+    Writes atomically: stage in a sibling tmp file on the same
+    filesystem, fsync, then `os.replace` over the original. A SIGKILL
+    or power loss mid-write therefore either leaves the original
+    intact or leaves the fully new file -- never a half-written
+    requirements file (which would silently re-introduce a malicious
+    pin).
     """
     with open(filepath) as f:
         lines = f.readlines()
@@ -1597,8 +1897,24 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
             ending = "\n" if lines[idx].endswith("\n") else ""
             lines[idx] = new_text + ending
 
-    with open(filepath, "w") as f:
-        f.writelines(lines)
+    dirpath = os.path.dirname(os.path.abspath(filepath)) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix = ".req_fix.",
+        dir = dirpath,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, filepath)
+    except Exception:
+        # Best effort cleanup; the destination was never touched.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _run_fix(
@@ -1842,10 +2158,19 @@ def main() -> int:
 
     all_findings: list[Finding] = []
 
+    # Hard pin-block: refuse to download known-malicious PyPI versions.
+    specs, blocked_findings = _check_blocked_pypi_versions(specs)
+    all_findings.extend(blocked_findings)
+
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
+    download_errors: list[str] = []
     try:
-        downloaded = download_packages(specs, tmpdir, with_deps = args.with_deps)
+        downloaded, download_errors = download_packages(
+            specs,
+            tmpdir,
+            with_deps = args.with_deps,
+        )
         print(f"  Downloaded {len(downloaded)} archive(s).")
 
         for spec, archive_path in downloaded:
@@ -1870,6 +2195,26 @@ def main() -> int:
                 f"\n  --fix: Searching for safe versions of {len(critical_pkgs)} CRITICAL package(s)..."
             )
             _run_fix(critical_pkgs, entries, args.max_search)
+
+    # Surface any pip-download failures BEFORE the scan-result exit code so
+    # an empty / partial download cannot mask itself as "0 findings, all
+    # clean". This is item (4) of the silent-failure hardening: an
+    # unresolvable spec or PyPI timeout used to print to stderr and exit 0.
+    if download_errors:
+        print(
+            f"\n  {'=' * 72}\n"
+            f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
+            f"failure(s):\n"
+            f"  {'=' * 72}",
+            file = sys.stderr,
+        )
+        for err in download_errors:
+            print(f"  [ERROR] {err}", file = sys.stderr)
+        print(
+            "  Refusing to report 'all clean' on a partial scan; " "exiting 2.",
+            file = sys.stderr,
+        )
+        return 2
 
     # Exit code: 1 if any CRITICAL or HIGH
     if any(f.severity in (CRITICAL, HIGH) for f in all_findings):

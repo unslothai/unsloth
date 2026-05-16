@@ -40,11 +40,37 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import urllib.error
 import urllib.request
 from typing import Any, Iterable, Iterator
+
+
+def _atomic_write_bytes(path: pathlib.Path, data: bytes) -> None:
+    """Atomic write helper. See `scripts/scan_packages.py::update_req_file`.
+
+    A crash between `mkstemp` and `os.replace` leaves the prior file
+    untouched, so a half-downloaded PyPI metadata cache file cannot
+    poison subsequent runs of the validator.
+    """
+    path.parent.mkdir(parents = True, exist_ok = True)
+    dirpath = str(path.parent) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix = ".nb_val.", dir = dirpath)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
 
 HERE = pathlib.Path(__file__).resolve().parent
 DATA_DIR = HERE / "data"
@@ -388,7 +414,7 @@ def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
             data = json.loads(r.read())
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
         return None
-    path.write_text(json.dumps(data))
+    _atomic_write_bytes(path, json.dumps(data).encode("utf-8"))
     return data
 
 
@@ -863,47 +889,72 @@ def cmd_drift(args: argparse.Namespace) -> int:
         check = False,
         capture_output = True,
     )
-    try:
-        proc = subprocess.run(
-            [sys.executable, str(update_script)],
-            cwd = nbdir,
-            capture_output = True,
-            text = True,
-            timeout = 600,
-        )
-    except subprocess.TimeoutExpired:
-        print("FAIL: update_all_notebooks.py timed out (>600s)", file = sys.stderr)
-        return 2
-    if proc.returncode != 0:
-        print(
-            f"FAIL: update_all_notebooks.py exited {proc.returncode}", file = sys.stderr
-        )
-        sys.stderr.write(proc.stderr[-2000:])
-        return 2
-    diff_proc = subprocess.run(
-        ["git", "-C", str(nbdir), "diff", "--stat"], capture_output = True, text = True
-    )
+    # SF3: the restore MUST run even on SystemExit / KeyboardInterrupt /
+    # segfault-propagated exception, otherwise the user's working tree
+    # silently stays rolled back into the stash. A bare try/finally
+    # (NOT try/except/finally) preserves the original exception and
+    # still runs the cleanup. The pre-existing try/except around
+    # `subprocess.run` of the updater is folded inside the new outer
+    # try so its early returns still happen, but the stash pop is
+    # protected.
     findings: list[Finding] = []
-    if diff_proc.stdout.strip():
-        for line in diff_proc.stdout.splitlines():
-            findings.append(
-                Finding(
-                    rule = "R-DRIFT-001",
-                    file = line.strip(),
-                    severity = "error",
-                    message = "generator-vs-checked-in drift",
-                    hint = "run `python update_all_notebooks.py` and commit the diff",
-                )
+    rc: int
+    try:
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(update_script)],
+                cwd = nbdir,
+                capture_output = True,
+                text = True,
+                timeout = 600,
             )
-    # Restore.
-    subprocess.run(
-        ["git", "-C", str(nbdir), "checkout", "."], check = False, capture_output = True
-    )
-    subprocess.run(
-        ["git", "-C", str(nbdir), "stash", "pop"], check = False, capture_output = True
-    )
+        except subprocess.TimeoutExpired:
+            print(
+                "FAIL: update_all_notebooks.py timed out (>600s)",
+                file = sys.stderr,
+            )
+            rc = 2
+        else:
+            if proc.returncode != 0:
+                print(
+                    f"FAIL: update_all_notebooks.py exited {proc.returncode}",
+                    file = sys.stderr,
+                )
+                sys.stderr.write(proc.stderr[-2000:])
+                rc = 2
+            else:
+                diff_proc = subprocess.run(
+                    ["git", "-C", str(nbdir), "diff", "--stat"],
+                    capture_output = True,
+                    text = True,
+                )
+                if diff_proc.stdout.strip():
+                    for line in diff_proc.stdout.splitlines():
+                        findings.append(
+                            Finding(
+                                rule = "R-DRIFT-001",
+                                file = line.strip(),
+                                severity = "error",
+                                message = "generator-vs-checked-in drift",
+                                hint = "run `python update_all_notebooks.py` and commit the diff",
+                            )
+                        )
+                rc = 0 if not findings else 1
+    finally:
+        # Restore the working tree. Both commands MUST run regardless of
+        # how the try block exited (including SystemExit/KeyboardInterrupt).
+        subprocess.run(
+            ["git", "-C", str(nbdir), "checkout", "."],
+            check = False,
+            capture_output = True,
+        )
+        subprocess.run(
+            ["git", "-C", str(nbdir), "stash", "pop"],
+            check = False,
+            capture_output = True,
+        )
     _emit(findings)
-    return 0 if not findings else 1
+    return rc
 
 
 # ----- Convert ----- #
@@ -1096,7 +1147,7 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
         print(f"FAIL: could not fetch {COLAB_PIP_FREEZE_URL}: {e}", file = sys.stderr)
         return 2
-    out.write_bytes(data)
+    _atomic_write_bytes(out, data)
     print(f"wrote {len(data)} bytes to {out}")
     return 0
 

@@ -2,6 +2,8 @@
 
 mod commands;
 mod desktop_auth;
+mod desktop_backend_owner;
+mod desktop_update_policy;
 mod diagnostics;
 mod install;
 mod native_backend_lease;
@@ -192,6 +194,8 @@ fn main() {
             commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
+            desktop_update_policy::check_desktop_manual_update,
+            desktop_update_policy::desktop_update_policy,
             diagnostics::collect_support_diagnostics,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,

@@ -425,14 +425,6 @@ class ChatMessage(BaseModel):
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
-        # Enforce the per-role OpenAI spec shape at the request boundary.
-        # Without this, malformed messages (e.g. user entries with no
-        # content, tool_calls on a user/system role, role="tool" without
-        # tool_call_id) would be silently forwarded to llama-server via
-        # the passthrough path, surfacing as opaque upstream errors or
-        # broken tool-call reconciliation downstream.
-
-        # Tool-call metadata must appear only on the appropriate role.
         if self.tool_calls is not None and self.role != "assistant":
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
@@ -440,23 +432,20 @@ class ChatMessage(BaseModel):
         if self.name is not None and self.role != "tool":
             raise ValueError('"name" is only valid on role="tool" messages.')
 
-        # Per-role content requirements. OpenAI-compatible clients may send
-        # ``content=""`` for image-only turns when the image travels in a
-        # companion field such as Studio's ``image_base64`` extension, so treat
-        # empty strings as present content for user/system messages.
         if self.role == "tool":
             if not self.tool_call_id:
-                raise ValueError(
-                    'role="tool" messages require "tool_call_id" per the OpenAI spec.'
-                )
+                # Frontend's second-round POST drops the streamed id;
+                # synthesise one so the request round-trips.
+                import secrets as _secrets
+
+                self.tool_call_id = f"call_{_secrets.token_hex(8)}"
             if not self.content:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":
-            # Assistant messages may omit content when tool_calls is set.
-            if not self.content and not self.tool_calls:
-                raise ValueError(
-                    'role="assistant" messages require either "content" or "tool_calls".'
-                )
+            # Tolerate the post-Stop empty-assistant sentinel by
+            # collapsing content="" to None.
+            if (self.content == "" or self.content == []) and not self.tool_calls:
+                self.content = None
         else:  # "user" | "system"
             if self.content is None or self.content == []:
                 raise ValueError(f'role="{self.role}" messages require "content".')
@@ -542,9 +531,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
-    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = Field(
         None,
-        description = "[x-unsloth] Reasoning effort level ('low'|'medium'|'high') for Harmony-style reasoning models (e.g. gpt-oss). Overrides enable_thinking when the active model uses reasoning_effort style.",
+        description = "[x-unsloth] Reasoning effort level ('none'|'minimal'|'low'|'medium'|'high'|'max'|'xhigh'). OpenAI `/v1/responses` accepts model-dependent subsets; Anthropic adaptive thinking uses `max` as the top tier on Claude 4.6 Opus/Sonnet (inbound `xhigh` is mapped to `max`) and `xhigh` on Claude 4.7 Opus; local Harmony/gpt-oss templates support low|medium|high.",
     )
     preserve_thinking: Optional[bool] = Field(
         None,
@@ -580,6 +571,114 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Per-request cancellation token. Frontend sends a fresh UUID per run so /inference/cancel matches one specific generation.",
     )
+
+    # ── External provider routing (x-unsloth extensions) ──────────
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved provider config ID. If set with encrypted_api_key, routes to external LLM.",
+    )
+    provider_type: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",
+    )
+    external_model: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Model ID at the external provider.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded API key for the external provider.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Override base URL for the external provider.",
+    )
+    enable_prompt_caching: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
+            "attaches cache_control={type:ephemeral} to the system block so the "
+            "static prefix is reused across turns. On OpenAI cloud, caching is "
+            "automatic for prompts >=1024 tokens and this flag is informational. "
+            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
+            "vllm, local, etc.). Treated as enabled when omitted."
+        ),
+    )
+    openai_code_exec_container_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] OpenAI shell-tool container id from the prior response "
+            "in the same chat thread. When set and `code_execution` is in "
+            "`enabled_tools`, the next /v1/responses call uses "
+            "environment.type='container_reference' so filesystem state "
+            "persists across turns. Unset → environment.type='container_auto' "
+            "and OpenAI creates a fresh container. Only meaningful for the "
+            "OpenAI cloud + gpt-5.5 family path; ignored otherwise."
+        ),
+    )
+
+
+# ── OpenAI shell-tool container management ─────────────────────
+
+
+class OpenAIContainerRequest(BaseModel):
+    """
+    Shared body for the three OpenAI container endpoints (list / create
+    / delete). Carries the encrypted API key + base URL so the route
+    handler can decrypt it and proxy to the user's OpenAI account.
+    Same pattern as the inference proxy endpoints — keeps the key off
+    persistent storage on the backend.
+    """
+
+    encrypted_api_key: str = Field(
+        ...,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded OpenAI API key.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] OpenAI base URL. Only api.openai.com is supported; non-cloud bases are rejected with 400.",
+    )
+
+
+class CreateOpenAIContainerBody(OpenAIContainerRequest):
+    name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 256,
+        description = "Human-readable container name. Surfaces in the picker UI.",
+    )
+    ttl_minutes: int = Field(
+        20,
+        ge = 1,
+        le = 20,
+        description = (
+            "Idle-timeout TTL the new container will inherit (anchor="
+            "last_active_at). OpenAI hard-caps this at 20 minutes and "
+            "rejects larger values with integer_above_max_value."
+        ),
+    )
+
+
+class DeleteOpenAIContainerBody(OpenAIContainerRequest):
+    container_id: str = Field(
+        ...,
+        description = "OpenAI container id (cntr_...) to delete.",
+    )
+
+
+class OpenAIContainerSummary(BaseModel):
+    """One row from GET /v1/containers, reshaped for the UI."""
+
+    id: str
+    name: Optional[str] = None
+    created_at: Optional[int] = None
+    last_active_at: Optional[int] = None
+    expires_after_minutes: Optional[int] = None
+    status: Optional[str] = None
+
+
+class ListOpenAIContainersResponse(BaseModel):
+    containers: list[OpenAIContainerSummary]
 
 
 # ── Streaming response chunks ────────────────────────────────────

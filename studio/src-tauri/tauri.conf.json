@@ -34,7 +34,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2RDhGMDMzNDNEMTlGMkQKUldRdG45RkRNL0RZMXZsaVo2TElUQlVHb1hVNWEyajhUOGFXeTdNVDFZTFdBVUtlZUh5L2wwWVYK",
       "endpoints": [
-        "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
+        "https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json"
       ],
       "windows": {
         "installMode": "passive"
@@ -73,9 +73,6 @@
     },
     "linux": {
       "deb": {
-        "postRemoveScript": "./linux/postremove.sh"
-      },
-      "rpm": {
         "postRemoveScript": "./linux/postremove.sh"
       }
     }

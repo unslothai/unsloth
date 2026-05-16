@@ -174,27 +174,43 @@ export interface AudioGenerationResponse {
   }>;
 }
 
+export type OpenAIMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 }
 
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;
-  temperature: number;
-  top_p: number;
+  /** Reasoning-class OpenAI models reject these — caller may omit. */
+  temperature?: number;
+  top_p?: number;
   max_tokens: number;
-  top_k: number;
-  min_p: number;
-  repetition_penalty: number;
-  presence_penalty: number;
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
+  presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
-  reasoning_effort?: "low" | "medium" | "high" | null;
+  reasoning_effort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "max"
+    | "xhigh"
+    | null;
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
@@ -203,6 +219,22 @@ export interface OpenAIChatCompletionsRequest {
   tool_call_timeout?: number;
   session_id?: string;
   cancel_id?: string;
+  provider_id?: string;
+  provider_type?: string;
+  external_model?: string;
+  encrypted_api_key?: string;
+  provider_base_url?: string | null;
+  enable_prompt_caching?: boolean | null;
+  /**
+   * OpenAI shell-tool container id captured from the prior response in
+   * this chat thread. When set and the Code pill is on, the backend
+   * routes the next /v1/responses call with
+   * `environment.type="container_reference"` so filesystem state
+   * persists across turns. Unset → backend uses
+   * `environment.type="container_auto"` and OpenAI creates a fresh
+   * container. Only meaningful for OpenAI cloud + gpt-5.5 family.
+   */
+  openai_code_exec_container_id?: string | null;
 }
 
 export interface OpenAIChatDelta {

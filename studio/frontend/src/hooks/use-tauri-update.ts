@@ -31,11 +31,49 @@ export type UpdatePhase =
   | "shell_install"
   | "recovered_after_shell_failure";
 
+export type DesktopUpdatePolicyMode = "in_app" | "manual_linux_package";
+
+interface DesktopUpdatePolicy {
+  mode: DesktopUpdatePolicyMode;
+  releasePageBaseUrl: string;
+  releaseTagPrefix: string;
+}
+
+interface ManualUpdateInfo {
+  version: string;
+  currentVersion: string;
+  body?: string;
+  date?: string;
+}
+
 export interface RetainedUpdateFailure {
   error: string;
   phase: UpdatePhase;
   progress: number;
   logs: string[];
+}
+
+const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
+  mode: "in_app",
+  releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
+  releaseTagPrefix: "desktop-v",
+};
+
+const UPDATE_VERSION_RE = /^v?\d+\.\d+\.\d+(?:(?:[-+][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)|(?:\.(?:post|dev|rc)\d*)|(?:(?:post|dev|rc|a|b)\d*))?$/;
+
+function normalizeUpdateVersion(version: string): string | null {
+  const trimmed = version.trim();
+  if (!UPDATE_VERSION_RE.test(trimmed)) return null;
+  return trimmed.startsWith("v") ? trimmed.slice(1) : trimmed;
+}
+
+function manualReleasePageUrl(
+  policy: DesktopUpdatePolicy,
+  version: string,
+): string | null {
+  const normalized = normalizeUpdateVersion(version);
+  if (!normalized) return null;
+  return `${policy.releasePageBaseUrl}${policy.releaseTagPrefix}${normalized}`;
 }
 
 export function useTauriUpdate(isExternalServer = false) {
@@ -50,6 +88,7 @@ export function useTauriUpdate(isExternalServer = false) {
   const [dismissed, setDismissed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
+  const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
   const updateRef = useRef<Awaited<
     ReturnType<typeof import("@tauri-apps/plugin-updater").check>
   > | null>(null);
@@ -93,12 +132,63 @@ export function useTauriUpdate(isExternalServer = false) {
     return failure;
   }
 
+  async function resolveUpdatePolicy(): Promise<DesktopUpdatePolicy> {
+    if (!isTauri) return DEFAULT_UPDATE_POLICY;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const policy = await invoke<DesktopUpdatePolicy>("desktop_update_policy");
+      setUpdatePolicy(policy);
+      return policy;
+    } catch (e) {
+      console.warn("Desktop update policy check failed:", e);
+      const failSafePolicy: DesktopUpdatePolicy = {
+        ...DEFAULT_UPDATE_POLICY,
+        mode: "manual_linux_package",
+      };
+      setUpdatePolicy(failSafePolicy);
+      return failSafePolicy;
+    }
+  }
+
+  async function checkManualUpdateFallback(policy: DesktopUpdatePolicy) {
+    if (policy.mode !== "manual_linux_package") return false;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const manualUpdate = await invoke<ManualUpdateInfo | null>(
+        "check_desktop_manual_update",
+      );
+      if (!manualUpdate) return false;
+      updateRef.current = null;
+      setInfo({
+        version: manualUpdate.version,
+        currentVersion: manualUpdate.currentVersion,
+        body: manualUpdate.body,
+        date: manualUpdate.date,
+      });
+      setStatus("available");
+      return true;
+    } catch (e) {
+      console.error("Manual update metadata check failed:", e);
+      return false;
+    }
+  }
+
+  async function openManualUpdatePage(policy: DesktopUpdatePolicy, version: string) {
+    const url = manualReleasePageUrl(policy, version);
+    if (!url) {
+      throw new Error(`Invalid desktop update version: ${version}`);
+    }
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  }
+
   useEffect(() => {
     if (!isTauri || checkedRef.current) return;
     checkedRef.current = true;
 
     async function checkForUpdate() {
       setStatus("checking");
+      const policy = await resolveUpdatePolicy();
       try {
         const { check } = await import("@tauri-apps/plugin-updater");
         const update = await check();
@@ -111,12 +201,14 @@ export function useTauriUpdate(isExternalServer = false) {
             date: update.date,
           });
           setStatus("available");
-        } else {
+        } else if (!(await checkManualUpdateFallback(policy))) {
           setStatus("idle");
         }
       } catch (e) {
         console.error("Update check failed:", e);
-        setStatus("idle");
+        if (!(await checkManualUpdateFallback(policy))) {
+          setStatus("idle");
+        }
       }
     }
 
@@ -125,14 +217,31 @@ export function useTauriUpdate(isExternalServer = false) {
   }, []);
 
   async function installUpdate() {
-    const update = updateRef.current;
-    if (!update || updatingRef.current) return;
+    if (updatingRef.current) return;
     updatingRef.current = true;
 
     const cleanups: (() => void)[] = [];
 
     try {
-      // ── Step 1: Backend update ──
+      const policy = await resolveUpdatePolicy();
+      if (policy.mode === "manual_linux_package") {
+        const version = info?.version ?? updateRef.current?.version;
+        if (!version) return;
+        try {
+          await openManualUpdatePage(policy, version);
+          setDismissed(true);
+          setError(null);
+        } catch (manualError) {
+          const msg = String(manualError);
+          setError(msg);
+          toast.error("Could not open release page", { description: msg });
+        }
+        return;
+      }
+
+      const update = updateRef.current;
+      if (!update) return;
+
       setUpdatePhase("backend");
       setStatus("updating-backend");
       replaceLogs([]);
@@ -144,7 +253,6 @@ export function useTauriUpdate(isExternalServer = false) {
       const { listen } = await import("@tauri-apps/api/event");
       const { invoke } = await import("@tauri-apps/api/core");
 
-      // Listen for backend update progress
       const unlistenProgress = await listen<string>(
         "update-progress",
         (e) => {
@@ -153,7 +261,6 @@ export function useTauriUpdate(isExternalServer = false) {
       );
       cleanups.push(unlistenProgress);
 
-      // Wait for complete or failed
       const backendResult = await new Promise<"complete" | string>(
         (resolve) => {
           listen<void>("update-complete", () => resolve("complete")).then(
@@ -171,12 +278,9 @@ export function useTauriUpdate(isExternalServer = false) {
         retainFailure(backendResult, "backend");
         setError(backendResult);
         setStatus("error");
-        updatingRef.current = false;
-        cleanup(cleanups);
         return;
       }
 
-      // ── Step 2: Shell update ──
       setUpdatePhase("shell_download");
       setStatus("downloading");
       setUpdateProgress(0);
@@ -201,7 +305,6 @@ export function useTauriUpdate(isExternalServer = false) {
         }
       });
 
-      // ── Step 3: Relaunch ──
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (e) {
@@ -281,6 +384,11 @@ export function useTauriUpdate(isExternalServer = false) {
     });
   }
 
+  const manualReleaseUrl =
+    updatePolicy.mode === "manual_linux_package" && info
+      ? manualReleasePageUrl(updatePolicy, info.version)
+      : null;
+
   return {
     status,
     info,
@@ -291,6 +399,8 @@ export function useTauriUpdate(isExternalServer = false) {
     phase,
     lastFailure,
     isExternalServer,
+    updatePolicyMode: updatePolicy.mode,
+    manualReleaseUrl,
     installUpdate,
     retryUpdate,
     skipAndRestart,

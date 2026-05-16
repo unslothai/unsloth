@@ -1045,6 +1045,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            num_images = kwargs.get("num_images", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
             token_type_ids = kwargs.get("token_type_ids", None)
             mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
@@ -1099,64 +1100,136 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
-
-            def chunk_optional(tensor, chunks):
-                if tensor is None:
-                    return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+            def slice_sample_axis(value, start, end):
+                if value is None:
+                    return None
+                return value[start:end]
 
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
+            if isinstance(num_images, torch.Tensor):
+                num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
+                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_sample = torch.split(rows_per_image, num_images)
+                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                # why: cum_rows is indexed via .item() inside the per-chunk loop;
+                # keeping it on CPU avoids per-iteration GPU->CPU sync.
+                cum_rows = torch.cat(
+                    [
+                        torch.tensor([0], device = rows_per_sample.device),
+                        rows_per_sample.cumsum(0),
+                    ]
+                ).cpu()
+                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+            else:
+                cum_rows = None
+                cum_imgs = None
+
+            def _first_dim_len(value):
+                if value is None:
+                    return None
+                if hasattr(value, "shape"):
+                    return value.shape[0]
+                try:
+                    return len(value)
+                except TypeError:
+                    return None
+
+            total_images = sum(num_images) if num_images is not None else None
+            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            image_sizes_chunks = []
+            token_type_ids_chunks = []
+            mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
-                end = start + batch_size
+                end = min(start + batch_size, total_samples)
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    grid_slice = image_grid_thw[start:end]
+                    if num_images is None:
+                        grid_slice = image_grid_thw[start:end]
+                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        start_pixel_idx = current_pixel_idx
+                        end_pixel_idx = current_pixel_idx + batch_pixel_count
+                        current_pixel_idx = end_pixel_idx
+                        img_start = img_end = None
+                    else:
+                        start_pixel_idx = cum_rows[start].item()
+                        end_pixel_idx = cum_rows[end].item()
+                        img_start = cum_imgs[start].item()
+                        img_end = cum_imgs[end].item()
+                        grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
-
-                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-
-                    start_pixel_idx = current_pixel_idx
-                    end_pixel_idx = current_pixel_idx + batch_pixel_count
 
                     pixel_values_chunks.append(
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
-                    if pixel_attention_mask is not None:
+                    if image_sizes is None:
+                        image_sizes_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and _image_sizes_n == total_images
+                        and img_start is not None
+                    ):
+                        image_sizes_chunks.append(image_sizes[img_start:img_end])
+                    else:
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
+
+                    if pixel_attention_mask is None:
+                        pixel_attention_mask_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and img_start is not None
+                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
+                    elif (
+                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
+                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
+                    ):
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
-                        pixel_attention_mask_chunks.append(None)
-
-                    current_pixel_idx = end_pixel_idx
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-
-            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
-            else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
             logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
@@ -1166,10 +1239,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             logit_scale_divide = getattr(model.config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
-
-            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
-            token_type_ids_chunks = chunk_optional(token_type_ids, B)
-            mm_token_type_ids_chunks = chunk_optional(mm_token_type_ids, B)
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -1375,6 +1444,7 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        num_images = inputs.get("num_images", None)
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
         token_type_ids = inputs.get("token_type_ids", None)
         mm_token_type_ids = inputs.get("mm_token_type_ids", None)
@@ -1490,6 +1560,35 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
+
+            def _unsloth_requires_multi_image_zoo(value):
+                if value is None:
+                    return False
+                if isinstance(value, torch.Tensor):
+                    counts = value.detach().cpu().reshape(-1).tolist()
+                else:
+                    counts = list(value)
+                return any(int(n) != 1 for n in counts)
+
+            if _unsloth_requires_multi_image_zoo(num_images) and not getattr(
+                self, "_unsloth_grpo_zoo_checked", False
+            ):
+                _supports_num_images = (
+                    "num_images" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_num_images:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_num_images = "num_images" in _zoo_src
+                if not _supports_num_images:
+                    raise RuntimeError(
+                        "Multi-image GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles num_images. Please upgrade "
+                        "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
+                    )
+                self._unsloth_grpo_zoo_checked = True
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -1504,6 +1603,9 @@ def grpo_trainer_compute_loss(function_name, function):
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -1535,6 +1637,11 @@ def grpo_trainer_compute_loss(function_name, function):
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,

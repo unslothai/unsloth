@@ -89,7 +89,19 @@ jobs:
     # Silicon (~5-7 min), so we budget headroom.
     timeout-minutes: 25
     steps:
+      # harden-runner audit mode: macOS runners cannot use blocking mode
+      # today (eBPF egress enforcement is Linux-only), but audit mode is
+      # supported cross-platform and surfaces the egress destinations in
+      # the runner log. This produces the data needed to graduate this
+      # job to a block-mode allowlist once macOS support lands.
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -290,15 +302,10 @@ jobs:
           "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
 
           mkdir -p /tmp/ggufs
-          python -c "
-          from huggingface_hub import hf_hub_download
-          p = hf_hub_download(
-              'unsloth/gemma-3-270m-it-GGUF',
-              'gemma-3-270m-it-Q4_K_M.gguf',
-              local_dir = '/tmp/ggufs',
-          )
-          print('downloaded:', p)
-          "
+          bash .github/scripts/hf-download-with-retry.sh \
+            'unsloth/gemma-3-270m-it-GGUF' \
+            'gemma-3-270m-it-Q4_K_M.gguf' \
+            /tmp/ggufs
 
           PORT=18080
           echo "=== starting llama-server on 127.0.0.1:$PORT ==="
