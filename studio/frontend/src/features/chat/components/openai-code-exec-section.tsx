@@ -29,7 +29,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -118,6 +118,22 @@ export function OpenAICodeExecSection({
   // creates more confusion than it solves. Refreshing the page resets
   // the tombstone naturally.
   const [tombstones, setTombstones] = useState<Set<string>>(() => new Set());
+  // Ids optimistically inserted after a successful create but not yet
+  // confirmed by a /v1/containers list response. OpenAI's list endpoint
+  // is eventually consistent — a freshly-created container can be absent
+  // for several seconds. We render the row immediately with a "Creating"
+  // pill, then drop it from this set once a refresh sees the id.
+  const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  // Ref mirror so `refresh()` can read the current pending set without
+  // re-binding when it changes (the callback is in a useEffect dep).
+  const pendingIdsRef = useRef<Set<string>>(pendingIds);
+  useEffect(() => {
+    pendingIdsRef.current = pendingIds;
+  }, [pendingIds]);
+  // One-shot follow-up refresh scheduled after a create, to catch the
+  // common case where the server list lags the create response by a few
+  // seconds. Tracked so we can clear it on unmount.
+  const pendingRetryRef = useRef<number | null>(null);
   // Target row for the destructive confirmation dialog. Held in state
   // (rather than blocking with window.confirm) so the dialog sits inside
   // the settings sheet instead of a native browser alert.
@@ -179,7 +195,24 @@ export function OpenAICodeExecSection({
         apiKey,
         baseUrl: provider.baseUrl || null,
       });
-      setContainers(list);
+      const serverIds = new Set(list.map((c) => c.id));
+      setContainers((prev) => {
+        // Preserve optimistic inserts the server hasn't acknowledged
+        // yet so they don't disappear on the reconciling refresh.
+        const orphans = prev.filter(
+          (c) => !serverIds.has(c.id) && pendingIdsRef.current.has(c.id),
+        );
+        return orphans.length > 0 ? [...orphans, ...list] : list;
+      });
+      setPendingIds((prev) => {
+        if (prev.size === 0) return prev;
+        const next = new Set(prev);
+        let changed = false;
+        for (const id of serverIds) {
+          if (next.delete(id)) changed = true;
+        }
+        return changed ? next : prev;
+      });
     } catch (err) {
       toast.error(
         `Failed to list containers: ${err instanceof Error ? err.message : "Unknown"}`,
@@ -210,6 +243,10 @@ export function OpenAICodeExecSection({
     return () => {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
+      if (pendingRetryRef.current != null) {
+        window.clearTimeout(pendingRetryRef.current);
+        pendingRetryRef.current = null;
+      }
     };
   }, [refresh]);
 
@@ -311,6 +348,29 @@ export function OpenAICodeExecSection({
       toast.success(`Created container ${name}`);
       setCreateName("");
       setCreateOpen(false);
+      // Optimistic insert + "Creating" pill. OpenAI's /v1/containers
+      // list endpoint is eventually consistent and can omit the new
+      // container for several seconds — without this, the row only
+      // shows up on the next 30s poll or a manual refresh.
+      setContainers((prev) =>
+        prev.some((c) => c.id === created.id) ? prev : [created, ...prev],
+      );
+      setPendingIds((prev) => {
+        if (prev.has(created.id)) return prev;
+        const next = new Set(prev);
+        next.add(created.id);
+        return next;
+      });
+      // Follow-up refresh ~5s later to reconcile the optimistic row
+      // with the server's view once /v1/containers catches up. One
+      // shot; the regular poll covers any longer tail.
+      if (pendingRetryRef.current != null) {
+        window.clearTimeout(pendingRetryRef.current);
+      }
+      pendingRetryRef.current = window.setTimeout(() => {
+        pendingRetryRef.current = null;
+        void refresh();
+      }, 5000);
       // Auto-bind the just-created container to the active thread.
       // ensureThreadRecord first so the bind lands even when the user
       // creates a container before sending the first message — without
@@ -448,6 +508,7 @@ export function OpenAICodeExecSection({
             {sortedContainers.map((c) => {
               const running = isContainerRunning(c);
               const isActive = running && c.id === displayActiveId;
+              const isPending = pendingIds.has(c.id);
               const ttlMinutes = c.expiresAfterMinutes ?? DEFAULT_TTL_MINUTES;
               const canActivate =
                 activeThreadId != null && !isActive && running;
@@ -491,7 +552,11 @@ export function OpenAICodeExecSection({
                       <span className="min-w-0 truncate font-medium">
                         {c.name ?? "(unnamed)"}
                       </span>
-                      {isActive ? (
+                      {isPending ? (
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Creating
+                        </span>
+                      ) : isActive ? (
                         <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium uppercase tracking-wider text-primary">
                           Active
                         </span>
