@@ -455,7 +455,9 @@ def test_simple_linux_direct_release_keeps_legacy_b_tag_path_without_checksums(
     }
 
     def unexpected_checksum_load(repo: str, release_tag: str):
-        raise AssertionError("legacy b-tag direct releases should not require checksum metadata")
+        raise AssertionError(
+            "legacy b-tag direct releases should not require checksum metadata"
+        )
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,

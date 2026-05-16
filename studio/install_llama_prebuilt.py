@@ -1278,9 +1278,8 @@ def direct_linux_release_plan(
         bundle.release_tag,
         bundle.upstream_tag,
     )
-    if (
-        DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets
-        and not is_release_tag_like(bundle.upstream_tag)
+    if DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets and not is_release_tag_like(
+        bundle.upstream_tag
     ):
         approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
         attempts = apply_approved_hashes(attempts, approved_checksums)
