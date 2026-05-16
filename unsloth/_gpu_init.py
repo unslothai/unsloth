@@ -209,7 +209,7 @@ del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
+if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
 
@@ -233,18 +233,12 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
-else:
-    # CPU-only CI under UNSLOTH_ALLOW_CPU=1. We can't probe device
-    # capability, so assume no bf16 -- training won't run on this host
-    # anyway, this branch only exists to let `import unsloth.trainer`
-    # succeed for source-inspection tests.
-    SUPPORTS_BFLOAT16 = False
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
 
-if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
+if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
         try:
