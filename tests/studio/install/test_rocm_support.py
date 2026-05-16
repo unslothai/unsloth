@@ -2077,5 +2077,128 @@ class TestStrixHaloGfxArchDetection:
             ), f"gfx arch regex not found in {path.name}"
 
 
+# =============================================================================
+# TEST: HIP SDK tool path resolution via HIP_PATH / ROCM_PATH env vars
+# =============================================================================
+
+
+class TestHipSdkEnvPathResolution:
+    """Verify that both install scripts resolve hipinfo/hipconfig via HIP_PATH
+    and ROCM_PATH when the tools are not on $PATH, and emit explicit warnings."""
+
+    # ── hipinfo resolution ────────────────────────────────────────────────────
+
+    def test_setup_checks_hip_path_for_hipinfo(self):
+        """setup.ps1 must reference HIP_PATH when resolving hipinfo."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP_PATH" in source
+        assert "hipinfo" in source
+
+    def test_install_checks_hip_path_for_hipinfo(self):
+        """install.ps1 must reference HIP_PATH when resolving hipinfo."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP_PATH" in source
+        assert "hipinfo" in source
+
+    def test_setup_checks_rocm_path_as_hipinfo_fallback(self):
+        """setup.ps1 must also check ROCM_PATH as a secondary hipinfo fallback."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCM_PATH" in source
+        # Confirm the fallback pattern: HIP_PATH ?? ROCM_PATH (or equivalent elseif)
+        assert ("ROCM_PATH" in source and "HIP_PATH" in source)
+
+    def test_install_checks_rocm_path_as_hipinfo_fallback(self):
+        """install.ps1 must also check ROCM_PATH as a secondary hipinfo fallback."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "ROCM_PATH" in source
+        assert ("ROCM_PATH" in source and "HIP_PATH" in source)
+
+    def test_setup_resolves_hipinfo_via_bin_subdir(self):
+        """setup.ps1 must join the env var root with 'bin\\hipinfo.exe'."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert r"bin\hipinfo.exe" in source
+
+    def test_install_resolves_hipinfo_via_bin_subdir(self):
+        """install.ps1 must join the env var root with 'bin\\hipinfo.exe'."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert r"bin\hipinfo.exe" in source
+
+    # ── hipinfo not-on-PATH warning ───────────────────────────────────────────
+
+    def test_setup_warns_when_hipinfo_not_on_path(self):
+        """setup.ps1 must warn when hipinfo is found via env var but not on PATH."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "hipinfo not on PATH" in source
+
+    def test_install_warns_when_hipinfo_not_on_path(self):
+        """install.ps1 must warn when hipinfo is found via env var but not on PATH."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "hipinfo not on PATH" in source
+
+    # ── warn when HIP_PATH set but exe missing ────────────────────────────────
+
+    def test_setup_warns_when_hip_path_set_but_exe_missing(self):
+        """setup.ps1 must warn when HIP_PATH is set but hipinfo.exe is not present."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        # The warning must mention that the SDK install may be incomplete
+        assert "incomplete" in source or "not found at" in source
+
+    def test_install_warns_when_hip_path_set_but_exe_missing(self):
+        """install.ps1 must warn when HIP_PATH is set but hipinfo.exe is not present."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "incomplete" in source or "not found at" in source
+
+    # ── hipinfo runtime error warning ─────────────────────────────────────────
+
+    def test_setup_warns_on_hipinfo_nonzero_exit(self):
+        """setup.ps1 must warn when hipinfo runs but returns a non-zero exit code."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP runtime error" in source or "runtime error" in source.lower()
+
+    def test_install_warns_on_hipinfo_nonzero_exit(self):
+        """install.ps1 must warn when hipinfo runs but returns a non-zero exit code."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "HIP runtime error" in source or "runtime error" in source.lower()
+
+    # ── hipconfig resolution ──────────────────────────────────────────────────
+
+    def test_setup_resolves_hipconfig_via_bin_subdir(self):
+        """setup.ps1 must also fall back to HIP_PATH/bin/hipconfig.exe for version detection."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert r"bin\hipconfig.exe" in source
+
+    def test_install_resolves_hipconfig_via_bin_subdir(self):
+        """install.ps1 must also fall back to HIP_PATH/bin/hipconfig.exe for version detection."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert r"bin\hipconfig.exe" in source
+
+    def test_setup_warns_when_hipconfig_not_on_path(self):
+        """setup.ps1 must warn when hipconfig is found via env var but not on PATH."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "hipconfig not on PATH" in source
+
+    def test_install_warns_when_hipconfig_not_on_path(self):
+        """install.ps1 must warn when hipconfig is found via env var but not on PATH."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "hipconfig not on PATH" in source
+
+    # ── PATH fix hint ─────────────────────────────────────────────────────────
+
+    def test_setup_provides_path_fix_hint(self):
+        """setup.ps1 must tell the user how to add the HIP bin dir to PATH."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        # Should mention adding to PATH or SetEnvironmentVariable
+        assert "PATH" in source and (
+            "SetEnvironmentVariable" in source or "Add" in source
+        )
+
+    def test_install_provides_path_fix_hint(self):
+        """install.ps1 must tell the user how to add the HIP bin dir to PATH."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        assert "PATH" in source and (
+            "SetEnvironmentVariable" in source or "Add" in source
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

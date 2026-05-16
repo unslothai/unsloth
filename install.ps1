@@ -1213,7 +1213,26 @@ shell.Run cmd, 0, False
     $ROCmVersion = $null
     $ROCmGfxArch = $null
     if (-not $HasNvidiaSmi) {
+        # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
+        # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
         $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+        if (-not $hipinfoExe) {
+            $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+            $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
+            if ($hipRoot) {
+                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+                if (Test-Path $hipinfoCandidate) {
+                    Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                    Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                    Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                    $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+                } else {
+                    Write-Host "  [WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" -ForegroundColor Yellow
+                    Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                    Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                }
+            }
+        }
         if ($hipinfoExe) {
             try {
                 $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
@@ -1225,6 +1244,12 @@ shell.Run cmd, 0, False
                     } else {
                         $ROCmGpuLabel = "AMD ROCm"
                     }
+                } elseif ($LASTEXITCODE -ne 0) {
+                    # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                    $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+                    Write-Host "  [WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" -ForegroundColor Yellow
+                    Write-Host "         $firstLine" -ForegroundColor Yellow
+                    Write-Host "         Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
                 }
             } catch {}
         }
@@ -1300,6 +1325,17 @@ shell.Run cmd, 0, False
         # Capture ROCm version for wheel selection (hipconfig, then amd-smi)
         if ($HasROCm) {
             $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+            if (-not $hipConfigExe) {
+                $hipRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+                if ($hipRoot) {
+                    $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
+                    if (Test-Path $hipConfigCandidate) {
+                        $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
+                        Write-Host "  [WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" -ForegroundColor Yellow
+                        $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
+                    }
+                }
+            }
             if ($hipConfigExe) {
                 try {
                     $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
