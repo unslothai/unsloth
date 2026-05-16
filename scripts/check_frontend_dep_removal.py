@@ -505,13 +505,104 @@ def build_bin_to_pkg(head_lock: dict) -> dict[str, str]:
 
 _SCRIPT_TOKENIZE = re.compile(r"\s*(?:&&|\|\||;|\|(?!\|))\s*")
 
+# Wrappers that delegate to a real CLI in the same shell word list.
+# After stripping env prefixes and (optionally) `npx`/`pnpm exec`/`yarn dlx`/
+# `bunx`, if the leading token is one of these we advance past the
+# wrapper's own flags and any further env-prefix tokens, then re-check.
+# `cross-env` is the common one; `dotenv-cli` / `dotenvx` use `--` as a
+# separator. Wrappers that operate on named npm-scripts (concurrently,
+# npm-run-all, run-s, run-p, wireit, turbo, nx) intentionally aren't
+# here -- they reference script names, not bin names, so the real bin
+# is in the *target* script's chunk which we already tokenize.
+_SCRIPT_WRAPPERS = {"cross-env", "dotenv", "dotenvx", "env-cmd"}
+_ENV_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _next_real_bin(words: list[str], idx: int) -> str | None:
+    """Walk `words` from `idx`, peeling env-prefix tokens, the leading
+    package-manager runner (`npx`, `pnpm exec`, etc.), and the known
+    wrapper bins. Return the next token that looks like the real CLI
+    binary, or None if the chunk has nothing to look up.
+
+    Recursion depth is bounded by the chunk's word count, so the loop
+    cannot run away on a pathological wrapper chain.
+    """
+    seen_wrappers: set[str] = set()
+    while idx < len(words):
+        # 1. env-prefix run: `FOO=bar BAZ="a b" cmd ...`. shlex has
+        # already collapsed quoted values into one word, so this
+        # tokenizer is safe for them.
+        while idx < len(words) and _ENV_PREFIX_RE.match(words[idx]):
+            idx += 1
+        if idx >= len(words):
+            return None
+
+        first = words[idx]
+        # 2. Package-manager runner: `npx <pkg> args`, `pnpm exec <pkg>`,
+        # `yarn dlx <pkg>`, `bunx <pkg>`. Strip and continue (so the
+        # wrapped command goes through the same unwrap loop).
+        if first in {"npx", "pnpx", "bunx"} and idx + 1 < len(words):
+            idx += 1
+            continue
+        if (
+            first in {"pnpm", "yarn"}
+            and idx + 2 < len(words)
+            and words[idx + 1] in {"exec", "dlx"}
+        ):
+            idx += 2
+            continue
+
+        # 3. Wrapper bin (cross-env, dotenv, etc.). Skip the wrapper's
+        # own flags and any subsequent env-prefix tokens, then re-loop.
+        bin_token = first.removeprefix("./node_modules/.bin/").removeprefix(
+            "node_modules/.bin/"
+        )
+        if bin_token in _SCRIPT_WRAPPERS and bin_token not in seen_wrappers:
+            seen_wrappers.add(bin_token)
+            idx += 1
+            # cross-env / env-cmd: no flags; just more env-prefix tokens.
+            # dotenv / dotenvx: skip `-e <file>` style flags and the
+            # optional `--` separator before the wrapped command.
+            while idx < len(words):
+                tok = words[idx]
+                if tok.startswith("-") and tok != "--":
+                    idx += 1
+                    # `-e .env` style: also skip the flag's argument
+                    # when it does not look like another flag.
+                    if (
+                        idx < len(words)
+                        and not words[idx].startswith("-")
+                        and not _ENV_PREFIX_RE.match(words[idx])
+                    ):
+                        idx += 1
+                    continue
+                if tok == "--":
+                    idx += 1
+                    break
+                break
+            continue
+        return bin_token
+    return None
+
 
 def scripts_bin_refs(
     head_pkg: dict, bin_to_pkg: dict[str, str]
 ) -> dict[str, list[str]]:
     """Return `{package_name: ['scripts.X: cmd', ...]}` listing every
     package referenced via its bin name in package.json scripts.
+
+    Each script value is split on shell separators (`&&`, `||`, `;`,
+    `|`). Within each chunk, `_next_real_bin()` unwraps env prefixes,
+    package-manager runners (`npx` / `pnpm exec` / `yarn dlx` / `bunx`),
+    and wrapper bins like `cross-env` / `dotenv` so that
+    `cross-env CI=1 biome check` correctly credits `biome` to its
+    declaring package.
+
+    Tokenization uses shlex.split so quoted env values
+    (`FOO="a b" biome`) survive unbroken.
     """
+    import shlex
+
     scripts = head_pkg.get("scripts", {}) or {}
     refs: dict[str, list[str]] = {}
     for script_name, raw_cmd in scripts.items():
@@ -521,25 +612,21 @@ def scripts_bin_refs(
             chunk = chunk.strip()
             if not chunk:
                 continue
-            words = chunk.split()
-            idx = 0
-            while idx < len(words) and re.match(
-                r"^[A-Za-z_][A-Za-z0-9_]*=", words[idx]
-            ):
-                idx += 1
-            if idx >= len(words):
+            try:
+                words = shlex.split(chunk, posix = True)
+            except ValueError:
+                # Unbalanced quotes -- fall back to plain split.
+                words = chunk.split()
+            if not words:
                 continue
-            first = words[idx]
-            if first in {"npx", "pnpx", "yarn", "pnpm", "bunx"} and idx + 1 < len(
-                words
-            ):
-                idx += 1
-                first = words[idx]
-            first = first.removeprefix("./node_modules/.bin/")
-            first = first.removeprefix("node_modules/.bin/")
-            pkg = bin_to_pkg.get(first)
+            bin_name = _next_real_bin(words, 0)
+            if bin_name is None:
+                continue
+            pkg = bin_to_pkg.get(bin_name)
             if pkg:
-                refs.setdefault(pkg, []).append(f"scripts.{script_name}: {raw_cmd}")
+                refs.setdefault(pkg, []).append(
+                    f"scripts.{script_name}: {raw_cmd}"
+                )
     return refs
 
 
@@ -618,6 +705,13 @@ def enumerate_dep_usage(head_pkg: dict, head_lock: dict) -> dict[str, list]:
         # Real-source-usage check
         hits = find_usage(name)
         used = bool(hits)
+        # CLI usage in shell / workflow / Dockerfile surfaces. Skip for
+        # `@types/*` packages because they never expose a CLI binary and
+        # the unscoped-tail bin name candidate would scan workflow files
+        # for the bare runtime name (a removed `@types/foo` would look
+        # for invocations of `foo`).
+        if not used and not name.startswith("@types/") and find_command_usage(name):
+            used = True
         # Bin scripts
         if not used and name in script_refs:
             used = True
@@ -752,10 +846,13 @@ def find_usage(pkg: str) -> list[Hit]:
         # Try the single-line classify first.
         kind = classify(pkg, file, content)
         if not kind:
-            # Multi-line window: 4 lines above + the line itself + 4 below.
+            # Multi-line window: a generous 25 lines above + the line +
+            # 25 below so Prettier's one-import-per-line formatting for
+            # 12-20+ named imports still includes the `import` keyword
+            # in the same window as the `from "pkg"` clause.
             lines = _read_file(file)
-            lo = max(0, lineno - 5)
-            hi = min(len(lines), lineno + 4)
+            lo = max(0, lineno - 26)
+            hi = min(len(lines), lineno + 25)
             window = "\n".join(lines[lo:hi])
             kind = classify(pkg, file, window)
         if kind:

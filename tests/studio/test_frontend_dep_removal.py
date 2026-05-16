@@ -335,6 +335,8 @@ _dep_check = _ilu.module_from_spec(_spec)
 sys.modules["_dep_check"] = _dep_check  # required so @dataclass can resolve annotations
 _spec.loader.exec_module(_dep_check)
 classify = _dep_check.classify
+_next_real_bin = _dep_check._next_real_bin
+scripts_bin_refs = _dep_check.scripts_bin_refs
 
 
 @dataclass
@@ -878,6 +880,24 @@ ADV_CASES: list[AdvCase] = [
         "FAIL",
         ["__adv_only_pkg_l__"],
     ),
+    # Prettier formats a long named-import list one identifier per line.
+    # 22 imports + braces puts the `import` keyword ~22 lines away from
+    # the `from "pkg"` clause. Before the window widening, the classify
+    # multi-line fallback used ±4 lines, which silently missed every
+    # such block. This case fails with the old window and passes once
+    # the window is wide enough (currently ±25).
+    AdvCase(
+        "A13",
+        "Prettier-style 22-identifier multi-line import should FAIL "
+        "(exercises the widened multi-line classify window)",
+        "adv13.ts",
+        "import {\n"
+        + "".join(f"  ident_{i:02d},\n" for i in range(22))
+        + '} from "__adv_only_pkg_m__";\n',
+        "__adv_only_pkg_m__",
+        "FAIL",
+        ["__adv_only_pkg_m__"],
+    ),
 ]
 
 
@@ -1384,6 +1404,168 @@ def run_enum_cases() -> int:
     return 0 if passed == len(ENUM_CASES) else 1
 
 
+# ---------------------------------------------------------------------------
+# Script-wrapper cases: exercise scripts_bin_refs / _next_real_bin so a
+# package.json script like `cross-env CI=1 biome check` correctly credits
+# `@biomejs/biome` rather than the wrapper itself. The 10x reviewer flagged
+# the original "first non-env token" heuristic as too narrow: any project
+# using cross-env / dotenv / dotenvx / env-cmd / a quoted env value would
+# bypass the bin-name check.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WrapperCase:
+    id: str
+    desc: str
+    raw_cmd: str
+    expected_bin: str | None  # None means "no real bin (e.g. unwrappable)"
+
+
+WRAPPER_CASES: list[WrapperCase] = [
+    WrapperCase(
+        "W01",
+        "cross-env wraps the real bin",
+        "cross-env CI=1 biome check .",
+        "biome",
+    ),
+    WrapperCase(
+        "W02",
+        "cross-env with multiple env tokens after the wrapper",
+        "cross-env A=1 B=2 NODE_ENV=prod biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W03",
+        "bare env-prefix run (no wrapper) still peels the env tokens",
+        "FOO=bar biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W04",
+        "quoted env value with spaces (shlex preserves it as one word)",
+        'FOO="a b" biome check',
+        "biome",
+    ),
+    WrapperCase(
+        "W05",
+        "npx + cross-env: runner peels, wrapper peels, real bin wins",
+        "npx cross-env CI=1 biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W06",
+        "pnpm exec + cross-env",
+        "pnpm exec cross-env CI=1 biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W07",
+        "dotenv with the `--` separator before the wrapped command",
+        "dotenv -- biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W08",
+        "dotenv with a flag-arg pair and `--` separator",
+        "dotenv -e .env -- biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W09",
+        "leading `./node_modules/.bin/` prefix is stripped",
+        "./node_modules/.bin/biome check",
+        "biome",
+    ),
+    WrapperCase(
+        "W10",
+        "concurrently is NOT a script wrapper -- it dispatches by "
+        "script *name*, not bin, so the real bin is `concurrently` "
+        "itself (the wrapped script names are credited by their own "
+        "scripts entries, which scripts_bin_refs iterates separately)",
+        'concurrently "npm:dev" "npm:typecheck"',
+        "concurrently",
+    ),
+]
+
+
+def run_wrapper_cases() -> int:
+    import shlex
+
+    passed = 0
+    for wc in WRAPPER_CASES:
+        try:
+            words = shlex.split(wc.raw_cmd, posix = True)
+        except ValueError:
+            words = wc.raw_cmd.split()
+        actual = _next_real_bin(words, 0)
+        ok = actual == wc.expected_bin
+        mark = "PASS" if ok else "FAIL"
+        print(f"  [{mark}] {wc.id}: {wc.desc}")
+        if not ok:
+            print(f"      raw_cmd={wc.raw_cmd!r}")
+            print(f"      expected={wc.expected_bin!r}, actual={actual!r}")
+        if ok:
+            passed += 1
+
+    # End-to-end integration: feed scripts_bin_refs a synthetic head_pkg
+    # whose scripts use a wrapper, and confirm the package owning the
+    # wrapped bin is credited (rather than the wrapper). This is the
+    # actual call path used by find_command_usage().
+    int_total = 0
+    int_passed = 0
+    int_cases = [
+        (
+            "I01",
+            "cross-env wrapping `biome` credits @biomejs/biome",
+            {"lint": "cross-env CI=1 biome check"},
+            {"biome": "@biomejs/biome"},
+            "@biomejs/biome",
+        ),
+        (
+            "I02",
+            "dotenv -- biome credits @biomejs/biome",
+            {"lint": "dotenv -- biome check"},
+            {"biome": "@biomejs/biome"},
+            "@biomejs/biome",
+        ),
+        (
+            "I03",
+            "quoted env value before bin still credits the bin's owner",
+            {"lint": 'FOO="a b" biome check .'},
+            {"biome": "@biomejs/biome"},
+            "@biomejs/biome",
+        ),
+        (
+            "I04",
+            "&& chain: both halves credit their owning packages",
+            {"build": "tsc -b && cross-env CI=1 biome check"},
+            {"tsc": "typescript", "biome": "@biomejs/biome"},
+            None,  # checked via owning_pkgs below
+        ),
+    ]
+    for case_id, desc, scripts, bin_to_pkg, expect_owner in int_cases:
+        int_total += 1
+        refs = scripts_bin_refs({"scripts": scripts}, bin_to_pkg)
+        if case_id == "I04":
+            owners = set(refs.keys())
+            ok = owners == {"typescript", "@biomejs/biome"}
+        else:
+            ok = expect_owner in refs
+        mark = "PASS" if ok else "FAIL"
+        print(f"  [{mark}] {case_id}: {desc}")
+        if not ok:
+            print(f"      scripts={scripts!r} bin_to_pkg={bin_to_pkg!r}")
+            print(f"      refs={refs!r}")
+        if ok:
+            int_passed += 1
+
+    total = len(WRAPPER_CASES) + int_total
+    print()
+    print(f"{passed + int_passed}/{total} wrapper-script cases pass")
+    return 0 if (passed == len(WRAPPER_CASES) and int_passed == int_total) else 1
+
+
 def main() -> int:
     head_pkg = json.loads(HEAD_PKG.read_text())
     print(f"Running {len(CASES)} edge cases against {SCRIPT.relative_to(REPO)}")
@@ -1422,7 +1604,22 @@ def main() -> int:
     print()
     enum_rc = run_enum_cases()
 
-    if passed == total and cls_rc == 0 and adv_rc == 0 and pkg_rc == 0 and enum_rc == 0:
+    print()
+    print(
+        f"Running {len(WRAPPER_CASES)} script-wrapper cases "
+        "(_next_real_bin + scripts_bin_refs end-to-end)"
+    )
+    print()
+    wrap_rc = run_wrapper_cases()
+
+    if (
+        passed == total
+        and cls_rc == 0
+        and adv_rc == 0
+        and pkg_rc == 0
+        and enum_rc == 0
+        and wrap_rc == 0
+    ):
         return 0
     return 1
 
