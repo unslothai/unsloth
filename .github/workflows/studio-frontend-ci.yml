@@ -15,6 +15,8 @@ on:
   pull_request:
     paths:
       - 'studio/frontend/**'
+      - 'scripts/check_frontend_dep_removal.py'
+      - 'tests/studio/test_frontend_dep_removal.py'
       - '.github/workflows/studio-frontend-ci.yml'
   push:
     branches: [main, pip]
@@ -57,8 +59,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       # Run the structural lockfile scan BEFORE npm ci. A compromised
       # tarball runs its `prepare` / `postinstall` during `npm ci`,
@@ -85,6 +85,26 @@ jobs:
             git status -- studio/frontend
             exit 1
           fi
+
+      # Catch the common foot-gun: a dep dropped from package.json that is
+      # still imported somewhere. The script walks the lockfile dep graph
+      # from the new top-level deps and only counts top-level node_modules
+      # paths as valid resolution targets for bare src/ imports.
+      #
+      # actions/checkout uses fetch-depth: 1 by default, so the base branch
+      # is not available locally. Fetch the single base commit with an
+      # explicit refspec so origin/<base> is reliably created (a bare
+      # `git fetch origin <ref>` only updates FETCH_HEAD in some configs).
+      - name: Dependency removal safety check
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ github.workspace }}
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          python3 scripts/check_frontend_dep_removal.py \
+            --base "origin/${{ github.base_ref }}" \
+            --enumerate-dead
+          python3 tests/studio/test_frontend_dep_removal.py
 
       - name: Typecheck
         run: npm run typecheck
