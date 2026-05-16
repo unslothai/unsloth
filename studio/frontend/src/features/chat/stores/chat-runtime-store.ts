@@ -229,6 +229,24 @@ type ChatRuntimeStore = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   supportsTools: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * web_search tool (OpenAI's /v1/responses today). Distinct from
+   * `supportsTools` — that flag governs the local tool runtime (Code,
+   * python sandbox, our DuckDuckGo web_search). This one only enables
+   * the chat composer's Search pill for external models. Local models
+   * keep `supportsTools` only.
+   */
+  supportsBuiltinWebSearch: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * code-execution tool (Anthropic's `code_execution_20250825` on the
+   * Claude 4.x family). Distinct from `supportsTools` for the same
+   * reason as `supportsBuiltinWebSearch`: external providers don't
+   * give us a local tool runtime, but Anthropic dispatches code
+   * execution server-side. Read by both composers' Code pill gate.
+   */
+  supportsBuiltinCodeExecution: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   toolStatus: string | null;
@@ -320,6 +338,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   supportsPreserveThinking: false,
   preserveThinking: loadBool(PRESERVE_THINKING_KEY, false),
   supportsTools: false,
+  supportsBuiltinWebSearch: false,
+  supportsBuiltinCodeExecution: false,
   toolsEnabled: false,
   codeToolsEnabled: false,
   toolStatus: null,
@@ -430,6 +450,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsPreserveThinking: false,
       supportsTools: false,
+      supportsBuiltinWebSearch: false,
+      supportsBuiltinCodeExecution: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       toolStatus: null,

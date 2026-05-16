@@ -4,6 +4,7 @@
 import { cn } from "@/lib/utils";
 import { DashboardSquare01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isCustomProviderType } from "./external-providers";
 
 /**
  * Registry logos live at `public/provider-logos/{provider_type}.{ext}` where `provider_type`
@@ -19,6 +20,9 @@ const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   kimi: "jpg",
   qwen: "png",
   openrouter: "svg",
+  vllm: "svg",
+  ollama: "svg",
+  llama_cpp: "svg",
 };
 
 export function apiProviderLogoSrc(
@@ -42,7 +46,8 @@ interface ApiProviderLogoProps {
  * OpenAI's asset is black-on-transparent; it is inverted in dark mode for contrast.
  */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
-  if (providerType === "custom") {
+  const src = apiProviderLogoSrc(providerType);
+  if (!src && isCustomProviderType(providerType)) {
     return (
       <span title={title} aria-hidden className="inline-flex shrink-0">
         <HugeiconsIcon icon={DashboardSquare01Icon} className={cn("shrink-0", className)} />
@@ -50,7 +55,6 @@ export function ApiProviderLogo({ providerType, className, title }: ApiProviderL
     );
   }
 
-  const src = apiProviderLogoSrc(providerType);
   if (!src) return null;
   return (
     <img

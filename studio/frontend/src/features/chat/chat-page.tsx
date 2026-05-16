@@ -50,6 +50,8 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
@@ -549,6 +551,7 @@ export function ChatPage(): ReactElement {
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
 
   useEffect(() => {
     const threadId = search.thread;
@@ -628,14 +631,16 @@ export function ChatPage(): ReactElement {
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
   const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const activeExternalProviderType = useMemo(() => {
+  const activeExternalProvider = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
-    const provider = externalProviders.find(
-      (p) => p.id === selection.providerId,
+    return (
+      externalProviders.find(
+        (p) => p.id === selection.providerId,
+      ) ?? null
     );
-    return provider?.providerType ?? null;
   }, [externalProviders, inferenceParams.checkpoint]);
+  const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
@@ -670,6 +675,7 @@ export function ChatPage(): ReactElement {
     const reasoningCaps = getExternalReasoningCapabilities(
       provider?.providerType,
       selection.modelId,
+      { isReasoningProvider: provider?.isReasoningModel === true },
     );
     const state = useChatRuntimeStore.getState();
     const preferredEffort = state.reasoningEffort;
@@ -678,9 +684,61 @@ export function ChatPage(): ReactElement {
       preferredEffort,
       effortLevels,
     );
+    // Per-provider default effort. Anthropic gets the highest available
+    // level (xhigh on 4.6/4.7, high on 4.5) since Claude's adaptive
+    // thinking adjusts cost per turn — sitting at the top of the dial
+    // gives users the strongest answers and the model can still skip
+    // thinking when the turn is trivial. OpenAI gets "high" by default
+    // — the gpt-5.x reasoning models accept high across the board and
+    // it's the right cost/quality sweet spot for Responses-API tools
+    // (web search included). Everyone else gets "medium" as a balanced
+    // default. Users can pick another level via the Think dropdown.
+    const isAnthropic = provider?.providerType === "anthropic";
+    const isOpenAI = provider?.providerType === "openai";
+    const anthropicTopEffort = effortLevels.includes("xhigh")
+      ? "xhigh"
+      : effortLevels.includes("high")
+        ? "high"
+        : clampedEffort;
+    const openaiDefaultEffort = effortLevels.includes("high")
+      ? "high"
+      : effortLevels.includes("medium")
+        ? "medium"
+        : clampedEffort;
     const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? clampedEffort
+      ? isAnthropic
+        ? anthropicTopEffort
+        : isOpenAI
+          ? openaiDefaultEffort
+          : effortLevels.includes("medium")
+            ? "medium"
+            : clampedEffort
       : state.reasoningEffort;
+    const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+      provider?.providerType,
+    );
+    const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+      provider?.providerType,
+      selection.modelId,
+      provider?.baseUrl,
+    );
+    // Kimi's k2.6/k2.5 default to thinking enabled on the server side
+    // (per https://platform.kimi.ai/docs/models). Mirror that default
+    // in the UI so the Think pill comes up clicked when the user picks
+    // a Kimi model. The Search pill stays off by default; the mutual-
+    // exclusion handlers in the composer flip the two when needed.
+    const isKimi = provider?.providerType === "kimi";
+    // Web search is on by default for the two providers we trust most
+    // for it: Anthropic (web_search_20250305 server tool, structured
+    // citations) and OpenAI (/v1/responses web_search, structured
+    // citations). Other providers stay off-by-default — OpenRouter's
+    // plugins shape and Kimi's $web_search builtin still work when the
+    // user opts in via the pill, but they're a notch less reliable so
+    // we don't pre-enable them.
+    const searchOnByDefault =
+      supportsBuiltinWebSearch &&
+      (provider?.providerType === "anthropic" ||
+        provider?.providerType === "openai");
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -690,10 +748,24 @@ export function ChatPage(): ReactElement {
       reasoningEffort: nextReasoningEffort,
       reasoningEnabled: reasoningCaps.supportsReasoning
         ? reasoningCaps.supportsReasoningOff
-          ? state.reasoningEnabled
+          ? isKimi
+            ? true
+            : state.reasoningEnabled
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
+      // External models never give us a local tool runtime (no
+      // python sandbox), so `supportsTools` must be false. The two
+      // `supportsBuiltin*` flags pick up the slack for providers that
+      // run the tool server-side: `supportsBuiltinWebSearch` lights
+      // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
+      // `supportsBuiltinCodeExecution` lights up the Code pill
+      // (Anthropic Claude 4.x only, today).
+      supportsTools: false,
+      supportsBuiltinWebSearch,
+      supportsBuiltinCodeExecution,
+      toolsEnabled: searchOnByDefault,
+      codeToolsEnabled: false,
     });
   }, [externalProviders, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -803,6 +875,10 @@ export function ChatPage(): ReactElement {
         const reasoningCaps = getExternalReasoningCapabilities(
           selectedProvider?.providerType,
           selectedExternal?.modelId,
+          {
+            isReasoningProvider:
+              selectedProvider?.isReasoningModel === true,
+          },
         );
         const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
@@ -810,8 +886,29 @@ export function ChatPage(): ReactElement {
           preferredEffort,
           effortLevels,
         );
+        // Same per-provider default policy as the useEffect path above:
+        // Anthropic picks the highest available level, OpenAI picks
+        // "high", everyone else picks "medium".
+        const isAnthropic = selectedProvider?.providerType === "anthropic";
+        const isOpenAI = selectedProvider?.providerType === "openai";
+        const anthropicTopEffort = effortLevels.includes("xhigh")
+          ? "xhigh"
+          : effortLevels.includes("high")
+            ? "high"
+            : clampedEffort;
+        const openaiDefaultEffort = effortLevels.includes("high")
+          ? "high"
+          : effortLevels.includes("medium")
+            ? "medium"
+            : clampedEffort;
         const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? clampedEffort
+          ? isAnthropic
+            ? anthropicTopEffort
+            : isOpenAI
+              ? openaiDefaultEffort
+              : effortLevels.includes("medium")
+                ? "medium"
+                : clampedEffort
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless the
         // user is staying on openrouter/free — otherwise the chip would
@@ -823,6 +920,25 @@ export function ChatPage(): ReactElement {
           ...store.params,
           checkpoint: value,
         });
+        const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+          selectedProvider?.providerType,
+        );
+        const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
+        );
+        // See sibling useEffect above: Kimi's k2.x default to thinking
+        // enabled, so the Think pill comes up clicked. Search pill stays
+        // off by default; mutual exclusion flips them via the composer.
+        const isKimi = selectedProvider?.providerType === "kimi";
+        // Mirror of sibling useEffect: Anthropic and OpenAI get Search
+        // on-by-default since their server tools emit structured
+        // citations end-to-end. OpenRouter and Kimi stay off-by-default.
+        const searchOnByDefault =
+          supportsBuiltinWebSearch &&
+          (selectedProvider?.providerType === "anthropic" ||
+            selectedProvider?.providerType === "openai");
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -837,10 +953,23 @@ export function ChatPage(): ReactElement {
           reasoningEffort: nextReasoningEffort,
           reasoningEnabled: reasoningCaps.supportsReasoning
             ? reasoningCaps.supportsReasoningOff
-              ? store.reasoningEnabled
+              ? isKimi
+                ? true
+                : store.reasoningEnabled
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
+          // External models have no local tool runtime → supportsTools
+          // stays false. The two supportsBuiltin* flags carry the
+          // server-side capability info for each pill:
+          //   - Search → providerSupportsBuiltinWebSearch
+          //   - Code   → providerSupportsBuiltinCodeExecution
+          //              (Anthropic Claude 4.x only, today)
+          supportsTools: false,
+          supportsBuiltinWebSearch,
+          supportsBuiltinCodeExecution,
+          toolsEnabled: searchOnByDefault,
+          codeToolsEnabled: false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
         return;
@@ -1321,6 +1450,14 @@ export function ChatPage(): ReactElement {
         onParamsChange={setInferenceParams}
         isExternalModel={isExternalModel}
         providerCapabilities={activeProviderCapabilities}
+        activeExternalProvider={activeExternalProvider}
+        onExternalProviderChange={(updatedProvider) => {
+          setExternalProviders(
+            externalProviders.map((provider) =>
+              provider.id === updatedProvider.id ? updatedProvider : provider,
+            ),
+          );
+        }}
         externalProviderType={activeExternalProviderType}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();

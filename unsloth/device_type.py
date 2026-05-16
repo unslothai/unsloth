@@ -52,6 +52,13 @@ def is_hip():
 
 @functools.cache
 def get_device_type():
+    # Test-only CPU fallback. Short-circuits the detection chain so the
+    # rest of the function -- and every DEVICE_TYPE == "cuda" branch in
+    # the codebase -- behaves identically to a real CUDA host. The env
+    # var is read exactly once per process because get_device_type is
+    # @functools.cache'd, so production hosts pay no runtime cost.
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return "cuda"
     if _IS_MLX:
         return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():

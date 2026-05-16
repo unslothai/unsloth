@@ -15,7 +15,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -23,7 +25,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowLeft02Icon,
-  DashboardSquare01Icon,
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
@@ -47,9 +48,19 @@ import {
 } from "./api/providers-api";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
+  CUSTOM_BACKEND_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_PRESETS,
+  customProviderBaseUrlPlaceholder,
+  customProviderDisplayName,
+  customProviderModelIdsPlaceholder,
   getExternalProviderApiKey,
+  isCustomProviderType,
+  LEGACY_CUSTOM_PROVIDER_TYPE,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
+  supportsProviderPromptCaching,
+  supportsProviderReasoningToggle,
+  toExternalBackendProviderType,
 } from "./external-providers";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
@@ -57,12 +68,11 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
 ];
 const PROVIDER_FORM_DURATION = 0.2;
-const CUSTOM_PROVIDER_TYPE = "custom";
-const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found, please make sure API key is added and valid for this provider.";
 const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
+const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
 const OPENROUTER_EXCLUDED_MODELS = new Set([
   "google/chirp-3",
   "kwaivgi/kling-v3.0-pro",
@@ -82,11 +92,18 @@ function resolveUiProviderTypeFromConfig(
   registryRows: ProviderRegistryEntry[],
   existingProviderType: string | undefined,
 ): string {
-  if (existingProviderType === CUSTOM_PROVIDER_TYPE) {
-    return CUSTOM_PROVIDER_TYPE;
+  if (existingProviderType && isCustomProviderType(existingProviderType)) {
+    return existingProviderType;
   }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
+  }
+  const displayName = (configDisplayName ?? "").trim().toLowerCase();
+  const matchingCustomPreset = CUSTOM_PROVIDER_PRESETS.find(
+    (preset) => preset.displayName.toLowerCase() === displayName,
+  );
+  if (matchingCustomPreset) {
+    return matchingCustomPreset.providerType;
   }
   const openAiRegistry = registryRows.find(
     (entry) => entry.provider_type === CUSTOM_BACKEND_PROVIDER_TYPE,
@@ -94,23 +111,16 @@ function resolveUiProviderTypeFromConfig(
   if (!openAiRegistry) {
     return configProviderType;
   }
-  const displayName = (configDisplayName ?? "").trim().toLowerCase();
   const openAiDisplayName = openAiRegistry.display_name.trim().toLowerCase();
   if (displayName.length > 0 && displayName !== openAiDisplayName) {
-    return CUSTOM_PROVIDER_TYPE;
+    return LEGACY_CUSTOM_PROVIDER_TYPE;
   }
   const configUrl = normalizeUrl(configBaseUrl ?? "");
   const defaultUrl = normalizeUrl(openAiRegistry.base_url ?? "");
   if (configUrl.length > 0 && configUrl !== defaultUrl) {
-    return CUSTOM_PROVIDER_TYPE;
+    return LEGACY_CUSTOM_PROVIDER_TYPE;
   }
   return configProviderType;
-}
-
-function toBackendProviderType(uiProviderType: string): string {
-  return uiProviderType === CUSTOM_PROVIDER_TYPE
-    ? CUSTOM_BACKEND_PROVIDER_TYPE
-    : uiProviderType;
 }
 
 function parseManualModelIds(text: string): string[] {
@@ -175,22 +185,27 @@ export function ChatProvidersSettings({
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState("Custom");
+  const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
-  const isCustomProvider = providerType === CUSTOM_PROVIDER_TYPE;
+  const isCustomProvider = isCustomProviderType(providerType);
+  // Ollama runs locally and does not require an API key. Hide the input
+  // entirely rather than just marking it optional so users aren't prompted
+  // for a credential the provider never uses.
+  const isOllamaProvider = providerType === "ollama";
+  const showApiKeyField = !isOllamaProvider;
+  const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
-  const hasCustomInRegistry = registryByType.has(CUSTOM_PROVIDER_TYPE);
-
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
   const isManualModelList = isCustomProvider || isCuratedModelList;
 
   const modelsPanelKey = isCustomProvider
-    ? "custom"
+    ? providerType || "custom"
     : isCuratedModelList
       ? "curated"
       : "remote";
@@ -225,14 +240,22 @@ export function ChatProvidersSettings({
   useEffect(() => {
     if (!providerType || editingProviderId) return;
     const entry = registryByType.get(providerType);
-    if (!entry) return;
-    // Seed the registry's default_models for every provider — curated and
-    // remote alike. For remote-mode providers, loadModels() will replace
-    // this with the union of defaults + the live /models response once the
-    // user clicks "Load Models"; until then (or if the call fails — e.g.
-    // decryption issues during key rotation) the seeded list ensures
-    // curated picks like claude-haiku-4-5 are always reachable.
-    setAvailableModels([...entry.default_models]);
+    if (!entry) {
+      if (isCustomProviderType(providerType)) {
+        setCustomProviderName(customProviderDisplayName(providerType));
+      }
+      return;
+    }
+    // Seed default_models only when the catalog is not fetched live:
+    // curated providers (catalog too large to enumerate, defaults are
+    // the suggestion shortlist) and Ollama (local, no API key — local
+    // /models stands in). Remote-mode cloud providers stay empty until
+    // the user clicks "Load available models" with a key, since
+    // different API tiers expose different catalogs and we don't want
+    // to advertise models the user can't actually call.
+    const seedDefaults =
+      entry.model_list_mode === "curated" || providerType === "ollama";
+    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
@@ -297,6 +320,12 @@ export function ChatProvidersSettings({
               baseUrl: config.base_url ?? "",
               models: existingModels,
               availableModels: existing?.availableModels ?? [],
+              enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
+                ? (existing?.enablePromptCaching ?? true)
+                : undefined,
+              isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
+                ? existing?.isReasoningModel === true
+                : undefined,
               createdAt: existing?.createdAt ?? createdAt,
               updatedAt,
             };
@@ -328,15 +357,19 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
-    setCustomProviderName("Custom");
+    setCustomProviderName(customProviderDisplayName(providerType));
+    setIsReasoningModel(false);
   }
 
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry) {
-      // Keep first-open behavior consistent with provider re-selection.
-      setAvailableModels([...entry.default_models]);
+      const seedDefaults =
+        entry.model_list_mode === "curated" || providerType === "ollama";
+      if (seedDefaults) {
+        setAvailableModels([...entry.default_models]);
+      }
     }
     setPage("form");
   }
@@ -384,7 +417,7 @@ export function ChatProvidersSettings({
     const trimmed = input.trim();
     if (!trimmed) {
       if (required) {
-        throw new Error("Base URL is required for custom providers.");
+        throw new Error("Base URL is required for this connection.");
       }
       return null;
     }
@@ -397,7 +430,7 @@ export function ChatProvidersSettings({
       return;
     }
     if (isCustomProvider) {
-      toast.info("Custom providers use manual model IDs.");
+      toast.info("This connection uses manual model IDs.");
       return;
     }
     if (isCuratedModelList) {
@@ -458,10 +491,10 @@ export function ChatProvidersSettings({
       toast.error("Choose a provider first.");
       return;
     }
-    const backendProviderType = toBackendProviderType(providerType);
+    const backendProviderType = toExternalBackendProviderType(providerType);
     const selectedRegistryEntry = registryByType.get(backendProviderType);
     const displayName = isCustomProvider
-      ? customProviderName.trim() || "Custom"
+      ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
     if (!isCustomProvider && !apiKey.trim()) {
       toast.error("API key is required.");
@@ -511,17 +544,21 @@ export function ChatProvidersSettings({
       const updatedAt = Number.isFinite(Date.parse(created.updated_at))
         ? Date.parse(created.updated_at)
         : Date.now();
+      const uiProviderType = isCustomProvider
+        ? providerType
+        : created.provider_type;
       const provider: ExternalProviderConfig = {
         id: created.id,
-        providerType: isCustomProvider
-          ? CUSTOM_PROVIDER_TYPE
-          : created.provider_type,
+        providerType: uiProviderType,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
         availableModels: manualModels
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
+          ? isReasoningModel
+          : undefined,
         createdAt,
         updatedAt,
       };
@@ -553,7 +590,7 @@ export function ChatProvidersSettings({
       return;
     }
     const isEditingCustomProvider =
-      existing.providerType === CUSTOM_PROVIDER_TYPE;
+      isCustomProviderType(existing.providerType);
     if (!isEditingCustomProvider && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
@@ -597,7 +634,8 @@ export function ChatProvidersSettings({
       );
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
-          ? customProviderName.trim() || "Custom"
+          ? customProviderName.trim() ||
+            customProviderDisplayName(existing.providerType)
           : existing.name,
         baseUrl,
       });
@@ -620,6 +658,11 @@ export function ChatProvidersSettings({
                 availableModels: manualModels
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
+                isReasoningModel: supportsProviderReasoningToggle(
+                  existing.providerType,
+                )
+                  ? isReasoningModel
+                  : undefined,
                 updatedAt,
               }
             : provider,
@@ -640,12 +683,19 @@ export function ChatProvidersSettings({
     setEditingProviderId(provider.id);
     setPage("form");
     setProviderType(provider.providerType);
-    setCustomProviderName(provider.name || "Custom");
+    setCustomProviderName(
+      provider.name || customProviderDisplayName(provider.providerType),
+    );
     setApiKey(getExternalProviderApiKey(provider.id));
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setModelSearchQuery("");
-    if (provider.providerType === CUSTOM_PROVIDER_TYPE) {
+    setIsReasoningModel(
+      supportsProviderReasoningToggle(provider.providerType)
+        ? provider.isReasoningModel === true
+        : false,
+    );
+    if (isCustomProviderType(provider.providerType)) {
       setAvailableModels([]);
       setSelectedModelIds([]);
       setManualModelIds(provider.models.join("\n"));
@@ -695,8 +745,11 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    if (!savedKey) {
-      if (provider.providerType === CUSTOM_PROVIDER_TYPE) {
+    // Ollama runs locally and never requires a key — fall through to the
+    // real connection check instead of prompting for credentials the form
+    // no longer exposes.
+    if (!savedKey && provider.providerType !== "ollama") {
+      if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
         return;
@@ -707,7 +760,9 @@ export function ChatProvidersSettings({
     }
     try {
       const result = await testProviderConnection({
-        providerType: toBackendProviderType(provider.providerType),
+        providerType:
+          toExternalBackendProviderType(provider.providerType) ??
+          provider.providerType,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
       });
@@ -715,7 +770,7 @@ export function ChatProvidersSettings({
         toast.success(result.message);
       } else {
         if (
-          provider.providerType === CUSTOM_PROVIDER_TYPE &&
+          isCustomProviderType(provider.providerType) &&
           result.message.includes("Illegal header value b'Bearer '")
         ) {
           toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -726,7 +781,7 @@ export function ChatProvidersSettings({
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       if (
-        provider.providerType === CUSTOM_PROVIDER_TYPE &&
+        isCustomProviderType(provider.providerType) &&
         message.includes("Illegal header value b'Bearer '")
       ) {
         toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -753,7 +808,7 @@ export function ChatProvidersSettings({
           </Button>
           <div className="flex min-w-0 items-center gap-2 leading-none">
             <span className="text-xs font-medium text-muted-foreground">
-              Cloud
+              Connections
             </span>
             <span className="size-1 rounded-full bg-muted-foreground/35" />
             <span className="truncate text-xs font-medium text-muted-foreground">
@@ -774,7 +829,7 @@ export function ChatProvidersSettings({
                     Provider
                   </Label>
                   <p className="text-xs leading-snug text-muted-foreground">
-                    Supported registry or Custom.
+                    Supported registry or local OpenAI-compatible connection.
                   </p>
                 </div>
                 <Select
@@ -786,6 +841,9 @@ export function ChatProvidersSettings({
                     setSelectedModelIds([]);
                     setManualModelIds("");
                     setModelSearchQuery("");
+                    if (isCustomProviderType(value)) {
+                      setCustomProviderName(customProviderDisplayName(value));
+                    }
                   }}
                 >
                   <SelectTrigger
@@ -796,72 +854,88 @@ export function ChatProvidersSettings({
                     <SelectValue placeholder="Choose a provider" />
                   </SelectTrigger>
                   <SelectContent>
-                    {registry.map((entry) => (
-                      <SelectItem
-                        key={entry.provider_type}
-                        value={entry.provider_type}
-                      >
-                        <span className="flex items-center gap-2">
-                          <ApiProviderLogo
-                            providerType={entry.provider_type}
-                            className="size-4"
-                            title={entry.display_name}
-                          />
-                          {entry.display_name}
-                        </span>
-                      </SelectItem>
-                    ))}
-                    {hasCustomInRegistry ? null : (
-                      <SelectItem value={CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex items-center gap-2">
-                          <HugeiconsIcon
-                            icon={DashboardSquare01Icon}
-                            className="size-4"
-                          />
-                          Custom
-                        </span>
-                      </SelectItem>
-                    )}
+                    <SelectGroup>
+                      {CUSTOM_PROVIDER_PRESETS.map((preset) => (
+                        <SelectItem
+                          key={preset.providerType}
+                          value={preset.providerType}
+                        >
+                          <span className="flex items-center gap-2">
+                            <ApiProviderLogo
+                              providerType={preset.providerType}
+                              className="size-4"
+                              title={preset.displayName}
+                            />
+                            {preset.displayName}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      {registry
+                        .filter(
+                          (entry) =>
+                            !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
+                        )
+                        .map((entry) => (
+                          <SelectItem
+                            key={entry.provider_type}
+                            value={entry.provider_type}
+                          >
+                            <span className="flex items-center gap-2">
+                              <ApiProviderLogo
+                                providerType={entry.provider_type}
+                                className="size-4"
+                                title={entry.display_name}
+                              />
+                              {entry.display_name}
+                            </span>
+                          </SelectItem>
+                        ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
 
-              <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
-                <div className="flex min-w-0 flex-col gap-0.5">
-                  <Label
-                    htmlFor="provider-api-key"
-                    className="text-sm font-medium"
-                  >
-                    API key {isCustomProvider ? "(optional)" : ""}
-                  </Label>
-                  <p className="text-xs leading-snug text-muted-foreground">
-                    Stored locally.
-                  </p>
+              {showApiKeyField ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-api-key"
+                      className="text-sm font-medium"
+                    >
+                      API key {isCustomProvider ? "(optional)" : ""}
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Stored locally.
+                    </p>
+                  </div>
+                  <div className="relative min-w-0">
+                    <Input
+                      id="provider-api-key"
+                      type={showApiKey ? "text" : "password"}
+                      value={apiKey}
+                      onChange={(event) => setApiKey(event.target.value)}
+                      placeholder="Enter API key"
+                      className="h-9 pr-9 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((visible) => !visible)}
+                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                      aria-pressed={showApiKey}
+                    >
+                      {showApiKey ? (
+                        <Eye className="size-3.5" />
+                      ) : (
+                        <EyeOff className="size-3.5" />
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <div className="relative min-w-0">
-                  <Input
-                    id="provider-api-key"
-                    type={showApiKey ? "text" : "password"}
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    placeholder="Enter API key"
-                    className="h-9 pr-9 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((visible) => !visible)}
-                    className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label={showApiKey ? "Hide API key" : "Show API key"}
-                    aria-pressed={showApiKey}
-                  >
-                    {showApiKey ? (
-                      <Eye className="size-3.5" />
-                    ) : (
-                      <EyeOff className="size-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
+              ) : null}
 
               {isCustomProvider ? (
                 <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
@@ -902,9 +976,33 @@ export function ChatProvidersSettings({
                     type="text"
                     value={baseUrlDraft}
                     onChange={(event) => setBaseUrlDraft(event.target.value)}
-                    placeholder="https://my-vllm-server.com/v1"
+                    placeholder={customProviderBaseUrlPlaceholder(providerType)}
                     className="h-9 text-sm"
                   />
+                </div>
+              ) : null}
+
+              {showReasoningToggle ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <Label
+                    htmlFor="provider-is-reasoning"
+                    className="text-sm font-medium"
+                  >
+                    Reasoning model
+                  </Label>
+                  <label
+                    htmlFor="provider-is-reasoning"
+                    className="flex cursor-pointer items-center gap-2 text-sm"
+                  >
+                    <Checkbox
+                      id="provider-is-reasoning"
+                      checked={isReasoningModel}
+                      onCheckedChange={(checked) =>
+                        setIsReasoningModel(checked === true)
+                      }
+                    />
+                    This server runs a reasoning model
+                  </label>
                 </div>
               ) : null}
             </div>
@@ -952,7 +1050,7 @@ export function ChatProvidersSettings({
                     }
                     title={
                       isCustomProvider
-                        ? "Custom providers use manual model IDs"
+                        ? "This connection uses manual model IDs"
                         : isCuratedModelList
                           ? "Full catalog is not fetched for this provider"
                           : undefined
@@ -986,7 +1084,7 @@ export function ChatProvidersSettings({
                         onChange={(event) =>
                           setManualModelIds(event.target.value)
                         }
-                        placeholder={"gpt-4o-mini\nQwen/Qwen3-14B"}
+                        placeholder={customProviderModelIdsPlaceholder(providerType)}
                         rows={5}
                         className="min-h-[100px] resize-y font-mono text-sm"
                       />
@@ -1197,9 +1295,9 @@ export function ChatProvidersSettings({
     <div className="flex min-h-0 flex-col gap-6">
       <header className="flex flex-col gap-1 pr-8">
         <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="font-heading text-lg font-semibold">Cloud</h1>
+          <h1 className="font-heading text-lg font-semibold">Connections</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage cloud provider connections for chat through the Studio proxy.
+            Manage model provider connections for chat through the Studio proxy.
           </p>
         </div>
       </header>
@@ -1237,7 +1335,8 @@ export function ChatProvidersSettings({
                 const detail =
                   provider.baseUrl || registryEntry?.base_url || "";
                 const providerLabel =
-                  registryEntry?.display_name ?? provider.providerType;
+                  registryEntry?.display_name ??
+                  customProviderDisplayName(provider.providerType);
                 const modelSummary = formatModelSummary(provider.models);
                 return (
                   <div
@@ -1346,9 +1445,9 @@ export function ChatProvidersDialog({
         className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[44rem]"
       >
         <DialogHeader className="sr-only">
-          <DialogTitle>Cloud</DialogTitle>
+          <DialogTitle>Connections</DialogTitle>
           <DialogDescription>
-            Manage external model providers for chat.
+            Manage external model connections for chat.
           </DialogDescription>
         </DialogHeader>
         <ChatProvidersSettings

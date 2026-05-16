@@ -14,8 +14,152 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /** Whether to ask supported hosted providers to use prompt caching. */
+  enablePromptCaching?: boolean;
+  /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
+  isReasoningModel?: boolean;
+  /**
+   * Default idle-timeout (in minutes) for newly created OpenAI shell
+   * containers. Pre-fills the "Create container" dialog and is the
+   * TTL the auto-create-per-thread path POSTs to /v1/containers with.
+   * OpenAI's hard default is 20. Only meaningful for OpenAI cloud.
+   */
+  openaiContainerTtlMinutes?: number;
   createdAt: number;
   updatedAt: number;
+}
+
+const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
+
+export function supportsProviderPromptCaching(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType != null && PROMPT_CACHING_PROVIDER_TYPES.has(providerType);
+}
+
+// Provider types that expose the connection-level "reasoning model"
+// toggle. vLLM's OpenAI-compat endpoint doesn't advertise this per model.
+const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
+
+export function supportsProviderReasoningToggle(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
+  );
+}
+
+export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
+export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
+
+export const CUSTOM_PROVIDER_PRESETS = [
+  {
+    providerType: "llama_cpp",
+    displayName: "llama.cpp",
+    baseUrlPlaceholder: "http://localhost:8080/v1",
+    modelIdsPlaceholder: "gpt-oss-20b\nqwen3-14b",
+  },
+  {
+    providerType: "vllm",
+    displayName: "vLLM",
+    baseUrlPlaceholder: "https://my-vllm-server.com/v1",
+    modelIdsPlaceholder: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
+  },
+  {
+    providerType: "ollama",
+    displayName: "Ollama",
+    baseUrlPlaceholder: "http://localhost:11434/v1",
+    modelIdsPlaceholder: "gpt-oss:20b\nqwen3:14b",
+  },
+] as const;
+
+const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: "Custom",
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_PRESETS.map((preset) => [
+      preset.providerType,
+      preset.displayName,
+    ]),
+  ),
+};
+
+const CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS: Record<string, string> = {
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: "https://my-vllm-server.com/v1",
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_PRESETS.map((preset) => [
+      preset.providerType,
+      preset.baseUrlPlaceholder,
+    ]),
+  ),
+};
+
+const CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS: Record<string, string> = {
+  [LEGACY_CUSTOM_PROVIDER_TYPE]: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_PRESETS.map((preset) => [
+      preset.providerType,
+      preset.modelIdsPlaceholder,
+    ]),
+  ),
+};
+
+export function isCustomProviderType(
+  providerType: string | null | undefined,
+): boolean {
+  if (!providerType) return false;
+  return providerType in CUSTOM_PROVIDER_LABELS;
+}
+
+export function customProviderDisplayName(
+  providerType: string | null | undefined,
+): string {
+  if (!providerType) return "Custom";
+  return CUSTOM_PROVIDER_LABELS[providerType] ?? providerType;
+}
+
+export function customProviderBaseUrlPlaceholder(
+  providerType: string | null | undefined,
+): string {
+  if (!providerType) {
+    return CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE];
+  }
+  return (
+    CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[providerType] ??
+    CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE]
+  );
+}
+
+export function customProviderModelIdsPlaceholder(
+  providerType: string | null | undefined,
+): string {
+  if (!providerType) {
+    return CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE];
+  }
+  return (
+    CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[providerType] ??
+    CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE]
+  );
+}
+
+export function toExternalBackendProviderType(providerType: string): string;
+export function toExternalBackendProviderType(
+  providerType: null | undefined,
+): undefined;
+export function toExternalBackendProviderType(
+  providerType: string | null | undefined,
+): string | undefined;
+export function toExternalBackendProviderType(
+  providerType: string | null | undefined,
+): string | undefined {
+  if (!providerType) return undefined;
+  // vLLM's /v1/responses applies the loaded model's chat template, which
+  // 400s on strict-alternation templates (e.g. Gemma 3). Pass the actual
+  // type through so the backend routes vLLM to /v1/chat/completions instead
+  // of the OpenAI Responses path used for gpt-5.x.
+  if (providerType === "vllm") return "vllm";
+  return isCustomProviderType(providerType)
+    ? CUSTOM_BACKEND_PROVIDER_TYPE
+    : providerType;
 }
 
 const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
@@ -71,9 +215,10 @@ function mapLegacyPresetToProviderType(presetId: string): string {
 }
 
 function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
+  const providerType = raw.providerType.trim();
   return {
     ...raw,
-    providerType: raw.providerType.trim(),
+    providerType,
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
     models: raw.models
@@ -82,6 +227,18 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    enablePromptCaching: supportsProviderPromptCaching(providerType)
+      ? raw.enablePromptCaching !== false
+      : undefined,
+    isReasoningModel: supportsProviderReasoningToggle(providerType)
+      ? raw.isReasoningModel === true
+      : undefined,
+    openaiContainerTtlMinutes:
+      providerType === "openai" &&
+      typeof raw.openaiContainerTtlMinutes === "number" &&
+      raw.openaiContainerTtlMinutes >= 1
+        ? Math.min(raw.openaiContainerTtlMinutes, 20)
+        : undefined,
   };
 }
 

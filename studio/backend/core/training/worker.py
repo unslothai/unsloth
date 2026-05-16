@@ -773,9 +773,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    # MLX: value-clip grads to [-5, 5]; norm clipping disabled for compile-friendliness.
+    # MLX: per-element clip to [-1, 1]; norm clip disabled (it needs a
+    # global reduction that breaks MLX's eager pipeline). 1.0 (not 5.0):
+    # |g_i| > 5 rarely fires, so the historical 5.0 was effectively no-op.
     max_grad_norm = 0.0
-    max_grad_value = 5.0  # TODO: expose MLX grad-clip in Studio UI for power users
+    max_grad_value = 1.0  # TODO: expose MLX grad-clip in Studio UI for power users
 
     trainer = MLXTrainer(
         model = model,

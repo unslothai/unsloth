@@ -593,6 +593,92 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
+    enable_prompt_caching: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
+            "attaches cache_control={type:ephemeral} to the system block so the "
+            "static prefix is reused across turns. On OpenAI cloud, caching is "
+            "automatic for prompts >=1024 tokens and this flag is informational. "
+            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
+            "vllm, local, etc.). Treated as enabled when omitted."
+        ),
+    )
+    openai_code_exec_container_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] OpenAI shell-tool container id from the prior response "
+            "in the same chat thread. When set and `code_execution` is in "
+            "`enabled_tools`, the next /v1/responses call uses "
+            "environment.type='container_reference' so filesystem state "
+            "persists across turns. Unset → environment.type='container_auto' "
+            "and OpenAI creates a fresh container. Only meaningful for the "
+            "OpenAI cloud + gpt-5.5 family path; ignored otherwise."
+        ),
+    )
+
+
+# ── OpenAI shell-tool container management ─────────────────────
+
+
+class OpenAIContainerRequest(BaseModel):
+    """
+    Shared body for the three OpenAI container endpoints (list / create
+    / delete). Carries the encrypted API key + base URL so the route
+    handler can decrypt it and proxy to the user's OpenAI account.
+    Same pattern as the inference proxy endpoints — keeps the key off
+    persistent storage on the backend.
+    """
+
+    encrypted_api_key: str = Field(
+        ...,
+        description = "[x-unsloth] RSA-encrypted, base64-encoded OpenAI API key.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] OpenAI base URL. Only api.openai.com is supported; non-cloud bases are rejected with 400.",
+    )
+
+
+class CreateOpenAIContainerBody(OpenAIContainerRequest):
+    name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 256,
+        description = "Human-readable container name. Surfaces in the picker UI.",
+    )
+    ttl_minutes: int = Field(
+        20,
+        ge = 1,
+        le = 20,
+        description = (
+            "Idle-timeout TTL the new container will inherit (anchor="
+            "last_active_at). OpenAI hard-caps this at 20 minutes and "
+            "rejects larger values with integer_above_max_value."
+        ),
+    )
+
+
+class DeleteOpenAIContainerBody(OpenAIContainerRequest):
+    container_id: str = Field(
+        ...,
+        description = "OpenAI container id (cntr_...) to delete.",
+    )
+
+
+class OpenAIContainerSummary(BaseModel):
+    """One row from GET /v1/containers, reshaped for the UI."""
+
+    id: str
+    name: Optional[str] = None
+    created_at: Optional[int] = None
+    last_active_at: Optional[int] = None
+    expires_after_minutes: Optional[int] = None
+    status: Optional[str] = None
+
+
+class ListOpenAIContainersResponse(BaseModel):
+    containers: list[OpenAIContainerSummary]
 
 
 # ── Streaming response chunks ────────────────────────────────────

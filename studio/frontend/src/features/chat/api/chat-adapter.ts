@@ -15,6 +15,8 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import { pickFriendlyContainerName } from "../lib/friendly-names";
+import { createOpenAIContainer } from "./openai-containers";
 import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
@@ -26,8 +28,11 @@ import type {
 } from "../types/api";
 import {
   getExternalProviderApiKey,
+  isCustomProviderType,
   loadExternalProviders,
   parseExternalModelId,
+  supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -35,6 +40,8 @@ import {
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
@@ -741,13 +748,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       if (isExternalRequest && !externalProvider) {
         toast.error("External provider not found.", {
-          description: "Open API Providers and re-add this provider.",
+          description: "Open Connections and re-add this provider.",
         });
         throw new Error("External provider not found.");
       }
-      if (isExternalRequest && !externalApiKey) {
+      // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
+      const externalProviderIsCustom = externalProvider
+        ? isCustomProviderType(externalProvider.providerType)
+        : false;
+      if (isExternalRequest && !externalApiKey && !externalProviderIsCustom) {
         toast.error("Missing API key for selected external provider.", {
-          description: "Open API Providers and set the API key again.",
+          description: "Open Connections and set the API key again.",
         });
         throw new Error("Missing external provider API key.");
       }
@@ -928,10 +939,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
-        const externalBackendProviderType =
-          externalProvider?.providerType === "custom"
-            ? "openai"
-            : externalProvider?.providerType;
+        const externalBackendProviderType = toExternalBackendProviderType(
+          externalProvider?.providerType,
+        );
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
@@ -942,6 +952,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
                 externalSelection.modelId,
+                {
+                  isReasoningProvider:
+                    externalProvider.isReasoningModel === true,
+                },
               )
             : {
                 supportsReasoning,
@@ -972,6 +986,106 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (externalSelection && externalProvider) {
+            // OpenAI shell-tool container reuse: pull the per-thread
+            // container_id (if any) so subsequent turns in the same
+            // thread reference the existing container instead of
+            // auto-creating a fresh one. Empty string / undefined →
+            // backend falls back to container_auto. Anthropic doesn't
+            // use this (server-side per-turn container).
+            let openaiCodeExecContainerId: string | null = null;
+            const codeExecEnabledForThisTurn =
+              codeToolsEnabled &&
+              providerSupportsBuiltinCodeExecution(
+                externalProvider.providerType,
+                externalSelection.modelId,
+                externalProvider.baseUrl,
+              );
+            if (codeExecEnabledForThisTurn && resolvedThreadId) {
+              try {
+                const thread = await db.threads.get(resolvedThreadId);
+                openaiCodeExecContainerId =
+                  thread?.openaiCodeExecContainerId ?? null;
+              } catch {
+                openaiCodeExecContainerId = null;
+              }
+              // Cross-thread inheritance: when the active thread has
+              // no container yet, default to the one most recently
+              // used on *any* other thread (provider-scoped).
+              // Matches what the Code Execution settings section
+              // shows in the picker, and keeps the user from getting
+              // a fresh container on every new thread. The picker
+              // can still be set to "Auto-create per thread"
+              // explicitly to opt into a fresh container — but
+              // that's done via the dropdown, not silently.
+              if (
+                !openaiCodeExecContainerId &&
+                externalProvider.providerType === "openai"
+              ) {
+                try {
+                  const others = await db.threads
+                    .orderBy("createdAt")
+                    .reverse()
+                    .toArray();
+                  for (const t of others) {
+                    if (t.id === resolvedThreadId) continue;
+                    if (t.openaiCodeExecContainerId) {
+                      openaiCodeExecContainerId = t.openaiCodeExecContainerId;
+                      void db.threads
+                        .update(resolvedThreadId, {
+                          openaiCodeExecContainerId,
+                        })
+                        .catch(() => {});
+                      break;
+                    }
+                  }
+                } catch {
+                  /* fall through to lazy-create below */
+                }
+              }
+              // Lazy pre-create when there's no inherited container.
+              // We always POST /v1/containers ourselves (rather than
+              // letting the backend send container_auto) so every
+              // container shows up in the picker with a friendly
+              // English-word name and the user's configured TTL.
+              // Falls back to container_auto only if the POST fails
+              // — keeps the chat moving in that case.
+              if (
+                !openaiCodeExecContainerId &&
+                externalProvider.providerType === "openai"
+              ) {
+                const ttl = externalProvider.openaiContainerTtlMinutes;
+                const ttlToUse =
+                  typeof ttl === "number" && ttl >= 1 ? ttl : 20;
+                try {
+                  const created = await createOpenAIContainer(
+                    {
+                      apiKey: externalApiKey,
+                      baseUrl: externalProvider.baseUrl || null,
+                    },
+                    {
+                      // Friendly English-word name so the container
+                      // is human-readable in the picker list (e.g.
+                      // "kestrel-3f9c") instead of a thread-id slug
+                      // or OpenAI's default blank name.
+                      name: pickFriendlyContainerName(),
+                      ttlMinutes: ttlToUse,
+                    },
+                  );
+                  openaiCodeExecContainerId = created.id;
+                  void db.threads
+                    .update(resolvedThreadId, {
+                      openaiCodeExecContainerId: created.id,
+                    })
+                    .catch(() => {});
+                } catch {
+                  // Fall back to backend's container_auto path on
+                  // failure — keeps the chat moving; the next turn
+                  // can retry. The auto-created container will be
+                  // unnamed, but the chat doesn't break.
+                  openaiCodeExecContainerId = null;
+                }
+              }
+            }
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
@@ -1005,14 +1119,65 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
+              // Built-in tools: Search pill maps to provider-side
+              // web_search (currently OpenAI / Anthropic / OpenRouter /
+              // Kimi); Code pill maps to Anthropic's server-side
+              // code_execution_20250825 tool (Anthropic is the only
+              // external provider that ships one today). Backend
+              // translates enabled_tools into each provider's tool
+              // schema — for Anthropic that's the entries appended to
+              // body["tools"] inside _stream_anthropic.
+              ...((toolsEnabled &&
+                providerSupportsBuiltinWebSearch(externalProvider.providerType)) ||
+              (codeToolsEnabled &&
+                providerSupportsBuiltinCodeExecution(
+                  externalProvider.providerType,
+                  externalSelection.modelId,
+                  externalProvider.baseUrl,
+                ))
+                ? {
+                    enable_tools: true,
+                    enabled_tools: [
+                      ...(toolsEnabled &&
+                      providerSupportsBuiltinWebSearch(
+                        externalProvider.providerType,
+                      )
+                        ? ["web_search"]
+                        : []),
+                      ...(codeToolsEnabled &&
+                      providerSupportsBuiltinCodeExecution(
+                        externalProvider.providerType,
+                        externalSelection.modelId,
+                        externalProvider.baseUrl,
+                      )
+                        ? ["code_execution"]
+                        : []),
+                    ],
+                  }
+                : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
-              encrypted_api_key: await encryptProviderApiKey(
-                externalApiKey,
-                forceRefreshPublicKey,
-              ),
+              ...(externalApiKey
+                ? {
+                    encrypted_api_key: await encryptProviderApiKey(
+                      externalApiKey,
+                      forceRefreshPublicKey,
+                    ),
+                  }
+                : {}),
               provider_base_url: externalProvider.baseUrl || null,
+              ...(openaiCodeExecContainerId
+                ? {
+                    openai_code_exec_container_id: openaiCodeExecContainerId,
+                  }
+                : {}),
+              ...(supportsProviderPromptCaching(externalProvider.providerType)
+                ? {
+                    enable_prompt_caching:
+                      externalProvider.enablePromptCaching ?? true,
+                  }
+                : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
                   ? externalReasoningEnabled
@@ -1090,6 +1255,34 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // On tool_end: set result on the existing part (transitions to "complete").
               const toolEvent = (chunk as unknown as { _toolEvent?: Record<string, unknown> })._toolEvent;
               if (toolEvent !== undefined) {
+                // OpenAI shell-tool container persistence — see
+                // ThreadRecord.openaiCodeExecContainerId. The backend
+                // emits these synthetic events on the OpenAI Responses
+                // SSE stream after capturing the container_id from a
+                // response, or detecting an expired-container error.
+                if (toolEvent.type === "container_ready") {
+                  const newContainerId = toolEvent.container_id as
+                    | string
+                    | undefined;
+                  if (newContainerId && resolvedThreadId) {
+                    void db.threads
+                      .update(resolvedThreadId, {
+                        openaiCodeExecContainerId: newContainerId,
+                      })
+                      .catch(() => {});
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "container_invalidated") {
+                  if (resolvedThreadId) {
+                    void db.threads
+                      .update(resolvedThreadId, {
+                        openaiCodeExecContainerId: null,
+                      })
+                      .catch(() => {});
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "tool_start") {
                   const id = (toolEvent.tool_call_id as string) || `${toolEvent.tool_name}_${Date.now()}`;
                   const toolArgs = (toolEvent.arguments ?? {}) as ToolCallMessagePart["args"];

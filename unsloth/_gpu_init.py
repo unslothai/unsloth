@@ -349,5 +349,10 @@ from unsloth_zoo.rl_environments import (
     launch_openenv,
 )
 
-# Patch TRL trainers for backwards compatibility
-_patch_trl_trainer()
+# Patch TRL trainers for backwards compatibility.
+# Skipped under UNSLOTH_ALLOW_CPU=1 (CPU-only CI) because rebinding
+# trl.SFTTrainer.__init__ to a generic wrapper changes
+# inspect.getsource(SFTTrainer.__init__) and corrupts downstream
+# drift detectors that anchor on the pristine upstream source.
+if os.environ.get("UNSLOTH_ALLOW_CPU", "0") != "1":
+    _patch_trl_trainer()

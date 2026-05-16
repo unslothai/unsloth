@@ -65,6 +65,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
+  type ExternalProviderConfig,
+  getExternalProviderApiKey,
+  parseExternalModelId,
+  supportsProviderPromptCaching,
+} from "./external-providers";
+import {
   applyPresetParams,
   BUILTIN_PRESET_NAMES,
   BUILTIN_PRESETS,
@@ -80,9 +86,11 @@ import {
   toPresetParams,
   type Preset,
 } from "./presets/preset-policy";
+import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   getExternalMinOutputTokens,
+  providerSupportsBuiltinCodeExecution,
   type ProviderCapabilities,
 } from "./provider-capabilities";
 import type { InferenceParams } from "./types/runtime";
@@ -235,7 +243,7 @@ function loadSavedActivePreset(): string {
   }
 }
 
-function InfoHint({ children }: { children: ReactNode }) {
+export function InfoHint({ children }: { children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -517,6 +525,8 @@ interface ChatSettingsPanelProps {
    * per-param visibility in the sampling section.
    */
   providerCapabilities?: ProviderCapabilities | null;
+  activeExternalProvider?: ExternalProviderConfig | null;
+  onExternalProviderChange?: (provider: ExternalProviderConfig) => void;
   /**
    * Backend provider type for the active external model (e.g. "kimi",
    * "anthropic", "openai"), or `null` for local models. Drives the
@@ -533,6 +543,8 @@ export function ChatSettingsPanel({
   onParamsChange,
   isExternalModel = false,
   providerCapabilities = null,
+  activeExternalProvider = null,
+  onExternalProviderChange,
   externalProviderType = null,
   onReloadModel,
 }: ChatSettingsPanelProps) {
@@ -662,6 +674,26 @@ export function ChatSettingsPanel({
     Boolean(currentCheckpoint) &&
     modelRequiresTrustRemoteCode &&
     !(params.trustRemoteCode ?? false);
+  const showPromptCachingControl =
+    activeExternalProvider != null &&
+    supportsProviderPromptCaching(activeExternalProvider.providerType);
+  const promptCachingEnabled =
+    activeExternalProvider?.enablePromptCaching !== false;
+  const externalSelection = currentCheckpoint
+    ? parseExternalModelId(currentCheckpoint)
+    : null;
+  const showOpenAICodeExecSection =
+    activeExternalProvider != null &&
+    providerSupportsBuiltinCodeExecution(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+      activeExternalProvider.baseUrl,
+    ) &&
+    activeExternalProvider.providerType === "openai";
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const openAiApiKeyForSection = activeExternalProvider
+    ? getExternalProviderApiKey(activeExternalProvider.id) || null
+    : null;
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
@@ -1144,6 +1176,43 @@ export function ChatSettingsPanel({
             </div>
           </div>
         </CollapsibleSection>
+
+        {showPromptCachingControl && activeExternalProvider ? (
+          <CollapsibleSection label="Provider" defaultOpen={true}>
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  Prompt caching
+                </span>
+                <InfoHint>
+                  Reuse compatible prompt prefixes for lower latency and cost.
+                </InfoHint>
+              </div>
+              <Switch
+                className="panel-switch shrink-0"
+                checked={promptCachingEnabled}
+                onCheckedChange={(checked) => {
+                  onExternalProviderChange?.({
+                    ...activeExternalProvider,
+                    enablePromptCaching: checked,
+                  });
+                }}
+                aria-label="Enable prompt caching"
+              />
+            </div>
+          </CollapsibleSection>
+        ) : null}
+
+        {showOpenAICodeExecSection && activeExternalProvider ? (
+          <CollapsibleSection label="Code Execution" defaultOpen={false}>
+            <OpenAICodeExecSection
+              provider={activeExternalProvider}
+              apiKey={openAiApiKeyForSection}
+              activeThreadId={activeThreadId}
+              onProviderChange={(p) => onExternalProviderChange?.(p)}
+            />
+          </CollapsibleSection>
+        ) : null}
 
         <CollapsibleSection label="System Prompt" defaultOpen={true}>
           <button

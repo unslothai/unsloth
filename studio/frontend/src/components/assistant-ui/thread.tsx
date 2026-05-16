@@ -13,6 +13,7 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
+import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -496,6 +497,9 @@ const ReasoningToggle: FC = () => {
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
     externalSelection?.modelId === "openrouter/free" &&
@@ -507,6 +511,10 @@ const ReasoningToggle: FC = () => {
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
         )
       : null;
   const effectiveReasoningStyle =
@@ -587,6 +595,11 @@ const ReasoningToggle: FC = () => {
                 setReasoningEffort(level);
                 setReasoningEnabled(true);
                 applyQwenThinkingParams(true);
+                // Kimi's $web_search builtin forbids thinking, so
+                // enabling thinking flips the Search pill off.
+                if (isKimiExternal && toolsEnabled) {
+                  setToolsEnabled(false);
+                }
               }}
             >
               {formatEffortLabel(level)}
@@ -613,6 +626,11 @@ const ReasoningToggle: FC = () => {
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
+        // Mutual exclusion with the Search pill on Kimi — see the
+        // dropdown branch above and shared-composer for the same rule.
+        if (isKimiExternal && next && toolsEnabled) {
+          setToolsEnabled(false);
+        }
       }}
       className="composer-pill-btn"
       data-active={
@@ -680,16 +698,44 @@ const WebSearchToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers (OpenAI today) expose a server-side web_search tool
+  // even when the local tool runtime is unavailable — gate the Search pill
+  // on either source so it lights up on external models too. Mirror of
+  // shared-composer's searchDisabled.
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const disabled = !(modelLoaded && supportsTools);
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => setToolsEnabled(!toolsEnabled)}
+      onClick={() => {
+        const next = !toolsEnabled;
+        setToolsEnabled(next);
+        // Kimi's $web_search builtin requires thinking=disabled (see
+        // https://platform.kimi.ai/docs/guide/use-web-search). Keep
+        // the two pills mutually exclusive so the visible state always
+        // matches what the backend ends up sending.
+        if (isKimiExternal) {
+          setReasoningEnabled(!next);
+          applyQwenThinkingParams(!next);
+        }
+      }}
       className="composer-pill-btn"
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
@@ -705,9 +751,18 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers have no local tool runtime, but Anthropic's
+  // Claude 4.x dispatches code_execution_20250825 server-side. The
+  // chat-page resolver stashes that capability in the runtime store
+  // (next to supportsBuiltinWebSearch). Mirror of shared-composer's
+  // codeDisabled so this pill lights up in active threads too.
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const disabled = !(modelLoaded && supportsTools);
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
@@ -901,6 +956,7 @@ const AssistantMessage: FC = () => {
                 web_search: WebSearchToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
+                code_execution: CodeExecutionToolUI,
               },
               Fallback: ToolFallback,
             },

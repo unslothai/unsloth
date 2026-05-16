@@ -24,7 +24,10 @@ import {
   type ReasoningEffort,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import { getExternalReasoningCapabilities } from "./provider-capabilities";
+import {
+  getExternalReasoningCapabilities,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
 import {
   type CompositionEvent,
   type KeyboardEvent,
@@ -304,6 +307,9 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
@@ -327,6 +333,10 @@ export function SharedComposer({
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
         )
       : null;
   const isExternalOpenAIReasoning =
@@ -345,13 +355,39 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  // Kimi's $web_search builtin mandates thinking=disabled per the docs at
+  // https://platform.kimi.ai/docs/guide/use-web-search. Both pills stay
+  // clickable for Kimi, but turning one on flips the other off — the
+  // click handlers below enforce this mutual exclusion so the visible
+  // state always matches what the backend actually sends.
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const toolsDisabled = !modelLoaded || !supportsTools;
+  // Two-pill gating: Search pill lights up when the runtime has either
+  // a local tool runtime (supportsTools, gives us our Code/python + local
+  // web_search) OR a server-side web_search the provider runs for us
+  // (supportsBuiltinWebSearch, currently OpenAI / Anthropic / OpenRouter
+  // / Kimi). Code pill lights up on the local runtime OR when Anthropic
+  // is selected with a model that accepts the server-side
+  // code_execution_20250825 tool — see
+  // providerSupportsBuiltinCodeExecution. Anthropic is the only external
+  // provider that ships a code-execution tool today.
+  const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+    selectedExternalProvider?.providerType,
+    effectiveExternalModelId,
+    selectedExternalProvider?.baseUrl,
+  );
+  const searchDisabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  const codeDisabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
+  // Backwards-compatible alias for any other call site that may still
+  // reference `toolsDisabled` (rare; both pills used it before).
+  const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -766,6 +802,11 @@ export function SharedComposer({
                       setReasoningEffort(level);
                       setReasoningEnabled(true);
                       applyQwenThinkingParams(true);
+                      // Mutual exclusion: turning thinking on for a
+                      // Kimi model forces the web_search builtin off.
+                      if (isKimiExternal && toolsEnabled) {
+                        setToolsEnabled(false);
+                      }
                     }}
                   >
                     {formatReasoningEffortLabel(level, externalSelection?.modelId)}
@@ -789,6 +830,12 @@ export function SharedComposer({
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
                 applyQwenThinkingParams(next);
+                // Mutual exclusion: Kimi's $web_search builtin
+                // requires thinking off, so turning thinking on flips
+                // the Search pill off (and vice versa).
+                if (isKimiExternal && next && toolsEnabled) {
+                  setToolsEnabled(false);
+                }
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
@@ -845,10 +892,22 @@ export function SharedComposer({
           )}
           <button
             type="button"
-            disabled={toolsDisabled}
-            onClick={() => setToolsEnabled(!toolsEnabled)}
+            disabled={searchDisabled}
+            onClick={() => {
+              const next = !toolsEnabled;
+              setToolsEnabled(next);
+              // Kimi's $web_search builtin requires thinking=disabled
+              // (https://platform.kimi.ai/docs/guide/use-web-search).
+              // Toggle the Think pill off when Search comes on, and
+              // back on when Search goes off — mutual exclusion that
+              // mirrors what the backend enforces.
+              if (isKimiExternal) {
+                setReasoningEnabled(!next);
+                applyQwenThinkingParams(!next);
+              }
+            }}
             className="composer-pill-btn"
-            data-active={toolsEnabled && !toolsDisabled ? "true" : "false"}
+            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
             <GlobeIcon className="size-3.5" />
@@ -856,10 +915,10 @@ export function SharedComposer({
           </button>
           <button
             type="button"
-            disabled={toolsDisabled}
+            disabled={codeDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
-            data-active={codeToolsEnabled && !toolsDisabled ? "true" : "false"}
+            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
             <CodeToggleIcon className="size-3.5" />
