@@ -2417,6 +2417,28 @@ class TestServerStartupRocmFixes:
         source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
         assert 'platform == "win32"' in source or "win32" in source
 
+    def test_hardware_py_stub_exposes_fake_process_group(self):
+        """hardware.py stub must set FakeProcessGroup so torch.distributed doesn't raise AttributeError."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert "FakeProcessGroup" in source
+
+    def test_hardware_py_stub_exposes_process_group(self):
+        """hardware.py stub must set ProcessGroup on the c10d stub."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert "ProcessGroup" in source
+
+    def test_hardware_py_stub_uses_setattr_for_symbols(self):
+        """hardware.py must use setattr to populate stub symbols dynamically."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert "setattr" in source
+
+    def test_hardware_py_stub_all_c10d_siblings_covered(self):
+        """hardware.py must stub all three torch._C._distributed_* submodules."""
+        source = _HARDWARE_PY_PATH.read_text(encoding = "utf-8")
+        assert "_distributed_c10d" in source
+        assert "_distributed_autograd" in source
+        assert "_distributed_rpc" in source
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -955,13 +955,36 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
     import types as _types
 
     if _sys.platform == "win32":
+        # Dummy class for any name torch.distributed tries to import from these stubs
+        class _Dummy:
+            pass
+
         for _c10d_name in (
             "torch._C._distributed_c10d",
             "torch._C._distributed_autograd",
             "torch._C._distributed_rpc",
         ):
             if _c10d_name not in _sys.modules:
-                _sys.modules[_c10d_name] = _types.ModuleType(_c10d_name)
+                _stub = _types.ModuleType(_c10d_name)
+                # torch.distributed imports these names from _distributed_c10d;
+                # provide no-op dummies so the import doesn't raise AttributeError.
+                for _sym in (
+                    "FakeProcessGroup",
+                    "ProcessGroup",
+                    "Work",
+                    "Store",
+                    "PrefixStore",
+                    "FileStore",
+                    "TCPStore",
+                    "HashStore",
+                    "Reducer",
+                    "Logger",
+                    "DistributedDebugLevel",
+                    "GradBucket",
+                    "BuiltinCommHookType",
+                ):
+                    setattr(_stub, _sym, _Dummy)
+                _sys.modules[_c10d_name] = _stub
 
     try:
         import torch.distributed as _td
