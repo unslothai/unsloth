@@ -1899,6 +1899,16 @@ if ($HasROCm -and $CuTag -eq "cpu") {
     $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
     if ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+    } elseif ($ROCmGfxArch) {
+        # GPU arch detected but not in the supported wheel map — warn explicitly
+        # so the user knows why they are getting CPU PyTorch instead of ROCm.
+        substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx90a, gfx908" "Yellow"
+    } else {
+        # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
+        # readable — warn rather than silently falling back to CPU PyTorch.
+        substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
     }
 }
 
@@ -1906,7 +1916,7 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
-    $output = Fast-Install --force-reinstall --index-url $ROCmIndexUrl torch torchvision torchaudio | Out-String
+    $output = Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
     $torchInstallExit = $LASTEXITCODE
     if ($torchInstallExit -ne 0) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow

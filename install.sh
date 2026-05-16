@@ -1568,7 +1568,10 @@ get_torch_index_url() {
         if [ -n "$_rocm_tag" ]; then
             # Minimum supported: ROCm 6.0 (no PyTorch wheels exist for older)
             case "$_rocm_tag" in
-                rocm[1-5].*) echo "$_base/cpu"; return ;;
+                rocm[1-5].*)
+                    echo "[WARN] ROCm $_rocm_tag detected but PyTorch ROCm wheels require ROCm 6.0+ -- falling back to CPU-only PyTorch" >&2
+                    echo "[WARN] Upgrade ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+                    echo "$_base/cpu"; return ;;
             esac
             # Supported tags; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
             case "$_rocm_tag" in
@@ -1584,6 +1587,12 @@ get_torch_index_url() {
             esac
             return
         fi
+        # AMD GPU confirmed by rocminfo/amd-smi but ROCm version could not be
+        # read from any source (amd-smi, /opt/rocm/.info/version, hipconfig,
+        # dpkg, rpm).  Warn explicitly rather than silently installing CPU PyTorch.
+        echo "[WARN] AMD GPU detected but ROCm version could not be determined -- falling back to CPU-only PyTorch" >&2
+        echo "[WARN] Ensure one of the following is accessible: amd-smi, hipconfig, /opt/rocm/.info/version, rocm-core package" >&2
+        echo "[WARN] To install ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
         echo "$_base/cpu"; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
