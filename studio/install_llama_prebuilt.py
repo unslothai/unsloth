@@ -1304,7 +1304,7 @@ def direct_linux_release_plan(
         # If the host glibc is too old, validate_prebuilt_attempts will fail
         # the lemonade attempt and we fall through to the source build.
         lemonade_choice = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+            host, "ubuntu", "linux-rocm", llama_tag = bundle.upstream_tag
         )
         if lemonade_choice is not None:
             attempts.append(lemonade_choice)
@@ -1358,10 +1358,23 @@ def direct_upstream_release_plan(
             )
         if host.has_rocm and not host.has_usable_nvidia:
             lemonade_choice = resolve_lemonade_rocm_choice(
-                host, "windows", "windows-hip", llama_tag = requested_tag
+                host, "windows", "windows-hip", llama_tag = release_tag
             )
             if lemonade_choice is not None:
                 attempts.append(lemonade_choice)
+            hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
+            hip_url = assets.get(hip_asset)
+            if hip_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = hip_asset,
+                        url = hip_url,
+                        source_label = "upstream",
+                        install_kind = "windows-hip",
+                    )
+                )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:

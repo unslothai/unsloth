@@ -3,7 +3,9 @@
 
 """Validates that the installer correctly resolves lemonade ROCm prebuilt assets.
 
-Hits the real lemonade GitHub API with a faked HostInfo so no AMD GPU is needed.
+Uses a faked HostInfo so no AMD GPU is needed. Network calls to the lemonade
+GitHub API are stubbed out so the suite runs without internet access and is
+not subject to rate limits.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -25,6 +28,27 @@ _LEMONADE_GFX_FAMILIES = getattr(_mod, "_LEMONADE_GFX_FAMILIES", None)
 
 if resolve_lemonade_rocm_choice is None or _LEMONADE_GFX_FAMILIES is None:
     pytest.skip("PR symbols not present - check branch", allow_module_level = True)
+
+
+_STUB_TAG = "b1262"
+_STUB_OS_PREFIXES = ("ubuntu", "windows")
+_STUB_FAMILIES = ("gfx1151", "gfx1150", "gfx120X", "gfx110X", "gfx103X")
+
+
+def _stub_lemonade_release() -> dict:
+    """Minimal lemonade release payload covering all supported GPU/OS combinations."""
+    assets = [
+        {
+            "name": f"llama-{_STUB_TAG}-{prefix}-rocm-{family}-x64.zip",
+            "browser_download_url": (
+                f"https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/"
+                f"{_STUB_TAG}/llama-{_STUB_TAG}-{prefix}-rocm-{family}-x64.zip"
+            ),
+        }
+        for prefix in _STUB_OS_PREFIXES
+        for family in _STUB_FAMILIES
+    ]
+    return {"tag_name": _STUB_TAG, "assets": assets}
 
 
 def _make_rocm_host(gfx_target: str, *, windows: bool = False) -> HostInfo:
@@ -97,9 +121,10 @@ def test_unknown_gpu_not_in_families():
 )
 def test_asset_resolves_for_known_gpu(gfx, os_prefix, windows):
     host = _make_rocm_host(gfx, windows = windows)
-    result = resolve_lemonade_rocm_choice(
-        host, os_prefix, "default", llama_tag = "latest"
-    )
+    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+        result = resolve_lemonade_rocm_choice(
+            host, os_prefix, "default", llama_tag = "latest"
+        )
     assert (
         result is not None
     ), f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
@@ -147,12 +172,13 @@ def _stub_unsloth_release(release_tag: str = "b9022") -> dict:
 )
 def test_simple_policy_plans_lemonade_for_rocm_host():
     host = _make_rocm_host("gfx1151")
-    plan = direct_linux_release_plan(
-        _stub_unsloth_release(),
-        host,
-        "unslothai/llama.cpp",
-        "latest",
-    )
+    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+        plan = direct_linux_release_plan(
+            _stub_unsloth_release(),
+            host,
+            "unslothai/llama.cpp",
+            "latest",
+        )
     assert plan is not None, "ROCm host should not be skipped by simple-policy planner"
     kinds = [a.install_kind for a in plan.attempts]
     assert (
@@ -174,9 +200,39 @@ def test_simple_policy_plans_lemonade_for_windows_hip_host():
         "name": "b9022",
         "assets": [],
     }
-    plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
+    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
     assert (
         "windows-hip" in kinds
     ), f"simple-policy planner did not include a lemonade HIP attempt; got {kinds}"
+
+
+@pytest.mark.skipif(
+    direct_upstream_release_plan is None,
+    reason = "simple-policy dispatcher not present on this branch",
+)
+def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavailable():
+    """If lemonade returns None (e.g. gfx999 or transient API failure), the planner
+    must still include the upstream HIP asset rather than silently downgrading to CPU."""
+    host = _make_rocm_host("gfx999", windows = True)
+    hip_asset = "llama-b9022-bin-win-hip-radeon-x64.zip"
+    release = {
+        "tag_name": "b9022",
+        "name": "b9022",
+        "assets": [
+            {
+                "name": hip_asset,
+                "browser_download_url": f"https://example.invalid/{hip_asset}",
+            },
+        ],
+    }
+    plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
+    assert plan is not None
+    kinds = [a.install_kind for a in plan.attempts]
+    assert (
+        "windows-hip" in kinds
+    ), f"upstream HIP asset not included as fallback; got {kinds}"
+    hip_attempt = next(a for a in plan.attempts if a.install_kind == "windows-hip")
+    assert hip_attempt.source_label == "upstream"
