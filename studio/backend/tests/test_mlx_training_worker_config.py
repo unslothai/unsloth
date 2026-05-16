@@ -37,6 +37,7 @@ def _load_worker_module():
         for name in (
             "direct_wheel_url",
             "flash_attn_wheel_url",
+            "has_blackwell_gpu",
             "install_wheel",
             "probe_torch_wheel_env",
             "url_exists",

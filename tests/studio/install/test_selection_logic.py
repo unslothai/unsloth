@@ -1839,6 +1839,126 @@ class TestWindowsCudaAttempts:
         assert result[0].name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
         assert result[1].name == "cudart-llama-bin-win-cuda-12.4-x64.zip"
 
+    def test_cudart_runtime_archive_is_paired(self, monkeypatch):
+        # #5106: cudart bundle must surface on runtime_url so
+        # install_from_archives downloads it.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip": f"https://example.com/llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
+            "cudart-llama-bin-win-cuda-13.1-x64.zip": "https://example.com/cudart-llama-bin-win-cuda-13.1-x64.zip",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": f"https://example.com/llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip": "https://example.com/cudart-llama-bin-win-cuda-12.4-x64.zip",
+        }
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert len(result) == 2
+        # cuda13 first (host driver supports 13.1)
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip"
+        assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
+        assert result[0].runtime_url == (
+            "https://example.com/cudart-llama-bin-win-cuda-13.1-x64.zip"
+        )
+        # cuda12 second
+        assert result[1].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
+        assert result[1].runtime_name == "cudart-llama-bin-win-cuda-12.4-x64.zip"
+
+    def test_no_runtime_archive_when_cudart_absent(self, monkeypatch):
+        # Older releases without the cudart split must still install.
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": f"https://example.com/llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+        }
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert len(result) == 1
+        assert result[0].runtime_url is None
+        assert result[0].runtime_name is None
+
+    def test_cudart_only_assets_do_not_self_pair(self, monkeypatch):
+        # Legacy cudart-only naming path must not self-pair.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.1", "12.4", current_names = True)
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert len(result) == 2
+        for attempt in result:
+            assert attempt.runtime_url is None
+            assert attempt.runtime_name is None
+
+
+# ===========================================================================
+# N.1. apply_approved_hashes -- runtime archive checksum threading
+# ===========================================================================
+
+
+class TestApplyApprovedHashesRuntimePair:
+    """Runtime archive must inherit a manifest hash, or be dropped."""
+
+    TAG = "b8508"
+
+    def _runtime_paired_attempt(self) -> AssetChoice:
+        return AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
+            url = f"https://x/llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
+            source_label = "published",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda13",
+            runtime_name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+            runtime_url = "https://x/cudart-llama-bin-win-cuda-13.1-x64.zip",
+        )
+
+    def test_runtime_hash_threaded_when_present(self):
+        attempt = self._runtime_paired_attempt()
+        checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = self.TAG,
+            upstream_tag = self.TAG,
+            artifacts = {
+                attempt.name: ApprovedArtifactHash(
+                    asset_name = attempt.name,
+                    sha256 = "0" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "windows-cuda",
+                ),
+                "cudart-llama-bin-win-cuda-13.1-x64.zip": ApprovedArtifactHash(
+                    asset_name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+                    sha256 = "1" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "windows-cuda",
+                ),
+            },
+        )
+        result = apply_approved_hashes([attempt], checksums)
+        assert len(result) == 1
+        assert result[0].expected_sha256 == "0" * 64
+        assert result[0].runtime_sha256 == "1" * 64
+        assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
+
+    def test_runtime_pair_dropped_when_hash_missing(self):
+        # Drop the pair rather than install an unverified runtime.
+        attempt = self._runtime_paired_attempt()
+        checksums = ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = self.TAG,
+            upstream_tag = self.TAG,
+            artifacts = {
+                attempt.name: ApprovedArtifactHash(
+                    asset_name = attempt.name,
+                    sha256 = "0" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "windows-cuda",
+                ),
+            },
+        )
+        result = apply_approved_hashes([attempt], checksums)
+        assert len(result) == 1
+        assert result[0].expected_sha256 == "0" * 64
+        assert result[0].runtime_url is None
+        assert result[0].runtime_name is None
+        assert result[0].runtime_sha256 is None
+
 
 # ===========================================================================
 # O. resolve_upstream_asset_choice -- platform routing

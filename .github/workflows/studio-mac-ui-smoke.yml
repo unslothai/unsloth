@@ -1,0 +1,343 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Mac counterpart to studio-ui-smoke.yml. Same Playwright + Chromium
+# end-to-end chat UI flow, but on macos-14 (M1) so we catch
+# Mac-specific frontend / backend wiring regressions that the Linux
+# job would miss (e.g. the Mac Tauri shell loading the same React
+# bundle, or the Mac llama.cpp prebuilt's HTTP layer behaving
+# differently from the Linux build).
+
+name: Mac Studio UI CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/workflows/studio-mac-ui-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ui-smoke:
+    name: Chat UI Tests
+    runs-on: macos-14
+    timeout-minutes: 35
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18896'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Install Studio (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Assert install.sh used the Mac llama.cpp prebuilt
+        run: |
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+
+      - name: Install Playwright + Chromium
+        # No --with-deps on Mac: that flag installs Linux apt packages.
+        # GitHub-hosted macos-14 ships the system frameworks Chromium
+        # needs already.
+        # Pinned <1.58 because all 1.55-1.58 drivers ship Node 24 on
+        # macos-14 and intermittently hit 'SyntaxError: Unexpected end
+        # of JSON input' in pipeTransport.js. Run 25491698868 showed
+        # the crash hitting 100% of three retry attempts -- not a
+        # rare race but a hard reproduction. Belt-and-suspenders fix:
+        # the test scripts pass --single-process to Chromium (see
+        # tests/studio/playwright_chat_ui.py) AND we patch
+        # pipeTransport.js below to swallow JSON parse errors instead
+        # of crashing the driver Node process. Both together let the
+        # in-script retry recover from any residual flakes.
+        run: |
+          pip install 'playwright>=1.55,<1.58'
+          python -m playwright install chromium
+
+      - name: Patch Playwright pipeTransport.js to tolerate malformed JSON
+        # In Playwright 1.55-1.58, pipeTransport.js does
+        # `JSON.parse(message)` with no try/catch; when Chromium dies
+        # mid-write the partial buffer crashes the driver Node
+        # process and the test script exits with 'Connection closed
+        # while reading from the driver'. Newer Playwright versions
+        # added a try/catch upstream. Backport that here.
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          import playwright
+          driver_dir = os.path.join(os.path.dirname(playwright.__file__), "driver", "package", "lib", "server")
+          path = os.path.join(driver_dir, "pipeTransport.js")
+          src = open(path).read()
+          # Wrap both `this.onmessage.call(null, JSON.parse(...))` sites in try/catch.
+          patched = re.sub(
+              r"this\.onmessage\.call\(null, JSON\.parse\((message2?)\)\);",
+              r"try { this.onmessage.call(null, JSON.parse(\1)); } "
+              r"catch (e) { /* swallow malformed JSON from a crashing browser */ }",
+              src,
+          )
+          if patched == src:
+              # Already patched, or upstream changed -- either way, don't fail the build.
+              print(f"pipeTransport.js: no JSON.parse calls matched at {path}; skipping.")
+          else:
+              open(path, "w").write(patched)
+              print(f"pipeTransport.js: patched JSON.parse calls in {path}")
+          PY
+
+      - name: Reset auth + boot Studio
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+
+      - name: Pass bootstrap password to the Playwright step
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          NEW2="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "::add-mask::$NEW2"
+          echo "STUDIO_OLD_PW=$OLD"   >> "$GITHUB_ENV"
+          echo "STUDIO_NEW_PW=$NEW"   >> "$GITHUB_ENV"
+          echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
+
+      - name: Drive the chat UI with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18896
+          PW_ART_DIR: logs/playwright
+          STUDIO_UI_STRICT: '1'
+          # macos-14 free runner is 3 vCPU / 7 GB / no Metal-accel
+          # available to llama.cpp from CI; gemma-3-270m turn latency
+          # has been observed to crowd the 180s default. Triple it.
+          STUDIO_UI_TURN_TIMEOUT_MS: '540000'
+        # Retry up to 3 times to absorb the racy Playwright Node 24
+        # pipeTransport.js 'Unexpected end of JSON input' crash that
+        # fires intermittently on macos-14 free runners (Chromium
+        # browser process dies mid-test → driver Node process can't
+        # parse the truncated JSON-RPC line and exits). The retry
+        # FULLY resets Studio (kill, reset-password, reboot, wait
+        # /api/health, re-export bootstrap pw) before re-running the
+        # script so the change-password flow finds a fresh bootstrap.
+        # A real test failure (assertion / timeout) does NOT match the
+        # JSON pattern so it bypasses retry and surfaces immediately.
+        run: |
+          mkdir -p logs/playwright
+          attempt=1
+          max_attempts=3
+          while : ; do
+            set +e
+            python tests/studio/playwright_chat_ui.py 2>&1 | tee logs/playwright_attempt_${attempt}.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if grep -q "Unexpected end of JSON input" logs/playwright_attempt_${attempt}.log \
+               && [ "$attempt" -lt "$max_attempts" ]; then
+              echo "::warning::Playwright pipeTransport JSON crash on attempt ${attempt}; resetting Studio and retrying..."
+              kill "${STUDIO_PID}" 2>/dev/null || true
+              sleep 2
+              unsloth studio reset-password
+              UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+                > "logs/studio_retry_${attempt}.log" 2>&1 &
+              STUDIO_PID=$!
+              echo "STUDIO_PID=$STUDIO_PID" >> "$GITHUB_ENV"
+              for i in $(seq 1 180); do
+                if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json \
+                   && jq -e '.status == "healthy"' /tmp/health.json >/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              STUDIO_OLD_PW=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+              STUDIO_NEW_PW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+              STUDIO_NEW2_PW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+              echo "::add-mask::$STUDIO_OLD_PW"
+              echo "::add-mask::$STUDIO_NEW_PW"
+              echo "::add-mask::$STUDIO_NEW2_PW"
+              export STUDIO_OLD_PW STUDIO_NEW_PW STUDIO_NEW2_PW
+              attempt=$((attempt + 1))
+              sleep 3
+              continue
+            fi
+            exit "$rc"
+          done
+
+      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Reset auth + boot Studio for extra UI tests (port 18897)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
+            > logs/studio_extra.log 2>&1 &
+          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health on 18897
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json; then
+              jq -e '.status == "healthy"' /tmp/health2.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health2.json
+
+      - name: Pass bootstrap pw for extra UI test
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
+          echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18897
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_extra
+          STUDIO_UI_STRICT: '1'
+          # See "Drive the chat UI" step.
+          STUDIO_UI_TURN_TIMEOUT_MS: '540000'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+        # Same pipeTransport JSON-crash retry shape as "Drive the chat
+        # UI with Playwright" -- see comment there.
+        run: |
+          mkdir -p logs/playwright_extra
+          attempt=1
+          max_attempts=3
+          while : ; do
+            set +e
+            python tests/studio/playwright_extra_ui.py 2>&1 | tee logs/playwright_extra_attempt_${attempt}.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if grep -q "Unexpected end of JSON input" logs/playwright_extra_attempt_${attempt}.log \
+               && [ "$attempt" -lt "$max_attempts" ]; then
+              echo "::warning::Playwright pipeTransport JSON crash on attempt ${attempt}; resetting Studio and retrying..."
+              kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
+              sleep 2
+              unsloth studio reset-password
+              UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
+                > "logs/studio_extra_retry_${attempt}.log" 2>&1 &
+              STUDIO_EXTRA_PID=$!
+              echo "STUDIO_EXTRA_PID=$STUDIO_EXTRA_PID" >> "$GITHUB_ENV"
+              for i in $(seq 1 180); do
+                if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json \
+                   && jq -e '.status == "healthy"' /tmp/health2.json >/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              STUDIO_OLD_PW=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+              STUDIO_NEW_PW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+              echo "::add-mask::$STUDIO_OLD_PW"
+              echo "::add-mask::$STUDIO_NEW_PW"
+              export STUDIO_OLD_PW STUDIO_NEW_PW
+              attempt=$((attempt + 1))
+              sleep 3
+              continue
+            fi
+            exit "$rc"
+          done
+
+      - name: Stop second Studio
+        if: always()
+        run: |
+          kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: mac-studio-ui-smoke-artifacts
+          path: |
+            logs/studio.log
+            logs/studio_extra.log
+            logs/install.log
+            logs/playwright
+            logs/playwright_extra
+          retention-days: 7

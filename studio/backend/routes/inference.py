@@ -194,6 +194,11 @@ from models.inference import (
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
     AnthropicUsage,
+    CreateOpenAIContainerBody,
+    DeleteOpenAIContainerBody,
+    ListOpenAIContainersResponse,
+    OpenAIContainerRequest,
+    OpenAIContainerSummary,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -203,6 +208,11 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+
+from core.inference.key_exchange import decrypt_api_key
+from core.inference.providers import get_provider_info, get_base_url
+from core.inference.external_provider import ExternalProviderClient
+from storage import providers_db
 
 import io
 import wave
@@ -474,7 +484,6 @@ async def load_model(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
-                from utils.models import is_audio_input_type
 
                 _gguf_audio = (
                     llama_backend._audio_type
@@ -495,9 +504,7 @@ async def load_model(
                     is_gguf = True,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
-                    has_audio_input = is_audio_input_type(_gguf_audio)
-                    if _gguf_audio
-                    else False,
+                    has_audio_input = False,
                     inference = inference_config,
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
@@ -658,9 +665,10 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Detect TTS audio by probing the loaded model's vocabulary
-            from utils.models import is_audio_input_type
-
+            # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
+            # GGUF audio input is not wired through the chat path yet, so do not
+            # advertise has_audio_input for GGUF models until uploaded audio is
+            # actually forwarded to llama-server.
             _gguf_audio = llama_backend.detect_audio_type()
             _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
@@ -686,7 +694,7 @@ async def load_model(
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
-                has_audio_input = is_audio_input_type(_gguf_audio),
+                has_audio_input = False,
                 inference = inference_config,
                 requires_trust_remote_code = bool(
                     inference_config.get("trust_remote_code", False)
@@ -1156,13 +1164,15 @@ async def get_status(
             ):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
+            _audio_type = getattr(llama_backend, "_audio_type", None)
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
-                audio_type = getattr(llama_backend, "_audio_type", None),
+                audio_type = _audio_type,
+                has_audio_input = False,
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
@@ -1178,6 +1188,8 @@ async def get_status(
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
+                cache_type_kv = llama_backend.cache_type_kv,
+                chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
             )
 
@@ -1462,6 +1474,345 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+# ── External provider proxy ──────────────────────────────────────
+
+
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """
+    Convert ChatMessage list to OpenAI-compatible dicts for external providers.
+
+    - Vision providers: preserve multimodal content arrays (image_url parts intact).
+    - Non-vision providers: flatten to text-only (images silently dropped).
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            # Skip assistant messages with empty content (some providers reject them)
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
+            result.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            if supports_vision:
+                parts = []
+                for part in msg.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part.image_url.url},
+                            }
+                        )
+                result.append({"role": msg.role, "content": parts})
+            else:
+                # Non-vision provider — strip images, keep text only
+                text = "\n".join(p.text for p in msg.content if p.type == "text")
+                result.append({"role": msg.role, "content": text})
+    return result
+
+
+async def _proxy_to_external_provider(
+    payload: ChatCompletionRequest,
+    request: Request,
+) -> StreamingResponse:
+    """
+    Proxy a chat completion request to an external LLM provider.
+
+    Resolves provider config (from DB or registry), decrypts the API key,
+    and streams the response back in OpenAI SSE format.
+    """
+    # Resolve provider type and base URL
+    provider_type = payload.provider_type
+    base_url = payload.provider_base_url
+
+    if payload.provider_id:
+        config = providers_db.get_provider(payload.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {payload.provider_id}",
+            )
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        provider_type = provider_type or config["provider_type"]
+        base_url = base_url or config["base_url"]
+
+    if not provider_type:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Either provider_id or provider_type is required for external provider routing.",
+        )
+
+    # Fall back to registry default base URL
+    if not base_url:
+        base_url = get_base_url(provider_type)
+    if not base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {provider_type}",
+        )
+
+    api_key = ""
+    if payload.encrypted_api_key:
+        try:
+            api_key = decrypt_api_key(payload.encrypted_api_key)
+        except Exception as exc:
+            logger.warning("external_provider.decrypt_failed", error = str(exc))
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+            )
+
+    model = payload.external_model or payload.model
+    if model == "default":
+        raise HTTPException(
+            status_code = 400,
+            detail = "external_model is required when using an external provider.",
+        )
+
+    # Build messages preserving multimodal content for vision-capable providers
+    from core.inference.providers import get_provider_info as _get_provider_info
+
+    _pinfo = _get_provider_info(provider_type) or {}
+    _supports_vision = _pinfo.get("supports_vision", False)
+    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+    async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            top_k = payload.top_k,
+            enable_thinking = payload.enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
+            enabled_tools = payload.enabled_tools,
+            enable_prompt_caching = payload.enable_prompt_caching,
+            openai_code_exec_container_id = payload.openai_code_exec_container_id,
+            stream = payload.stream,
+        )
+        try:
+            sent_done = False
+            async for line in gen:
+                yield f"{line}\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("external_provider.stream_error", error = str(exc))
+        finally:
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+            await client.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── OpenAI shell-tool container management ───────────────────────
+
+
+def _resolve_openai_cloud_client(
+    body: OpenAIContainerRequest,
+) -> ExternalProviderClient:
+    """
+    Decrypt the API key + validate the base URL points at OpenAI cloud,
+    then build an ExternalProviderClient for the three container CRUD
+    endpoints below. The shell tool only exists on api.openai.com, so
+    rejecting non-cloud bases up front prevents confusing 404s on
+    ollama / llama.cpp / vLLM / custom presets.
+    """
+    base_url = body.provider_base_url or get_base_url("openai")
+    if not base_url or "api.openai.com" not in base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "OpenAI container management is only available on the "
+                "managed cloud (api.openai.com). The provider's base URL "
+                f"points at {base_url!r}."
+            ),
+        )
+    try:
+        api_key = decrypt_api_key(body.encrypted_api_key)
+    except Exception as exc:
+        logger.warning("external_provider.decrypt_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 400,
+            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+        )
+    return ExternalProviderClient(
+        provider_type = "openai",
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+
+def _summarize_container(raw: dict) -> OpenAIContainerSummary:
+    expires = raw.get("expires_after")
+    expires_minutes: Optional[int] = None
+    if isinstance(expires, dict):
+        minutes = expires.get("minutes")
+        if isinstance(minutes, int):
+            expires_minutes = minutes
+    return OpenAIContainerSummary(
+        id = str(raw.get("id") or ""),
+        name = raw.get("name"),
+        created_at = raw.get("created_at")
+        if isinstance(raw.get("created_at"), int)
+        else None,
+        last_active_at = raw.get("last_active_at")
+        if isinstance(raw.get("last_active_at"), int)
+        else None,
+        expires_after_minutes = expires_minutes,
+        status = raw.get("status") if isinstance(raw.get("status"), str) else None,
+    )
+
+
+@router.post(
+    "/external/openai/containers/list",
+    response_model = ListOpenAIContainersResponse,
+)
+async def list_openai_containers(
+    body: OpenAIContainerRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> ListOpenAIContainersResponse:
+    """List the user's OpenAI shell-tool containers."""
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            raw = await client.list_openai_containers()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers list: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+        # OpenAI keeps expired containers in /v1/containers indefinitely
+        # with status="expired" — they're effectively dead but still
+        # listed. Hide them so the picker only shows usable containers.
+        return ListOpenAIContainersResponse(
+            containers = [
+                _summarize_container(c)
+                for c in raw
+                if isinstance(c, dict) and c.get("status") != "expired"
+            ],
+        )
+    finally:
+        await client.close()
+
+
+@router.post(
+    "/external/openai/containers/create",
+    response_model = OpenAIContainerSummary,
+)
+async def create_openai_container(
+    body: CreateOpenAIContainerBody,
+    current_subject: str = Depends(get_current_subject),
+) -> OpenAIContainerSummary:
+    """Create a named container with the user-chosen idle TTL."""
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            raw = await client.create_openai_container(
+                name = body.name,
+                ttl_minutes = body.ttl_minutes,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers create: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code = 502,
+                detail = "OpenAI returned an unexpected container payload.",
+            )
+        return _summarize_container(raw)
+    finally:
+        await client.close()
+
+
+@router.post("/external/openai/containers/delete", status_code = 204)
+async def delete_openai_container(
+    body: DeleteOpenAIContainerBody,
+    current_subject: str = Depends(get_current_subject),
+) -> None:
+    """Delete a named container by id."""
+    logger.info(
+        "openai_container_delete.request subject=%s container_id=%s base_url=%s",
+        current_subject,
+        body.container_id,
+        body.provider_base_url,
+    )
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            await client.delete_openai_container(body.container_id)
+            logger.info(
+                "openai_container_delete.success container_id=%s",
+                body.container_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            logger.warning(
+                "openai_container_delete.openai_rejected container_id=%s status=%s body=%s",
+                body.container_id,
+                exc.response.status_code if exc.response else None,
+                detail,
+            )
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers delete: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "openai_container_delete.transport_error container_id=%s error=%s",
+                body.container_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+    finally:
+        await client.close()
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1481,6 +1832,11 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # ── External provider routing ────────────────────────────────
+    # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
+    if payload.provider_id or payload.provider_type:
+        return await _proxy_to_external_provider(payload, request)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
@@ -1669,6 +2025,12 @@ async def openai_chat_completions(
         and not _effective_enable_tools(payload)
         and (_tools_passthrough or _has_response_format)
     ):
+        if payload.audio_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported for GGUF chat models yet.",
+            )
+
         # Preserve the vision guard that would otherwise run in the
         # non-passthrough path below: text-only tool-capable GGUFs
         # should return a clear 400 here rather than forwarding the
@@ -1716,6 +2078,12 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
+        if payload.audio_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported for GGUF chat models yet.",
+            )
+
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
         if image_b64 and not llama_backend.is_vision:
@@ -1729,7 +2097,7 @@ async def openai_chat_completions(
             try:
                 import base64 as _b64
                 from io import BytesIO as _BytesIO
-                from PIL import Image as _Image
+                from PIL import Image as _Image, UnidentifiedImageError as _UIE
 
                 raw = _b64.b64decode(image_b64)
                 # Normalize to RGB so PNG encoding succeeds regardless of
@@ -1740,9 +2108,15 @@ async def openai_chat_completions(
                 buf = _BytesIO()
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except _UIE:
                 raise HTTPException(
-                    status_code = 400, detail = f"Failed to process image: {e}"
+                    status_code = 400,
+                    detail = "Unsupported or corrupt image format.",
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Failed to process image.",
                 )
 
         # Build message list with system prompt prepended
@@ -3412,10 +3786,10 @@ def _normalize_anthropic_openai_images(
                 buf = io.BytesIO()
                 img.save(buf, format = "PNG")
                 png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except Exception:
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Failed to process image: {e}",
+                    detail = "Failed to process image.",
                 )
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
@@ -3451,6 +3825,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
+    openai_messages = _drop_empty_assistant_sentinels(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
@@ -4176,6 +4551,19 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
+    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            has_content = bool(m.get("content"))
+            has_tool_calls = bool(m.get("tool_calls"))
+            if not has_content and not has_tool_calls:
+                continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -4192,7 +4580,9 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     ``image_url`` content part so vision + function-calling requests work
     transparently.
     """
-    messages = [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
 
     if not payload.image_base64:
         return messages
@@ -4207,10 +4597,10 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         buf = _BytesIO()
         img.save(buf, format = "PNG")
         png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code = 400,
-            detail = f"Failed to process image: {e}",
+            detail = "Failed to process image.",
         )
 
     data_url = f"data:image/png;base64,{png_b64}"

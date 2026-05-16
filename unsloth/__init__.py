@@ -12,16 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, platform, importlib.util
+import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+
+def _is_mlx_available():
+    # Transitional import barrier: while the paired unsloth-zoo MLX runtime
+    # rollout is in flight, keep non-Apple-Silicon imports from touching
+    # unsloth_zoo here. After both PRs are released together and
+    # unsloth_zoo.mlx is guaranteed to be import-safe on GPU hosts,
+    # this helper can collapse back to the centralized zoo runtime call below.
+    if (
+        os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
+        or platform.system() != "Darwin"
+        or platform.machine() != "arm64"
+        or importlib.util.find_spec("mlx") is None
+    ):
+        return False
+    try:
+        from unsloth_zoo.mlx import is_mlx_available
+    except ImportError:
+        return False
+    return is_mlx_available()
+
+
 # Detect Apple Silicon + MLX before any torch/numpy imports
-_IS_MLX = (
-    platform.system() == "Darwin"
-    and platform.machine() == "arm64"
-    and importlib.util.find_spec("mlx") is not None
-)
+_IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
     try:
@@ -31,18 +48,18 @@ if _IS_MLX:
             "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
             "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
         ) from _e
-    # The mlx_trainer / mlx_loader submodules ship with unsloth-zoo's MLX
+    # The mlx.trainer / mlx.loader submodules ship with unsloth-zoo's MLX
     # support. An older installed unsloth-zoo (e.g. from PyPI before the
     # MLX release lands) will satisfy `import unsloth_zoo` but be missing
     # these submodules. Surface the same friendly install hint instead of
     # a raw ImportError on the submodule path.
     try:
-        from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
-        from unsloth_zoo.mlx_loader import FastMLXModel
+        from unsloth_zoo.mlx.trainer import MLXTrainer, MLXTrainingConfig
+        from unsloth_zoo.mlx.loader import FastMLXModel
     except ImportError as _e:
         raise ImportError(
             "Unsloth: MLX support requires an unsloth-zoo build that includes "
-            "`unsloth_zoo.mlx_trainer` and `unsloth_zoo.mlx_loader`. Upgrade with "
+            "`unsloth_zoo.mlx.trainer` and `unsloth_zoo.mlx.loader`. Upgrade with "
             "`pip install -U unsloth-zoo` or rerun install.sh."
         ) from _e
 

@@ -192,6 +192,7 @@ def _drive(
         else:
             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
+            pin_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
             for n_gpus in range(1, len(ranked) + 1):
                 subset = ranked[:n_gpus]
                 pool_mib = sum(free for _, free in subset)
@@ -203,7 +204,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * 0.90:
+                if total_mib <= pool_mib * pin_fraction:
                     effective_ctx = capped
                     gpu_indices = sorted(idx for idx, _ in subset)
                     use_fit = False
@@ -211,6 +212,17 @@ def _drive(
                     break
             if not matched:
                 effective_ctx = min(FALLBACK_CTX, effective_ctx)
+                # Mirror llama_cpp.py: re-check fit at FALLBACK_CTX.
+                if effective_ctx > 0:
+                    for n_gpus in range(1, len(ranked) + 1):
+                        subset = ranked[:n_gpus]
+                        pool_mib = sum(free for _, free in subset)
+                        kv = inst._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                        total_mib = (model_size + kv) / (1024 * 1024)
+                        if total_mib <= pool_mib * pin_fraction:
+                            gpu_indices = sorted(idx for idx, _ in subset)
+                            use_fit = False
+                            break
     elif gpus:
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
@@ -379,6 +391,52 @@ class TestFittableAutoPickRegressions:
 
 
 # ---------------------------------------------------------------------------
+# #5106 regression: 91-95% utilization must still pin GPU.
+# ---------------------------------------------------------------------------
+
+
+class TestTightFitPinsToGPU:
+    """Models that fit at 91-95% of free VRAM must use the GPU."""
+
+    def test_rtx_4090_qwen_24gb_class(self):
+        # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free
+        # GPU, ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [0]
+
+    def test_explicit_ctx_at_94_pct_pins_to_gpu(self):
+        # Explicit-ctx branch must agree with auto-ctx on headroom.
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [0]
+
+    def test_genuine_overflow_still_uses_fit(self):
+        # Beyond 95% must still defer to --fit on.
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 23,
+            gpus = [(0, 22_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is True
+        assert plan["gpu_indices"] is None
+
+
+# ---------------------------------------------------------------------------
 # Platform-agnostic input shape
 # ---------------------------------------------------------------------------
 
@@ -391,3 +449,81 @@ def test_identical_decision_across_platforms(platform_tag):
     plan_a = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     plan_b = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     assert plan_a == plan_b, platform_tag
+
+
+# ---------------------------------------------------------------------------
+# _classify_gpu_offload: detect silent CPU fallback (#5106).
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyGpuOffload:
+    def _backend(self, stdout_lines):
+        inst = LlamaCppBackend.__new__(LlamaCppBackend)
+        inst._stdout_lines = list(stdout_lines)
+        return inst
+
+    def test_cuda_buffer_present_returns_true(self):
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 33/33 layers to GPU",
+                "load_tensors:        CUDA0 model buffer size = 21000.0 MiB",
+                "load_tensors:   CPU_Mapped model buffer size =     0.6 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_cpu_only_buffer_returns_false(self):
+        # llama-server printed buffer lines but only CPU buffers --
+        # this is the silent CPU fallback symptom we want to catch.
+        inst = self._backend(
+            [
+                "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+                "load_tensors:          CPU model buffer size =     0.6 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_no_buffer_lines_returns_none(self):
+        # If we can't see buffer-allocation lines at all, don't guess.
+        inst = self._backend(
+            [
+                "INFO [main] starting server",
+                "load_tensors: file format = GGUF V3",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is None
+
+    def test_no_gpus_detected_returns_none(self):
+        # CPU-only systems are valid; suppress the warning entirely.
+        inst = self._backend(
+            [
+                "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(False, []) is None
+
+    def test_user_did_not_intend_gpu_returns_none(self):
+        # Studio called start_llama_server without expecting GPU use;
+        # don't warn.
+        inst = self._backend(
+            [
+                "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(False, [(0, 22805)]) is None
+
+    def test_rocm_buffer_marker_returns_true(self):
+        inst = self._backend(
+            [
+                "load_tensors:        ROCm0 model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_metal_buffer_marker_returns_true(self):
+        inst = self._backend(
+            [
+                "load_tensors:       Metal model buffer size = 8000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True

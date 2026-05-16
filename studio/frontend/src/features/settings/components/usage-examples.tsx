@@ -96,11 +96,11 @@ export function UsageExamples() {
   };
 
   return (
-    <section className="flex flex-col">
+    <section className="flex min-w-0 max-w-full flex-col">
       <h2 className="mb-2 text-sm font-semibold text-foreground">Usage examples</h2>
-      <div className="overflow-hidden rounded-lg border border-border bg-muted/20">
-        <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
-          <div className="flex items-center gap-0.5">
+      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
+        <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+          <div className="flex min-w-0 items-center gap-0.5">
             {TABS.map((t) => {
               const active = lang === t.id;
               return (
@@ -134,7 +134,7 @@ export function UsageExamples() {
             {copied ? "Copied" : "Copy"}
           </button>
         </div>
-        <pre className="overflow-x-auto p-3 font-mono text-[11px] leading-relaxed text-foreground">
+        <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-foreground">
           {snippets[lang]}
         </pre>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">

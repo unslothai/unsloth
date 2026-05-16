@@ -263,16 +263,43 @@ def spoof_hardware(monkeypatch):
             monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
             monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
         else:
+            # Drop any cached mlx modules and patch find_spec so the
+            # unsloth gate (which uses importlib.util.find_spec) sees
+            # mlx as absent.
             monkeypatch.delitem(sys.modules, "mlx", raising = False)
             monkeypatch.delitem(sys.modules, "mlx.core", raising = False)
             real_find_spec = importlib.util.find_spec
 
             def _no_mlx(name, *args, **kwargs):
-                if name == "mlx":
+                if name == "mlx" or name.startswith("mlx."):
                     return None
                 return real_find_spec(name, *args, **kwargs)
 
             monkeypatch.setattr(importlib.util, "find_spec", _no_mlx)
+
+            # Studio's _has_mlx() literally does `import mlx.core`, not
+            # find_spec, so on a real Apple Silicon host with mlx
+            # genuinely installed the import would still succeed. Block
+            # it via a meta_path finder that raises ImportError for any
+            # `mlx` / `mlx.*` import while this profile is active.
+            class _BlockMLXFinder:
+                def find_spec(self_inner, name, path = None, target = None):
+                    if name == "mlx" or name.startswith("mlx."):
+                        raise ImportError(
+                            f"mlx import blocked by spoof_hardware "
+                            f"(profile={profile.name})"
+                        )
+                    return None
+
+            blocker = _BlockMLXFinder()
+            # Replace meta_path with a NEW list so monkeypatch can fully
+            # restore the original on teardown (mutating the list in
+            # place would survive the test).
+            monkeypatch.setattr(
+                sys,
+                "meta_path",
+                [blocker, *sys.meta_path],
+            )
 
     return _apply
 
