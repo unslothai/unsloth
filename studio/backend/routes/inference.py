@@ -4045,32 +4045,34 @@ async def anthropic_messages(
     # Validate client tool definitions at the boundary. AnthropicTool was
     # relaxed to Optional[input_schema] to accommodate server tools, so
     # the converter silently drops malformed entries — surface them as 400.
+    # A `type` field marks the entry as a server-tool declaration per the
+    # Anthropic spec; unrecognized server tools are accepted as no-ops
+    # (matching the prior pass-through behavior) rather than rejected.
     for tool in payload.tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
         name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
-        is_server_tool = (
-            isinstance(type_, str) and type_ in _STUDIO_ANTHROPIC_TOOL_ALIASES
-        ) or (
+        if (
             schema is None
-            and isinstance(name, str)
-            and name in _STUDIO_ANTHROPIC_TOOL_ALIASES
-        )
-        if not is_server_tool and schema is None:
+            and not isinstance(type_, str)
+            and not (isinstance(name, str) and name in _STUDIO_ANTHROPIC_TOOL_ALIASES)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = f"Tool {name!r} is missing required field 'input_schema'.",
             )
 
-    openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in requested_studio_tools
-    ]
+    # Detect client tools from the raw payload (presence of input_schema)
+    # so the mixed-mode check below isn't fooled by a name collision with
+    # a server-tool alias that the post-filter would silently drop.
+    _has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        for t in payload.tools or []
+    )
 
     # The server-tool agentic loop executes tools in-process and cannot
     # relay unknown client functions back to the caller, so mixed requests
     # would silently drop the client tools. Reject explicitly instead.
-    if requested_studio_tools and openai_client_tools:
+    if requested_studio_tools and _has_client_tool:
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -4079,6 +4081,12 @@ async def anthropic_messages(
                 "supported. Send them in separate requests."
             ),
         )
+
+    openai_client_tools = [
+        tool
+        for tool in anthropic_tools_to_openai(payload.tools or [])
+        if tool.get("function", {}).get("name") not in requested_studio_tools
+    ]
 
     # An Anthropic server-tool declaration implies server-tool mode, but
     # only when tools aren't explicitly disabled (CLI --disable-tools or

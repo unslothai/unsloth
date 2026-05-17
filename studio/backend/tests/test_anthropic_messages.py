@@ -1178,6 +1178,26 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
+    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(
+        self, monkeypatch
+    ):
+        # Regression: a client tool sharing a name with a mapped server
+        # tool (e.g. user defines their own "web_search") must still
+        # trigger the mixed-mode 400 — the post-name filter would
+        # otherwise drop the client tool and silently route to server-only.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {"type": "web_search_20250305", "name": "web_search"},
+                {"name": "web_search", "input_schema": {"type": "object"}},
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
     def test_client_tool_missing_input_schema_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -1188,6 +1208,20 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "input_schema" in exc.value.detail
+
+    def test_unrecognized_server_tool_accepted_as_noop(self, monkeypatch):
+        # Anthropic server tools we don't map (e.g. code_execution_20250825)
+        # must not trip the missing-input_schema validation — `type` marks
+        # them as server-tool declarations per spec; we just don't dispatch.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "code_execution_20250825", "name": "code_execution"}],
+        )
+
+        # Should fall through to the plain chat path (no client tools, no
+        # recognized studio aliases), not raise.
+        with pytest.raises(_PlainPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
         # CLI `unsloth run --disable-tools` sets policy=False. A request
