@@ -2407,7 +2407,7 @@ class LlamaCppBackend:
                 )
                 logger.info(f"Reasoning model: {reasoning_kw} by default")
 
-            if launch_mmproj_path:
+            if launch_mmproj_path and effective_is_vision:
                 cmd.extend(["--mmproj", launch_mmproj_path])
                 logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
 
