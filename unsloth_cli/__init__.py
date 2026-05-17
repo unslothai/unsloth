@@ -4,13 +4,14 @@
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
 
+
 from unsloth_cli.commands.train import train
 from unsloth_cli.commands.inference import inference
 from unsloth_cli.commands.export import export, list_checkpoints
 from unsloth_cli.commands.studio import run as studio_run, studio_app
 
 
-def _version_callback(value: bool):
+def show_version(value: bool):
     if value:
         try:
             version = package_version("unsloth")
@@ -27,12 +28,12 @@ app = typer.Typer(
 
 
 @app.callback()
-def _main(
+def main(
     version: bool = typer.Option(
-        False,
+        None,
         "--version",
         "-V",
-        callback = _version_callback,
+        callback = show_version,
         is_eager = True,
         help = "Show version and exit.",
     ),
