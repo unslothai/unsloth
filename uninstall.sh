@@ -27,6 +27,11 @@ _kill_pid_file() {
     rm -f "$_pid_file" 2>/dev/null || true
 }
 
+# BRE-escape a path so it can be embedded in a pkill -f regex.
+_pkill_escape() {
+    printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
+}
+
 _pkill_studio() {
     # Prefer PID files written by _spawn_terminal so we only touch our own installs.
     for _data_dir in "$HOME/.local/share/unsloth" $(_custom_studio_data_dirs); do
@@ -36,25 +41,42 @@ _pkill_studio() {
         done
     done
 
-    if command -v pkill >/dev/null 2>&1; then
-        # Anchored patterns avoid matching `less notes.md` etc. Third pattern
-        # catches the post-exec `studio/backend/run.py --port N` form.
+    command -v pkill >/dev/null 2>&1 || return 0
+
+    # Scope fallback patterns to the install roots we are removing so a
+    # different Studio install (different UNSLOTH_STUDIO_HOME) is not touched.
+    _kill_roots="$HOME/.unsloth/studio"
+    _roots_from_conf=$(_custom_studio_roots 2>/dev/null || true)
+    [ -n "$_roots_from_conf" ] && _kill_roots="$_kill_roots
+$_roots_from_conf"
+
+    printf '%s\n' "$_kill_roots" | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        [ -d "$_root" ] || continue
+        _re=$(_pkill_escape "$_root")
+        # `unsloth studio` (default port) + `-p N` + `--port N` forms, all
+        # anchored on the install root's venv path.
         for _pat in \
-            "/unsloth_studio/bin/.*unsloth[^/]* studio.*-p[ =][0-9]" \
-            "/unsloth_studio/bin/.*unsloth[^/]* studio.*--port[ =][0-9]" \
-            "studio/backend/run\.py.*--port[ =][0-9]"
+            "${_re}/unsloth_studio/bin/[^ ]* studio( |\$|.*-p[ =][0-9])" \
+            "${_re}/unsloth_studio/bin/[^ ]* studio.*--port[ =][0-9]" \
+            "${_re}/.*studio/backend/run\.py"
         do
             pkill -TERM -f "$_pat" 2>/dev/null || true
         done
-        sleep 0.5
+    done
+    sleep 0.5
+    printf '%s\n' "$_kill_roots" | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        [ -d "$_root" ] || continue
+        _re=$(_pkill_escape "$_root")
         for _pat in \
-            "/unsloth_studio/bin/.*unsloth[^/]* studio.*-p[ =][0-9]" \
-            "/unsloth_studio/bin/.*unsloth[^/]* studio.*--port[ =][0-9]" \
-            "studio/backend/run\.py.*--port[ =][0-9]"
+            "${_re}/unsloth_studio/bin/[^ ]* studio( |\$|.*-p[ =][0-9])" \
+            "${_re}/unsloth_studio/bin/[^ ]* studio.*--port[ =][0-9]" \
+            "${_re}/.*studio/backend/run\.py"
         do
             pkill -KILL -f "$_pat" 2>/dev/null || true
         done
-    fi
+    done
 }
 
 _remove_path() {
@@ -64,13 +86,15 @@ _remove_path() {
     fi
 }
 
-# Accept as Studio root only if Studio sentinels exist. Without this,
-# UNSLOTH_STUDIO_HOME=$HOME sh uninstall.sh would rm -rf $HOME.
+# Accept as Studio root only if Studio sentinels exist (matches install.sh's
+# env-mode ownership guard at install.sh:1358-1361). A bare unsloth_studio/
+# directory is NOT enough -- require the install-time owner marker so a user
+# directory that happens to contain a folder named "unsloth_studio" is safe.
 _is_studio_root() {
     _r="$1"
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
-    [ -d "$_r/unsloth_studio" ] && return 0
+    [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
@@ -176,7 +200,14 @@ _remove_path "$HOME/.local/share/unsloth"
 _remove_cli_shim
 
 echo "Removing desktop shortcut and launcher lock..."
-_remove_path "$HOME/Desktop/Unsloth Studio"
+# install.sh creates Desktop/Unsloth Studio as a symlink. If the user has an
+# unrelated regular directory by that name, leave it alone.
+_desktop_link="$HOME/Desktop/Unsloth Studio"
+if [ -L "$_desktop_link" ] || [ ! -e "$_desktop_link" ]; then
+    _remove_path "$_desktop_link"
+else
+    echo "  refusing to remove non-symlink Desktop path: $_desktop_link" >&2
+fi
 _remove_path "$HOME/Desktop/unsloth-studio.desktop"
 # Locks are namespaced per-uid; env-mode adds an extra suffix.
 _lock_glob="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-${_uid}"
