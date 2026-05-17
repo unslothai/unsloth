@@ -1278,14 +1278,32 @@ def direct_linux_release_plan(
         bundle.release_tag,
         bundle.upstream_tag,
     )
+    resolved_upstream_tag = bundle.upstream_tag
     if DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets and not is_release_tag_like(
         bundle.upstream_tag
     ):
         approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
+        # Require exact source provenance for branch/pull/commit releases.
+        # Mirrors validated_checksums_for_bundle so incomplete metadata
+        # fails closed instead of degrading to the legacy branch-as-tag
+        # source hydration path that this PR is meant to eliminate.
+        if (
+            not approved_checksums.source_commit
+            or exact_source_archive_hash(approved_checksums) is None
+            or source_clone_url_from_checksums(approved_checksums) is None
+        ):
+            raise PrebuiltFallback(
+                f"approved checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} for "
+                f"{repo}@{bundle.release_tag} did not contain exact source provenance"
+            )
         attempts = apply_approved_hashes(attempts, approved_checksums)
+        # Pin auxiliary downloads (ensure_converter_scripts) and the install
+        # fingerprint to the concrete upstream tag from the approved metadata
+        # rather than the moving branch label inferred from asset names.
+        resolved_upstream_tag = approved_checksums.upstream_tag
     return InstallReleasePlan(
         requested_tag = requested_tag,
-        llama_tag = bundle.upstream_tag,
+        llama_tag = resolved_upstream_tag,
         release_tag = bundle.release_tag,
         attempts = attempts,
         approved_checksums = approved_checksums,
