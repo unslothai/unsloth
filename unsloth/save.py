@@ -3576,7 +3576,9 @@ def patch_saving_functions(model, vision = False):
             token = kwargs.get("token", None),
         )
         _preserve_tokenizer_eos_token(
-            self, save_directory, filename_prefix = filename_prefix,
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
         )
         if push_to_hub:
             push_kwargs = dict(kwargs)
