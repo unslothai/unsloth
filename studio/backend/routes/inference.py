@@ -3405,6 +3405,17 @@ async def _responses_stream(
             ),
         )
 
+    # Direct pass-through bypasses the openai_chat_completions image gate.
+    if not llama_backend.is_vision and any(
+        isinstance(m.content, list)
+        and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image provided but current GGUF model does not support vision.",
+        )
+
     body = _build_openai_passthrough_body(
         chat_req, backend_ctx = llama_backend.context_length
     )
