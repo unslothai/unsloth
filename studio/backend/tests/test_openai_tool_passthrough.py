@@ -305,7 +305,9 @@ class TestChatCompletionRequestToolFields:
         req = self._make()
         assert req.stream is False
 
-    def test_post_without_stream_field_decodes_to_stream_false_over_http(self, monkeypatch):
+    def test_post_without_stream_field_decodes_to_stream_false_over_http(
+        self, monkeypatch
+    ):
         # Wire-level guard for the same default: a POST body that omits
         # `stream` entirely (the exact shape naive curl / .NET clients
         # send) must deserialise into stream=False *and* the response
