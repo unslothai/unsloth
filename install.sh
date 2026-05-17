@@ -727,21 +727,10 @@ _spawn_terminal() {
     _cmd="$1"
     _os=$(uname)
     if [ "$_os" = "Darwin" ]; then
-        # why: AppleEvents from unsigned shell-shim .app bundles are blocked
-        # by TCC (no NSAppleEventsUsageDescription in the generated bundle,
-        # and no stable signing identity), so `osascript ... tell Terminal`
-        # silently fails and the launcher times out. Use a .command file +
-        # `open -a Terminal` instead: Terminal handles .command natively
-        # via Launch Services, no AppleEvents permission required.
-        #
-        # Server is nohup-detached so warm relaunches hit the fast-path
-        # (browser opens immediately). The .command file is a log viewer
-        # with a watcher subshell + trap so that:
-        #   - server exits (e.g. user clicked "Stop server" in the UI)
-        #     → watcher kills `tail` → bash exits → Terminal does not
-        #     prompt "process still running" when the user closes it
-        #   - user closes Terminal (Cmd+W) → trap fires → server is
-        #     SIGTERMed (then SIGKILLed at +0.5s as a safety net)
+        # AppleEvents are TCC-denied from unsigned .app bundles; spawn
+        # Terminal via a .command file + Launch Services instead. Server
+        # is nohup'd so warm relaunches hit the fast-path; watcher + trap
+        # in the .command couple Terminal close <-> server shutdown.
         nohup sh -c "$_cmd" >> "$LOG_FILE" 2>&1 &
         _server_pid=$!
         _pid_file="$DATA_DIR/studio-$_launch_port.pid"
@@ -762,8 +751,7 @@ _spawn_terminal() {
             printf '}\n'
             printf "tail -n 100 -F '%s' &\n" "$_logfile_q"
             printf 'TAIL_PID=$!\n'
-            # Watcher: server gone (UI quit, crash, external kill) → kill
-            # tail so bash returns from wait and exits cleanly.
+            # Server gone -> kill tail so bash exits cleanly.
             printf '(\n'
             printf '  while kill -0 "$SERVER_PID" 2>/dev/null; do sleep 1; done\n'
             printf '  kill "$TAIL_PID" 2>/dev/null\n'
@@ -775,8 +763,7 @@ _spawn_terminal() {
         } > "$_cmd_file" 2>/dev/null \
             && chmod +x "$_cmd_file" 2>/dev/null \
             && open -a Terminal "$_cmd_file" 2>/dev/null
-        # Foreground Terminal so the user sees the window when Launch
-        # Services spawned the launcher in a background (no-TTY) context.
+        # Foreground Terminal (Launch Services spawns us backgrounded).
         osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
         return 0
     else
@@ -1054,10 +1041,8 @@ DESKTOP_EOF
         _css_contents="$_css_app/Contents"
         _css_macos_dir="$_css_contents/MacOS"
         _css_res_dir="$_css_contents/Resources"
-        # why: a prior install (e.g. --tauri) may have left the .app path
-        # as a symlink. mkdir -p follows symlinks and would write the
-        # bundle contents to the target, corrupting both. Refuse to
-        # install through a symlink; remove it and recreate fresh.
+        # mkdir -p follows symlinks; an old --tauri install may have left
+        # one here. Remove it so we don't write through to the target.
         if [ -L "$_css_app" ]; then
             rm -f "$_css_app" 2>/dev/null || {
                 echo "[ERROR] $_css_app exists as a symlink and cannot be removed; remove manually and re-run install" >&2
