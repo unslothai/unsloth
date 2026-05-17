@@ -304,9 +304,7 @@ def _make_hip_install_env(monkeypatch, *, gcc_dir: str | None):
     branch of _install_package_wheel_first end-to-end. The package isn't
     installed yet, no prebuilt wheel exists, hipcc is on PATH, and the
     fake env reports an HIP torch."""
-    monkeypatch.setattr(
-        builtins, "__import__", _missing_module_import("causal_conv1d")
-    )
+    monkeypatch.setattr(builtins, "__import__", _missing_module_import("causal_conv1d"))
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
@@ -332,9 +330,7 @@ def test_install_injects_gcc_install_dir_on_hip_source_build(monkeypatch):
     """HIP source-build with no user-set HIPCC_COMPILE_FLAGS_APPEND →
     subprocess env carries --gcc-install-dir=<detected path>."""
     monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
-    _make_hip_install_env(
-        monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13"
-    )
+    _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
     captured: dict[str, str] = {}
 
@@ -365,9 +361,7 @@ def test_install_appends_to_existing_hipcc_compile_flags(monkeypatch):
     """User has HIPCC_COMPILE_FLAGS_APPEND='-O3 -DFOO' set → final value
     keeps the user's flags AND adds --gcc-install-dir at the end."""
     monkeypatch.setenv("HIPCC_COMPILE_FLAGS_APPEND", "-O3 -DFOO")
-    _make_hip_install_env(
-        monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13"
-    )
+    _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
     captured: dict[str, str] = {}
 
@@ -400,9 +394,7 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         "HIPCC_COMPILE_FLAGS_APPEND",
         "--gcc-install-dir=/opt/custom/gcc-13",
     )
-    _make_hip_install_env(
-        monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13"
-    )
+    _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
     captured: dict[str, str] | None = {"_called": "no"}
 
@@ -437,9 +429,7 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
 def test_install_does_not_inject_env_on_cuda(monkeypatch):
     """CUDA path (no hip_version in env) → no env override at all."""
     monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
-    monkeypatch.setattr(
-        builtins, "__import__", _missing_module_import("causal_conv1d")
-    )
+    monkeypatch.setattr(builtins, "__import__", _missing_module_import("causal_conv1d"))
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
@@ -458,9 +448,7 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     monkeypatch.setattr(
         worker,
         "_hipcc_gcc_install_dir",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("must not run on CUDA")
-        ),
+        lambda: (_ for _ in ()).throw(AssertionError("must not run on CUDA")),
     )
 
     captured: dict[str, Any] = {}

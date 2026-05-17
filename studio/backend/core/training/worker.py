@@ -258,9 +258,7 @@ def _install_package_wheel_first(
         if "--gcc-install-dir" not in _existing_flags:
             _gcc_dir = _hipcc_gcc_install_dir()
             if _gcc_dir is not None:
-                _appended = (
-                    f"{_existing_flags} --gcc-install-dir={_gcc_dir}"
-                ).strip()
+                _appended = (f"{_existing_flags} --gcc-install-dir={_gcc_dir}").strip()
                 _run_kwargs["env"] = {
                     **os.environ,
                     "HIPCC_COMPILE_FLAGS_APPEND": _appended,
