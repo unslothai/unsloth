@@ -424,7 +424,7 @@ def fast_save_pickle(shard, name):
     return
 
 
-def _preserve_tokenizer_eos_token(tokenizer, save_directory):
+def _preserve_tokenizer_eos_token(tokenizer, save_directory, filename_prefix = None):
     """Restore tokenizer_config.json eos_token from the tokenizer passed to save.
 
     Some merge paths may re-save or mutate tokenizer metadata after the tokenizer
@@ -433,6 +433,11 @@ def _preserve_tokenizer_eos_token(tokenizer, save_directory):
     as vLLM will not stop generation correctly. Keep the serialized metadata in
     sync with the source tokenizer without failing the save if the config is not
     present or cannot be edited.
+
+    `filename_prefix` mirrors the same argument on Transformers'
+    `PreTrainedTokenizerBase.save_pretrained`: when provided, the tokenizer
+    config is written as `{filename_prefix}-tokenizer_config.json` instead of
+    `tokenizer_config.json`.
     """
     if tokenizer is None or save_directory is None:
         return
@@ -447,7 +452,12 @@ def _preserve_tokenizer_eos_token(tokenizer, save_directory):
         return
     eos_token = str(eos_token)
 
-    tokenizer_config = os.path.join(str(save_directory), "tokenizer_config.json")
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json"
+        if filename_prefix
+        else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
     if not os.path.isfile(tokenizer_config):
         return
 
@@ -1025,7 +1035,9 @@ def unsloth_save_model(
 
         tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
-            tokenizer, tokenizer_save_settings["save_directory"]
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
         )
 
         # Revert back padding side
@@ -3563,7 +3575,9 @@ def patch_saving_functions(model, vision = False):
             save_directory,
             token = kwargs.get("token", None),
         )
-        _preserve_tokenizer_eos_token(self, save_directory)
+        _preserve_tokenizer_eos_token(
+            self, save_directory, filename_prefix = filename_prefix,
+        )
         if push_to_hub:
             push_kwargs = dict(kwargs)
             repo_id = push_kwargs.pop("repo_id", save_directory)
