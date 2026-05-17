@@ -415,7 +415,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   };
 }
 
-async function ensureThreadRecord({
+export async function ensureThreadRecord({
   threadId,
   modelType,
   pairId,

@@ -3208,6 +3208,9 @@ class UnslothTrainer:
                 if eval_steps_val > 0:
                     config_args["eval_strategy"] = "steps"
                     config_args["eval_steps"] = eval_steps_val
+                    config_args["per_device_eval_batch_size"] = config_args[
+                        "per_device_train_batch_size"
+                    ]
                     logger.info(
                         f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n"
                     )
