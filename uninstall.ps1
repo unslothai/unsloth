@@ -127,9 +127,28 @@ function Uninstall-UnslothStudio {
         }
     }
 
+    # Return $true iff the PID's image path lives under one of $KnownRoots.
+    # Prevents killing an unrelated process that happens to listen on a stale
+    # Studio port.
+    function _PidUnderKnownRoot {
+        param([int]$Pid_, [string[]]$KnownRoots)
+        if (-not $KnownRoots -or $KnownRoots.Count -eq 0) { return $false }
+        try {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$Pid_" -ErrorAction SilentlyContinue
+            if (-not $proc) { return $false }
+            $exe = $proc.ExecutablePath
+            if (-not $exe) { return $false }
+            foreach ($r in $KnownRoots) {
+                if ($r -and ($exe -ilike "$r\*")) { return $true }
+            }
+        } catch { }
+        return $false
+    }
+
     # Stop a Studio backend whose port is recorded in <DataDir>\studio.port.
+    # Only kills if the listening PID's exe path is under a known Studio root.
     function _StopByPortFile {
-        param([string]$PortFile)
+        param([string]$PortFile, [string[]]$KnownRoots)
         if (-not (Test-Path -LiteralPath $PortFile -PathType Leaf)) { return }
         $port = Get-Content -LiteralPath $PortFile -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($port) { $port = $port.Trim() }
@@ -140,18 +159,24 @@ function Uninstall-UnslothStudio {
         try {
             $conns = Get-NetTCPConnection -State Listen -LocalPort ([int]$port) -ErrorAction SilentlyContinue
             foreach ($c in $conns) {
+                if (-not (_PidUnderKnownRoot -Pid_ ([int]$c.OwningProcess) -KnownRoots $KnownRoots)) { continue }
                 try {
                     Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
                 } catch { }
             }
         } catch {
-            # Fallback for PS versions without Get-NetTCPConnection.
+            # netstat fallback for older PowerShell. Require LISTENING state so
+            # we never kill a process whose remote endpoint just happens to be
+            # the cached port (browser -> :443 etc.).
             try {
-                $lines = & netstat.exe -ano 2>$null | Select-String -Pattern (":$port\s")
+                $lines = & netstat.exe -ano 2>$null |
+                    Select-String -Pattern "LISTENING" |
+                    Select-String -Pattern ":$port\s"
                 foreach ($l in $lines) {
                     $parts = ($l.ToString() -split '\s+') | Where-Object { $_ }
                     $pid_ = $parts[-1]
                     if ($pid_ -match '^\d+$') {
+                        if (-not (_PidUnderKnownRoot -Pid_ ([int]$pid_) -KnownRoots $KnownRoots)) { continue }
                         try { Stop-Process -Id ([int]$pid_) -Force -ErrorAction SilentlyContinue } catch { }
                     }
                 }
@@ -190,21 +215,20 @@ function Uninstall-UnslothStudio {
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
     $defaultDataDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth Studio" } else { $null }
 
-    # ── Stop running servers ──
-    _Step "Stopping any running Unsloth Studio servers..."
-    # Default-mode port file.
-    if ($defaultDataDir) {
-        _StopByPortFile (Join-Path $defaultDataDir "studio.port")
-    }
-    # Custom-root port files (env-mode <root>\share\studio.port).
+    # Build known-root list FIRST so the port-file kill can verify ownership.
     $customRoots = @(_CustomStudioRoots)
-    foreach ($r in $customRoots) {
-        _StopByPortFile (Join-Path $r "share\studio.port")
-    }
-    # Process-name sweep as belt-and-suspenders.
     $knownRoots = @()
     if ($defaultStudioHome) { $knownRoots += $defaultStudioHome }
     $knownRoots += $customRoots
+
+    # ── Stop running servers ──
+    _Step "Stopping any running Unsloth Studio servers..."
+    if ($defaultDataDir) {
+        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $knownRoots
+    }
+    foreach ($r in $customRoots) {
+        _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
+    }
     _StopStudioProcesses -KnownRoots $knownRoots
 
     # ── Remove custom-root install trees ──
@@ -246,22 +270,22 @@ function Uninstall-UnslothStudio {
                     $entries = $rawPath -split ';'
                     $kept = New-Object System.Collections.ArrayList
                     $removedAny = $false
+                    # Only remove PATH entries that live inside a Studio root we
+                    # actually own (default or env-mode). A literal substring
+                    # match on `unsloth_studio` would clobber unrelated user
+                    # virtualenvs that happen to share the name.
                     foreach ($e in $entries) {
                         if ([string]::IsNullOrWhiteSpace($e)) { continue }
-                        # Drop any PATH entry under .unsloth\studio or an unsloth_studio venv.
-                        $expanded = [Environment]::ExpandEnvironmentVariables($e)
-                        if ($expanded -match '\\\.unsloth\\studio($|\\)' -or $expanded -match '\\unsloth_studio\\') {
-                            _Substep "removed PATH entry: $e" "Green"
-                            $removedAny = $true
-                            continue
+                        $expanded = [Environment]::ExpandEnvironmentVariables($e).TrimEnd('\','/')
+                        $isStudio = $false
+                        foreach ($r in $knownRoots) {
+                            if (-not $r) { continue }
+                            $rNorm = $r.TrimEnd('\','/')
+                            if ($expanded -ieq $rNorm -or $expanded -ilike "$rNorm\*") {
+                                $isStudio = $true; break
+                            }
                         }
-                        # Also drop a custom-root\bin we know about.
-                        $isCustom = $false
-                        foreach ($r in $customRoots) {
-                            $rBin = (Join-Path $r "bin").TrimEnd('\','/')
-                            if ($expanded.TrimEnd('\','/') -ieq $rBin) { $isCustom = $true; break }
-                        }
-                        if ($isCustom) {
+                        if ($isStudio) {
                             _Substep "removed PATH entry: $e" "Green"
                             $removedAny = $true
                             continue
