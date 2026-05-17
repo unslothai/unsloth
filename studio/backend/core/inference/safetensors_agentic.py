@@ -221,20 +221,14 @@ def run_safetensors_tool_loop(
             # Buffer never resolved. Treat any leaked tool XML as a
             # tool call, otherwise emit the buffer as plain content.
             stripped = content_buffer.lstrip()
-            if (
-                stripped
-                and auto_heal_tool_calls
-                and has_tool_signal(stripped)
-            ):
+            if stripped and auto_heal_tool_calls and has_tool_signal(stripped):
                 detect_state = _state_draining
             else:
                 if content_buffer:
                     cumulative_display += content_buffer
                     yield {
                         "type": "content",
-                        "text": strip_tool_markup(
-                            cumulative_display, final=True
-                        ),
+                        "text": strip_tool_markup(cumulative_display, final = True),
                     }
                 yield {"type": "status", "text": ""}
                 return
@@ -248,13 +242,13 @@ def run_safetensors_tool_loop(
             if not safety_tc:
                 # Final answer arrived. Flush and exit.
                 if cumulative_display:
-                    cleaned = strip_tool_markup(cumulative_display, final=True)
+                    cleaned = strip_tool_markup(cumulative_display, final = True)
                     if cleaned and cleaned != last_emitted:
                         yield {"type": "content", "text": cleaned}
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
-            content_text = strip_tool_markup(content_accum, final=True)
+            content_text = strip_tool_markup(content_accum, final = True)
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
                 len(tool_calls),
@@ -264,12 +258,12 @@ def run_safetensors_tool_loop(
             tool_calls = parse_tool_calls_from_text(content_accum)
             if not tool_calls and auto_heal_tool_calls:
                 # Drained but parser found nothing. Treat as plain text.
-                cleaned = strip_tool_markup(content_accum, final=True)
+                cleaned = strip_tool_markup(content_accum, final = True)
                 if cleaned:
                     yield {"type": "content", "text": cleaned}
                 yield {"type": "status", "text": ""}
                 return
-            content_text = strip_tool_markup(content_accum, final=True)
+            content_text = strip_tool_markup(content_accum, final = True)
 
         if final_attempt_done:
             # We already asked the model for a final answer and it tried
@@ -289,7 +283,7 @@ def run_safetensors_tool_loop(
             tool_name = func.get("name", "") or ""
             arguments = _coerce_arguments(
                 func.get("arguments", {}),
-                heal=auto_heal_tool_calls,
+                heal = auto_heal_tool_calls,
             )
 
             yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
@@ -310,16 +304,14 @@ def run_safetensors_tool_loop(
                     "already have, or provide your final answer now."
                 )
             else:
-                eff_timeout = (
-                    None if tool_call_timeout >= 9999 else tool_call_timeout
-                )
+                eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                 try:
                     result = execute_tool(
                         tool_name,
                         arguments,
-                        cancel_event=cancel_event,
-                        timeout=eff_timeout,
-                        session_id=session_id,
+                        cancel_event = cancel_event,
+                        timeout = eff_timeout,
+                        session_id = session_id,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", tool_name, exc)
@@ -340,7 +332,10 @@ def run_safetensors_tool_loop(
             # Strip frontend image sentinel before feeding the result
             # back to the model so it does not see UI plumbing.
             result_for_model = result
-            if isinstance(result_for_model, str) and "\n__IMAGES__:" in result_for_model:
+            if (
+                isinstance(result_for_model, str)
+                and "\n__IMAGES__:" in result_for_model
+            ):
                 result_for_model = result_for_model.rsplit("\n__IMAGES__:", 1)[0]
             if is_error:
                 result_for_model = (

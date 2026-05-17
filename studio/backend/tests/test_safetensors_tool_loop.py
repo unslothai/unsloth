@@ -47,7 +47,9 @@ from core.inference.tool_call_parser import (
 
 class TestParser:
     def test_json_tool_call(self):
-        text = '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
+        text = (
+            '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         tc = result[0]
@@ -65,9 +67,7 @@ class TestParser:
         assert result[0]["function"]["name"] == "python"
 
     def test_xml_function_call(self):
-        text = (
-            "<function=python><parameter=code>print('hi')</parameter></function>"
-        )
+        text = "<function=python><parameter=code>print('hi')</parameter></function>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -104,7 +104,7 @@ class TestParser:
         assert result[1]["function"]["name"] == "web_search"
 
     def test_bad_json_does_not_raise(self):
-        text = '<tool_call>{not valid json}</tool_call>'
+        text = "<tool_call>{not valid json}</tool_call>"
         result = parse_tool_calls_from_text(text)
         # Bad JSON is silently dropped; caller can fall back to text.
         assert result == []
@@ -121,7 +121,7 @@ class TestParser:
     def test_strip_markup_unclosed_final(self):
         text = "before <tool_call>{partial"
         # With final=True the trailing run is dropped.
-        assert strip_tool_markup(text, final=True) == "before"
+        assert strip_tool_markup(text, final = True) == "before"
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
 
@@ -176,7 +176,7 @@ class FakeExecuteTool:
         return result
 
 
-def _collect_events(generator, max_events=200):
+def _collect_events(generator, max_events = 200):
     events = []
     for ev in generator:
         events.append(ev)
@@ -185,7 +185,7 @@ def _collect_events(generator, max_events=200):
     return events
 
 
-def _make_loop(*, turns, exec_results=None, **kwargs):
+def _make_loop(*, turns, exec_results = None, **kwargs):
     """Build a configured loop with a multi-turn fake generator.
 
     ``turns`` is a list of chunk-lists; iteration N yields chunks from
@@ -217,8 +217,8 @@ class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".
         loop, _exec = _make_loop(
-            turns=[["Hello", " world", "!"]],
-            exec_results=[],
+            turns = [["Hello", " world", "!"]],
+            exec_results = [],
         )
         events = _collect_events(loop)
         contents = [e for e in events if e["type"] == "content"]
@@ -231,17 +231,17 @@ class TestLoopBasic:
 
     def test_single_tool_then_answer(self):
         loop, exec_fn = _make_loop(
-            turns=[
+            turns = [
                 # Iteration 1: tool call only.
                 [
                     '<tool_call>{"name":"web_search",',
                     '"arguments":{"query":"weather"}}',
-                    '</tool_call>',
+                    "</tool_call>",
                 ],
                 # Iteration 2: final answer.
                 ["The ", "weather is ", "sunny."],
             ],
-            exec_results=["Sunny and 22C"],
+            exec_results = ["Sunny and 22C"],
         )
         events = _collect_events(loop)
         kinds = [e["type"] for e in events]
@@ -261,11 +261,11 @@ class TestLoopBasic:
 
     def test_function_xml_form(self):
         loop, exec_fn = _make_loop(
-            turns=[
+            turns = [
                 ["<function=python><parameter=code>print(1)</parameter></function>"],
                 ["Result: 1"],
             ],
-            exec_results=["1\n"],
+            exec_results = ["1\n"],
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
@@ -274,13 +274,13 @@ class TestLoopBasic:
 
     def test_truncated_unclosed_tool_call(self):
         loop, exec_fn = _make_loop(
-            turns=[
+            turns = [
                 # No </tool_call>; balanced-brace parser must still
                 # succeed because the JSON itself is balanced.
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}'],
                 ["done"],
             ],
-            exec_results=["result"],
+            exec_results = ["result"],
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
@@ -289,15 +289,17 @@ class TestLoopBasic:
         # Tool call with non-JSON string arguments. With auto_heal_tool_calls
         # the string is routed as {"query": ...}.
         loop, exec_fn = _make_loop(
-            turns=[
+            turns = [
                 # JSON inside the tool call is well-formed; the
                 # ``arguments`` is a string that is not itself valid
                 # JSON for ``_coerce_arguments`` to parse, so the
                 # heal path runs.
-                ['<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'
+                ],
                 ["ok"],
             ],
-            exec_results=["..."],
+            exec_results = ["..."],
         )
         events = _collect_events(loop)
         assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
@@ -310,12 +312,16 @@ class TestLoopBehaviour:
         # circuited with a "do not repeat" message and execute_tool is
         # called only once.
         loop, exec_fn = _make_loop(
-            turns=[
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final"],
             ],
-            exec_results=["search-result-1"],
+            exec_results = ["search-result-1"],
         )
         events = _collect_events(loop)
         # Only one real call.
@@ -329,11 +335,13 @@ class TestLoopBehaviour:
         # stripped before being fed back into the next turn, BUT the
         # tool_end event still carries the raw result for the UI.
         loop, exec_fn = _make_loop(
-            turns=[
-                ['<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'],
+            turns = [
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'
+                ],
                 ["see chart"],
             ],
-            exec_results=["chart\n__IMAGES__:/tmp/chart.png"],
+            exec_results = ["chart\n__IMAGES__:/tmp/chart.png"],
         )
         events = _collect_events(loop)
         tool_end = next(e for e in events if e["type"] == "tool_end")
@@ -341,11 +349,13 @@ class TestLoopBehaviour:
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(
-            turns=[
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["sorry, that failed"],
             ],
-            exec_results=["Error: network unreachable"],
+            exec_results = ["Error: network unreachable"],
         )
         events = _collect_events(loop)
         tool_end = next(e for e in events if e["type"] == "tool_end")
@@ -356,11 +366,13 @@ class TestLoopBehaviour:
 
     def test_exception_in_executor_does_not_raise(self):
         loop, exec_fn = _make_loop(
-            turns=[
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["recovered"],
             ],
-            exec_results=[RuntimeError("boom")],
+            exec_results = [RuntimeError("boom")],
         )
         events = _collect_events(loop)
         tool_end = next(e for e in events if e["type"] == "tool_end")
@@ -393,14 +405,16 @@ class TestLoopControl:
         # The loop should stop after max_tool_iterations even if the
         # model keeps asking for tools, then emit a final-attempt round.
         loop, exec_fn = _make_loop(
-            turns=[
+            turns = [
                 # iteration 1: tool call (executes once)
-                ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
+                ],
                 # iteration 2: model gives a final answer when nudged.
                 ["here is the final answer"],
             ],
-            exec_results=["result"],
-            max_tool_iterations=1,
+            exec_results = ["result"],
+            max_tool_iterations = 1,
         )
         events = _collect_events(loop)
         contents = [e for e in events if e["type"] == "content"]
@@ -415,18 +429,21 @@ class TestStatusFormatting:
             safetensors_agentic._status_for_tool("web_search", {"query": "abc"})
             == "Searching: abc"
         )
-        assert safetensors_agentic._status_for_tool(
-            "web_search", {"url": "https://www.example.com/x"}
-        ) == "Reading: example.com"
+        assert (
+            safetensors_agentic._status_for_tool(
+                "web_search", {"url": "https://www.example.com/x"}
+            )
+            == "Reading: example.com"
+        )
         assert safetensors_agentic._status_for_tool(
             "python", {"code": "x = 1"}
         ).startswith("Running Python:")
         assert safetensors_agentic._status_for_tool(
             "terminal", {"command": "ls"}
         ).startswith("Running:")
-        assert safetensors_agentic._status_for_tool(
-            "unknown_tool", {}
-        ).startswith("Calling:")
+        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith(
+            "Calling:"
+        )
 
 
 if __name__ == "__main__":

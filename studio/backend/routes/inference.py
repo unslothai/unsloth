@@ -231,9 +231,7 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
-def _detect_safetensors_features(
-    backend, chat_template: Optional[str]
-) -> dict:
+def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Surface reasoning/tool capabilities for a loaded safetensors model.
 
     Uses the same ``detect_reasoning_flags`` classifier as GGUF so flags
@@ -242,17 +240,21 @@ def _detect_safetensors_features(
     than chat-template markup.
     """
     model_id = getattr(backend, "active_model_name", None)
-    flags = detect_reasoning_flags(
-        chat_template,
-        model_identifier = model_id,
-        log_source = "safetensors",
-    ) if chat_template else {
-        "supports_reasoning": False,
-        "reasoning_style": "enable_thinking",
-        "reasoning_always_on": False,
-        "supports_preserve_thinking": False,
-        "supports_tools": False,
-    }
+    flags = (
+        detect_reasoning_flags(
+            chat_template,
+            model_identifier = model_id,
+            log_source = "safetensors",
+        )
+        if chat_template
+        else {
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+            "supports_tools": False,
+        }
+    )
     # gpt-oss surfaces reasoning via harmony channels (HarmonyTextStreamer);
     # the chat template does not advertise reasoning kwargs but we still
     # want the UI to enable the reasoning toggle. Tool calling for gpt-oss
@@ -647,9 +649,7 @@ async def load_model(
                 # ``preserve_thinking`` / ``tools`` into
                 # ``apply_chat_template``, so we can honestly advertise
                 # whatever the template supports.
-                _sf_flags = _detect_safetensors_features(
-                    backend, _chat_template
-                )
+                _sf_flags = _detect_safetensors_features(backend, _chat_template)
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 return LoadResponse(
@@ -673,9 +673,7 @@ async def load_model(
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
-                    supports_preserve_thinking = _sf_flags[
-                        "supports_preserve_thinking"
-                    ],
+                    supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
                     supports_tools = _sf_flags["supports_tools"],
                     chat_template = _chat_template,
                 )
@@ -2775,8 +2773,7 @@ async def openai_chat_completions(
     _sf_is_gptoss = False
     try:
         _sf_is_gptoss = bool(
-            hasattr(backend, "_is_gpt_oss_model")
-            and backend._is_gpt_oss_model()
+            hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model()
         )
     except Exception:
         _sf_is_gptoss = False
@@ -2793,9 +2790,7 @@ async def openai_chat_completions(
 
         if payload.enabled_tools is not None:
             _sf_tools_to_use = [
-                t
-                for t in ALL_TOOLS
-                if t["function"]["name"] in payload.enabled_tools
+                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
             ]
         else:
             _sf_tools_to_use = ALL_TOOLS
@@ -2851,9 +2846,7 @@ async def openai_chat_completions(
         if _sf_nudge:
             _sf_nudge += _TOOL_ACTION_NUDGE
             if _sf_system_prompt:
-                _sf_system_prompt = (
-                    _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
-                )
+                _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
             else:
                 _sf_system_prompt = _sf_nudge
 
@@ -2861,15 +2854,11 @@ async def openai_chat_completions(
         # model doesn't see fragments from earlier conversations.
         _sf_chat_messages = []
         for _msg in chat_messages:
-            if _msg.get("role") == "assistant" and isinstance(
-                _msg.get("content"), str
-            ):
+            if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _TOOL_XML_RE.sub(
-                            "", _msg["content"]
-                        ).strip(),
+                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
                     }
                 )
             else:
@@ -2996,9 +2985,7 @@ async def openai_chat_completions(
                 import traceback
 
                 tb = traceback.format_exc()
-                logger.error(
-                    f"Error during safetensors tool streaming: {e}\n{tb}"
-                )
+                logger.error(f"Error during safetensors tool streaming: {e}\n{tb}")
                 error_chunk = {
                     "error": {
                         "message": _friendly_error(e),
