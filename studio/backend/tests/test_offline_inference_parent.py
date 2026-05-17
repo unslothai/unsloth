@@ -40,23 +40,41 @@ _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
-_hx = _types.ModuleType("httpx")
-for _exc in ("ConnectError", "TimeoutException", "ReadTimeout", "ReadError",
-             "RemoteProtocolError", "CloseError"):
-    setattr(_hx, _exc, type(_exc, (Exception,), {}))
+# Prefer real httpx if installed (CI installs it). Stub only as fallback.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    _hx = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+        "HTTPStatusError",
+    ):
+        setattr(_hx, _exc, type(_exc, (Exception,), {}))
+    _hx.Response = type("Response", (), {})
+    _hx.Request = type("Request", (), {})
 
+    class _FakeTimeout:
+        def __init__(self, *a, **k):
+            pass
 
-class _FakeTimeout:
-    def __init__(self, *a, **k): pass
-
-
-_hx.Timeout = _FakeTimeout
-_hx.Client = type("Client", (), {
-    "__init__": lambda s, **k: None,
-    "__enter__": lambda s: s,
-    "__exit__": lambda s, *a: None,
-})
-sys.modules.setdefault("httpx", _hx)
+    _hx.Timeout = _FakeTimeout
+    _hx.Client = type(
+        "Client",
+        (),
+        {
+            "__init__": lambda s, **k: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules.setdefault("httpx", _hx)
 
 
 from utils.models.model_config import _env_offline
