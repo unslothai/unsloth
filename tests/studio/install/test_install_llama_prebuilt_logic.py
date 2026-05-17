@@ -344,6 +344,278 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
     assert (install_dir / "BUILD_INFO.txt").exists()
 
 
+def test_simple_linux_direct_release_uses_published_source_checksums_for_branch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_commit = "25b1bc9c2f9aa0a390b968ee1ffd9ff01340a3fe"
+    release = {
+        "tag_name": "llama-prebuilt-master-3a92bc9",
+        "assets": [
+            {
+                "name": "app-master-linux-x64-cuda13-newer.tar.gz",
+                "browser_download_url": "https://example.test/app-master-linux-x64-cuda13-newer.tar.gz",
+            },
+            {
+                "name": "llama-prebuilt-sha256.json",
+                "browser_download_url": "https://example.test/llama-prebuilt-sha256.json",
+            },
+        ],
+    }
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "llama-prebuilt-master-3a92bc9",
+        upstream_tag = "b9174",
+        source_commit = source_commit,
+        source_repo = "ggml-org/llama.cpp",
+        source_repo_url = "https://github.com/ggml-org/llama.cpp",
+        source_ref_kind = "branch",
+        requested_source_ref = "master",
+        resolved_source_ref = "master",
+        artifacts = {
+            "app-master-linux-x64-cuda13-newer.tar.gz": ApprovedArtifactHash(
+                asset_name = "app-master-linux-x64-cuda13-newer.tar.gz",
+                sha256 = "a" * 64,
+                repo = "unslothai/llama.cpp",
+                kind = "linux-cuda-app",
+            ),
+            INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
+                source_commit
+            ): ApprovedArtifactHash(
+                asset_name = INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
+                    source_commit
+                ),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "exact-source",
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "load_approved_release_checksums",
+        lambda repo, release_tag: checksums,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "detected_linux_runtime_lines",
+        lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+    )
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = (13, 1),
+        compute_caps = ["100"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+    plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
+        release,
+        host,
+        "unslothai/llama.cpp",
+        "latest",
+    )
+
+    assert plan is not None
+    assert plan.llama_tag == "master"
+    assert plan.approved_checksums.upstream_tag == "b9174"
+    assert plan.approved_checksums.source_commit == source_commit
+    assert plan.attempts[0].expected_sha256 == "a" * 64
+    source_repo, source_ref, _source_archive, exact_source = (
+        INSTALL_LLAMA_PREBUILT.preferred_source_archive(
+            plan.approved_checksums, plan.llama_tag
+        )
+    )
+    assert source_repo == "ggml-org/llama.cpp"
+    assert source_ref == source_commit
+    assert exact_source is True
+
+
+@pytest.mark.parametrize(
+    "mutate, expected_match",
+    [
+        # Missing source_commit.
+        (
+            lambda c: setattr(c, "source_commit", None)
+            or setattr(c, "source_commit_short", None),
+            "exact source provenance",
+        ),
+        # source_commit present, but no exact-source archive hash.
+        (
+            lambda c: c.artifacts.pop(
+                INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
+                    c.source_commit
+                ),
+                None,
+            ),
+            "exact source provenance",
+        ),
+        # source_commit + exact-source archive present, but no source_repo.
+        (
+            lambda c: setattr(c, "source_repo", None)
+            or setattr(c, "source_repo_url", None),
+            "exact source provenance",
+        ),
+    ],
+    ids = [
+        "missing_source_commit",
+        "missing_exact_source_artifact",
+        "missing_source_repo",
+    ],
+)
+def test_simple_linux_direct_release_rejects_branch_without_exact_source_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate,
+    expected_match,
+):
+    source_commit = "25b1bc9c2f9aa0a390b968ee1ffd9ff01340a3fe"
+    release = {
+        "tag_name": "llama-prebuilt-master-3a92bc9",
+        "assets": [
+            {
+                "name": "app-master-linux-x64-cuda13-newer.tar.gz",
+                "browser_download_url": "https://example.test/app-master-linux-x64-cuda13-newer.tar.gz",
+            },
+            {
+                "name": "llama-prebuilt-sha256.json",
+                "browser_download_url": "https://example.test/llama-prebuilt-sha256.json",
+            },
+        ],
+    }
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "llama-prebuilt-master-3a92bc9",
+        upstream_tag = "b9174",
+        source_commit = source_commit,
+        source_repo = "ggml-org/llama.cpp",
+        source_repo_url = "https://github.com/ggml-org/llama.cpp",
+        source_ref_kind = "branch",
+        requested_source_ref = "master",
+        resolved_source_ref = "master",
+        artifacts = {
+            "app-master-linux-x64-cuda13-newer.tar.gz": ApprovedArtifactHash(
+                asset_name = "app-master-linux-x64-cuda13-newer.tar.gz",
+                sha256 = "a" * 64,
+                repo = "unslothai/llama.cpp",
+                kind = "linux-cuda-app",
+            ),
+            INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
+                source_commit
+            ): ApprovedArtifactHash(
+                asset_name = INSTALL_LLAMA_PREBUILT.exact_source_archive_logical_name(
+                    source_commit
+                ),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "exact-source",
+            ),
+        },
+    )
+    mutate(checksums)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "load_approved_release_checksums",
+        lambda repo, release_tag: checksums,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "detected_linux_runtime_lines",
+        lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+    )
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = (13, 1),
+        compute_caps = ["100"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+    with pytest.raises(PrebuiltFallback, match = expected_match):
+        INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
+            release,
+            host,
+            "unslothai/llama.cpp",
+            "latest",
+        )
+
+
+def test_simple_linux_direct_release_keeps_legacy_b_tag_path_without_checksums(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    release = {
+        "tag_name": "b9999",
+        "assets": [
+            {
+                "name": "app-b9999-linux-x64-cuda13-newer.tar.gz",
+                "browser_download_url": "https://example.test/app-b9999-linux-x64-cuda13-newer.tar.gz",
+            },
+            {
+                "name": "llama-prebuilt-sha256.json",
+                "browser_download_url": "https://example.test/llama-prebuilt-sha256.json",
+            },
+        ],
+    }
+
+    def unexpected_checksum_load(repo: str, release_tag: str):
+        raise AssertionError(
+            "legacy b-tag direct releases should not require checksum metadata"
+        )
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "load_approved_release_checksums",
+        unexpected_checksum_load,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "detected_linux_runtime_lines",
+        lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+    )
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = (13, 1),
+        compute_caps = ["100"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+    plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
+        release,
+        host,
+        "unslothai/llama.cpp",
+        "latest",
+    )
+
+    assert plan is not None
+    assert plan.llama_tag == "b9999"
+    assert plan.release_tag == "b9999"
+    assert plan.approved_checksums.source_commit is None
+    assert plan.attempts[0].expected_sha256 is None
+
+
 def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
