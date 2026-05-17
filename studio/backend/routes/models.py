@@ -32,6 +32,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
+from utils.fs_access import is_accessible_dir
 
 # Import backend functions
 try:
@@ -882,7 +883,7 @@ async def get_recommended_folders(
             return
         if resolved in seen:
             return
-        if Path(resolved).is_dir() and os.access(resolved, os.R_OK | os.X_OK):
+        if is_accessible_dir(resolved):
             seen.add(resolved)
             folders.append(resolved)
 
