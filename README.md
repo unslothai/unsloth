@@ -221,7 +221,7 @@ unsloth studio -p 8888
 You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
 
 * ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
-* ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
+* ​ **Windows (PowerShell):** `irm https://unsloth.ai/uninstall.ps1 | iex`
 
 For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
 
