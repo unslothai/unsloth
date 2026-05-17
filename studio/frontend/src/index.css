@@ -1132,8 +1132,8 @@
 	mix-blend-mode: normal;
 }
 
-/* Sonner hardcodes `top: 0` on the close button; pin it 12px from the top
-   to match the 12px right offset set via --toast-close-button-end. */
+/* Sonner hardcodes `top: 0` on the close button; pin it 16px from the top
+   to match the toast's own 16px padding and --toast-close-button-end. */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: 12px !important;
+	top: 16px !important;
 }
