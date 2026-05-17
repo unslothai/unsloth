@@ -470,6 +470,17 @@ class LlamaCppBackend:
         # their own cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
         self._shared_kv_layers: Optional[int] = None
         self._lock = threading.Lock()
+        # Wraps load_model() end-to-end so concurrent loads serialise
+        # and never coexist as two llama-server processes (#5401).
+        self._serial_load_lock = threading.Lock()
+        # Last extra_args / requested n_ctx, preserved across unload so
+        # the chat UI's /unload+/load Apply path can inherit them (#5401).
+        # ``_extra_args_source`` records the (model_identifier, hf_variant)
+        # the stored args came from so the route can refuse cross-model
+        # inheritance.
+        self._extra_args: Optional[List[str]] = None
+        self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
+        self._requested_n_ctx: int = 0
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
@@ -504,6 +515,25 @@ class LlamaCppBackend:
     @property
     def hf_variant(self) -> Optional[str]:
         return self._hf_variant
+
+    @property
+    def extra_args(self) -> Optional[List[str]]:
+        """Extra llama-server flags from the last load. Copy; None = never
+        set, [] = explicitly cleared. Used by the route for inheritance."""
+        return list(self._extra_args) if self._extra_args is not None else None
+
+    @property
+    def requested_n_ctx(self) -> int:
+        """n_ctx the last load was invoked with (not the effective cap).
+        0 means Auto. Used by the route to detect Auto-vs-explicit flips."""
+        return self._requested_n_ctx
+
+    @property
+    def extra_args_source(self) -> Optional[tuple[str, Optional[str]]]:
+        """(model_identifier, hf_variant) the stored extra_args came from.
+        ``None`` if no extras have ever been recorded. Used by the route
+        to refuse cross-model inheritance (#5401)."""
+        return self._extra_args_source
 
     @property
     def context_length(self) -> Optional[int]:
@@ -1983,653 +2013,778 @@ class LlamaCppBackend:
 
         Returns True if server started and health check passed.
         """
-        self._cancel_event.clear()
-
-        # ── Phase 1: kill old process (under lock, fast) ──────────
-        with self._lock:
-            self._kill_process()
-
-        binary = self._find_llama_server_binary()
-        if not binary:
-            raise RuntimeError(
-                "llama-server binary not found. "
-                "Run setup.sh to build it, install llama.cpp, "
-                "or set LLAMA_SERVER_PATH environment variable."
-            )
-
-        # ── Phase 2: download (NO lock held, so cancel can proceed) ──
-        if hf_repo:
-            model_path = self._download_gguf(
-                hf_repo = hf_repo,
+        # Serialise the whole load so concurrent /load calls never
+        # leave two llama-server processes alive (#5401 / #5161). Does
+        # not block /unload, /status, /load-progress.
+        with self._serial_load_lock:
+            # Duplicate /load that raced past the route-level check
+            # (the first one hadn't published _healthy=True yet). If the
+            # live server already satisfies this request, do nothing.
+            if self._already_in_target_state(
+                gguf_path = gguf_path,
+                model_identifier = model_identifier,
                 hf_variant = hf_variant,
-                hf_token = hf_token,
-            )
-            # Auto-download mmproj for vision models
-            if is_vision and not mmproj_path:
-                mmproj_path = self._download_mmproj(
+                n_ctx = n_ctx,
+                cache_type_kv = cache_type_kv,
+                speculative_type = speculative_type,
+                chat_template_override = chat_template_override,
+                extra_args = extra_args,
+                is_vision = is_vision,
+            ):
+                logger.info(
+                    f"load_model: backend already in target state for "
+                    f"'{model_identifier}', skipping reload"
+                )
+                return True
+
+            self._cancel_event.clear()
+
+            # ── Phase 1: kill old process (under lock, fast) ──────────
+            with self._lock:
+                self._kill_process()
+
+            binary = self._find_llama_server_binary()
+            if not binary:
+                raise RuntimeError(
+                    "llama-server binary not found. "
+                    "Run setup.sh to build it, install llama.cpp, "
+                    "or set LLAMA_SERVER_PATH environment variable."
+                )
+
+            # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+            if hf_repo:
+                model_path = self._download_gguf(
                     hf_repo = hf_repo,
+                    hf_variant = hf_variant,
                     hf_token = hf_token,
                 )
-        elif gguf_path:
-            if not Path(gguf_path).is_file():
-                raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-            model_path = gguf_path
-        else:
-            raise ValueError("Either gguf_path or hf_repo must be provided")
+                # Auto-download mmproj for vision models
+                if is_vision and not mmproj_path:
+                    mmproj_path = self._download_mmproj(
+                        hf_repo = hf_repo,
+                        hf_token = hf_token,
+                    )
+            elif gguf_path:
+                if not Path(gguf_path).is_file():
+                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                model_path = gguf_path
+            else:
+                raise ValueError("Either gguf_path or hf_repo must be provided")
 
-        # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
-        self._model_identifier = model_identifier
+            # Set identifier early so _read_gguf_metadata can use it for DeepSeek detection
+            self._model_identifier = model_identifier
 
-        # Read GGUF metadata (context_length, chat_template) -- fast, header only
-        self._read_gguf_metadata(model_path)
+            # Read GGUF metadata (context_length, chat_template) -- fast, header only
+            self._read_gguf_metadata(model_path)
 
-        # Check cancel after download
-        if self._cancel_event.is_set():
-            logger.info("Load cancelled after download phase")
-            return False
-
-        # ── Phase 3: start llama-server (under lock) ──────────────
-        with self._lock:
-            # Re-check cancel inside lock
+            # Check cancel after download
             if self._cancel_event.is_set():
-                logger.info("Load cancelled before server start")
+                logger.info("Load cancelled after download phase")
                 return False
 
-            self._port = self._find_free_port()
+            # ── Phase 3: start llama-server (under lock) ──────────────
+            with self._lock:
+                # Re-check cancel inside lock
+                if self._cancel_event.is_set():
+                    logger.info("Load cancelled before server start")
+                    return False
 
-            # Select GPU(s) based on model size + estimated KV cache.
-            # Seed safe defaults before GPU probing so the except path
-            # still has valid state to publish.
-            effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
-            max_available_ctx = self._context_length or effective_ctx
-            gpus: list[tuple[int, int]] = []
-            try:
-                model_size = self._get_gguf_size_bytes(model_path)
-                gpus = self._get_gpu_free_memory()
+                self._port = self._find_free_port()
 
-                # Resolve effective context: 0 means let llama-server use the
-                # model's native length.  Only expand to a known native length
-                # if metadata is available; otherwise preserve 0 as a sentinel.
-                if n_ctx > 0:
-                    effective_ctx = n_ctx
-                elif self._context_length is not None:
-                    effective_ctx = self._context_length
-                else:
-                    effective_ctx = 0
-                original_ctx = effective_ctx
-                # Default UI ceiling to the model's native context length.
-                # GPU/VRAM-fit logic below may shrink this if hardware is limited.
+                # Select GPU(s) based on model size + estimated KV cache.
+                # Seed safe defaults before GPU probing so the except path
+                # still has valid state to publish.
+                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
+                gpus: list[tuple[int, int]] = []
+                try:
+                    model_size = self._get_gguf_size_bytes(model_path)
+                    gpus = self._get_gpu_free_memory()
 
-                # Auto-cap context to fit in GPU VRAM and select GPUs.
-                #
-                # Two policies depending on whether the user set n_ctx:
-                #
-                # Explicit n_ctx (user chose a context length):
-                #   Honor it. Try the full requested context with _select_gpus
-                #   (which uses as many GPUs as needed). Only cap if it doesn't
-                #   fit on any GPU combination.
-                #
-                # Auto n_ctx=0 (model's native context):
-                #   Prefer fewer GPUs with reduced context over more GPUs,
-                #   since multi-GPU is slower and the user didn't ask for a
-                #   specific context length.
-                gpu_indices, use_fit = None, True
-                explicit_ctx = n_ctx > 0
+                    # Resolve effective context: 0 means let llama-server use the
+                    # model's native length.  Only expand to a known native length
+                    # if metadata is available; otherwise preserve 0 as a sentinel.
+                    if n_ctx > 0:
+                        effective_ctx = n_ctx
+                    elif self._context_length is not None:
+                        effective_ctx = self._context_length
+                    else:
+                        effective_ctx = 0
+                    original_ctx = effective_ctx
+                    # Default UI ceiling to the model's native context length.
+                    # GPU/VRAM-fit logic below may shrink this if hardware is limited.
+                    max_available_ctx = self._context_length or effective_ctx
 
-                if gpus and self._can_estimate_kv() and effective_ctx > 0:
-                    # Compute the largest hardware-aware cap from the model's
-                    # native context across all usable GPU subsets (for UI
-                    # bounds), independent of the currently requested context.
-                    native_ctx_for_cap = self._context_length or effective_ctx
-                    if native_ctx_for_cap > 0:
-                        ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
-                        best_cap = 0
-                        for n_gpus in range(1, len(ranked_for_cap) + 1):
-                            subset = ranked_for_cap[:n_gpus]
-                            pool_mib = sum(free for _, free in subset)
-                            capped = self._fit_context_to_vram(
-                                native_ctx_for_cap,
-                                pool_mib,
-                                model_size,
-                                cache_type_kv,
-                                n_parallel = n_parallel,
+                    # Auto-cap context to fit in GPU VRAM and select GPUs.
+                    #
+                    # Two policies depending on whether the user set n_ctx:
+                    #
+                    # Explicit n_ctx (user chose a context length):
+                    #   Honor it. Try the full requested context with _select_gpus
+                    #   (which uses as many GPUs as needed). Only cap if it doesn't
+                    #   fit on any GPU combination.
+                    #
+                    # Auto n_ctx=0 (model's native context):
+                    #   Prefer fewer GPUs with reduced context over more GPUs,
+                    #   since multi-GPU is slower and the user didn't ask for a
+                    #   specific context length.
+                    gpu_indices, use_fit = None, True
+                    explicit_ctx = n_ctx > 0
+
+                    if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                        # Compute the largest hardware-aware cap from the model's
+                        # native context across all usable GPU subsets (for UI
+                        # bounds), independent of the currently requested context.
+                        native_ctx_for_cap = self._context_length or effective_ctx
+                        if native_ctx_for_cap > 0:
+                            ranked_for_cap = sorted(
+                                gpus, key = lambda g: g[1], reverse = True
                             )
-                            kv = self._estimate_kv_cache_bytes(
-                                capped, cache_type_kv, n_parallel = n_parallel
+                            best_cap = 0
+                            for n_gpus in range(1, len(ranked_for_cap) + 1):
+                                subset = ranked_for_cap[:n_gpus]
+                                pool_mib = sum(free for _, free in subset)
+                                capped = self._fit_context_to_vram(
+                                    native_ctx_for_cap,
+                                    pool_mib,
+                                    model_size,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                )
+                                kv = self._estimate_kv_cache_bytes(
+                                    capped, cache_type_kv, n_parallel = n_parallel
+                                )
+                                total_mib = (model_size + kv) / (1024 * 1024)
+                                if total_mib <= pool_mib * 0.90:
+                                    best_cap = max(best_cap, capped)
+                            if best_cap > 0:
+                                max_available_ctx = best_cap
+                            else:
+                                # Weights exceed 90% of every GPU subset's free
+                                # memory, so there is no fitting context. Anchor
+                                # the UI's "safe zone" threshold at 4096 (the
+                                # spec's default when the model cannot fit) so
+                                # the ctx slider shows the "might be slower"
+                                # warning as soon as the user drags above the
+                                # fallback default instead of never.
+                                max_available_ctx = min(4096, native_ctx_for_cap)
+
+                        if explicit_ctx:
+                            # Honor the user's requested context verbatim. If it
+                            # fits, pin GPUs and skip --fit; if it doesn't, ship
+                            # -c <user_ctx> --fit on and let llama-server flex
+                            # -ngl (CPU layer offload). The UI is expected to
+                            # have surfaced the "might be slower" warning before
+                            # the user submitted a ctx above the fit ceiling.
+                            requested_total = (
+                                model_size
+                                + self._estimate_kv_cache_bytes(
+                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
+                                )
                             )
-                            total_mib = (model_size + kv) / (1024 * 1024)
-                            if total_mib <= pool_mib * 0.90:
-                                best_cap = max(best_cap, capped)
-                        if best_cap > 0:
-                            max_available_ctx = best_cap
+                            gpu_indices, use_fit = self._select_gpus(
+                                requested_total, gpus
+                            )
+                            # No silent shrink: effective_ctx stays == n_ctx.
                         else:
-                            # Weights exceed 90% of every GPU subset's free
-                            # memory, so there is no fitting context. Anchor
-                            # the UI's "safe zone" threshold at 4096 (the
-                            # spec's default when the model cannot fit) so
-                            # the ctx slider shows the "might be slower"
-                            # warning as soon as the user drags above the
-                            # fallback default instead of never.
-                            max_available_ctx = min(4096, native_ctx_for_cap)
+                            # Auto context: prefer fewer GPUs, cap context
+                            # to fit. Same headroom threshold as
+                            # _select_gpus (#5106).
+                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
+                            pin_fraction = self._GPU_PIN_VRAM_FRACTION
+                            for n_gpus in range(1, len(ranked) + 1):
+                                subset = ranked[:n_gpus]
+                                pool_mib = sum(free for _, free in subset)
+                                capped = self._fit_context_to_vram(
+                                    effective_ctx,
+                                    pool_mib,
+                                    model_size,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                )
+                                kv = self._estimate_kv_cache_bytes(
+                                    capped, cache_type_kv, n_parallel = n_parallel
+                                )
+                                total_mib = (model_size + kv) / (1024 * 1024)
+                                if total_mib <= pool_mib * pin_fraction:
+                                    effective_ctx = capped
+                                    gpu_indices = sorted(idx for idx, _ in subset)
+                                    use_fit = False
+                                    break
+                            else:
+                                # Native ctx doesn't fit. Drop to 4096 and
+                                # re-check before deferring to --fit on:
+                                # a model that overflows at 131k may pin
+                                # comfortably with a 4096 KV cache (#5106).
+                                effective_ctx = min(4096, effective_ctx)
+                                if effective_ctx > 0:
+                                    for n_gpus in range(1, len(ranked) + 1):
+                                        subset = ranked[:n_gpus]
+                                        pool_mib = sum(free for _, free in subset)
+                                        kv = self._estimate_kv_cache_bytes(
+                                            effective_ctx,
+                                            cache_type_kv,
+                                            n_parallel = n_parallel,
+                                        )
+                                        total_mib = (model_size + kv) / (1024 * 1024)
+                                        if total_mib <= pool_mib * pin_fraction:
+                                            gpu_indices = sorted(
+                                                idx for idx, _ in subset
+                                            )
+                                            use_fit = False
+                                            break
 
-                    if explicit_ctx:
-                        # Honor the user's requested context verbatim. If it
-                        # fits, pin GPUs and skip --fit; if it doesn't, ship
-                        # -c <user_ctx> --fit on and let llama-server flex
-                        # -ngl (CPU layer offload). The UI is expected to
-                        # have surfaced the "might be slower" warning before
-                        # the user submitted a ctx above the fit ceiling.
-                        requested_total = model_size + self._estimate_kv_cache_bytes(
+                    elif gpus:
+                        # Can't estimate KV -- fall back to file-size-only check.
+                        # Without KV estimation we cannot prove a hardware cap, so
+                        # keep the ceiling at the native context (already the default).
+                        logger.debug(
+                            "Falling back to file-size-only GPU selection",
+                            model_size_gb = round(model_size / (1024**3), 2),
+                        )
+                        gpu_indices, use_fit = self._select_gpus(model_size, gpus)
+                        if use_fit and not explicit_ctx:
+                            # Weights don't fit on any subset. Default the UI to
+                            # 4096 so the slider doesn't land on an unusable native
+                            # context. --fit on will flex -ngl at runtime.
+                            effective_ctx = (
+                                min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                            )
+
+                    if effective_ctx < original_ctx:
+                        kv_est = self._estimate_kv_cache_bytes(
                             effective_ctx, cache_type_kv, n_parallel = n_parallel
                         )
-                        gpu_indices, use_fit = self._select_gpus(requested_total, gpus)
-                        # No silent shrink: effective_ctx stays == n_ctx.
-                    else:
-                        # Auto context: prefer fewer GPUs, cap context
-                        # to fit. Same headroom threshold as
-                        # _select_gpus (#5106).
-                        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
-                        pin_fraction = self._GPU_PIN_VRAM_FRACTION
-                        for n_gpus in range(1, len(ranked) + 1):
-                            subset = ranked[:n_gpus]
-                            pool_mib = sum(free for _, free in subset)
-                            capped = self._fit_context_to_vram(
-                                effective_ctx,
-                                pool_mib,
-                                model_size,
-                                cache_type_kv,
-                                n_parallel = n_parallel,
-                            )
-                            kv = self._estimate_kv_cache_bytes(
-                                capped, cache_type_kv, n_parallel = n_parallel
-                            )
-                            total_mib = (model_size + kv) / (1024 * 1024)
-                            if total_mib <= pool_mib * pin_fraction:
-                                effective_ctx = capped
-                                gpu_indices = sorted(idx for idx, _ in subset)
-                                use_fit = False
-                                break
-                        else:
-                            # Native ctx doesn't fit. Drop to 4096 and
-                            # re-check before deferring to --fit on:
-                            # a model that overflows at 131k may pin
-                            # comfortably with a 4096 KV cache (#5106).
-                            effective_ctx = min(4096, effective_ctx)
-                            if effective_ctx > 0:
-                                for n_gpus in range(1, len(ranked) + 1):
-                                    subset = ranked[:n_gpus]
-                                    pool_mib = sum(free for _, free in subset)
-                                    kv = self._estimate_kv_cache_bytes(
-                                        effective_ctx,
-                                        cache_type_kv,
-                                        n_parallel = n_parallel,
-                                    )
-                                    total_mib = (model_size + kv) / (1024 * 1024)
-                                    if total_mib <= pool_mib * pin_fraction:
-                                        gpu_indices = sorted(idx for idx, _ in subset)
-                                        use_fit = False
-                                        break
-
-                elif gpus:
-                    # Can't estimate KV -- fall back to file-size-only check.
-                    # Without KV estimation we cannot prove a hardware cap, so
-                    # keep the ceiling at the native context (already the default).
-                    logger.debug(
-                        "Falling back to file-size-only GPU selection",
-                        model_size_gb = round(model_size / (1024**3), 2),
-                    )
-                    gpu_indices, use_fit = self._select_gpus(model_size, gpus)
-                    if use_fit and not explicit_ctx:
-                        # Weights don't fit on any subset. Default the UI to
-                        # 4096 so the slider doesn't land on an unusable native
-                        # context. --fit on will flex -ngl at runtime.
-                        effective_ctx = (
-                            min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        logger.info(
+                            f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
+                            f"(model: {model_size / (1024**3):.1f} GB, "
+                            f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
                         )
 
-                if effective_ctx < original_ctx:
-                    kv_est = self._estimate_kv_cache_bytes(
+                    kv_cache_bytes = self._estimate_kv_cache_bytes(
                         effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
                     logger.info(
-                        f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
-                        f"(model: {model_size / (1024**3):.1f} GB, "
-                        f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                        f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                        f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                        f"context: {effective_ctx}, "
+                        f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                     )
+                except Exception as e:
+                    logger.warning(f"GPU selection failed ({e}), using --fit on")
+                    gpu_indices, use_fit = None, True
+                    effective_ctx = n_ctx  # fall back to original
 
-                kv_cache_bytes = self._estimate_kv_cache_bytes(
-                    effective_ctx, cache_type_kv, n_parallel = n_parallel
-                )
-                logger.info(
-                    f"GGUF size: {model_size / (1024**3):.1f} GB, "
-                    f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
-                    f"context: {effective_ctx}, "
-                    f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
-                )
-            except Exception as e:
-                logger.warning(f"GPU selection failed ({e}), using --fit on")
-                gpu_indices, use_fit = None, True
-                effective_ctx = n_ctx  # fall back to original
+                cmd = [
+                    binary,
+                    "-m",
+                    model_path,
+                    "--port",
+                    str(self._port),
+                    "-c",
+                    str(effective_ctx) if effective_ctx > 0 else "0",
+                    "--parallel",
+                    str(n_parallel),
+                    "--flash-attn",
+                    "on",  # Force flash attention for speed
+                    # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                    "--no-context-shift",
+                ]
 
-            cmd = [
-                binary,
-                "-m",
-                model_path,
-                "--port",
-                str(self._port),
-                "-c",
-                str(effective_ctx) if effective_ctx > 0 else "0",
-                "--parallel",
-                str(n_parallel),
-                "--flash-attn",
-                "on",  # Force flash attention for speed
-                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
-                "--no-context-shift",
-            ]
+                if use_fit:
+                    cmd.extend(["--fit", "on"])
+                elif gpu_indices is not None:
+                    # Model fits on selected GPU(s) -- offload all layers
+                    cmd.extend(["-ngl", "-1"])
 
-            if use_fit:
-                cmd.extend(["--fit", "on"])
-            elif gpu_indices is not None:
-                # Model fits on selected GPU(s) -- offload all layers
-                cmd.extend(["-ngl", "-1"])
-
-            # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
-            # do not inherit llama-server's internal default, which has historically
-            # varied (hardware concurrency incl. hyperthreads on some builds).
-            cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
-
-            # Always enable Jinja chat template rendering for proper template support
-            cmd.extend(["--jinja"])
-
-            # KV cache data type
-            _valid_cache_types = {
-                "f16",
-                "bf16",
-                "q8_0",
-                "q4_0",
-                "q4_1",
-                "q5_0",
-                "q5_1",
-                "iq4_nl",
-                "f32",
-            }
-            if cache_type_kv and cache_type_kv in _valid_cache_types:
+                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
+                # do not inherit llama-server's internal default, which has historically
+                # varied (hardware concurrency incl. hyperthreads on some builds).
                 cmd.extend(
-                    ["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv]
+                    ["--threads", str(n_threads if n_threads is not None else -1)]
                 )
-                self._cache_type_kv = cache_type_kv
-                logger.info(f"KV cache type: {cache_type_kv}")
-            else:
-                self._cache_type_kv = None
 
-            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
-            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
-            # variable draft lengths.  Helps most when the model repeats
-            # existing text (code refactoring, summarization, reasoning).
-            # For general chat with low repetition, overhead is ~5 ms.
-            #
-            # Benchmarks from upstream llama.cpp speculative-decoding PRs:
-            #   Scenario                        | Without | With    | Speedup
-            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
-            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
-            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
-            #
-            # Params from llama.cpp docs (docs/speculative.md):
-            #   --spec-ngram-size-n 24  (small n not recommended)
-            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
-            #     dense models can reduce these)
-            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
-            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
-            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
-            # ``"default"`` -> let llama-server pick a sensible spec
-            # config via ``--spec-default``. Explicit type names are
-            # passed through with the manual draft tuning we've shipped
-            # historically so power users keep their overrides.
-            _valid_spec_types = {"ngram-simple", "ngram-mod"}
-            normalized_spec = (
-                speculative_type.lower().strip() if speculative_type else None
-            )
-            if normalized_spec and normalized_spec != "off" and not is_vision:
-                if normalized_spec == "default":
-                    cmd.append("--spec-default")
-                    self._speculative_type = "default"
-                elif normalized_spec in _valid_spec_types:
-                    cmd.extend(["--spec-type", normalized_spec])
-                    if normalized_spec == "ngram-mod":
-                        cmd.extend(
-                            [
-                                "--spec-ngram-size-n",
-                                "24",
-                                "--draft-min",
-                                "48",
-                                "--draft-max",
-                                "64",
-                            ]
-                        )
-                    self._speculative_type = normalized_spec
+                # Always enable Jinja chat template rendering for proper template support
+                cmd.extend(["--jinja"])
+
+                # KV cache data type
+                _valid_cache_types = {
+                    "f16",
+                    "bf16",
+                    "q8_0",
+                    "q4_0",
+                    "q4_1",
+                    "q5_0",
+                    "q5_1",
+                    "iq4_nl",
+                    "f32",
+                }
+                if cache_type_kv and cache_type_kv in _valid_cache_types:
+                    cmd.extend(
+                        [
+                            "--cache-type-k",
+                            cache_type_kv,
+                            "--cache-type-v",
+                            cache_type_kv,
+                        ]
+                    )
+                    self._cache_type_kv = cache_type_kv
+                    logger.info(f"KV cache type: {cache_type_kv}")
+                else:
+                    self._cache_type_kv = None
+
+                # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+                # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+                # variable draft lengths.  Helps most when the model repeats
+                # existing text (code refactoring, summarization, reasoning).
+                # For general chat with low repetition, overhead is ~5 ms.
+                #
+                # Benchmarks from upstream llama.cpp speculative-decoding PRs:
+                #   Scenario                        | Without | With    | Speedup
+                #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+                #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+                #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+                #
+                # Params from llama.cpp docs (docs/speculative.md):
+                #   --spec-ngram-size-n 24  (small n not recommended)
+                #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+                #     dense models can reduce these)
+                # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+                # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+                # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+                # ``"default"`` -> let llama-server pick a sensible spec
+                # config via ``--spec-default``. Explicit type names are
+                # passed through with the manual draft tuning we've shipped
+                # historically so power users keep their overrides.
+                _valid_spec_types = {"ngram-simple", "ngram-mod"}
+                normalized_spec = (
+                    speculative_type.lower().strip() if speculative_type else None
+                )
+                if normalized_spec and normalized_spec != "off" and not is_vision:
+                    if normalized_spec == "default":
+                        cmd.append("--spec-default")
+                        self._speculative_type = "default"
+                    elif normalized_spec in _valid_spec_types:
+                        cmd.extend(["--spec-type", normalized_spec])
+                        if normalized_spec == "ngram-mod":
+                            cmd.extend(
+                                [
+                                    "--spec-ngram-size-n",
+                                    "24",
+                                    "--draft-min",
+                                    "48",
+                                    "--draft-max",
+                                    "64",
+                                ]
+                            )
+                        self._speculative_type = normalized_spec
+                    else:
+                        self._speculative_type = None
                 else:
                     self._speculative_type = None
-            else:
-                self._speculative_type = None
 
-            # Apply custom chat template override if provided
-            self._chat_template_override = chat_template_override
-            if chat_template_override:
-                import tempfile
+                # Apply custom chat template override if provided
+                self._chat_template_override = chat_template_override
+                if chat_template_override:
+                    import tempfile
 
-                flags = detect_reasoning_flags(
-                    chat_template_override,
-                    self._model_identifier,
-                    log_source = "GGUF chat template override",
-                )
-                self._supports_reasoning = flags["supports_reasoning"]
-                self._reasoning_style = flags["reasoning_style"]
-                self._reasoning_always_on = flags["reasoning_always_on"]
-                self._supports_preserve_thinking = flags["supports_preserve_thinking"]
-                self._supports_tools = flags["supports_tools"]
-
-                self._chat_template_file = tempfile.NamedTemporaryFile(
-                    mode = "w",
-                    suffix = ".jinja",
-                    delete = False,
-                    prefix = "unsloth_chat_template_",
-                )
-                self._chat_template_file.write(chat_template_override)
-                self._chat_template_file.close()
-                cmd.extend(["--chat-template-file", self._chat_template_file.name])
-                logger.info(
-                    f"Using custom chat template file: {self._chat_template_file.name}"
-                )
-
-            # For reasoning models, set default thinking mode.
-            # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
-            # Only 9B and larger enable thinking.
-            # Always-on templates ignore the kwarg entirely, so skip.
-            if self._supports_reasoning and not self._reasoning_always_on:
-                thinking_default = True
-                mid = (model_identifier or "").lower()
-                if "qwen3.5" in mid or "qwen3.6" in mid:
-                    size_val = _extract_model_size_b(mid)
-                    if size_val is not None and size_val < 9:
-                        thinking_default = False
-                self._reasoning_default = thinking_default
-                reasoning_kw = self._reasoning_kwargs(thinking_default)
-                cmd.extend(
-                    [
-                        "--chat-template-kwargs",
-                        json.dumps(reasoning_kw),
+                    flags = detect_reasoning_flags(
+                        chat_template_override,
+                        self._model_identifier,
+                        log_source = "GGUF chat template override",
+                    )
+                    self._supports_reasoning = flags["supports_reasoning"]
+                    self._reasoning_style = flags["reasoning_style"]
+                    self._reasoning_always_on = flags["reasoning_always_on"]
+                    self._supports_preserve_thinking = flags[
+                        "supports_preserve_thinking"
                     ]
-                )
-                logger.info(f"Reasoning model: {reasoning_kw} by default")
+                    self._supports_tools = flags["supports_tools"]
 
-            if mmproj_path:
-                if not Path(mmproj_path).is_file():
-                    logger.warning(f"mmproj file not found: {mmproj_path}")
-                else:
-                    # #5347 guard for paths that bypass detect_mmproj_file.
-                    from utils.models.model_config import (
-                        mmproj_matches_model_family,
+                    self._chat_template_file = tempfile.NamedTemporaryFile(
+                        mode = "w",
+                        suffix = ".jinja",
+                        delete = False,
+                        prefix = "unsloth_chat_template_",
+                    )
+                    self._chat_template_file.write(chat_template_override)
+                    self._chat_template_file.close()
+                    cmd.extend(["--chat-template-file", self._chat_template_file.name])
+                    logger.info(
+                        f"Using custom chat template file: {self._chat_template_file.name}"
                     )
 
-                    if not mmproj_matches_model_family(model_path, mmproj_path):
-                        logger.warning(
-                            f"Skipping mmproj with mismatched family: "
-                            f"model={Path(model_path).name}, "
-                            f"mmproj={Path(mmproj_path).name}"
-                        )
+                # For reasoning models, set default thinking mode.
+                # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+                # Only 9B and larger enable thinking.
+                # Always-on templates ignore the kwarg entirely, so skip.
+                if self._supports_reasoning and not self._reasoning_always_on:
+                    thinking_default = True
+                    mid = (model_identifier or "").lower()
+                    if "qwen3.5" in mid or "qwen3.6" in mid:
+                        size_val = _extract_model_size_b(mid)
+                        if size_val is not None and size_val < 9:
+                            thinking_default = False
+                    self._reasoning_default = thinking_default
+                    reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    cmd.extend(
+                        [
+                            "--chat-template-kwargs",
+                            json.dumps(reasoning_kw),
+                        ]
+                    )
+                    logger.info(f"Reasoning model: {reasoning_kw} by default")
+
+                if mmproj_path:
+                    if not Path(mmproj_path).is_file():
+                        logger.warning(f"mmproj file not found: {mmproj_path}")
                     else:
-                        cmd.extend(["--mmproj", mmproj_path])
-                        logger.info(f"Using mmproj for vision: {mmproj_path}")
-
-            # Option C: add --api-key for direct client access when enabled
-            import os as _os
-            import secrets as _secrets
-
-            if _os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
-                self._api_key = _secrets.token_urlsafe(32)
-                cmd.extend(["--api-key", self._api_key])
-                logger.info("llama-server started with --api-key for direct streaming")
-            else:
-                self._api_key = None
-
-            # User-supplied pass-through args go last so llama.cpp's
-            # last-wins flag parsing lets the user override Studio's
-            # auto-set tier-2 flags (e.g. --cache-type-k, --spec-type).
-            # The route layer has already validated this list against
-            # the managed-flag denylist via validate_extra_args().
-            if extra_args:
-                cmd.extend(str(a) for a in extra_args)
-                logger.info(
-                    f"Appending user extra args to llama-server: {list(extra_args)}"
-                )
-
-            _log_cmd = list(cmd)
-            if "--api-key" in _log_cmd:
-                _ki = _log_cmd.index("--api-key") + 1
-                if _ki < len(_log_cmd):
-                    _log_cmd[_ki] = "<redacted>"
-            logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
-
-            # Set library paths so llama-server can find its shared libs and CUDA DLLs
-            import os
-            import sys
-
-            env = child_env_without_native_path_secret()
-            binary_dir = str(Path(binary).parent)
-
-            if sys.platform == "win32":
-                # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
-                # be on PATH. Order: binary_dir, torch's pip-installed
-                # nvidia wheels, then a system CUDA toolkit. Pip wheels
-                # are the canonical source per Studio's install design
-                # (mirrors the Linux LD_LIBRARY_PATH block below) and
-                # CUDA_PATH covers users with a system toolkit. #5106.
-                path_dirs = [binary_dir]
-                path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
-                cuda_path = os.environ.get("CUDA_PATH", "")
-                if cuda_path:
-                    cuda_bin = os.path.join(cuda_path, "bin")
-                    if os.path.isdir(cuda_bin):
-                        path_dirs.append(cuda_bin)
-                    # Some CUDA installs put DLLs in bin\x64
-                    cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
-                    if os.path.isdir(cuda_bin_x64):
-                        path_dirs.append(cuda_bin_x64)
-                existing_path = env.get("PATH", "")
-                env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-            else:
-                # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
-                # and CUDA runtime libs (libcudart, libcublas, etc.)
-                import platform
-
-                lib_dirs = [binary_dir]
-                _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                # Pip-installed nvidia CUDA runtime libs (e.g. torch's
-                # bundled cuda-bindings).  The prebuilt llama.cpp binary
-                # links against libcudart.so.13 / libcublas.so.13 which
-                # live here, not in /usr/local/cuda.
-                import glob as _glob
-
-                for _nv_pattern in [
-                    os.path.join(
-                        sys.prefix,
-                        "lib",
-                        "python*",
-                        "site-packages",
-                        "nvidia",
-                        "cu*",
-                        "lib",
-                    ),
-                    os.path.join(
-                        sys.prefix,
-                        "lib",
-                        "python*",
-                        "site-packages",
-                        "nvidia",
-                        "cudnn",
-                        "lib",
-                    ),
-                    os.path.join(
-                        sys.prefix,
-                        "lib",
-                        "python*",
-                        "site-packages",
-                        "nvidia",
-                        "nvjitlink",
-                        "lib",
-                    ),
-                ]:
-                    for _nv_dir in _glob.glob(_nv_pattern):
-                        if os.path.isdir(_nv_dir):
-                            lib_dirs.append(_nv_dir)
-
-                for cuda_lib in [
-                    "/usr/local/cuda/lib64",
-                    f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                    # Fallback CUDA compat paths (e.g. binary built with
-                    # CUDA 12 on a system where default /usr/local/cuda
-                    # points to CUDA 13+).
-                    "/usr/local/cuda-12/lib64",
-                    "/usr/local/cuda-12.8/lib64",
-                    f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                    f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                ]:
-                    if os.path.isdir(cuda_lib):
-                        lib_dirs.append(cuda_lib)
-                existing_ld = env.get("LD_LIBRARY_PATH", "")
-                new_ld = ":".join(lib_dirs)
-                env["LD_LIBRARY_PATH"] = (
-                    f"{new_ld}:{existing_ld}" if existing_ld else new_ld
-                )
-
-            # Pin to selected GPU(s). On ROCm, llama-server (and any torch
-            # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
-            # narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
-            # the full HIP/ROCR set the parent inherited.
-            if gpu_indices is not None:
-                pinned = ",".join(str(i) for i in gpu_indices)
-                env["CUDA_VISIBLE_DEVICES"] = pinned
-                try:
-                    import torch as _torch
-
-                    if getattr(_torch.version, "hip", None) is not None:
-                        env["HIP_VISIBLE_DEVICES"] = pinned
-                        env["ROCR_VISIBLE_DEVICES"] = pinned
-                except Exception as e:
-                    logger.debug(
-                        "Failed to set ROCm visibility env vars for child: %s", e
-                    )
-
-            # Defensive kill: if a concurrent load slipped past Phase 1
-            # (because its `self._process` was None at the time) and
-            # already stored a Popen handle here, drop that orphan
-            # before we overwrite the reference. See issue #5161.
-            self._kill_process()
-
-            self._stdout_lines = []
-            self._process = subprocess.Popen(
-                cmd,
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                text = True,
-                env = env,
-                **_windows_hidden_subprocess_kwargs(),
-            )
-
-            # Start background thread to drain stdout and prevent pipe deadlock
-            self._stdout_thread = threading.Thread(
-                target = self._drain_stdout, daemon = True, name = "llama-stdout"
-            )
-            self._stdout_thread.start()
-
-            # Store the resolved on-disk path, not the caller's kwarg. In
-            # HF mode the caller passes gguf_path=None and the real path
-            # (``model_path``) is what llama-server is actually mmap'ing.
-            # Downstream consumers (load_progress, log lines, etc.) need
-            # the path that exists on disk.
-            self._gguf_path = model_path
-            self._hf_repo = hf_repo
-            # For local GGUF files, extract variant from filename if not provided
-            if hf_variant:
-                self._hf_variant = hf_variant
-            elif gguf_path:
-                try:
-                    from utils.models.model_config import _extract_quant_label
-
-                    self._hf_variant = _extract_quant_label(gguf_path)
-                except Exception:
-                    self._hf_variant = None
-            else:
-                self._hf_variant = None
-            self._is_vision = is_vision
-            self._model_identifier = model_identifier
-
-            # Store the effective (possibly capped) context separately.
-            # Do NOT overwrite _context_length -- it holds the model's native
-            # context length from GGUF metadata and is used for display/info.
-            self._effective_context_length = (
-                effective_ctx if effective_ctx > 0 else self._context_length
-            )
-            self._max_context_length = (
-                max_available_ctx
-                if max_available_ctx > 0
-                else self._effective_context_length
-            )
-
-            # Wait for llama-server to become healthy
-            if not self._wait_for_health(timeout = 600.0):
-                self._kill_process()
-                _gguf = gguf_path or ""
-                _is_ollama = (
-                    ".studio_links" in _gguf
-                    or os.sep + "ollama_links" + os.sep in _gguf
-                    or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
-                    or (self._model_identifier or "").startswith("ollama/")
-                )
-                # Only show the Ollama-specific message when the server
-                # output indicates a GGUF compatibility issue, not for
-                # unrelated failures like OOM or missing binaries.
-                if _is_ollama:
-                    _output = "\n".join(self._stdout_lines[-50:]).lower()
-                    _gguf_compat_hints = (
-                        "key not found",
-                        "unknown model architecture",
-                        "failed to load model",
-                    )
-                    if any(h in _output for h in _gguf_compat_hints):
-                        raise RuntimeError(
-                            "Some Ollama models do not work with llama.cpp. "
-                            "Try a different model, or use this model directly through Ollama instead."
+                        # #5347 guard for paths that bypass detect_mmproj_file.
+                        from utils.models.model_config import (
+                            mmproj_matches_model_family,
                         )
-                raise RuntimeError(
-                    "llama-server failed to start. "
-                    "Check that the GGUF file is valid and you have enough memory."
+
+                        if not mmproj_matches_model_family(model_path, mmproj_path):
+                            logger.warning(
+                                f"Skipping mmproj with mismatched family: "
+                                f"model={Path(model_path).name}, "
+                                f"mmproj={Path(mmproj_path).name}"
+                            )
+                        else:
+                            cmd.extend(["--mmproj", mmproj_path])
+                            logger.info(f"Using mmproj for vision: {mmproj_path}")
+
+                # Option C: add --api-key for direct client access when enabled
+                import os as _os
+                import secrets as _secrets
+
+                if _os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                    self._api_key = _secrets.token_urlsafe(32)
+                    cmd.extend(["--api-key", self._api_key])
+                    logger.info(
+                        "llama-server started with --api-key for direct streaming"
+                    )
+                else:
+                    self._api_key = None
+
+                # User-supplied pass-through args go last so llama.cpp's
+                # last-wins flag parsing lets the user override Studio's
+                # auto-set tier-2 flags (e.g. --cache-type-k, --spec-type).
+                # The route layer has already validated this list against
+                # the managed-flag denylist via validate_extra_args().
+                if extra_args:
+                    cmd.extend(str(a) for a in extra_args)
+                    logger.info(
+                        f"Appending user extra args to llama-server: {list(extra_args)}"
+                    )
+
+                _log_cmd = list(cmd)
+                if "--api-key" in _log_cmd:
+                    _ki = _log_cmd.index("--api-key") + 1
+                    if _ki < len(_log_cmd):
+                        _log_cmd[_ki] = "<redacted>"
+                logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
+
+                # Set library paths so llama-server can find its shared libs and CUDA DLLs
+                import os
+                import sys
+
+                env = child_env_without_native_path_secret()
+                binary_dir = str(Path(binary).parent)
+
+                if sys.platform == "win32":
+                    # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
+                    # be on PATH. Order: binary_dir, torch's pip-installed
+                    # nvidia wheels, then a system CUDA toolkit. Pip wheels
+                    # are the canonical source per Studio's install design
+                    # (mirrors the Linux LD_LIBRARY_PATH block below) and
+                    # CUDA_PATH covers users with a system toolkit. #5106.
+                    path_dirs = [binary_dir]
+                    path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
+                    cuda_path = os.environ.get("CUDA_PATH", "")
+                    if cuda_path:
+                        cuda_bin = os.path.join(cuda_path, "bin")
+                        if os.path.isdir(cuda_bin):
+                            path_dirs.append(cuda_bin)
+                        # Some CUDA installs put DLLs in bin\x64
+                        cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+                        if os.path.isdir(cuda_bin_x64):
+                            path_dirs.append(cuda_bin_x64)
+                    existing_path = env.get("PATH", "")
+                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+                else:
+                    # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                    # and CUDA runtime libs (libcudart, libcublas, etc.)
+                    import platform
+
+                    lib_dirs = [binary_dir]
+                    _arch = platform.machine()  # x86_64, aarch64, etc.
+
+                    # Pip-installed nvidia CUDA runtime libs (e.g. torch's
+                    # bundled cuda-bindings).  The prebuilt llama.cpp binary
+                    # links against libcudart.so.13 / libcublas.so.13 which
+                    # live here, not in /usr/local/cuda.
+                    import glob as _glob
+
+                    for _nv_pattern in [
+                        os.path.join(
+                            sys.prefix,
+                            "lib",
+                            "python*",
+                            "site-packages",
+                            "nvidia",
+                            "cu*",
+                            "lib",
+                        ),
+                        os.path.join(
+                            sys.prefix,
+                            "lib",
+                            "python*",
+                            "site-packages",
+                            "nvidia",
+                            "cudnn",
+                            "lib",
+                        ),
+                        os.path.join(
+                            sys.prefix,
+                            "lib",
+                            "python*",
+                            "site-packages",
+                            "nvidia",
+                            "nvjitlink",
+                            "lib",
+                        ),
+                    ]:
+                        for _nv_dir in _glob.glob(_nv_pattern):
+                            if os.path.isdir(_nv_dir):
+                                lib_dirs.append(_nv_dir)
+
+                    for cuda_lib in [
+                        "/usr/local/cuda/lib64",
+                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                        # Fallback CUDA compat paths (e.g. binary built with
+                        # CUDA 12 on a system where default /usr/local/cuda
+                        # points to CUDA 13+).
+                        "/usr/local/cuda-12/lib64",
+                        "/usr/local/cuda-12.8/lib64",
+                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+                    ]:
+                        if os.path.isdir(cuda_lib):
+                            lib_dirs.append(cuda_lib)
+                    existing_ld = env.get("LD_LIBRARY_PATH", "")
+                    new_ld = ":".join(lib_dirs)
+                    env["LD_LIBRARY_PATH"] = (
+                        f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+                    )
+
+                # Pin to selected GPU(s). On ROCm, llama-server (and any torch
+                # in the subprocess) honors HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES;
+                # narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
+                # the full HIP/ROCR set the parent inherited.
+                if gpu_indices is not None:
+                    pinned = ",".join(str(i) for i in gpu_indices)
+                    env["CUDA_VISIBLE_DEVICES"] = pinned
+                    try:
+                        import torch as _torch
+
+                        if getattr(_torch.version, "hip", None) is not None:
+                            env["HIP_VISIBLE_DEVICES"] = pinned
+                            env["ROCR_VISIBLE_DEVICES"] = pinned
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to set ROCm visibility env vars for child: %s", e
+                        )
+
+                # Defensive kill: if a concurrent load slipped past Phase 1
+                # (because its `self._process` was None at the time) and
+                # already stored a Popen handle here, drop that orphan
+                # before we overwrite the reference. See issue #5161.
+                self._kill_process()
+
+                self._stdout_lines = []
+                self._process = subprocess.Popen(
+                    cmd,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                    env = env,
+                    **_windows_hidden_subprocess_kwargs(),
                 )
 
-            self._healthy = True
+                # Start background thread to drain stdout and prevent pipe deadlock
+                self._stdout_thread = threading.Thread(
+                    target = self._drain_stdout, daemon = True, name = "llama-stdout"
+                )
+                self._stdout_thread.start()
 
-            # Catch silent CPU fallback when GPU was intended (#5106).
-            self._gpu_offload_active = self._classify_gpu_offload(
-                gpu_indices is not None or use_fit, gpus or []
-            )
-            if self._gpu_offload_active is False:
-                logger.warning(
-                    "llama-server appears to have loaded the model entirely "
-                    "on CPU even though Studio detected at least one GPU. "
-                    "This usually means the prebuilt binary's GPU backend "
-                    "failed to load -- on Windows, cudart64_X.dll / "
-                    "cublas64_X.dll could not be resolved. Reinstall the "
-                    "Studio llama.cpp prebuilt or install a matching CUDA "
-                    "toolkit (issue unslothai/unsloth#5106).",
+                # Store the resolved on-disk path, not the caller's kwarg. In
+                # HF mode the caller passes gguf_path=None and the real path
+                # (``model_path``) is what llama-server is actually mmap'ing.
+                # Downstream consumers (load_progress, log lines, etc.) need
+                # the path that exists on disk.
+                self._gguf_path = model_path
+                self._hf_repo = hf_repo
+                # For local GGUF files, extract variant from filename if not provided
+                if hf_variant:
+                    self._hf_variant = hf_variant
+                elif gguf_path:
+                    try:
+                        from utils.models.model_config import _extract_quant_label
+
+                        self._hf_variant = _extract_quant_label(gguf_path)
+                    except Exception:
+                        self._hf_variant = None
+                else:
+                    self._hf_variant = None
+                self._is_vision = is_vision
+                self._model_identifier = model_identifier
+
+                # Store the effective (possibly capped) context separately.
+                # Do NOT overwrite _context_length -- it holds the model's native
+                # context length from GGUF metadata and is used for display/info.
+                self._effective_context_length = (
+                    effective_ctx if effective_ctx > 0 else self._context_length
+                )
+                self._max_context_length = (
+                    max_available_ctx
+                    if max_available_ctx > 0
+                    else self._effective_context_length
                 )
 
-            logger.info(
-                f"llama-server ready on port {self._port} "
-                f"for model '{model_identifier}'"
-            )
-            return True
+                # Wait for llama-server to become healthy
+                if not self._wait_for_health(timeout = 600.0):
+                    self._kill_process()
+                    _gguf = gguf_path or ""
+                    _is_ollama = (
+                        ".studio_links" in _gguf
+                        or os.sep + "ollama_links" + os.sep in _gguf
+                        or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
+                        or (self._model_identifier or "").startswith("ollama/")
+                    )
+                    # Only show the Ollama-specific message when the server
+                    # output indicates a GGUF compatibility issue, not for
+                    # unrelated failures like OOM or missing binaries.
+                    if _is_ollama:
+                        _output = "\n".join(self._stdout_lines[-50:]).lower()
+                        _gguf_compat_hints = (
+                            "key not found",
+                            "unknown model architecture",
+                            "failed to load model",
+                        )
+                        if any(h in _output for h in _gguf_compat_hints):
+                            raise RuntimeError(
+                                "Some Ollama models do not work with llama.cpp. "
+                                "Try a different model, or use this model directly through Ollama instead."
+                            )
+                    raise RuntimeError(
+                        "llama-server failed to start. "
+                        "Check that the GGUF file is valid and you have enough memory."
+                    )
+
+                self._healthy = True
+
+                # Commit caller intent only after _healthy=True so a
+                # failed startup can't poison the next inheritance check.
+                # None keeps prior, [] clears, list sets. Source records
+                # the caller's hf_variant (None for local files) so the
+                # route's same_source check stays symmetric.
+                if extra_args is not None:
+                    self._extra_args = list(extra_args)
+                    self._extra_args_source = (model_identifier, hf_variant)
+                self._requested_n_ctx = int(n_ctx)
+
+                # Catch silent CPU fallback when GPU was intended (#5106).
+                self._gpu_offload_active = self._classify_gpu_offload(
+                    gpu_indices is not None or use_fit, gpus or []
+                )
+                if self._gpu_offload_active is False:
+                    logger.warning(
+                        "llama-server appears to have loaded the model entirely "
+                        "on CPU even though Studio detected at least one GPU. "
+                        "This usually means the prebuilt binary's GPU backend "
+                        "failed to load -- on Windows, cudart64_X.dll / "
+                        "cublas64_X.dll could not be resolved. Reinstall the "
+                        "Studio llama.cpp prebuilt or install a matching CUDA "
+                        "toolkit (issue unslothai/unsloth#5106).",
+                    )
+
+                logger.info(
+                    f"llama-server ready on port {self._port} "
+                    f"for model '{model_identifier}'"
+                )
+                return True
+
+    def _already_in_target_state(
+        self,
+        *,
+        model_identifier: str,
+        hf_variant: Optional[str],
+        n_ctx: int,
+        cache_type_kv: Optional[str],
+        speculative_type: Optional[str],
+        chat_template_override: Optional[str],
+        extra_args: Optional[List[str]],
+        is_vision: bool,
+        gguf_path: Optional[str] = None,
+    ) -> bool:
+        """True iff the live server already satisfies these load kwargs.
+
+        Mirrors ``routes/inference.py:_request_matches_loaded_settings``
+        but compares raw kwargs so ``load_model`` can short-circuit a
+        duplicate /load that raced past the route-level check (#5401).
+        """
+        if not self.is_loaded:
+            return False
+        if (self._model_identifier or "").lower() != (model_identifier or "").lower():
+            return False
+        # Direct-file loads pass hf_variant=None while the backend
+        # stores an extracted filename label; compare paths instead
+        # to keep the guard symmetric.
+        if gguf_path is not None and self._gguf_path:
+            try:
+                if Path(self._gguf_path).resolve() != Path(gguf_path).resolve():
+                    return False
+            except OSError:
+                return False
+        elif (self._hf_variant or "").lower() != (hf_variant or "").lower():
+            return False
+        if self._requested_n_ctx != int(n_ctx):
+            return False
+
+        def _norm(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                stripped = value.strip().lower()
+                return stripped or None
+            return value
+
+        if _norm(self._cache_type_kv) != _norm(cache_type_kv):
+            return False
+
+        # Vision GGUFs silently drop speculative decoding in
+        # load_model (the spec gate is "not is_vision"); treat the
+        # request's value as "off" so a vision load with
+        # speculative_type="default" still matches.
+        if self._is_vision or is_vision:
+            req_spec = "off"
+        else:
+            req_spec = _norm(speculative_type) or "off"
+        backend_spec = _norm(self._speculative_type) or "off"
+        if req_spec != backend_spec:
+            return False
+
+        if (self._chat_template_override or None) != (chat_template_override or None):
+            return False
+
+        # extra_args=None means "no opinion" (inherit semantics handled
+        # at the route layer); only an explicit list forces equality.
+        if extra_args is not None:
+            current = list(self._extra_args) if self._extra_args is not None else []
+            if list(extra_args) != current:
+                return False
+        return True
 
     def _classify_gpu_offload(
         self,
@@ -2737,6 +2892,10 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._process = None
+            # Clear healthy so a /load arriving during the replacement
+            # server's warm-up window cannot short-circuit against the
+            # previous server's health (#5401).
+            self._healthy = False
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
