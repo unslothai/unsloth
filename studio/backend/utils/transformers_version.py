@@ -44,6 +44,15 @@ from utils.subprocess_compat import (
 logger = get_logger(__name__)
 
 
+def _env_offline() -> bool:
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -242,6 +251,13 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
+    # Offline: don't burn 10s on a network timeout when the user has
+    # already signalled the network is unreachable. Fail-open to the
+    # lower tier same as any other fetch failure.
+    if _env_offline():
+        _tokenizer_class_cache[model_name] = False
+        return False
+
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
@@ -307,6 +323,11 @@ def _check_config_needs_550(model_name: str) -> bool:
             return result
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_cfg, exc)
+
+    # Offline: skip the urllib fetch (same fail-open semantics).
+    if _env_offline():
+        _config_needs_550_cache[model_name] = False
+        return False
 
     # --- Fall back to fetching from HuggingFace ---------------------------
     import urllib.request

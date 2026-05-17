@@ -44,6 +44,16 @@ from utils.subprocess_compat import (
 
 logger = get_logger(__name__)
 
+
+def _env_offline() -> bool:
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+
+
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
@@ -1357,12 +1367,7 @@ def list_gguf_variants(
     from huggingface_hub import model_info as hf_model_info
 
     # Offline: skip the API and serve from cache.
-    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
-    if offline:
+    if _env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
             return cached
@@ -1570,12 +1575,7 @@ def detect_gguf_model_remote(
     import time
     from huggingface_hub import model_info as hf_model_info
 
-    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
-    if offline:
+    if _env_offline():
         cached = _detect_gguf_from_hf_cache(repo_id)
         if cached is not None:
             return cached
@@ -2389,8 +2389,12 @@ class ModelConfig:
                     f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
                 )
 
-        # Auto-detect LoRA for remote HF models (check repo file listing)
-        if not is_lora and not is_local:
+        # Auto-detect LoRA for remote HF models (check repo file listing).
+        # Skip the API call when HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE is set
+        # so offline loads don't burn ~25s waiting for the HF API to time out.
+        # If the repo really is a LoRA, the worker still resolves it from
+        # cache later via the same env var.
+        if not is_lora and not is_local and not _env_offline():
             try:
                 from huggingface_hub import model_info as hf_model_info
 

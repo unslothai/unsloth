@@ -117,6 +117,7 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -142,6 +143,7 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -643,13 +645,18 @@ async def load_model(
                     chat_template = _chat_template,
                 )
 
-        # Create config using clean factory method
-        # is_lora is auto-detected from adapter_config.json on disk/HF
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+        # Create config using clean factory method.
+        # is_lora is auto-detected from adapter_config.json on disk/HF.
+        # Wrap in the DNS-probe contextmanager so offline loads (DNS dead)
+        # short-circuit the LoRA detect / tokenizer / config network checks
+        # in ModelConfig.from_identifier and load_model_defaults instead of
+        # burning 30-60s on soft-failed timeouts before the worker starts.
+        with _hf_offline_if_dns_dead():
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
 
         if not config:
             raise HTTPException(
