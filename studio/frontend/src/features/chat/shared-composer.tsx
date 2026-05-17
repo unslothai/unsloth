@@ -690,6 +690,9 @@ export function SharedComposer({
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
+        // dir="auto" auto-detects RTL (Arabic / Hebrew / Persian / Urdu)
+        // from the first strong character; no effect on LTR scripts.
+        dir="auto"
       />
       <div className="composer-action-wrapper">
         <div className="flex items-center gap-1">
