@@ -695,7 +695,7 @@ export function SharedComposer({
         dir="auto"
       />
       <div className="composer-action-wrapper">
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <input
             ref={fileInputRef}
             type="file"
@@ -751,12 +751,12 @@ export function SharedComposer({
                   type="button"
                   disabled={reasoningDisabled}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                    "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
                     reasoningDisabled
                       ? "cursor-not-allowed opacity-40"
                       : effectiveReasoningVisualEnabled
-                        ? "bg-primary/10 text-primary hover:bg-primary/20"
-                        : "text-muted-foreground hover:bg-muted-foreground/15",
+                        ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                        : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
                   )}
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
@@ -841,14 +841,14 @@ export function SharedComposer({
                 }
               }}
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
                 reasoningLockedOn
-                  ? "cursor-not-allowed bg-primary/10 text-primary"
+                  ? "cursor-not-allowed text-primary"
                   : reasoningDisabled
                     ? "cursor-not-allowed opacity-40"
                     : effectiveReasoningEnabled
-                      ? "bg-primary/10 text-primary hover:bg-primary/20"
-                      : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+                      ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                      : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
                 reasoningLockedOn
@@ -874,12 +874,12 @@ export function SharedComposer({
               disabled={!modelLoaded}
               onClick={() => setPreserveThinking(!preserveThinking)}
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
                 !modelLoaded
                   ? "cursor-not-allowed opacity-40"
                   : preserveThinking
-                    ? "bg-primary/10 text-primary hover:bg-primary/20"
-                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+                    ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                    : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
                 preserveThinking ? "Disable preserve think" : "Enable preserve think"
