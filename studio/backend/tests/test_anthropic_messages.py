@@ -1067,10 +1067,12 @@ class TestAnthropicRequestedStudioTools:
         tools = [{"type": "web_search_20250305", "name": "web_search"}]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
-    def test_recognizes_bare_server_tool_name(self):
-        # Server tools may arrive with just `name` (no versioned type).
+    def test_bare_name_without_type_is_not_treated_as_server_tool(self):
+        # Anthropic dispatches server tools by `type`; bare-name matching
+        # would let a malformed client tool (e.g. user forgot input_schema)
+        # silently flip the request into server-execution mode.
         tools = [{"name": "python"}]
-        assert _anthropic_requested_studio_tools(tools) == {"python"}
+        assert _anthropic_requested_studio_tools(tools) == set()
 
     def test_client_tool_named_python_is_not_misclassified(self):
         # input_schema is the client-tool discriminator; presence of it
@@ -1209,17 +1211,27 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "input_schema" in exc.value.detail
 
+    def test_alias_named_client_tool_without_schema_rejected_with_400(
+        self, monkeypatch
+    ):
+        # Regression: a typo'd client tool whose name happens to collide
+        # with a Studio alias (e.g. user meant a custom "python" tool but
+        # forgot input_schema) must surface a 400, not silently switch
+        # the request into Studio's built-in python execution.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = [{"name": "python"}])
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "input_schema" in exc.value.detail
+
     def test_unrecognized_server_tool_accepted_as_noop(self, monkeypatch):
-        # Anthropic server tools we don't map (e.g. code_execution_20250825)
-        # must not trip the missing-input_schema validation — `type` marks
-        # them as server-tool declarations per spec; we just don't dispatch.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "code_execution_20250825", "name": "code_execution"}],
         )
 
-        # Should fall through to the plain chat path (no client tools, no
-        # recognized studio aliases), not raise.
         with pytest.raises(_PlainPathCalled):
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
@@ -1236,7 +1248,9 @@ class TestAnthropicMessagesToolRouting:
         with pytest.raises(_PlainPathCalled):
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
-    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(
+        self, monkeypatch
+    ):
         # Mirror of the previous test for the default (None) policy.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -1246,7 +1260,9 @@ class TestAnthropicMessagesToolRouting:
         with pytest.raises(_ToolPathCalled):
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
-    def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
+    def test_per_request_enable_tools_false_blocks_server_tool_alias(
+        self, monkeypatch
+    ):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             enable_tools = False,

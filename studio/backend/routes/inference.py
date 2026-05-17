@@ -3891,13 +3891,14 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     for tool in tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
         # Client tools always carry input_schema; server tools never do.
-        # Skip client tools to avoid name collisions (e.g. a custom tool
-        # literally named "python" or "web_search").
         if td.get("input_schema") is not None:
             continue
-        for key in (td.get("name"), td.get("type")):
-            if isinstance(key, str) and key in _STUDIO_ANTHROPIC_TOOL_ALIASES:
-                requested.add(_STUDIO_ANTHROPIC_TOOL_ALIASES[key])
+        # Anthropic dispatches server tools by `type` (not by bare `name`);
+        # matching name too would let a malformed client tool like
+        # `{"name": "python"}` silently flip into server-execution mode.
+        type_ = td.get("type")
+        if isinstance(type_, str) and type_ in _STUDIO_ANTHROPIC_TOOL_ALIASES:
+            requested.add(_STUDIO_ANTHROPIC_TOOL_ALIASES[type_])
     return requested
 
 
@@ -4042,20 +4043,16 @@ async def anthropic_messages(
     # the `not image_b64` gate in /v1/chat/completions.
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
 
-    # Validate client tool definitions at the boundary. AnthropicTool was
-    # relaxed to Optional[input_schema] to accommodate server tools, so
-    # the converter silently drops malformed entries — surface them as 400.
-    # A `type` field marks the entry as a server-tool declaration per the
-    # Anthropic spec; unrecognized server tools are accepted as no-ops
-    # (matching the prior pass-through behavior) rather than rejected.
+    # Reject malformed client tools at the boundary. AnthropicTool was
+    # relaxed to Optional[input_schema] for server tools, so the converter
+    # silently drops incomplete entries — surface them as 400. A `type`
+    # field marks a server-tool declaration per spec (unrecognized server
+    # tools are accepted as no-ops); anything else without input_schema
+    # is malformed and must not be allowed to flip execution mode silently.
     for tool in payload.tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
         name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
-        if (
-            schema is None
-            and not isinstance(type_, str)
-            and not (isinstance(name, str) and name in _STUDIO_ANTHROPIC_TOOL_ALIASES)
-        ):
+        if schema is None and not isinstance(type_, str):
             raise HTTPException(
                 status_code = 400,
                 detail = f"Tool {name!r} is missing required field 'input_schema'.",
