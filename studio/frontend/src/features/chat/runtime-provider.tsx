@@ -81,6 +81,13 @@ const OPEN_DOCUMENT_TEXT_MIME = "application/vnd.oasis.opendocument.text";
 const OFFICE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 const TABLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
 const TEXT_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
+const OPEN_DOCUMENT_CELL_VALUE_ATTRIBUTES = [
+  "string-value",
+  "value",
+  "boolean-value",
+  "date-value",
+  "time-value",
+] as const;
 const MAX_REPEATED_OPEN_DOCUMENT_ROWS = 100;
 const MAX_REPEATED_OPEN_DOCUMENT_COLUMNS = 100;
 
@@ -432,11 +439,22 @@ function extractOpenDocumentCellText(cell: Element): string {
     return text;
   }
 
-  return (
-    getOpenDocumentAttribute(cell, OFFICE_NAMESPACE, "string-value") ??
-    getOpenDocumentAttribute(cell, OFFICE_NAMESPACE, "value") ??
-    ""
-  );
+  return getOpenDocumentCellValueText(cell);
+}
+
+function getOpenDocumentCellValueText(cell: Element): string {
+  for (const attributeName of OPEN_DOCUMENT_CELL_VALUE_ATTRIBUTES) {
+    const value = getOpenDocumentAttribute(
+      cell,
+      OFFICE_NAMESPACE,
+      attributeName,
+    );
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return "";
 }
 
 function extractOpenDocumentInlineText(node: Node): string {
