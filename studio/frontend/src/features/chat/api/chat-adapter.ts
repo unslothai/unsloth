@@ -43,7 +43,6 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
-import { ensureThreadRecord } from "../runtime-provider";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
@@ -1282,20 +1281,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         ? "anthropicCodeExecContainerId"
                         : "openaiCodeExecContainerId";
                     // On the first turn of a brand-new thread the row
-                    // may not have been inserted into Dexie yet when
-                    // this SSE event fires; db.threads.update would
-                    // silently affect 0 rows and the next turn would
-                    // re-read null, causing Anthropic to auto-create a
-                    // new container. ensureThreadRecord materializes
-                    // the row so the update sticks.
+                    // may not be in Dexie yet when this SSE event
+                    // fires — db.threads.update silently affects 0
+                    // rows, the next turn re-reads null, and Anthropic
+                    // auto-creates a fresh container. Retry briefly so
+                    // assistant-ui's own DexieAdapter.initialize lands
+                    // the row first (with the correct modelType for
+                    // base / lora / compare contexts) and our update
+                    // sticks on a subsequent attempt.
                     try {
-                      await ensureThreadRecord({
-                        threadId: resolvedThreadId,
-                        modelType: "base",
-                      });
-                      await db.threads.update(resolvedThreadId, {
-                        [field]: newContainerId,
-                      });
+                      for (let attempt = 0; attempt < 10; attempt++) {
+                        const affected = await db.threads.update(
+                          resolvedThreadId,
+                          { [field]: newContainerId },
+                        );
+                        if (affected > 0) break;
+                        await new Promise((resolve) =>
+                          setTimeout(resolve, 50),
+                        );
+                      }
                     } catch {
                       /* best-effort: container reuse is an optimization */
                     }
