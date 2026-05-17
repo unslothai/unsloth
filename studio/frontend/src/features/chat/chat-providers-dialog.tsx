@@ -246,13 +246,16 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed the registry's default_models for every provider — curated and
-    // remote alike. For remote-mode providers, loadModels() will replace
-    // this with the union of defaults + the live /models response once the
-    // user clicks "Load Models"; until then (or if the call fails — e.g.
-    // decryption issues during key rotation) the seeded list ensures
-    // curated picks like claude-haiku-4-5 are always reachable.
-    setAvailableModels([...entry.default_models]);
+    // Seed default_models only when the catalog is not fetched live:
+    // curated providers (catalog too large to enumerate, defaults are
+    // the suggestion shortlist) and Ollama (local, no API key — local
+    // /models stands in). Remote-mode cloud providers stay empty until
+    // the user clicks "Load available models" with a key, since
+    // different API tiers expose different catalogs and we don't want
+    // to advertise models the user can't actually call.
+    const seedDefaults =
+      entry.model_list_mode === "curated" || providerType === "ollama";
+    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
@@ -362,8 +365,11 @@ export function ChatProvidersSettings({
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry) {
-      // Keep first-open behavior consistent with provider re-selection.
-      setAvailableModels([...entry.default_models]);
+      const seedDefaults =
+        entry.model_list_mode === "curated" || providerType === "ollama";
+      if (seedDefaults) {
+        setAvailableModels([...entry.default_models]);
+      }
     }
     setPage("form");
   }
