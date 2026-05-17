@@ -4059,7 +4059,7 @@ async def anthropic_messages(
                 status_code = 400,
                 detail = f"Tool {name!r} is missing required field 'input_schema'.",
             )
-        if schema is not None and not isinstance(name, str):
+        if schema is not None and (not isinstance(name, str) or not name):
             raise HTTPException(
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",

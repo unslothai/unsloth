@@ -1227,6 +1227,20 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "name" in exc.value.detail
 
+    def test_client_tool_empty_name_rejected_with_400(self, monkeypatch):
+        # Same silent-disable class as missing-name: `name: ""` passes the
+        # isinstance check but is dropped by anthropic_tools_to_openai's
+        # `if not name` guard. Reject at the boundary so the typo surfaces.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"name": "", "input_schema": {"type": "object"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "name" in exc.value.detail
+
     def test_alias_named_client_tool_without_schema_rejected_with_400(
         self, monkeypatch
     ):
