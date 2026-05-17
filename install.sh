@@ -572,7 +572,7 @@ fi
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
-POLL_INTERVAL_SEC=1
+POLL_INTERVAL_SEC=0.25
 LOG_FILE="$DATA_DIR/studio.log"
 # why: in env-override mode multiple installs share an OS user; namespace the
 # lock and remember our own healthy port so we never attach to an unrelated
@@ -727,9 +727,58 @@ _spawn_terminal() {
     _cmd="$1"
     _os=$(uname)
     if [ "$_os" = "Darwin" ]; then
-        # Escape backslashes and double-quotes for AppleScript string
-        _cmd_escaped=$(printf '%s' "$_cmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        osascript -e "tell application \"Terminal\" to do script \"$_cmd_escaped\"" >/dev/null 2>&1 && return 0
+        # why: AppleEvents from unsigned shell-shim .app bundles are blocked
+        # by TCC (no NSAppleEventsUsageDescription in the generated bundle,
+        # and no stable signing identity), so `osascript ... tell Terminal`
+        # silently fails and the launcher times out. Use a .command file +
+        # `open -a Terminal` instead: Terminal handles .command natively
+        # via Launch Services, no AppleEvents permission required.
+        #
+        # Server is nohup-detached so warm relaunches hit the fast-path
+        # (browser opens immediately). The .command file is a log viewer
+        # with a watcher subshell + trap so that:
+        #   - server exits (e.g. user clicked "Stop server" in the UI)
+        #     → watcher kills `tail` → bash exits → Terminal does not
+        #     prompt "process still running" when the user closes it
+        #   - user closes Terminal (Cmd+W) → trap fires → server is
+        #     SIGTERMed (then SIGKILLed at +0.5s as a safety net)
+        nohup sh -c "$_cmd" >> "$LOG_FILE" 2>&1 &
+        _server_pid=$!
+        _pid_file="$DATA_DIR/studio-$_launch_port.pid"
+        printf '%d\n' "$_server_pid" > "$_pid_file" 2>/dev/null || true
+
+        _cmd_file="$DATA_DIR/launch-terminal.command"
+        _logfile_q=$(printf '%s' "$LOG_FILE" | sed "s/'/'\\\\''/g")
+        _pidfile_q=$(printf '%s' "$_pid_file" | sed "s/'/'\\\\''/g")
+        {
+            printf '#!/bin/bash\n'
+            printf "SERVER_PID=%s\n" "$_server_pid"
+            printf "PID_FILE='%s'\n" "$_pidfile_q"
+            printf 'shutdown_studio() {\n'
+            printf '  kill -TERM "$SERVER_PID" 2>/dev/null\n'
+            printf '  sleep 0.5\n'
+            printf '  kill -KILL "$SERVER_PID" 2>/dev/null\n'
+            printf '  rm -f "$PID_FILE" 2>/dev/null\n'
+            printf '}\n'
+            printf "tail -n 100 -F '%s' &\n" "$_logfile_q"
+            printf 'TAIL_PID=$!\n'
+            # Watcher: server gone (UI quit, crash, external kill) → kill
+            # tail so bash returns from wait and exits cleanly.
+            printf '(\n'
+            printf '  while kill -0 "$SERVER_PID" 2>/dev/null; do sleep 1; done\n'
+            printf '  kill "$TAIL_PID" 2>/dev/null\n'
+            printf ') &\n'
+            printf 'WATCHER_PID=$!\n'
+            printf 'trap "shutdown_studio; kill $WATCHER_PID $TAIL_PID 2>/dev/null; exit" HUP INT TERM\n'
+            printf 'trap "rm -f \"$PID_FILE\" 2>/dev/null" EXIT\n'
+            printf 'wait "$TAIL_PID" 2>/dev/null\n'
+        } > "$_cmd_file" 2>/dev/null \
+            && chmod +x "$_cmd_file" 2>/dev/null \
+            && open -a Terminal "$_cmd_file" 2>/dev/null
+        # Foreground Terminal so the user sees the window when Launch
+        # Services spawned the launcher in a background (no-TTY) context.
+        osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+        return 0
     else
         for _term in gnome-terminal konsole xfce4-terminal mate-terminal lxterminal xterm; do
             if command -v "$_term" >/dev/null 2>&1; then
@@ -1005,6 +1054,16 @@ DESKTOP_EOF
         _css_contents="$_css_app/Contents"
         _css_macos_dir="$_css_contents/MacOS"
         _css_res_dir="$_css_contents/Resources"
+        # why: a prior install (e.g. --tauri) may have left the .app path
+        # as a symlink. mkdir -p follows symlinks and would write the
+        # bundle contents to the target, corrupting both. Refuse to
+        # install through a symlink; remove it and recreate fresh.
+        if [ -L "$_css_app" ]; then
+            rm -f "$_css_app" 2>/dev/null || {
+                echo "[ERROR] $_css_app exists as a symlink and cannot be removed; remove manually and re-run install" >&2
+                return 1
+            }
+        fi
         mkdir -p "$_css_macos_dir" "$_css_res_dir"
 
         # Info.plist
