@@ -9,15 +9,13 @@ from unsloth_cli.commands.inference import inference
 from unsloth_cli.commands.export import export, list_checkpoints
 from unsloth_cli.commands.studio import run as studio_run, studio_app
 
-try:
-    _version = package_version("unsloth")
-except PackageNotFoundError:
-    _version = "unknown"
-
-
 def _version_callback(value: bool):
     if value:
-        typer.echo(f"unsloth {_version}")
+        try:
+            version = package_version("unsloth")
+        except PackageNotFoundError:
+            version = "unknown"
+        typer.echo(f"unsloth {version}")
         raise typer.Exit()
 
 
@@ -30,9 +28,7 @@ app = typer.Typer(
 @app.callback()
 def _main(
     version: bool = typer.Option(
-        None,
-        "--version",
-        "-V",
+        False, "--version", "-V",
         callback = _version_callback,
         is_eager = True,
         help = "Show version and exit.",
