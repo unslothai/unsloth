@@ -24,7 +24,10 @@ if str(backend_dir) not in sys.path:
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
-from startup_banner import print_studio_access_banner
+from startup_banner import (
+    print_sandbox_unavailable_notice,
+    print_studio_access_banner,
+)
 
 logger = get_logger(__name__)
 
@@ -426,6 +429,24 @@ def run_server(
         print(f"TAURI_PORT={port}", flush = True)
 
     if not silent:
+        # Probe in background: on kernel.unprivileged_userns_clone=0 hosts
+        # sandbox_available() stalls for its full 5s timeout otherwise.
+        import threading
+
+        from core.inference.sandbox import sandbox_available
+
+        probe_result: list[bool] = []
+        probe_done = threading.Event()
+
+        def _bg_probe():
+            try:
+                probe_result.append(sandbox_available())
+            finally:
+                probe_done.set()
+
+        threading.Thread(target = _bg_probe, daemon = True).start()
+        if probe_done.wait(timeout = 2.0) and probe_result and not probe_result[0]:
+            print_sandbox_unavailable_notice()
         display_host = _resolve_external_ip() if host == "0.0.0.0" else host
         print_studio_access_banner(
             port = port,

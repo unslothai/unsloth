@@ -3,306 +3,16 @@ name: Release Desktop App
 on:
   workflow_dispatch:
     inputs:
-      studio_version:
-        description: 'Studio version tag to release (for example, v0.1.39-beta)'
-        type: string
-        required: true
-      pypi_version:
-        description: 'Exact PyPI unsloth version just published/stamped (for example, 2026.5.3); leave blank to use MIN_DESKTOP_BACKEND_VERSION'
-        type: string
-        required: false
       draft:
-        description: 'Create as draft release; draft runs do not advance desktop-latest updater channel'
+        description: 'Create as draft release'
         type: boolean
         default: true
 
 permissions:
-  contents: read
-
-concurrency:
-  group: release-desktop-${{ github.repository }}
-  cancel-in-progress: false
+  contents: write
 
 jobs:
-  prepare-version:
-    name: Prepare release versions
-    runs-on: ubuntu-latest
-    outputs:
-      studio_version: ${{ steps.prepare.outputs.studio_version }}
-      app_version: ${{ steps.prepare.outputs.app_version }}
-      desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
-      prerelease: ${{ steps.prepare.outputs.prerelease }}
-      pypi_version: ${{ steps.prepare.outputs.pypi_version }}
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-
-      - name: Validate release versions
-        id: prepare
-        shell: bash
-        env:
-          INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
-          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
-        run: |
-          python3 <<'PY'
-          import os
-          import pathlib
-          import re
-          import sys
-
-          studio_version = os.environ['INPUT_STUDIO_VERSION'].strip()
-          if not studio_version:
-              sys.exit('studio_version is required, for example v0.1.39-beta')
-          if re.fullmatch(r'v?20\d{2}\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', studio_version):
-              sys.exit(f'studio_version must be a Studio SemVer tag, not a date-style backend version: {studio_version}')
-
-          semver_tag = re.compile(
-              r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
-              r'(?:-[0-9A-Za-z.][0-9A-Za-z.-]*)?$'
-          )
-          if not semver_tag.fullmatch(studio_version):
-              sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.39-beta: {studio_version}')
-
-          app_version = studio_version.removeprefix('v')
-          desktop_release_tag = f'desktop-v{app_version}'
-          prerelease = 'true' if '-' in app_version.split('+', 1)[0] else 'false'
-
-          def parse_backend_version(version):
-              match = re.fullmatch(
-                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
-                  r'(?:([a-zA-Z]|\.dev|dev|\.rc|rc|\.post|post)(\d*))?'
-                  r'(?:[-+]([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?',
-                  version,
-              )
-              if not match:
-                  return None
-              major, minor, patch, suffix_name, suffix_number, suffix_text = match.groups()
-              if suffix_name:
-                  normalized = suffix_name.lower().lstrip('.')
-                  order = {'dev': 0, 'a': 1, 'b': 2, 'rc': 3, 'post': 5}.get(normalized)
-                  if order is None:
-                      return None
-                  number = int(suffix_number or '0')
-              elif suffix_text:
-                  order = 3 if version[version.find(suffix_text) - 1] == '-' else 4
-                  number = 0
-              else:
-                  order = 4
-                  number = 0
-              return (int(major), int(minor), int(patch), order, number)
-
-          preflight = pathlib.Path('studio/src-tauri/src/preflight/version.rs').read_text()
-          match = re.search(r'MIN_DESKTOP_BACKEND_VERSION:\s*&str\s*=\s*"([^"]+)"', preflight)
-          if not match:
-              sys.exit('Could not read MIN_DESKTOP_BACKEND_VERSION')
-          min_backend_version = match.group(1)
-
-          input_pypi_version = os.environ.get('INPUT_PYPI_VERSION', '').strip()
-          parsed_min_backend = parse_backend_version(min_backend_version)
-          if parsed_min_backend is None:
-              sys.exit(f'MIN_DESKTOP_BACKEND_VERSION is not a supported backend package version: {min_backend_version}')
-
-          pypi_version = input_pypi_version or min_backend_version
-          parsed_pypi = parse_backend_version(pypi_version)
-          if parsed_pypi is None:
-              sys.exit(f'pypi_version is not a supported backend package version: {pypi_version}')
-          if parsed_pypi < parsed_min_backend:
-              sys.exit(
-                  f'pypi_version {pypi_version} is lower than desktop minimum '
-                  f'MIN_DESKTOP_BACKEND_VERSION {min_backend_version}'
-              )
-
-          if input_pypi_version:
-              print(
-                  'Using exact PyPI unsloth version from pypi_version input: '
-                  f'{pypi_version} (desktop minimum: {min_backend_version})'
-              )
-          else:
-              print(
-                  'Using exact PyPI unsloth version from MIN_DESKTOP_BACKEND_VERSION: '
-                  f'{pypi_version}'
-              )
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              print(f'studio_version={studio_version}', file=output)
-              print(f'app_version={app_version}', file=output)
-              print(f'desktop_release_tag={desktop_release_tag}', file=output)
-              print(f'prerelease={prerelease}', file=output)
-              print(f'pypi_version={pypi_version}', file=output)
-          PY
-
-      - name: Verify PyPI package and Studio stamp
-        shell: bash
-        env:
-          STUDIO_VERSION: ${{ steps.prepare.outputs.studio_version }}
-          PYPI_VERSION: ${{ steps.prepare.outputs.pypi_version }}
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-          import time
-          import urllib.error
-          import urllib.request
-
-          pypi_version = os.environ['PYPI_VERSION']
-          dist_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'pypi-unsloth-dist')
-          dist_dir.mkdir(parents=True, exist_ok=True)
-          metadata_url = f'https://pypi.org/pypi/unsloth/{pypi_version}/json'
-
-          last_error = None
-          for attempt in range(1, 6):
-              try:
-                  with urllib.request.urlopen(metadata_url, timeout=30) as response:
-                      metadata = json.load(response)
-                  break
-              except Exception as exc:
-                  last_error = exc
-                  if attempt < 5:
-                      time.sleep(10 * attempt)
-          else:
-              sys.exit(f'Publish unsloth=={pypi_version} to PyPI before the desktop release ({last_error})')
-
-          files = metadata.get('urls') or []
-          if not files:
-              sys.exit(f'PyPI returned no distribution files for unsloth=={pypi_version}')
-
-          for file_info in files:
-              filename = file_info.get('filename')
-              url = file_info.get('url')
-              if not filename or '/' in filename or not url:
-                  sys.exit(f'Unexpected PyPI file entry for unsloth=={pypi_version}: {file_info!r}')
-              target = dist_dir / filename
-              for attempt in range(1, 4):
-                  try:
-                      with urllib.request.urlopen(url, timeout=60) as response:
-                          target.write_bytes(response.read())
-                      break
-                  except Exception as exc:
-                      last_error = exc
-                      if attempt < 3:
-                          time.sleep(5 * attempt)
-              else:
-                  sys.exit(f'Could not download {filename} from PyPI ({last_error})')
-          PY
-
-          if [ -f scripts/stamp_studio_release.py ]; then
-            mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
-            if [ "${#dists[@]}" -eq 0 ]; then
-              echo "No PyPI wheel/sdist artifacts downloaded for unsloth==$PYPI_VERSION" >&2
-              exit 1
-            fi
-            python3 scripts/stamp_studio_release.py --verify-dist "$RUNNER_TEMP/pypi-unsloth-dist" --expected "$STUDIO_VERSION"
-          else
-            echo "scripts/stamp_studio_release.py not found; release-desktop requires #5308 to verify the PyPI Studio stamp." >&2
-            exit 1
-          fi
-
-      - name: Guard public updater channel version
-        if: ${{ !inputs.draft }}
-        shell: bash
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          APP_VERSION: ${{ steps.prepare.outputs.app_version }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/desktop-current"
-          if ! gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current" --clobber 2>/dev/null; then
-            echo "No existing desktop-latest latest.json found; allowing first channel publish."
-            exit 0
-          fi
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import re
-          import sys
-
-          def parse(value: str):
-              value = value.removeprefix('v')
-              match = re.fullmatch(
-                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
-                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
-                  r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?',
-                  value,
-              )
-              if not match:
-                  sys.exit(f'desktop-latest latest.json has invalid version: {value}')
-              major, minor, patch, prerelease = match.groups()
-              return (int(major), int(minor), int(patch), prerelease)
-
-          def numeric_tail(identifier: str) -> tuple[str, int] | None:
-              match = re.fullmatch(r'([A-Za-z-]+)(\d+)', identifier)
-              if not match:
-                  return None
-              return (match.group(1).lower(), int(match.group(2)))
-
-          def compare_identifier(left: str, right: str) -> int:
-              left_num = left.isdigit()
-              right_num = right.isdigit()
-              if left_num and right_num:
-                  return (int(left) > int(right)) - (int(left) < int(right))
-              if left_num:
-                  return -1
-              if right_num:
-                  return 1
-
-              left_tail = numeric_tail(left)
-              right_tail = numeric_tail(right)
-              if left_tail and right_tail and left_tail[0] == right_tail[0]:
-                  return (left_tail[1] > right_tail[1]) - (left_tail[1] < right_tail[1])
-
-              return (left > right) - (left < right)
-
-          def compare_prerelease(left: str | None, right: str | None) -> int:
-              if left == right:
-                  return 0
-              if left is None:
-                  return 1
-              if right is None:
-                  return -1
-              left_parts = left.split('.')
-              right_parts = right.split('.')
-              for left_part, right_part in zip(left_parts, right_parts):
-                  order = compare_identifier(left_part, right_part)
-                  if order:
-                      return order
-              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
-
-          def compare(left: str, right: str) -> int:
-              left_major, left_minor, left_patch, left_pre = parse(left)
-              right_major, right_minor, right_patch, right_pre = parse(right)
-              left_core = (left_major, left_minor, left_patch)
-              right_core = (right_major, right_minor, right_patch)
-              if left_core != right_core:
-                  return (left_core > right_core) - (left_core < right_core)
-              return compare_prerelease(left_pre, right_pre)
-
-          current_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-current', 'latest.json')
-          current = json.loads(current_path.read_text()).get('version')
-          next_version = os.environ['APP_VERSION']
-          if not isinstance(current, str):
-              sys.exit('desktop-latest latest.json has missing version')
-          if compare(next_version, current) < 0:
-              sys.exit(
-                  f'Refusing to publish {next_version}; desktop-latest currently points at newer version {current}.'
-              )
-          PY
-
   build:
-    # TODO: split into a "build (no secrets)" + "publish (secrets)" job pair
-    # with actions/upload-artifact handoff so the matrix build cannot
-    # publish a Release on its own. The current matrix runs across
-    # Linux/macOS/Windows in a single job, so the split needs artefact
-    # collection across the OS matrix and is out of scope for this
-    # hardening pass.
-    permissions:
-      contents: write  # tauri-apps/tauri-action creates / uploads a GitHub Release
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -322,31 +32,14 @@ jobs:
             label: Windows (x64)
 
     name: Build ${{ matrix.label }}
-    needs: prepare-version
     runs-on: ${{ matrix.platform }}
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
-      STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
-      DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-      DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
+
 
     steps:
-      # harden-runner in audit mode: surfaces every egress destination in
-      # the runner log so the allowlist for a future `egress-policy: block`
-      # promotion can be derived from observed traffic. Audit mode is
-      # cross-platform (Linux / macOS / Windows runners); blocking mode is
-      # currently Linux-only, so we deliberately stay in audit until the
-      # macOS + Windows codesign paths have been observed.
-      - name: Harden runner (audit)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       # ── Linux dependencies ──
       - name: Install Linux dependencies
@@ -357,18 +50,12 @@ jobs:
 
       # ── Node.js ──
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
 
       - name: Install pinned Tauri CLI
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1
 
       - name: Verify pinned Tauri CLI
         shell: bash
@@ -380,152 +67,38 @@ jobs:
             exit 1
           fi
 
-      - name: Verify desktop updater and Linux package config
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm install
+
+      - name: Verify backend package is published
         shell: bash
         run: |
           node <<'JS'
           const { readFileSync } = require('node:fs');
 
-          const expected = 'https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json';
-          const config = JSON.parse(readFileSync('studio/src-tauri/tauri.conf.json', 'utf8'));
-          const endpoints = config.plugins?.updater?.endpoints;
-          if (!Array.isArray(endpoints) || endpoints.length !== 1) {
-            throw new Error('Expected exactly one desktop updater endpoint');
-          }
-          if (endpoints[0] !== expected) {
-            throw new Error('Desktop updater endpoint must be ' + expected + ', got ' + endpoints[0]);
-          }
-          if (endpoints.some((endpoint) => endpoint.includes('/releases/latest/'))) {
-            throw new Error('Desktop updater endpoint must not use repo-wide /releases/latest/');
-          }
+          (async () => {
+            const cargo = readFileSync('studio/src-tauri/Cargo.toml', 'utf8');
+            const match = cargo.match(/^version\s*=\s*"([^"]+)"/m);
+            if (!match) throw new Error('Could not read desktop app version');
 
-          const targets = config.bundle?.targets;
-          if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'rpm')) {
-            throw new Error('Desktop release must not target RPM packages');
-          }
-          if (config.bundle?.linux?.rpm) {
-            throw new Error('bundle.linux.rpm must not be configured');
-          }
-
-          const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
-          const lines = workflow.split(/\r?\n/);
-          const releaseBodies = [];
-          for (let i = 0; i < lines.length; i += 1) {
-            const match = lines[i].match(/^(\s*)releaseBody:\s*\|\s*$/);
-            if (!match) continue;
-            const baseIndent = match[1].length;
-            const bodyLines = [];
-            i += 1;
-            for (; i < lines.length; i += 1) {
-              const line = lines[i];
-              if (line.trim() === '') {
-                bodyLines.push('');
-                continue;
-              }
-              const indent = line.match(/^\s*/)[0].length;
-              if (indent <= baseIndent) {
-                i -= 1;
-                break;
-              }
-              bodyLines.push(line.slice(baseIndent + 2));
+            const appVersion = match[1];
+            const response = await fetch(`https://pypi.org/pypi/unsloth/${appVersion}/json`);
+            if (!response.ok) {
+              const message = 'Publish unsloth=={app_version} to PyPI before the desktop release';
+              throw new Error(`${message.replace('{app_version}', appVersion)} (HTTP ${response.status})`);
             }
-            releaseBodies.push(bodyLines.join('\n'));
-          }
-          if (releaseBodies.length === 0) {
-            throw new Error('Expected at least one desktop release body');
-          }
-          for (const body of releaseBodies) {
-            if (/\brpm\b|\.rpm/i.test(body)) {
-              throw new Error('Desktop release body must not advertise RPM packages');
-            }
-          }
+          })();
           JS
-
-      - name: Install frontend dependencies
-        working-directory: studio/frontend
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
-        run: npm install --no-fund --no-audit
 
       # ── Rust ──
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Patch desktop app version
-        shell: bash
-        working-directory: studio/src-tauri
-        run: |
-          set -euo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            PYTHON=python3
-          else
-            PYTHON=python
-          fi
-          "$PYTHON" <<'PY'
-          import os
-          import pathlib
-          import re
-          import sys
-
-          app_version = os.environ['APP_VERSION']
-          if not app_version:
-              sys.exit('APP_VERSION is required')
-
-          cargo_toml = pathlib.Path('Cargo.toml')
-          lines = cargo_toml.read_text().splitlines(keepends=True)
-          in_package = False
-          patched = False
-          for index, line in enumerate(lines):
-              stripped = line.strip()
-              if stripped == '[package]':
-                  in_package = True
-                  continue
-              if stripped.startswith('[') and stripped.endswith(']'):
-                  in_package = False
-              if in_package and re.fullmatch(r'version\s*=\s*"[^"]+"\s*', stripped):
-                  lines[index] = f'version = "{app_version}"\n'
-                  patched = True
-                  break
-          if not patched:
-              sys.exit('Could not patch [package] version in Cargo.toml')
-          cargo_toml.write_text(''.join(lines))
-
-          cargo_lock = pathlib.Path('Cargo.lock')
-          lock_text = cargo_lock.read_text()
-          lock_text, count = re.subn(
-              r'(?m)(^\[\[package\]\]\nname = "unsloth-studio"\nversion = ")[^"]+(")',
-              lambda match: f'{match.group(1)}{app_version}{match.group(2)}',
-              lock_text,
-          )
-          if count != 1:
-              sys.exit(f'Could not patch unsloth-studio version in Cargo.lock (matches={count})')
-          cargo_lock.write_text(lock_text)
-          PY
-
-          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
-          "$PYTHON" <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          app_version = os.environ['APP_VERSION']
-          metadata = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'cargo-metadata.json').read_text())
-          versions = [package['version'] for package in metadata.get('packages', []) if package.get('name') == 'unsloth-studio']
-          if versions != [app_version]:
-              sys.exit(f'cargo metadata unsloth-studio version mismatch: expected {app_version}, got {versions}')
-          PY
-
-          git diff -- Cargo.toml Cargo.lock
-
       - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: 'studio/src-tauri -> target'
 
@@ -573,8 +146,8 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          tagName: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-          releaseName: 'Unsloth Studio (Desktop) ${{ needs.prepare-version.outputs.studio_version }}'
+          tagName: desktop-v__VERSION__
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
             Desktop app for Unsloth Studio.
 
@@ -586,7 +159,7 @@ jobs:
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
-          prerelease: ${{ needs.prepare-version.outputs.prerelease }}
+          prerelease: false
           args: -v ${{ matrix.args }}
 
       # ── macOS: build + sign + notarize + upload ──
@@ -604,8 +177,8 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          tagName: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-          releaseName: 'Unsloth Studio (Desktop) ${{ needs.prepare-version.outputs.studio_version }}'
+          tagName: desktop-v__VERSION__
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
             Desktop app for Unsloth Studio.
 
@@ -617,7 +190,7 @@ jobs:
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
-          prerelease: ${{ needs.prepare-version.outputs.prerelease }}
+          prerelease: false
           args: -v ${{ matrix.args }}
 
       # ── Windows: build + sign + upload ──
@@ -636,8 +209,8 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          tagName: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-          releaseName: 'Unsloth Studio (Desktop) ${{ needs.prepare-version.outputs.studio_version }}'
+          tagName: desktop-v__VERSION__
+          releaseName: 'Unsloth Studio (Desktop) v__VERSION__'
           releaseBody: |
             Desktop app for Unsloth Studio.
 
@@ -649,254 +222,5 @@ jobs:
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
-          prerelease: ${{ needs.prepare-version.outputs.prerelease }}
+          prerelease: false
           args: -v ${{ matrix.args }}
-
-  # Release process note: only non-draft workflow runs advance the public
-  # desktop-latest updater channel. Draft builds are for private review; if a
-  # draft is manually published later, this channel intentionally remains
-  # unchanged until a narrow manual channel-publish flow is added or a public
-  # desktop release is created by running this workflow with draft=false.
-  publish-updater-channel:
-    name: Publish desktop updater channel
-    needs: [prepare-version, build]
-    if: ${{ !inputs.draft }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_REPO: ${{ github.repository }}
-      APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
-      STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
-      DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-      DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
-
-    steps:
-      - name: Download versioned updater metadata
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/desktop-updater"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          source = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'source-release.json').read_text())
-          expected_tag = os.environ['DESKTOP_RELEASE_TAG']
-          if source.get('tag_name') != expected_tag:
-              sys.exit(f'Expected source release {expected_tag}, got {source.get("tag_name")}')
-          if source.get('draft'):
-              sys.exit(f'Source desktop release {expected_tag} is draft; refusing to publish public updater channel')
-          PY
-          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater" --clobber
-          test -s "$RUNNER_TEMP/desktop-updater/latest.json"
-
-      - name: Validate versioned updater metadata
-        shell: bash
-        run: |
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import re
-          import sys
-
-          app_version = os.environ['APP_VERSION']
-          release_tag = os.environ['DESKTOP_RELEASE_TAG']
-          latest_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
-          data = json.loads(latest_path.read_text())
-          if not isinstance(data, dict):
-              sys.exit('latest.json must be a JSON object')
-
-          version = data.get('version')
-          if not isinstance(version, str) or not version:
-              sys.exit('latest.json missing version')
-          if not re.fullmatch(r'v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
-              sys.exit(f'latest.json version is not SemVer-like: {version}')
-          if version.removeprefix('v') != app_version:
-              sys.exit(f'latest.json version {version} does not match desktop app version {app_version}')
-
-          platforms = data.get('platforms')
-          if not isinstance(platforms, dict) or not platforms:
-              sys.exit('latest.json missing platforms')
-
-          required_families = {
-              'darwin-aarch64': False,
-              'linux-x86_64': False,
-              'windows-x86_64': False,
-          }
-          expected_prefix = f'https://github.com/unslothai/unsloth/releases/download/{release_tag}/'
-          forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
-
-          for platform, entry in platforms.items():
-              if not isinstance(entry, dict):
-                  sys.exit(f'Platform {platform} must be an object')
-              url = entry.get('url')
-              signature = entry.get('signature')
-              if not isinstance(url, str) or not url.strip():
-                  sys.exit(f'Platform {platform} missing url')
-              if not isinstance(signature, str) or not signature.strip():
-                  sys.exit(f'Platform {platform} missing signature')
-              if any(fragment in url for fragment in forbidden_fragments):
-                  sys.exit(f'Platform {platform} points at a moving updater channel: {url}')
-              if not url.startswith(expected_prefix):
-                  sys.exit(f'Platform {platform} URL must point at {release_tag}: {url}')
-              for family in required_families:
-                  if platform == family or platform.startswith(family + '-'):
-                      required_families[family] = True
-
-          missing = [family for family, found in required_families.items() if not found]
-          if missing:
-              sys.exit('latest.json missing required platform families: ' + ', '.join(missing))
-          PY
-
-      - name: Ensure desktop updater channel release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          channel_json="$RUNNER_TEMP/desktop-latest-release.json"
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json" 2>/dev/null; then
-            gh release create desktop-latest \
-              --title "Unsloth Studio Desktop updater channel" \
-              --notes "Machine-managed desktop updater channel; latest.json is replaced by release-desktop.yml." \
-              --prerelease \
-              --latest=false \
-              --target "$GITHUB_SHA"
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json"
-          fi
-
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
-          if channel.get('draft'):
-              sys.exit('desktop-latest release is draft; refusing to publish updater channel')
-          if channel.get('immutable'):
-              sys.exit('desktop-latest release is immutable; cannot replace latest.json')
-          if not channel.get('prerelease'):
-              sys.exit('desktop-latest release must be a prerelease so it cannot compete with repo-wide latest')
-          PY
-
-      - name: Prevent updater channel downgrade
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/desktop-current"
-          if ! gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current" --clobber 2>/dev/null; then
-            echo "No existing desktop-latest latest.json found; allowing first channel publish."
-            exit 0
-          fi
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import re
-          import sys
-
-          def parse(value: str):
-              value = value.removeprefix('v')
-              match = re.fullmatch(
-                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
-                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
-                  r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?',
-                  value,
-              )
-              if not match:
-                  sys.exit(f'desktop-latest latest.json has invalid version: {value}')
-              major, minor, patch, prerelease = match.groups()
-              return (int(major), int(minor), int(patch), prerelease)
-
-          def numeric_tail(identifier: str) -> tuple[str, int] | None:
-              match = re.fullmatch(r'([A-Za-z-]+)(\d+)', identifier)
-              if not match:
-                  return None
-              return (match.group(1).lower(), int(match.group(2)))
-
-          def compare_identifier(left: str, right: str) -> int:
-              left_num = left.isdigit()
-              right_num = right.isdigit()
-              if left_num and right_num:
-                  return (int(left) > int(right)) - (int(left) < int(right))
-              if left_num:
-                  return -1
-              if right_num:
-                  return 1
-
-              left_tail = numeric_tail(left)
-              right_tail = numeric_tail(right)
-              if left_tail and right_tail and left_tail[0] == right_tail[0]:
-                  return (left_tail[1] > right_tail[1]) - (left_tail[1] < right_tail[1])
-
-              return (left > right) - (left < right)
-
-          def compare_prerelease(left: str | None, right: str | None) -> int:
-              if left == right:
-                  return 0
-              if left is None:
-                  return 1
-              if right is None:
-                  return -1
-              left_parts = left.split('.')
-              right_parts = right.split('.')
-              for left_part, right_part in zip(left_parts, right_parts):
-                  order = compare_identifier(left_part, right_part)
-                  if order:
-                      return order
-              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
-
-          def compare(left: str, right: str) -> int:
-              left_major, left_minor, left_patch, left_pre = parse(left)
-              right_major, right_minor, right_patch, right_pre = parse(right)
-              left_core = (left_major, left_minor, left_patch)
-              right_core = (right_major, right_minor, right_patch)
-              if left_core != right_core:
-                  return (left_core > right_core) - (left_core < right_core)
-              return compare_prerelease(left_pre, right_pre)
-
-          current_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-current', 'latest.json')
-          next_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
-          current = json.loads(current_path.read_text()).get('version')
-          next_version = json.loads(next_path.read_text()).get('version')
-          if not isinstance(current, str) or not isinstance(next_version, str):
-              sys.exit('Could not compare desktop-latest channel versions')
-          if compare(next_version, current) < 0:
-              sys.exit(
-                  f'Refusing to move desktop-latest from {current} to older version {next_version}.'
-              )
-          PY
-
-      - name: Publish desktop updater channel metadata
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/desktop-latest-release.json"
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
-          assets = [asset for asset in channel.get('assets', []) if asset.get('name') == 'latest.json']
-          if len(assets) != 1:
-              sys.exit(f'Expected exactly one desktop-latest latest.json asset, found {len(assets)}')
-          expected_url = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/desktop-latest/latest.json'
-          actual_url = assets[0].get('browser_download_url')
-          if actual_url != expected_url:
-              sys.exit(f'desktop-latest latest.json URL mismatch: expected {expected_url}, got {actual_url}')
-          PY

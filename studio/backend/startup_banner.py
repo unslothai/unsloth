@@ -33,6 +33,37 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
         print(msg)
 
 
+def print_sandbox_unavailable_notice() -> None:
+    """Notice that tool execution will run without an OS-level sandbox.
+
+    On Linux, includes install hints for bubblewrap. macOS users only
+    reach this if ``sandbox-exec`` is missing or the probe failed —
+    there's nothing to install on macOS, so no install lines are shown.
+    """
+    use_color = stdout_supports_color()
+    dim = "\033[38;5;245m"
+    reset = "\033[0m"
+
+    def style(text: str) -> str:
+        return f"{dim}{text}{reset}" if use_color else text
+
+    lines = [
+        "",
+        style("Sandbox unavailable: tool execution will run unsandboxed."),
+    ]
+    if sys.platform == "linux":
+        for line in (
+            "  Install bubblewrap to enable the Linux sandbox:",
+            "    Debian/Ubuntu:  sudo apt install bubblewrap",
+            "    Fedora/RHEL:    sudo dnf install bubblewrap",
+            "    Arch:           sudo pacman -S bubblewrap",
+            "  Restart this server after install.",
+        ):
+            lines.append(style(line))
+    lines.append("")
+    print("\n".join(lines))
+
+
 def print_studio_access_banner(
     *,
     port: int,

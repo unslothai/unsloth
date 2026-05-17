@@ -235,15 +235,6 @@ export interface OpenAIChatCompletionsRequest {
    * container. Only meaningful for OpenAI cloud + gpt-5.5 family.
    */
   openai_code_exec_container_id?: string | null;
-  /**
-   * Anthropic code_execution container id captured from the prior
-   * response in this chat thread. When set and the Code pill is on,
-   * the backend forwards a top-level `container` field on
-   * /v1/messages so filesystem state persists across turns. Unset →
-   * Anthropic auto-creates a fresh container. Only meaningful for
-   * the Anthropic provider with `code_execution` in `enabled_tools`.
-   */
-  anthropic_code_exec_container_id?: string | null;
 }
 
 export interface OpenAIChatDelta {
