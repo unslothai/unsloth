@@ -8,7 +8,7 @@ Chat history API routes backed by studio.db.
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from storage.studio_db import (
@@ -16,11 +16,13 @@ from storage.studio_db import (
     count_chat_threads,
     delete_chat_threads,
     get_chat_thread,
+    list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
     sync_chat_messages,
     update_chat_thread,
+    upsert_chat_settings,
     upsert_chat_message,
     upsert_chat_thread,
 )
@@ -85,6 +87,65 @@ class ChatExportResponse(BaseModel):
     threadCount: int
     threads: list[ChatThread]
     messages: list[ChatMessage]
+
+
+class ChatInferenceSettings(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    temperature: Optional[float] = None
+    topP: Optional[float] = None
+    topK: Optional[float] = None
+    minP: Optional[float] = None
+    repetitionPenalty: Optional[float] = None
+    presencePenalty: Optional[float] = None
+    maxSeqLength: Optional[float] = None
+    maxTokens: Optional[float] = None
+    systemPrompt: Optional[str] = None
+    trustRemoteCode: Optional[bool] = None
+
+
+class ChatPreset(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str
+    params: ChatInferenceSettings
+
+
+class ChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    inferenceParams: Optional[ChatInferenceSettings] = None
+    customPresets: Optional[list[ChatPreset]] = None
+    activePreset: Optional[str] = None
+    activePresetSource: Optional[
+        Literal["builtin-default", "custom", "modified"]
+    ] = None
+    autoTitle: Optional[bool] = None
+    reasoningEffort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    preserveThinking: Optional[bool] = None
+    autoHealToolCalls: Optional[bool] = None
+    maxToolCallsPerMessage: Optional[int] = None
+    toolCallTimeout: Optional[int] = None
+
+
+class ChatSettingsResponse(BaseModel):
+    settings: dict[str, Any]
+
+
+def _deep_merge_settings(
+    current: dict[str, Any],
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in updates.items():
+        current_value = merged.get(key)
+        if isinstance(current_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_settings(current_value, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
@@ -205,6 +266,27 @@ async def count_threads(current_subject: str = Depends(get_current_subject)):
 async def clear_history(current_subject: str = Depends(get_current_subject)):
     clear_chat_history()
     return {"status": "deleted"}
+
+
+@router.get("/settings", response_model = ChatSettingsResponse)
+async def get_settings(current_subject: str = Depends(get_current_subject)):
+    return ChatSettingsResponse(settings = list_chat_settings())
+
+
+@router.put("/settings", response_model = ChatSettingsResponse)
+async def put_settings(
+    payload: dict[str, Any],
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        parsed = ChatSettingsPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code = 400, detail = exc.errors()) from exc
+    settings = _deep_merge_settings(
+        list_chat_settings(),
+        parsed.model_dump(exclude_unset = True),
+    )
+    return ChatSettingsResponse(settings = upsert_chat_settings(settings))
 
 
 @router.get("/export", response_model = ChatExportResponse)
