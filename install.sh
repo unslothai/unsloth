@@ -731,7 +731,9 @@ _spawn_terminal() {
         # Terminal via a .command file + Launch Services instead. Server
         # is nohup'd so warm relaunches hit the fast-path; watcher + trap
         # in the .command couple Terminal close <-> server shutdown.
-        nohup sh -c "$_cmd" >> "$LOG_FILE" 2>&1 &
+        # `exec` keeps the recorded PID equal to the studio process so
+        # signals reach studio directly rather than a wrapper shell.
+        nohup sh -c "exec $_cmd" >> "$LOG_FILE" 2>&1 &
         _server_pid=$!
         _pid_file="$DATA_DIR/studio-$_launch_port.pid"
         printf '%d\n' "$_server_pid" > "$_pid_file" 2>/dev/null || true
