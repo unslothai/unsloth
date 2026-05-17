@@ -4045,11 +4045,12 @@ async def anthropic_messages(
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
 
     # Reject malformed client tools at the boundary. AnthropicTool was
-    # relaxed to Optional[input_schema] for server tools, so the converter
-    # silently drops incomplete entries — surface them as 400. A `type`
-    # field marks a server-tool declaration per spec (unrecognized server
-    # tools are accepted as no-ops); anything else without input_schema
-    # is malformed and must not be allowed to flip execution mode silently.
+    # relaxed to Optional[name]/Optional[input_schema] for server tools,
+    # so the converter silently drops incomplete entries — surface them
+    # as 400. A `type` field marks a server-tool declaration per spec
+    # (unrecognized server tools are accepted as no-ops); anything else
+    # without input_schema or name is malformed and must not be allowed
+    # to silently flip execution mode or disable tool calling.
     for tool in payload.tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
         name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
@@ -4057,6 +4058,11 @@ async def anthropic_messages(
             raise HTTPException(
                 status_code = 400,
                 detail = f"Tool {name!r} is missing required field 'input_schema'.",
+            )
+        if schema is not None and not isinstance(name, str):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Client tool is missing required field 'name'.",
             )
 
     # Detect client tools from the raw payload (presence of input_schema)

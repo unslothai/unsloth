@@ -1211,6 +1211,22 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "input_schema" in exc.value.detail
 
+    def test_client_tool_missing_name_rejected_with_400(self, monkeypatch):
+        # Regression: AnthropicTool.name was relaxed to Optional for server
+        # tools, so a client-tool payload that has input_schema but omits
+        # `name` (e.g. typo) now parses successfully but would be silently
+        # dropped by anthropic_tools_to_openai, leaving the request with
+        # tool calling disabled. Reject at the boundary instead.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"input_schema": {"type": "object"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "name" in exc.value.detail
+
     def test_alias_named_client_tool_without_schema_rejected_with_400(
         self, monkeypatch
     ):
