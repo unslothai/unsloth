@@ -37,10 +37,15 @@ from core.inference.anthropic_compat import (
 from routes.inference import (
     _normalize_anthropic_openai_images,
     _select_anthropic_server_tools,
+    _anthropic_requested_studio_tools,
+    anthropic_messages,
 )
+from state.tool_policy import reset_tool_policy, set_tool_policy
 from fastapi import HTTPException
+import asyncio
 import base64 as _b64
 from io import BytesIO as _BytesIO
+from types import SimpleNamespace
 
 
 # =====================================================================
@@ -1050,3 +1055,173 @@ class TestNormalizeAnthropicOpenAIImages:
         with pytest.raises(HTTPException) as exc:
             _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert exc.value.status_code == 400
+
+
+# =====================================================================
+# Studio-tool alias detection (/v1/messages tool routing)
+# =====================================================================
+
+
+class TestAnthropicRequestedStudioTools:
+    def test_recognizes_server_tool_by_type(self):
+        tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    def test_recognizes_bare_server_tool_name(self):
+        # Server tools may arrive with just `name` (no versioned type).
+        tools = [{"name": "python"}]
+        assert _anthropic_requested_studio_tools(tools) == {"python"}
+
+    def test_client_tool_named_python_is_not_misclassified(self):
+        # input_schema is the client-tool discriminator; presence of it
+        # must prevent the name from being treated as a Studio alias.
+        tools = [
+            {
+                "name": "python",
+                "description": "user's own python",
+                "input_schema": {"type": "object"},
+            }
+        ]
+        assert _anthropic_requested_studio_tools(tools) == set()
+
+    def test_mixed_request_only_extracts_server_tools(self):
+        tools = [
+            {"type": "web_search_20250305", "name": "web_search"},
+            {"name": "custom_tool", "input_schema": {"type": "object"}},
+        ]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    def test_pydantic_model_input(self):
+        tools = [
+            AnthropicTool(type = "web_fetch_20250910", name = "web_fetch"),
+            AnthropicTool(name = "x", input_schema = {"type": "object"}),
+        ]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    def test_empty_and_none(self):
+        assert _anthropic_requested_studio_tools(None) == set()
+        assert _anthropic_requested_studio_tools([]) == set()
+
+
+# =====================================================================
+# Route-level tool routing (/v1/messages)
+# =====================================================================
+
+
+class _PlainPathCalled(Exception):
+    pass
+
+
+class _ToolPathCalled(Exception):
+    pass
+
+
+def _mock_backend(monkeypatch, **overrides):
+    """Install a minimal stub backend on routes.inference.
+
+    Generation methods raise sentinel exceptions so the caller can assert
+    which path the route entered.
+    """
+    import routes.inference as inf_mod
+
+    def _gen_plain(**kwargs):
+        raise _PlainPathCalled()
+
+    def _gen_tools(**kwargs):
+        raise _ToolPathCalled()
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = True,
+        model_identifier = "test-model",
+        generate_chat_completion = _gen_plain,
+        generate_chat_completion_with_tools = _gen_tools,
+    )
+    backend.__dict__.update(overrides)
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+def _drive(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def _basic_payload(**fields) -> AnthropicMessagesRequest:
+    base = {
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    base.update(fields)
+    return AnthropicMessagesRequest(**base)
+
+
+@pytest.fixture(autouse = True)
+def _reset_policy():
+    reset_tool_policy()
+    yield
+    reset_tool_policy()
+
+
+class TestAnthropicMessagesToolRouting:
+    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {"type": "web_search_20250305", "name": "web_search"},
+                {"name": "custom", "input_schema": {"type": "object"}},
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
+    def test_client_tool_missing_input_schema_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"name": "my_tool", "description": "oops, schema typo"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "input_schema" in exc.value.detail
+
+    def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
+        # CLI `unsloth run --disable-tools` sets policy=False. A request
+        # carrying a Studio server-tool alias must NOT enter the agentic
+        # loop in that configuration.
+        _mock_backend(monkeypatch)
+        set_tool_policy(False)
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(_PlainPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(
+        self, monkeypatch
+    ):
+        # Mirror of the previous test for the default (None) policy.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(_ToolPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+    def test_per_request_enable_tools_false_blocks_server_tool_alias(
+        self, monkeypatch
+    ):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = False,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(_PlainPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))

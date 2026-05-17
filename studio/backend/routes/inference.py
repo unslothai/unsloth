@@ -3890,6 +3890,11 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
+        # Client tools always carry input_schema; server tools never do.
+        # Skip client tools to avoid name collisions (e.g. a custom tool
+        # literally named "python" or "web_search").
+        if td.get("input_schema") is not None:
+            continue
         for key in (td.get("name"), td.get("type")):
             if isinstance(key, str) and key in _STUDIO_ANTHROPIC_TOOL_ALIASES:
                 requested.add(_STUDIO_ANTHROPIC_TOOL_ALIASES[key])
@@ -4036,13 +4041,51 @@ async def anthropic_messages(
     # Server-side agentic loop doesn't support multimodal input — matches
     # the `not image_b64` gate in /v1/chat/completions.
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+
+    # Validate client tool definitions at the boundary. AnthropicTool was
+    # relaxed to Optional[input_schema] to accommodate server tools, so
+    # the converter silently drops malformed entries — surface them as 400.
+    for tool in payload.tools or []:
+        td = tool if isinstance(tool, dict) else tool.model_dump()
+        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
+        is_server_tool = (
+            isinstance(type_, str) and type_ in _STUDIO_ANTHROPIC_TOOL_ALIASES
+        ) or (
+            schema is None
+            and isinstance(name, str)
+            and name in _STUDIO_ANTHROPIC_TOOL_ALIASES
+        )
+        if not is_server_tool and schema is None:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Tool {name!r} is missing required field 'input_schema'.",
+            )
+
     openai_client_tools = [
         tool
         for tool in anthropic_tools_to_openai(payload.tools or [])
         if tool.get("function", {}).get("name") not in requested_studio_tools
     ]
+
+    # The server-tool agentic loop executes tools in-process and cannot
+    # relay unknown client functions back to the caller, so mixed requests
+    # would silently drop the client tools. Reject explicitly instead.
+    if requested_studio_tools and openai_client_tools:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Mixing Anthropic server tools (e.g. web_search_20250305) "
+                "with custom client tools in a single request is not "
+                "supported. Send them in separate requests."
+            ),
+        )
+
+    # An Anthropic server-tool declaration implies server-tool mode, but
+    # only when tools aren't explicitly disabled (CLI --disable-tools or
+    # per-request enable_tools=false). Explicit False always wins.
+    _enable = _effective_enable_tools(payload)
     server_tools = (
-        (_effective_enable_tools(payload) or bool(requested_studio_tools))
+        (_enable or (_enable is None and bool(requested_studio_tools)))
         and llama_backend.supports_tools
         and not _has_image
     )
