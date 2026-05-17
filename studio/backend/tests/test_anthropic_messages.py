@@ -1202,9 +1202,7 @@ class TestAnthropicMessagesToolRouting:
         with pytest.raises(_PlainPathCalled):
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
-    def test_server_tool_alias_enters_tool_path_when_policy_unset(
-        self, monkeypatch
-    ):
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
         # Mirror of the previous test for the default (None) policy.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -1214,9 +1212,7 @@ class TestAnthropicMessagesToolRouting:
         with pytest.raises(_ToolPathCalled):
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
 
-    def test_per_request_enable_tools_false_blocks_server_tool_alias(
-        self, monkeypatch
-    ):
+    def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             enable_tools = False,
