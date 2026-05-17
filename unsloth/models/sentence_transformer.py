@@ -2344,7 +2344,7 @@ def _patch_st_trainer_load_from_checkpoint():
         load_result = set_peft_model_state_dict(
             inner, load_peft_weights(checkpoint_path), adapter_name = adapter_name
         )
-        unexpected = list(getattr(load_result, "unexpected_keys", []) or [])
+        unexpected = getattr(load_result, "unexpected_keys", []) or []
         missing = [
             x
             for x in (getattr(load_result, "missing_keys", []) or [])
@@ -2395,14 +2395,20 @@ def _patch_st_trainer_load_from_checkpoint():
             fresh = module_cls.load(module_dir)
             if not isinstance(fresh, module_cls):
                 raise RuntimeError(f"Unsloth: Module {idx} reload returned wrong type.")
+            # Parameterless modules (Pooling, Normalize) make
+            # next(module.parameters()) raise StopIteration; route through
+            # the SentenceTransformer's device property instead.
             try:
-                fresh.to(next(module.parameters()).device)
-            except (AttributeError, StopIteration):
+                fresh.to(self.model.device)
+            except AttributeError:
                 pass
             self.model[idx] = fresh
             restored.add(idx)
-        if sorted(set(range(1, len(self.model))) - restored):
-            raise RuntimeError("Unsloth: Checkpoint modules.json is incomplete.")
+        missing_idx = sorted(set(range(1, len(self.model))) - restored)
+        if missing_idx:
+            raise RuntimeError(
+                f"Unsloth: Checkpoint modules.json is incomplete (missing idx={missing_idx[:8]})."
+            )
 
     SentenceTransformerTrainer._load_from_checkpoint = _unsloth_load_from_checkpoint
     SentenceTransformerTrainer._unsloth_load_from_checkpoint_patched = True
