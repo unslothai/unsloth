@@ -557,10 +557,14 @@ const ReasoningToggle: FC = () => {
           <button
             type="button"
             disabled={disabled}
-            className="composer-pill-btn"
-            data-active={
-              effectiveReasoningVisualEnabled && !disabled ? "true" : "false"
-            }
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+              disabled
+                ? "cursor-not-allowed opacity-40"
+                : effectiveReasoningVisualEnabled
+                  ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                  : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+            )}
             aria-label={`Reasoning effort: ${reasoningEffort}`}
           >
             {effectiveReasoningVisualEnabled ? (
@@ -671,8 +675,14 @@ const PreserveThinkingToggle: FC = () => {
       type="button"
       disabled={disabled}
       onClick={() => setPreserveThinking(!preserveThinking)}
-      className="composer-pill-btn"
-      data-active={preserveThinking && !disabled ? "true" : "false"}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : preserveThinking
+            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+      )}
       aria-label={
         preserveThinking ? "Disable preserve think" : "Enable preserve think"
       }

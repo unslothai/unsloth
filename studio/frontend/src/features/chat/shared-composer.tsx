@@ -4,6 +4,7 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -749,12 +750,14 @@ export function SharedComposer({
                 <button
                   type="button"
                   disabled={reasoningDisabled}
-                  className="composer-pill-btn"
-                  data-active={
-                    effectiveReasoningVisualEnabled && !reasoningDisabled
-                      ? "true"
-                      : "false"
-                  }
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                    reasoningDisabled
+                      ? "cursor-not-allowed opacity-40"
+                      : effectiveReasoningVisualEnabled
+                        ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                        : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+                  )}
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
                   {effectiveReasoningVisualEnabled ? (
@@ -837,12 +840,16 @@ export function SharedComposer({
                   setToolsEnabled(false);
                 }
               }}
-              className="composer-pill-btn"
-              data-active={
-                reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled)
-                  ? "true"
-                  : "false"
-              }
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                reasoningLockedOn
+                  ? "cursor-not-allowed text-primary"
+                  : reasoningDisabled
+                    ? "cursor-not-allowed opacity-40"
+                    : effectiveReasoningEnabled
+                      ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                      : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+              )}
               aria-label={
                 reasoningLockedOn
                   ? "Thinking is required for this model"
@@ -866,8 +873,14 @@ export function SharedComposer({
               type="button"
               disabled={!modelLoaded}
               onClick={() => setPreserveThinking(!preserveThinking)}
-              className="composer-pill-btn"
-              data-active={preserveThinking && modelLoaded ? "true" : "false"}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                !modelLoaded
+                  ? "cursor-not-allowed opacity-40"
+                  : preserveThinking
+                    ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                    : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+              )}
               aria-label={
                 preserveThinking ? "Disable preserve think" : "Enable preserve think"
               }
