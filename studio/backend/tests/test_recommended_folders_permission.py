@@ -43,7 +43,7 @@ def _load_safe_is_dir():
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_safe_is_dir"
     )
-    module = ast.Module(body=[fn], type_ignores=[])
+    module = ast.Module(body = [fn], type_ignores = [])
     ns: dict = {"Path": Path, "os": os}
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_safe_is_dir"]
