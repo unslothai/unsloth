@@ -37,8 +37,16 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # Skip noisy paths during file discovery.
 SKIP_PARTS = {
-    ".git", ".out", "temp", "node_modules", "build", "dist",
-    ".venv", "venv", ".pytest_cache", "__pycache__",
+    ".git",
+    ".out",
+    "temp",
+    "node_modules",
+    "build",
+    "dist",
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    "__pycache__",
     # Frontend tree under studio is JS/TS plus a few stub .py files; not worth walking.
     "frontend",
 }
@@ -69,11 +77,12 @@ def _safe_parse(path: pathlib.Path):
         return _PARSE_CACHE[key]
     try:
         import warnings as _w
+
         with _w.catch_warnings():
             # Suppress SyntaxWarning emitted while parsing third-party files
             # that contain invalid escape sequences in regex / docstrings.
             _w.simplefilter("ignore", SyntaxWarning)
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
     except (SyntaxError, UnicodeDecodeError):
         tree = None
     _PARSE_CACHE[key] = tree
@@ -171,7 +180,9 @@ def _func_arity(node: ast.AST) -> tuple[int, bool] | None:
     return arity, accepts_var
 
 
-def discover_producers(roots: list[pathlib.Path]) -> dict[str, list[tuple[pathlib.Path, int]]]:
+def discover_producers(
+    roots: list[pathlib.Path],
+) -> dict[str, list[tuple[pathlib.Path, int]]]:
     """Walk every .py under each root and return {cb_list_attr: [(file, arity), ...]}."""
     producers: dict[str, list[tuple[pathlib.Path, int]]] = {}
     for root in roots:
@@ -186,7 +197,9 @@ def discover_producers(roots: list[pathlib.Path]) -> dict[str, list[tuple[pathli
     return producers
 
 
-def check_registrations(roots: list[pathlib.Path], producers: dict[str, list[tuple[pathlib.Path, int]]]):
+def check_registrations(
+    roots: list[pathlib.Path], producers: dict[str, list[tuple[pathlib.Path, int]]]
+):
     """Walk every .py under each root, find <x>.add_*_callback(fn) where fn is a
     bare Name resolvable to a def in the same file, and assert its arity
     matches the producer's canonical arity. Returns (issues, skipped, ok_count).
@@ -207,7 +220,11 @@ def check_registrations(roots: list[pathlib.Path], producers: dict[str, list[tup
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     defs_by_name[node.name] = node
                 if isinstance(node, ast.Assign):
-                    if isinstance(node.value, ast.Lambda) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    if (
+                        isinstance(node.value, ast.Lambda)
+                        and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)
+                    ):
                         defs_by_name[node.targets[0].id] = node.value
             # Find <x>.add_*_callback(fn) sites
             for call in ast.walk(tree):
