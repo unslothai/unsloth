@@ -2390,11 +2390,11 @@ class ModelConfig:
                 )
 
         # Auto-detect LoRA for remote HF models (check repo file listing).
-        # Skip the API call when HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE is set
-        # so offline loads don't burn ~25s waiting for the HF API to time out.
-        # If the repo really is a LoRA, the worker still resolves it from
-        # cache later via the same env var.
-        if not is_lora and not is_local and not _env_offline():
+        # When HF_HUB_OFFLINE is set, huggingface_hub short-circuits the
+        # call to OfflineModeIsEnabled in ~0ms, so we don't bypass the
+        # check; checking still finds cached LoRA adapters via the
+        # snapshot's adapter_config.json before the offline raise.
+        if not is_lora and not is_local:
             try:
                 from huggingface_hub import model_info as hf_model_info
 
@@ -2407,6 +2407,17 @@ class ModelConfig:
                 logger.debug(
                     f"Could not check remote LoRA status for '{identifier}': {e}"
                 )
+
+            # Offline cache fallback: HF API may have failed (DNS, env, etc.)
+            # but the LoRA's adapter_config.json could still be in the snapshot.
+            if not is_lora:
+                for snap in _iter_hf_cache_snapshots(identifier):
+                    if (snap / "adapter_config.json").is_file():
+                        is_lora = True
+                        logger.info(
+                            f"Auto-detected cached LoRA adapter: '{identifier}'"
+                        )
+                        break
 
         # Handle LoRA adapters
         base_model = None
