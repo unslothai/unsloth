@@ -24,7 +24,10 @@ import {
   type ReasoningEffort,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import { getExternalReasoningCapabilities } from "./provider-capabilities";
+import {
+  getExternalReasoningCapabilities,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
 import {
   type CompositionEvent,
   type KeyboardEvent,
@@ -367,13 +370,21 @@ export function SharedComposer({
   // Two-pill gating: Search pill lights up when the runtime has either
   // a local tool runtime (supportsTools, gives us our Code/python + local
   // web_search) OR a server-side web_search the provider runs for us
-  // (supportsBuiltinWebSearch, currently just OpenAI's /v1/responses).
-  // Code pill is gated on `supportsTools` only — external providers
-  // never give us code execution, so the pill must stay disabled even
-  // when Search is available.
+  // (supportsBuiltinWebSearch, currently OpenAI / Anthropic / OpenRouter
+  // / Kimi). Code pill lights up on the local runtime OR when Anthropic
+  // is selected with a model that accepts the server-side
+  // code_execution_20250825 tool — see
+  // providerSupportsBuiltinCodeExecution. Anthropic is the only external
+  // provider that ships a code-execution tool today.
+  const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+    selectedExternalProvider?.providerType,
+    effectiveExternalModelId,
+    selectedExternalProvider?.baseUrl,
+  );
   const searchDisabled =
     !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
-  const codeDisabled = !modelLoaded || !supportsTools;
+  const codeDisabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
