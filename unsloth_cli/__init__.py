@@ -9,6 +9,7 @@ from unsloth_cli.commands.inference import inference
 from unsloth_cli.commands.export import export, list_checkpoints
 from unsloth_cli.commands.studio import run as studio_run, studio_app
 
+
 def _version_callback(value: bool):
     if value:
         try:
@@ -28,7 +29,9 @@ app = typer.Typer(
 @app.callback()
 def _main(
     version: bool = typer.Option(
-        False, "--version", "-V",
+        False,
+        "--version",
+        "-V",
         callback = _version_callback,
         is_eager = True,
         help = "Show version and exit.",
