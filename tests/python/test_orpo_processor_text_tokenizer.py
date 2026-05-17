@@ -14,7 +14,10 @@ def _load_orpo_rewriter():
     tree = ast.parse(src)
     ns = {"re": re}
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "orpo_trainer_text_tokenizer":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "orpo_trainer_text_tokenizer"
+        ):
             exec(ast.get_source_segment(src, node), ns)
             return ns[node.name]
     raise AssertionError("orpo_trainer_text_tokenizer not found")
@@ -62,12 +65,12 @@ def _exec_rewritten(function_name, source, extra_ns = None):
 
 
 def test_orpo_build_tokenized_answer_uses_processor_tokenizer():
-    source = '''
+    source = """
 def build_tokenized_answer(self, prompt, answer):
     full_tokenized = self.processing_class(prompt + answer, add_special_tokens=False)
     prompt_input_ids = self.processing_class(prompt, add_special_tokens=False)["input_ids"]
     return full_tokenized["input_ids"][len(prompt_input_ids):]
-'''
+"""
     fn = _exec_rewritten("build_tokenized_answer", source)
     trainer = _Trainer()
 
@@ -76,7 +79,7 @@ def build_tokenized_answer(self, prompt, answer):
 
 
 def test_orpo_tokenize_row_uses_processor_tokenizer():
-    source = '''
+    source = """
 def tokenize_row(self, feature, model=None):
     batch = {}
     prompt = feature["prompt"]
@@ -106,7 +109,7 @@ def tokenize_row(self, feature, model=None):
         batch["chosen_input_ids"] = chosen_tokens["input_ids"]
         batch["rejected_input_ids"] = rejected_tokens["input_ids"]
     return batch
-'''
+"""
 
     def add_bos_token_if_needed(*args):
         return args[2], args[4], args[6]

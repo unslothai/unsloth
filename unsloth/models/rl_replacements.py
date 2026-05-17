@@ -510,9 +510,12 @@ def orpo_trainer_text_tokenizer(function_name, function):
         function = re.sub(
             r"(?m)^([ \t]*)full_tokenized = self\.processing_class\(prompt \+ answer, add_special_tokens=False\)\n"
             r'\1prompt_input_ids = self\.processing_class\(prompt, add_special_tokens=False\)\["input_ids"\]\n',
-            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)' "\n"
-            r"\1full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)" "\n"
-            r'\1prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]' "\n",
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n"
+            r"\1full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)"
+            "\n"
+            r'\1prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]'
+            "\n",
             function,
             count = 1,
         )
@@ -521,17 +524,26 @@ def orpo_trainer_text_tokenizer(function_name, function):
     if function_name != "tokenize_row":
         return function
 
-    if "tokenizer = getattr(self.processing_class, \"tokenizer\", self.processing_class)" not in function:
+    if (
+        'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+        not in function
+    ):
         function = re.sub(
             r"(?m)^([ \t]*)batch = \{\}\n",
-            r"\1batch = {}" "\n"
-            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)' "\n",
+            r"\1batch = {}"
+            "\n"
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n",
             function,
             count = 1,
         )
     function = function.replace("self.processing_class(", "tokenizer(")
-    function = function.replace("self.processing_class.bos_token_id", "tokenizer.bos_token_id")
-    function = function.replace("self.processing_class.eos_token_id", "tokenizer.eos_token_id")
+    function = function.replace(
+        "self.processing_class.bos_token_id", "tokenizer.bos_token_id"
+    )
+    function = function.replace(
+        "self.processing_class.eos_token_id", "tokenizer.eos_token_id"
+    )
     return function
 
 
