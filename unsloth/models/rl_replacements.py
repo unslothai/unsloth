@@ -528,7 +528,7 @@ def orpo_trainer_text_tokenizer(function_name, function):
         'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
         not in function
     ):
-        function = re.sub(
+        new_function = re.sub(
             r"(?m)^([ \t]*)batch = \{\}\n",
             r"\1batch = {}"
             "\n"
@@ -537,6 +537,9 @@ def orpo_trainer_text_tokenizer(function_name, function):
             function,
             count = 1,
         )
+        if new_function == function:
+            return function
+        function = new_function
     function = function.replace("self.processing_class(", "tokenizer(")
     function = function.replace(
         "self.processing_class.bos_token_id", "tokenizer.bos_token_id"

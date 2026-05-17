@@ -64,6 +64,21 @@ def _exec_rewritten(function_name, source, extra_ns = None):
     return ns[function_name]
 
 
+def test_orpo_tokenize_row_returns_original_when_tokenizer_anchor_missing():
+    rewriter = _load_orpo_rewriter()
+    source = """
+def tokenize_row(self, feature, model=None):
+    output = {}
+    output["prompt_input_ids"] = self.processing_class(feature["prompt"], add_special_tokens=False)["input_ids"]
+    return output
+"""
+
+    rewritten = rewriter("tokenize_row", source)
+
+    assert rewritten == source
+    assert "tokenizer(" not in rewritten
+
+
 def test_orpo_build_tokenized_answer_uses_processor_tokenizer():
     source = """
 def build_tokenized_answer(self, prompt, answer):
