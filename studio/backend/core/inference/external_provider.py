@@ -238,6 +238,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
+        anthropic_code_exec_container_id: Optional[str] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -263,6 +264,7 @@ class ExternalProviderClient:
                 reasoning_effort,
                 enabled_tools,
                 enable_prompt_caching,
+                anthropic_code_exec_container_id,
             ):
                 yield line
             return
@@ -1063,6 +1065,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
+        anthropic_code_exec_container_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1313,6 +1316,19 @@ class ExternalProviderClient:
                 }
             )
             body["tools"] = anthropic_tools
+            # Reuse the prior turn's container so filesystem state
+            # (files written, packages installed, variables set)
+            # persists across turns of the same thread. Anthropic
+            # exposes the container id on the Message object's
+            # top-level `container.id`; on the SSE stream we latch it
+            # off `message_start.message.container.id` further down
+            # and emit a `container_ready` _toolEvent so the chat
+            # adapter persists it on the thread record. A stale id
+            # (container expired / not found) surfaces as a 4xx
+            # below, where we emit `container_invalidated` and let
+            # the next turn fall back to auto-create.
+            if anthropic_code_exec_container_id:
+                body["container"] = anthropic_code_exec_container_id
 
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
@@ -1376,6 +1392,28 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
+                    # Stale container detection (mirror of the OpenAI
+                    # path). When we sent a `container` field and the
+                    # response is 4xx with any hint that the id is
+                    # expired / missing, emit container_invalidated so
+                    # the chat adapter clears the stored id and the
+                    # next turn falls back to auto-create.
+                    if (
+                        anthropic_code_exec_container_id
+                        and 400 <= response.status_code < 500
+                    ):
+                        lowered = error_text.lower()
+                        if "container" in lowered and (
+                            "expired" in lowered
+                            or "not_found" in lowered
+                            or "not found" in lowered
+                            or "no such container" in lowered
+                            or "invalid" in lowered
+                        ):
+                            yield (
+                                f"data: "
+                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
+                            )
                     yield _error_sse_line(
                         response.status_code, error_text, self.provider_type
                     )
@@ -1421,6 +1459,13 @@ class ExternalProviderClient:
                 # them. Track the count so we know how often it would
                 # have mattered.
                 code_execution_generated_files = 0
+                # Container id captured from `message_start.message.container.id`
+                # when code_execution is enabled. Emit a `container_ready`
+                # _toolEvent on first sight so the chat adapter persists it
+                # on the thread record. Only emitted when the value differs
+                # from the inbound id — no churn on reuse.
+                latched_container_id: Optional[str] = None
+                container_id_emitted = False
                 # Cache usage tracking. message_start carries the input
                 # accounting (incl. cache_creation_input_tokens and
                 # cache_read_input_tokens); message_delta carries cumulative
@@ -1800,6 +1845,36 @@ class ExternalProviderClient:
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
+                            # Anthropic reports the code_execution container
+                            # id on `message_delta.delta.container.{id,
+                            # expires_at}` (NOT on message_start — at start
+                            # the container hasn't been provisioned yet).
+                            # Latch on first sight and emit container_ready
+                            # only when the value differs from the inbound
+                            # id, so steady-state reuse doesn't re-write
+                            # the same id to the thread record every turn.
+                            delta_obj = event.get("delta") or {}
+                            container_obj = delta_obj.get("container")
+                            if (
+                                isinstance(container_obj, dict)
+                                and latched_container_id is None
+                            ):
+                                probe = container_obj.get("id")
+                                if isinstance(probe, str) and probe:
+                                    latched_container_id = probe
+                            if (
+                                latched_container_id
+                                and not container_id_emitted
+                                and latched_container_id
+                                != anthropic_code_exec_container_id
+                            ):
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "container_ready",
+                                        "container_id": latched_container_id,
+                                    }
+                                )
+                                container_id_emitted = True
                             stop_reason = event.get("delta", {}).get("stop_reason")
                             if stop_reason:
                                 if thinking_open:
@@ -1869,6 +1944,7 @@ class ExternalProviderClient:
                         "code_execution_invocations=%s, "
                         "code_execution_results=%s, "
                         "code_execution_generated_files=%s, "
+                        "container_id_in=%s, container_id_out=%s, "
                         "input_tokens=%s, output_tokens=%s, "
                         "cache_creation_input_tokens=%s, "
                         "cache_read_input_tokens=%s, events=%s)",
@@ -1881,6 +1957,8 @@ class ExternalProviderClient:
                         code_execution_invocations,
                         code_execution_results,
                         code_execution_generated_files,
+                        anthropic_code_exec_container_id,
+                        latched_container_id,
                         last_usage.get("input_tokens"),
                         last_usage.get("output_tokens"),
                         last_usage.get("cache_creation_input_tokens"),
