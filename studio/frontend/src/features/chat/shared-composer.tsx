@@ -20,7 +20,7 @@ import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { loadModel, validateModel } from "./api/chat-api";
-import { parseExternalModelId } from "./external-providers";
+import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   type ReasoningEffort,
@@ -322,9 +322,17 @@ export function SharedComposer({
   );
   const externalSelection = parseExternalModelId(checkpoint);
   const isExternalModel = externalSelection !== null;
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
   const imageUnavailableReason = getImageInputUnavailableReason({
     activeModel,
     isExternalModel,
+    externalSupportsVision: providerTypeSupportsVision(
+      selectedExternalProvider?.providerType,
+    ),
+    externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
     modelLoaded,
   });
@@ -335,10 +343,6 @@ export function SharedComposer({
   // entry after ensureModelLoaded runs at send time. Single mode uses
   // the loaded model's runtime capability.
   const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
-  const selectedExternalProvider =
-    externalSelection != null
-      ? externalProviders.find((p) => p.id === externalSelection.providerId)
-      : undefined;
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
     externalSelection?.modelId === "openrouter/free" &&

@@ -31,6 +31,7 @@ import {
   isCustomProviderType,
   loadExternalProviders,
   parseExternalModelId,
+  providerTypeSupportsVision,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
@@ -792,6 +793,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const imageGateReason = getImageInputUnavailableReason({
           activeModel,
           isExternalModel: isExternalRequest,
+          externalSupportsVision: providerTypeSupportsVision(
+            externalProvider?.providerType,
+          ),
+          externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
         });

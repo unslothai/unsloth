@@ -6,26 +6,35 @@ import type { ChatModelSummary } from "../types/runtime";
 export function getImageInputUnavailableReason({
   activeModel,
   isExternalModel,
+  externalSupportsVision,
+  externalModelLabel,
   loadedIsMultimodal,
   modelLoaded,
 }: {
   activeModel?: ChatModelSummary;
   isExternalModel: boolean;
+  // true/false = caller knows; null/undefined = unknown (default-allow).
+  // External selections aren't in runtime.models[], so callers should
+  // resolve provider-type capability and pass it here.
+  externalSupportsVision?: boolean | null;
+  // Fallback toast label when activeModel is missing.
+  externalModelLabel?: string | null;
   loadedIsMultimodal: boolean;
   modelLoaded: boolean;
 }): string | null {
-  // External providers: assume vision works. Only block if the catalog
-  // says non-vision AND there are no audio flags either. The audio flags
-  // signal the catalog is current, so an explicit isVision=false there
-  // is real (Cohere chat being the usual case).
   if (isExternalModel) {
-    if (
-      activeModel &&
-      activeModel.isVision === false &&
-      !activeModel.isAudio &&
-      !activeModel.hasAudioInput
-    ) {
-      const label = activeModel.name || activeModel.id || "Current model";
+    const explicitlyNonVision =
+      externalSupportsVision === false ||
+      (activeModel &&
+        activeModel.isVision === false &&
+        !activeModel.isAudio &&
+        !activeModel.hasAudioInput);
+    if (explicitlyNonVision) {
+      const label =
+        activeModel?.name ||
+        externalModelLabel ||
+        activeModel?.id ||
+        "Current model";
       return `${label} cannot accept images.`;
     }
     return null;
