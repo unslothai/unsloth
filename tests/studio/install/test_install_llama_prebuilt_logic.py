@@ -424,9 +424,8 @@ def test_simple_linux_direct_release_uses_published_source_checksums_for_branch(
     )
 
     assert plan is not None
-    # Branch releases report the concrete upstream tag from approved
-    # metadata, not the moving branch label inferred from asset names.
-    assert plan.llama_tag == "b9174"
+    assert plan.llama_tag == "master"
+    assert plan.approved_checksums.upstream_tag == "b9174"
     assert plan.approved_checksums.source_commit == source_commit
     assert plan.attempts[0].expected_sha256 == "a" * 64
     source_repo, source_ref, _source_archive, exact_source = (

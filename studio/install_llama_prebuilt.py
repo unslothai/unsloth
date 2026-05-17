@@ -1297,10 +1297,6 @@ def direct_linux_release_plan(
                 f"{repo}@{bundle.release_tag} did not contain exact source provenance"
             )
         attempts = apply_approved_hashes(attempts, approved_checksums)
-        # Pin auxiliary downloads (ensure_converter_scripts) and the install
-        # fingerprint to the concrete upstream tag from the approved metadata
-        # rather than the moving branch label inferred from asset names.
-        resolved_upstream_tag = approved_checksums.upstream_tag
     return InstallReleasePlan(
         requested_tag = requested_tag,
         llama_tag = resolved_upstream_tag,
