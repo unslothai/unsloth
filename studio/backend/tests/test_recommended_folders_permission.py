@@ -2,68 +2,94 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Regression test for the /recommended-folders 500 caused by an
-unreadable model directory (e.g. a stock root-owned ``ollama`` install at
-``/usr/share/ollama/.ollama/models``).
+Regression test for the /recommended-folders (and /browse-folders) 500
+caused by an unreadable model directory, e.g. a stock root-owned
+``ollama`` install at ``/usr/share/ollama/.ollama/models``.
 
-Root cause: ``routes.models.get_recommended_folders`` probed candidate
+Root cause: the folder-scan helpers in ``routes.models`` probed candidate
 paths with a bare ``Path(p).is_dir()``. On Python <= 3.11 that returned
 ``False`` for an unreadable path; on Python >= 3.12 ``is_dir()`` propagates
 ``PermissionError`` (EACCES), so the endpoint 500-ed through the whole
-middleware stack instead of just skipping the directory.
+middleware stack instead of just skipping the directory. The probes now go
+through the module-level ``_safe_is_dir`` helper.
 
-The check now goes through ``utils.fs_access.is_accessible_dir``, which is
-stdlib-only and importable without the heavy backend dependencies — so
-this regression is covered without standing up the FastAPI app.
+``routes.models`` pulls the full backend dependency tree (fastapi,
+structlog, the models package, ...), so rather than stand up the app we
+extract the real ``_safe_is_dir`` definition from the source file and
+exercise that exact function in isolation. The test therefore stays
+dependency-free while still running the shipped code.
 
 Run:
     python -m pytest studio/backend/tests/test_recommended_folders_permission.py -v
 """
 
+import ast
 import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# Mirror conftest: backend root on sys.path so `from utils...` resolves
-# even when this file is run directly.
 _backend_root = Path(__file__).resolve().parent.parent
-if str(_backend_root) not in sys.path:
-    sys.path.insert(0, str(_backend_root))
+_models_src = _backend_root / "routes" / "models.py"
 
-from utils.fs_access import is_accessible_dir  # noqa: E402
+
+def _load_safe_is_dir():
+    """Return the real ``_safe_is_dir`` from routes/models.py without
+    importing the (heavily dependency-laden) module."""
+    tree = ast.parse(_models_src.read_text())
+    fn = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_safe_is_dir"
+    )
+    module = ast.Module(body=[fn], type_ignores=[])
+    ns: dict = {"Path": Path, "os": os}
+    exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
+    return ns["_safe_is_dir"]
+
+
+safe_is_dir = _load_safe_is_dir()
 
 # Permission bits are bypassed for the superuser, so the chmod-000 setup
-# below does not actually deny access when running as root.
+# below would not actually deny access when running as root.
 _skip_as_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason = "root bypasses filesystem permission bits",
 )
 
 
-def test_readable_dir_is_accessible(tmp_path):
-    assert is_accessible_dir(tmp_path) is True
+def test_helper_exists_in_source():
+    # Guards against a refactor silently dropping the helper the fix
+    # depends on (the extractor would then raise StopIteration).
+    assert callable(safe_is_dir)
 
 
-def test_missing_path_is_not_accessible(tmp_path):
-    assert is_accessible_dir(tmp_path / "does-not-exist") is False
+def test_readable_dir_is_true(tmp_path):
+    assert safe_is_dir(tmp_path) is True
 
 
-def test_file_is_not_a_dir(tmp_path):
+def test_missing_path_is_false(tmp_path):
+    assert safe_is_dir(tmp_path / "does-not-exist") is False
+
+
+def test_file_is_false(tmp_path):
     f = tmp_path / "weights.gguf"
     f.write_bytes(b"x")
-    assert is_accessible_dir(f) is False
+    assert safe_is_dir(f) is False
 
 
 @_skip_as_root
-def test_unreadable_dir_returns_false_not_raises(tmp_path):
+def test_mode000_dir_itself_is_still_a_dir(tmp_path):
+    """A mode-000 directory is still stat-able via its (traversable)
+    parent, so _safe_is_dir reports True without raising. Filtering out
+    dirs we cannot actually *read* is the caller's separate
+    os.access(R_OK|X_OK) check, not this helper's job."""
     locked = tmp_path / "locked"
     locked.mkdir()
     os.chmod(locked, 0o000)
     try:
-        # Must not raise PermissionError (the production bug).
-        assert is_accessible_dir(locked) is False
+        assert safe_is_dir(locked) is True  # must not raise
     finally:
         os.chmod(locked, 0o755)
 
@@ -76,7 +102,7 @@ def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
     parent.mkdir()
     os.chmod(parent, 0o000)
     try:
-        assert is_accessible_dir(parent / ".ollama" / "models") is False
+        assert safe_is_dir(parent / ".ollama" / "models") is False
     finally:
         os.chmod(parent, 0o755)
 
@@ -87,14 +113,13 @@ def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
     reason = "is_dir() only propagates PermissionError on Python >= 3.12",
 )
 def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
-    """Documents *why* is_accessible_dir exists: the old bare pattern
-    raises on the interpreters Studio ships on (3.12+)."""
+    """Documents *why* _safe_is_dir exists: the old bare pattern raises
+    on the interpreters Studio ships on (3.12+)."""
     parent = tmp_path / "ollama"
     parent.mkdir()
     os.chmod(parent, 0o000)
     try:
         with pytest.raises(PermissionError):
-            # This is the pre-fix expression from get_recommended_folders.
-            Path(parent / ".ollama" / "models").is_dir()
+            Path(parent / ".ollama" / "models").is_dir()  # pre-fix expr
     finally:
         os.chmod(parent, 0o755)
