@@ -4,7 +4,6 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -750,14 +749,12 @@ export function SharedComposer({
                 <button
                   type="button"
                   disabled={reasoningDisabled}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                    reasoningDisabled
-                      ? "cursor-not-allowed opacity-40"
-                      : effectiveReasoningVisualEnabled
-                        ? "bg-primary/10 text-primary hover:bg-primary/20"
-                        : "text-muted-foreground hover:bg-muted-foreground/15",
-                  )}
+                  className="composer-pill-btn"
+                  data-active={
+                    effectiveReasoningVisualEnabled && !reasoningDisabled
+                      ? "true"
+                      : "false"
+                  }
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
                   {effectiveReasoningVisualEnabled ? (
@@ -840,16 +837,12 @@ export function SharedComposer({
                   setToolsEnabled(false);
                 }
               }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                reasoningLockedOn
-                  ? "cursor-not-allowed bg-primary/10 text-primary"
-                  : reasoningDisabled
-                    ? "cursor-not-allowed opacity-40"
-                    : effectiveReasoningEnabled
-                      ? "bg-primary/10 text-primary hover:bg-primary/20"
-                      : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-              )}
+              className="composer-pill-btn"
+              data-active={
+                reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled)
+                  ? "true"
+                  : "false"
+              }
               aria-label={
                 reasoningLockedOn
                   ? "Thinking is required for this model"
@@ -873,14 +866,8 @@ export function SharedComposer({
               type="button"
               disabled={!modelLoaded}
               onClick={() => setPreserveThinking(!preserveThinking)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-                !modelLoaded
-                  ? "cursor-not-allowed opacity-40"
-                  : preserveThinking
-                    ? "bg-primary/10 text-primary hover:bg-primary/20"
-                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-              )}
+              className="composer-pill-btn"
+              data-active={preserveThinking && modelLoaded ? "true" : "false"}
               aria-label={
                 preserveThinking ? "Disable preserve think" : "Enable preserve think"
               }
