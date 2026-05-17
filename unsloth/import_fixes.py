@@ -1289,53 +1289,61 @@ def patch_torchcodec_audio_decoder():
 
 
 def disable_torchcodec_if_broken():
-    """Disable torchcodec in transformers if it cannot actually load.
+    """Make broken torchcodec behave as if uninstalled (#5446).
 
-    transformers checks if torchcodec is installed via importlib.util.find_spec(),
-    but this returns True even when torchcodec cannot load its native libraries
-    (e.g., when FFmpeg is missing). This causes runtime errors when transformers
-    tries to use torchcodec for audio loading.
-
-    This function tests if torchcodec can actually load and if not, patches
-    transformers to think torchcodec is unavailable so it falls back to librosa.
-
-    Two shapes to cover:
-      * transformers < 5: a module-level ``_torchcodec_available`` flag
-        cached in ``transformers.utils.import_utils``; flip it to False.
-      * transformers >= 5: a public ``is_torchcodec_available()`` callable
-        wrapped with ``functools.lru_cache``; replace it with a stub that
-        returns False and clear the cache so subsequent callers see it.
+    transformers and datasets both detect torchcodec via find_spec, which
+    returns True even when the native libs cannot dlopen. We flip their
+    flags and seat a sys.modules sentinel so downstream imports fall through
+    their existing except ImportError handlers cleanly.
     """
     try:
         import importlib.util
 
         if importlib.util.find_spec("torchcodec") is None:
-            return  # torchcodec not installed, nothing to do
+            return  # absent or already disabled
 
-        # Test if torchcodec can actually load
+        # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
         from torchcodec.decoders import AudioDecoder
     except (ImportError, RuntimeError, OSError):
-        # torchcodec cannot load - disable it in transformers
+        # transformers: flip flag (<5) and/or rebind lru_cache'd func (>=5).
         try:
             import transformers.utils.import_utils as tf_import_utils
-        except ImportError:
-            return
 
-        # transformers < 5 path: module-level cached flag.
-        try:
-            tf_import_utils._torchcodec_available = False
-        except AttributeError:
-            pass
-
-        # transformers >= 5 path: public lru_cache'd function. Clear any
-        # cached True result then rebind to a stub that returns False.
-        is_avail = getattr(tf_import_utils, "is_torchcodec_available", None)
-        if is_avail is not None:
             try:
-                is_avail.cache_clear()
+                tf_import_utils._torchcodec_available = False
             except AttributeError:
                 pass
-            tf_import_utils.is_torchcodec_available = lambda: False
+
+            is_avail = getattr(tf_import_utils, "is_torchcodec_available", None)
+            if is_avail is not None:
+                try:
+                    is_avail.cache_clear()
+                except AttributeError:
+                    pass
+                tf_import_utils.is_torchcodec_available = lambda: False
+        except ImportError:
+            pass
+
+        # datasets >= 4.0: own flag gating audio/video/features/formatters.
+        try:
+            import datasets.config as datasets_config
+
+            if hasattr(datasets_config, "TORCHCODEC_AVAILABLE"):
+                datasets_config.TORCHCODEC_AVAILABLE = False
+        except ImportError:
+            pass
+
+        # Drop half-loaded entries and seat the absence sentinel. After this,
+        # import torchcodec raises ModuleNotFoundError and find_spec returns None.
+        for _stale in [
+            n
+            for n in list(sys.modules)
+            if n == "torchcodec"
+            or n.startswith("torchcodec.")
+            or n == "datasets.features._torchcodec"
+        ]:
+            sys.modules.pop(_stale, None)
+        sys.modules["torchcodec"] = None
 
 
 def disable_broken_wandb():
