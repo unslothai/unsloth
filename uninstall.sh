@@ -9,14 +9,49 @@
 
 set -e
 
+# Stop a Studio server via its PID file (written by install.sh's _spawn_terminal).
+_kill_pid_file() {
+    _pid_file="$1"
+    [ -f "$_pid_file" ] || return 0
+    _pid=$(sed -n '1s/[^0-9].*//p' "$_pid_file" 2>/dev/null || true)
+    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+        kill -TERM "$_pid" 2>/dev/null || true
+        # Wait up to 10s for graceful shutdown.
+        _i=0
+        while kill -0 "$_pid" 2>/dev/null && [ "$_i" -lt 20 ]; do
+            sleep 0.5
+            _i=$((_i + 1))
+        done
+        kill -0 "$_pid" 2>/dev/null && kill -KILL "$_pid" 2>/dev/null || true
+    fi
+    rm -f "$_pid_file" 2>/dev/null || true
+}
+
 _pkill_studio() {
+    # Prefer PID files written by _spawn_terminal so we only touch our own installs.
+    for _data_dir in "$HOME/.local/share/unsloth" $(_custom_studio_data_dirs); do
+        [ -d "$_data_dir" ] || continue
+        for _pf in "$_data_dir"/studio-*.pid; do
+            [ -f "$_pf" ] && _kill_pid_file "$_pf"
+        done
+    done
+
     if command -v pkill >/dev/null 2>&1; then
-        # Cover both `-p PORT` and `--port PORT` invocation styles.
-        for _pat in "unsloth studio.*-p[ =][0-9]" "unsloth studio.*--port[ =][0-9]"; do
+        # Anchored patterns avoid matching `less notes.md` etc. Third pattern
+        # catches the post-exec `studio/backend/run.py --port N` form.
+        for _pat in \
+            "/unsloth_studio/bin/.*unsloth[^/]* studio.*-p[ =][0-9]" \
+            "/unsloth_studio/bin/.*unsloth[^/]* studio.*--port[ =][0-9]" \
+            "studio/backend/run\.py.*--port[ =][0-9]"
+        do
             pkill -TERM -f "$_pat" 2>/dev/null || true
         done
         sleep 0.5
-        for _pat in "unsloth studio.*-p[ =][0-9]" "unsloth studio.*--port[ =][0-9]"; do
+        for _pat in \
+            "/unsloth_studio/bin/.*unsloth[^/]* studio.*-p[ =][0-9]" \
+            "/unsloth_studio/bin/.*unsloth[^/]* studio.*--port[ =][0-9]" \
+            "studio/backend/run\.py.*--port[ =][0-9]"
+        do
             pkill -KILL -f "$_pat" 2>/dev/null || true
         done
     fi
@@ -27,6 +62,38 @@ _remove_path() {
     if [ -e "$_p" ] || [ -L "$_p" ]; then
         rm -rf "$_p" 2>/dev/null && echo "  removed: $_p" || echo "  could not remove: $_p" >&2
     fi
+}
+
+# Accept as Studio root only if Studio sentinels exist. Without this,
+# UNSLOTH_STUDIO_HOME=$HOME sh uninstall.sh would rm -rf $HOME.
+_is_studio_root() {
+    _r="$1"
+    [ -n "$_r" ] || return 1
+    [ -f "$_r/share/studio.conf" ] && return 0
+    [ -d "$_r/unsloth_studio" ] && return 0
+    if [ -L "$_r/bin/unsloth" ]; then
+        _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
+        case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
+    fi
+    return 1
+}
+
+# Hard deny list: never delete /, $HOME, $HOME's parent, or system paths.
+_is_unsafe_root() {
+    _r="$1"
+    [ -z "$_r" ] && return 0
+    case "$_r" in /|""|"$HOME"|"$HOME/") return 0 ;; esac
+    case "$_r" in /bin|/sbin|/etc|/usr|/usr/*|/var|/var/*|/opt|/opt/*|/Library|/Library/*|/System|/System/*|/Applications|/Applications/*) return 0 ;; esac
+    _parent=$(dirname "$HOME" 2>/dev/null || echo "")
+    [ -n "$_parent" ] && [ "$_r" = "$_parent" ] && return 0
+    return 1
+}
+
+# Print share/ dirs of known custom roots (where PID files live).
+_custom_studio_data_dirs() {
+    _custom_studio_roots 2>/dev/null | while IFS= read -r _r; do
+        [ -d "$_r/share" ] && printf '%s\n' "$_r/share"
+    done
 }
 
 # Resolve a custom install root from any of:
@@ -92,7 +159,16 @@ _pkill_studio
 
 echo "Removing data and install directories..."
 _custom_studio_roots | while IFS= read -r _custom_root; do
-    [ -n "$_custom_root" ] && _remove_path "$_custom_root"
+    [ -n "$_custom_root" ] || continue
+    if _is_unsafe_root "$_custom_root"; then
+        echo "  refusing to remove unsafe path: $_custom_root" >&2
+        continue
+    fi
+    if ! _is_studio_root "$_custom_root"; then
+        echo "  refusing to remove non-Studio path: $_custom_root" >&2
+        continue
+    fi
+    _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
 _remove_path "$HOME/.local/share/unsloth"
