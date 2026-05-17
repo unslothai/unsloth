@@ -990,11 +990,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // container_id (if any) so subsequent turns in the same
             // thread reference the existing container instead of
             // auto-creating a fresh one. Empty string / undefined →
-            // backend falls back to container_auto. Anthropic uses
-            // the parallel `anthropicCodeExecContainerId` field below
-            // (sent as `container` on /v1/messages).
+            // backend falls back to container_auto. Anthropic doesn't
+            // use this (server-side per-turn container).
             let openaiCodeExecContainerId: string | null = null;
-            let anthropicCodeExecContainerId: string | null = null;
             const codeExecEnabledForThisTurn =
               codeToolsEnabled &&
               providerSupportsBuiltinCodeExecution(
@@ -1007,11 +1005,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 const thread = await db.threads.get(resolvedThreadId);
                 openaiCodeExecContainerId =
                   thread?.openaiCodeExecContainerId ?? null;
-                anthropicCodeExecContainerId =
-                  thread?.anthropicCodeExecContainerId ?? null;
               } catch {
                 openaiCodeExecContainerId = null;
-                anthropicCodeExecContainerId = null;
               }
               // Cross-thread inheritance: when the active thread has
               // no container yet, default to the one most recently
@@ -1177,12 +1172,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
                   }
                 : {}),
-              ...(anthropicCodeExecContainerId
-                ? {
-                    anthropic_code_exec_container_id:
-                      anthropicCodeExecContainerId,
-                  }
-                : {}),
               ...(supportsProviderPromptCaching(externalProvider.providerType)
                 ? {
                     enable_prompt_caching:
@@ -1276,45 +1265,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     | string
                     | undefined;
                   if (newContainerId && resolvedThreadId) {
-                    const field =
-                      externalProvider?.providerType === "anthropic"
-                        ? "anthropicCodeExecContainerId"
-                        : "openaiCodeExecContainerId";
-                    // On the first turn of a brand-new thread the row
-                    // may not be in Dexie yet when this SSE event
-                    // fires — db.threads.update silently affects 0
-                    // rows, the next turn re-reads null, and Anthropic
-                    // auto-creates a fresh container. Retry briefly so
-                    // assistant-ui's own DexieAdapter.initialize lands
-                    // the row first (with the correct modelType for
-                    // base / lora / compare contexts) and our update
-                    // sticks on a subsequent attempt.
-                    try {
-                      for (let attempt = 0; attempt < 10; attempt++) {
-                        const affected = await db.threads.update(
-                          resolvedThreadId,
-                          { [field]: newContainerId },
-                        );
-                        if (affected > 0) break;
-                        await new Promise((resolve) =>
-                          setTimeout(resolve, 50),
-                        );
-                      }
-                    } catch {
-                      /* best-effort: container reuse is an optimization */
-                    }
+                    void db.threads
+                      .update(resolvedThreadId, {
+                        openaiCodeExecContainerId: newContainerId,
+                      })
+                      .catch(() => {});
                   }
                   continue;
                 }
                 if (toolEvent.type === "container_invalidated") {
                   if (resolvedThreadId) {
-                    const field =
-                      externalProvider?.providerType === "anthropic"
-                        ? "anthropicCodeExecContainerId"
-                        : "openaiCodeExecContainerId";
                     void db.threads
                       .update(resolvedThreadId, {
-                        [field]: null,
+                        openaiCodeExecContainerId: null,
                       })
                       .catch(() => {});
                   }

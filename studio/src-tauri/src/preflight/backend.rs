@@ -143,13 +143,7 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
     if health.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
     }
-    // Unauthenticated /api/health gates `version` behind a bearer; capability bits
-    // (protocol/manageability/auth/ownership) above are only set by backends >=
-    // MIN_DESKTOP_BACKEND_VERSION, so missing version means "auth-gated", not "old".
-    match health.version.as_deref() {
-        Some(version) if !version.is_empty() => backend_version_stale_reason(Some(version)),
-        _ => None,
-    }
+    backend_version_stale_reason(health.version.as_deref())
 }
 
 #[derive(Serialize)]

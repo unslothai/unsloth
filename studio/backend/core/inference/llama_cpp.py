@@ -32,6 +32,9 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from core.inference.tool_call_parser import (
+    parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+)
 
 logger = get_logger(__name__)
 
@@ -99,51 +102,6 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
 # list[bool] mask. Lazy-loaded.
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
-
-
-def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
-    """Quick DNS check. Runs on a daemon thread so concurrent sockets
-    in the same process are not affected by socket.setdefaulttimeout."""
-    result: list[Optional[bool]] = [None]
-
-    def _probe() -> None:
-        try:
-            socket.gethostbyname(host)
-            result[0] = False
-        except Exception:
-            result[0] = True
-
-    t = threading.Thread(target = _probe, daemon = True)
-    t.start()
-    t.join(timeout)
-    # Thread still running -> resolver wedged -> treat as dead.
-    return True if result[0] is None else result[0]
-
-
-@contextlib.contextmanager
-def _hf_offline_if_dns_dead():
-    """Set HF_HUB_OFFLINE for the body of this block only when DNS to
-    huggingface.co fails. Restores the env on exit so a transient
-    resolver hiccup at the start of one load can't quarantine the whole
-    process. Respects an explicit user setting (no-op if already set)."""
-    if "HF_HUB_OFFLINE" in os.environ:
-        yield False
-        return
-    if not _probe_dns_dead():
-        yield False
-        return
-
-    transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    if not transformers_was_set:
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
-    try:
-        yield True
-    finally:
-        os.environ.pop("HF_HUB_OFFLINE", None)
-        if not transformers_was_set:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
 
 def _swa_cache_path() -> Path:
@@ -528,9 +486,6 @@ class LlamaCppBackend:
         self._requested_n_ctx: int = 0
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
-        # llama-server tee log (see _drain_stdout / _kill_process).
-        self._llama_log_fh = None
-        self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
 
@@ -1510,11 +1465,6 @@ class LlamaCppBackend:
         This prevents a pipe-buffer deadlock on Windows where the default
         pipe buffer is only ~4 KB.  Without draining, llama-server blocks
         on writes and never becomes healthy.
-
-        Each line is also teed to ``self._llama_log_fh`` when set so a
-        post-mortem (especially in CI) has the full subprocess output
-        even if the crash predates the drain-thread join in
-        ``_wait_for_health``.
         """
         try:
             for line in self._process.stdout:
@@ -1522,14 +1472,6 @@ class LlamaCppBackend:
                 if line:
                     self._stdout_lines.append(line)
                     logger.debug(f"[llama-server] {line}")
-                    fh = getattr(self, "_llama_log_fh", None)
-                    if fh is not None:
-                        try:
-                            fh.write(line + "\n")
-                            fh.flush()
-                        except (ValueError, OSError):
-                            # Log file closed under us; tee silently.
-                            pass
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
@@ -1865,55 +1807,6 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
-            # Offline: resolve variant -> filename from the local HF cache.
-            # The heuristic below assumes filenames echo the repo name,
-            # which breaks for e.g. Qwen3.6-27B-MTP-GGUF (no "MTP" in file).
-            # Match against the rel path (not just basename) so subdir
-            # layouts like ``BF16/foo.gguf`` are findable.
-            if not gguf_filename:
-                try:
-                    from utils.models.model_config import _iter_hf_cache_snapshots
-
-                    boundary = re.compile(
-                        r"(?<![a-zA-Z0-9])"
-                        + re.escape(hf_variant.lower())
-                        + r"(?![a-zA-Z0-9])"
-                    )
-                    for snap in _iter_hf_cache_snapshots(hf_repo):
-                        matches = sorted(
-                            p.relative_to(snap).as_posix()
-                            for p in snap.rglob("*.gguf")
-                            if "mmproj" not in p.name.lower()
-                            and boundary.search(p.relative_to(snap).as_posix().lower())
-                        )
-                        if not matches:
-                            continue
-                        gguf_filename = matches[0]
-                        m = _SHARD_FULL_RE.match(Path(gguf_filename).name)
-                        if m:
-                            prefix = m.group(1)
-                            total = m.group(3)
-                            sibling_pat = re.compile(
-                                r"^"
-                                + re.escape(prefix)
-                                + r"-\d{5}-of-"
-                                + re.escape(total)
-                                + r"\.gguf$"
-                            )
-                            gguf_extra_shards = [
-                                f
-                                for f in matches[1:]
-                                if sibling_pat.match(Path(f).name)
-                            ]
-                        logger.info(
-                            "Resolved variant %s -> %s from local HF cache",
-                            hf_variant,
-                            gguf_filename,
-                        )
-                        break
-                except Exception as e:
-                    logger.debug(f"Offline cache lookup for variant failed: {e}")
-
             if not gguf_filename:
                 repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                 gguf_filename = f"{repo_name}-{hf_variant}.gguf"
@@ -1921,6 +1814,8 @@ class LlamaCppBackend:
         # Check disk space and fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
         try:
+            import os
+
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
@@ -2054,50 +1949,24 @@ class LlamaCppBackend:
         Prefers mmproj-F16.gguf, falls back to any mmproj*.gguf file.
         Returns the local path, or None if no mmproj file exists.
         """
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files
 
-        def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+            files = list_repo_files(hf_repo, token = hf_token)
             mmproj_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
+                f for f in files if f.endswith(".gguf") and "mmproj" in f.lower()
             )
             if not mmproj_files:
                 return None
+
+            # Prefer F16 variant
+            target = None
             for f in mmproj_files:
                 if f.lower().endswith("-f16.gguf"):
-                    return f
-            return mmproj_files[0]
-
-        target: Optional[str] = None
-        try:
-            from huggingface_hub import list_repo_files
-
-            target = _pick_mmproj(list_repo_files(hf_repo, token = hf_token))
-        except Exception as e:
-            logger.debug(f"Could not list repo files for mmproj: {e}")
-
-        # Offline: resolve mmproj from the local HF cache snapshot, same
-        # shape as _download_gguf's offline fallback above.
-        if target is None:
-            try:
-                from utils.models.model_config import _iter_hf_cache_snapshots
-
-                for snap in _iter_hf_cache_snapshots(hf_repo):
-                    rel_files = [
-                        p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")
-                    ]
-                    target = _pick_mmproj(rel_files)
-                    if target is not None:
-                        logger.info("Resolved mmproj %s from local HF cache", target)
-                        break
-            except Exception as e:
-                logger.debug(f"Offline cache lookup for mmproj failed: {e}")
-
-        if target is None:
-            return None
-
-        try:
-            from huggingface_hub import hf_hub_download
+                    target = f
+                    break
+            if target is None:
+                target = mmproj_files[0]
 
             logger.info(f"Downloading mmproj: {hf_repo}/{target}")
             local_path = hf_hub_download(
@@ -2186,22 +2055,18 @@ class LlamaCppBackend:
                 )
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
-            # Scope HF_HUB_OFFLINE to the download block only when DNS is
-            # dead; cleanup runs even on exception so a transient hiccup
-            # at the start of one load cannot quarantine future loads.
             if hf_repo:
-                with _hf_offline_if_dns_dead():
-                    model_path = self._download_gguf(
+                model_path = self._download_gguf(
+                    hf_repo = hf_repo,
+                    hf_variant = hf_variant,
+                    hf_token = hf_token,
+                )
+                # Auto-download mmproj for vision models
+                if is_vision and not mmproj_path:
+                    mmproj_path = self._download_mmproj(
                         hf_repo = hf_repo,
-                        hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                    # Auto-download mmproj for vision models
-                    if is_vision and not mmproj_path:
-                        mmproj_path = self._download_mmproj(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                        )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -2741,30 +2606,6 @@ class LlamaCppBackend:
                 self._kill_process()
 
                 self._stdout_lines = []
-                # Tee llama-server output to a dedicated log file so a
-                # post-mortem in CI (or after a remote-debug session)
-                # has the full subprocess trail even when the parent
-                # only stored the last 50 lines. Path lives under the
-                # studio home so it ships in the same place all other
-                # Studio logs live.
-                self._llama_log_fh = None
-                try:
-                    log_dir = _swa_cache_path().parent / "logs" / "llama-server"
-                    log_dir.mkdir(parents = True, exist_ok = True)
-                    self._llama_log_path = (
-                        log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
-                    )
-                    self._llama_log_fh = open(
-                        self._llama_log_path,
-                        "w",
-                        encoding = "utf-8",
-                        buffering = 1,
-                    )
-                    logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
-                except OSError as e:
-                    # Best-effort; never block the load on logging.
-                    logger.debug(f"Could not open llama-server log file: {e}")
-                    self._llama_log_path = None
                 self._process = subprocess.Popen(
                     cmd,
                     stdout = subprocess.PIPE,
@@ -3061,13 +2902,6 @@ class LlamaCppBackend:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-            fh = getattr(self, "_llama_log_fh", None)
-            if fh is not None:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-                self._llama_log_fh = None
 
     @staticmethod
     def _kill_orphaned_servers():
@@ -3279,17 +3113,7 @@ class LlamaCppBackend:
                 resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
-            except (
-                httpx.ConnectError,
-                httpx.TimeoutException,
-                # ReadError covers TCP RST mid-read while llama-server is
-                # still binding the port (Windows: WinError 10054). The
-                # crash-detection branch above catches a real exit; this
-                # one keeps a transient socket close from masking it.
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.WriteError,
-            ):
+            except (httpx.ConnectError, httpx.TimeoutException):
                 pass
 
             time.sleep(interval)
@@ -3301,128 +3125,11 @@ class LlamaCppBackend:
 
     @staticmethod
     def _parse_tool_calls_from_text(content: str) -> list[dict]:
+        """Parse tool calls from XML markup. Thin wrapper around the
+        shared backend-neutral parser so the safetensors path picks up
+        the same fixes when this is updated.
         """
-        Parse tool calls from XML markup in content text.
-
-        Handles formats like:
-          <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
-          <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
-        Closing tags (</tool_call>, </function>, </parameter>) are all optional
-        since models frequently omit them.
-        """
-        tool_calls = []
-
-        # Pattern 1: JSON inside <tool_call> tags.
-        # Use balanced-brace extraction that skips braces inside JSON strings.
-        for m in _TC_JSON_START_RE.finditer(content):
-            brace_start = m.end() - 1  # position of the opening {
-            depth, i = 0, brace_start
-            in_string = False
-            while i < len(content):
-                ch = content[i]
-                if in_string:
-                    if ch == "\\" and i + 1 < len(content):
-                        i += 2  # skip escaped character
-                        continue
-                    if ch == '"':
-                        in_string = False
-                elif ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                i += 1
-            if depth == 0:
-                json_str = content[brace_start : i + 1]
-                try:
-                    obj = json.loads(json_str)
-                    tc = {
-                        "id": f"call_{len(tool_calls)}",
-                        "type": "function",
-                        "function": {
-                            "name": obj.get("name", ""),
-                            "arguments": obj.get("arguments", {}),
-                        },
-                    }
-                    if isinstance(tc["function"]["arguments"], dict):
-                        tc["function"]["arguments"] = json.dumps(
-                            tc["function"]["arguments"]
-                        )
-                    tool_calls.append(tc)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
-        # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
-        # All closing tags optional -- models frequently omit </parameter>,
-        # </function>, and/or </tool_call>.
-        if not tool_calls:
-            # Step 1: Find all <function=name> positions and extract their bodies.
-            # Body boundary: use only </tool_call> or next <function= as hard
-            # boundaries.  We avoid using </function> as a boundary because
-            # code parameter values can contain that literal string.
-            # After extracting, we trim a trailing </function> if present.
-            func_starts = list(_TC_FUNC_START_RE.finditer(content))
-            for idx, fm in enumerate(func_starts):
-                func_name = fm.group(1)
-                body_start = fm.end()
-                # Hard boundaries: next <function= tag or </tool_call>
-                next_func = (
-                    func_starts[idx + 1].start()
-                    if idx + 1 < len(func_starts)
-                    else len(content)
-                )
-                end_tag = _TC_END_TAG_RE.search(content[body_start:])
-                if end_tag:
-                    body_end = body_start + end_tag.start()
-                else:
-                    body_end = len(content)
-                body_end = min(body_end, next_func)
-                body = content[body_start:body_end]
-                # Trim trailing </function> if present (it's the real closing tag)
-                body = _TC_FUNC_CLOSE_RE.sub("", body)
-
-                # Step 2: Extract parameters from body.
-                # For single-parameter functions (the common case: code, command,
-                # query), use body end as the only boundary to avoid false matches
-                # on </parameter> inside code strings.
-                arguments = {}
-                param_starts = list(_TC_PARAM_START_RE.finditer(body))
-                if len(param_starts) == 1:
-                    # Single parameter: value is everything from after the tag
-                    # to end of body, trimming any trailing </parameter>.
-                    pm = param_starts[0]
-                    val = body[pm.end() :]
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)
-                    arguments[pm.group(1)] = val.strip()
-                else:
-                    for pidx, pm in enumerate(param_starts):
-                        param_name = pm.group(1)
-                        val_start = pm.end()
-                        # Value ends at next <parameter= or end of body
-                        next_param = (
-                            param_starts[pidx + 1].start()
-                            if pidx + 1 < len(param_starts)
-                            else len(body)
-                        )
-                        val = body[val_start:next_param]
-                        # Trim trailing </parameter> if present
-                        val = _TC_PARAM_CLOSE_RE.sub("", val)
-                        arguments[param_name] = val.strip()
-
-                tc = {
-                    "id": f"call_{len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": func_name,
-                        "arguments": json.dumps(arguments),
-                    },
-                }
-                tool_calls.append(tc)
-
-        return tool_calls
+        return _shared_parse_tool_calls_from_text(content)
 
     @staticmethod
     def _build_openai_messages(

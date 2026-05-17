@@ -449,6 +449,10 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -494,6 +498,14 @@ class InferenceOrchestrator:
 
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
+        if tools is not None:
+            cmd["tools"] = tools
+        if enable_thinking is not None:
+            cmd["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            cmd["reasoning_effort"] = reasoning_effort
+        if preserve_thinking is not None:
+            cmd["preserve_thinking"] = preserve_thinking
 
         # Create mailbox BEFORE sending command
         mailbox: queue.Queue = queue.Queue()
@@ -770,8 +782,18 @@ class InferenceOrchestrator:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
-        """Generate response, streaming tokens from subprocess."""
+        """Generate response, streaming tokens from subprocess.
+
+        Optional ``tools`` / ``enable_thinking`` / ``reasoning_effort`` /
+        ``preserve_thinking`` kwargs are forwarded into the worker so
+        ``tokenizer.apply_chat_template`` can render tool schemas and
+        reasoning controls when the template understands them.
+        """
         yield from self._generate_inner(
             messages = messages,
             system_prompt = system_prompt,
@@ -784,6 +806,80 @@ class InferenceOrchestrator:
             repetition_penalty = repetition_penalty,
             cancel_event = cancel_event,
             use_adapter = None,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+
+    def generate_chat_completion_with_tools(
+        self,
+        messages: list,
+        tools: list,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_tokens: Optional[int] = None,
+        repetition_penalty: float = 1.0,
+        cancel_event = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        max_tool_iterations: int = 25,
+        auto_heal_tool_calls: bool = True,
+        tool_call_timeout: int = 300,
+        session_id: Optional[str] = None,
+        **_unused,
+    ):
+        """Run the safetensors agentic tool loop in this (parent)
+        process, calling the worker for each generation turn.
+
+        Yields the same event dicts as the GGUF tool loop so the route
+        layer can stream both backends through one helper. See
+        ``safetensors_agentic.run_safetensors_tool_loop`` for the
+        event protocol.
+        """
+        from core.inference.safetensors_agentic import run_safetensors_tool_loop
+        from core.inference.tools import execute_tool
+
+        max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
+
+        def _single_turn(conv: list):
+            # ``conv`` already carries any system message because the
+            # loop appends to a list seeded with system+user above.
+            yield from self.generate_chat_response(
+                messages = conv,
+                system_prompt = "",
+                image = None,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_new_tokens = max_new_tokens,
+                repetition_penalty = repetition_penalty,
+                cancel_event = cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
+
+        initial = list(messages)
+        if system_prompt:
+            initial = [{"role": "system", "content": system_prompt}] + initial
+
+        yield from run_safetensors_tool_loop(
+            single_turn = _single_turn,
+            messages = initial,
+            tools = tools,
+            execute_tool = execute_tool,
+            cancel_event = cancel_event,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+            max_tool_iterations = max_tool_iterations,
+            tool_call_timeout = tool_call_timeout,
+            session_id = session_id,
         )
 
     def generate_with_adapter_control(
@@ -817,6 +913,10 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -853,6 +953,10 @@ class InferenceOrchestrator:
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
                 use_adapter = use_adapter,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
 
     def _generate_locked(
@@ -868,6 +972,10 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Actual generation logic — must be called under _gen_lock."""
         request_id = str(uuid.uuid4())
@@ -893,6 +1001,16 @@ class InferenceOrchestrator:
 
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
+        # Only forward template kwargs the caller actually set so older
+        # workers that ignore unknown keys still work.
+        if tools is not None:
+            cmd["tools"] = tools
+        if enable_thinking is not None:
+            cmd["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            cmd["reasoning_effort"] = reasoning_effort
+        if preserve_thinking is not None:
+            cmd["preserve_thinking"] = preserve_thinking
 
         try:
             self._send_cmd(cmd)

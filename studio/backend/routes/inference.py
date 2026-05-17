@@ -231,6 +231,45 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+def _detect_safetensors_features(
+    backend, chat_template: Optional[str]
+) -> dict:
+    """Surface reasoning/tool capabilities for a loaded safetensors model.
+
+    Uses the same ``detect_reasoning_flags`` classifier as GGUF so flags
+    match across backends. The gpt-oss harmony case is layered on top
+    because that path provides reasoning via tokenizer channels rather
+    than chat-template markup.
+    """
+    model_id = getattr(backend, "active_model_name", None)
+    flags = detect_reasoning_flags(
+        chat_template,
+        model_identifier = model_id,
+        log_source = "safetensors",
+    ) if chat_template else {
+        "supports_reasoning": False,
+        "reasoning_style": "enable_thinking",
+        "reasoning_always_on": False,
+        "supports_preserve_thinking": False,
+        "supports_tools": False,
+    }
+    # gpt-oss surfaces reasoning via harmony channels (HarmonyTextStreamer);
+    # the chat template does not advertise reasoning kwargs but we still
+    # want the UI to enable the reasoning toggle. Tool calling for gpt-oss
+    # over safetensors is not yet implemented (harmony uses a dedicated
+    # channel for tool calls rather than the <tool_call> XML this loop
+    # parses), so suppress the supports_tools flag to avoid offering a
+    # toggle that would silently no-op.
+    try:
+        if hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model():
+            flags["supports_reasoning"] = True
+            flags["reasoning_style"] = "reasoning_effort"
+            flags["supports_tools"] = False
+    except Exception:
+        pass
+    return flags
+
+
 def _effective_enable_tools(payload) -> Optional[bool]:
     """Resolve `payload.enable_tools` against the process-level tool policy.
 
@@ -602,21 +641,17 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
-                # Non-GGUF: only advertise reasoning for gpt-oss Harmony,
-                # which emits reasoning via channels at the tokenizer level.
-                # Template-level chat_template_kwargs (enable_thinking /
-                # preserve_thinking / tools) are not yet forwarded through
-                # the transformers generation path, so avoid advertising
-                # controls the server cannot honour outside GGUF.
-                _sf_supports_reasoning = False
-                _sf_reasoning_style = "enable_thinking"
-                if hasattr(backend, "_is_gpt_oss_model"):
-                    try:
-                        if backend._is_gpt_oss_model():
-                            _sf_supports_reasoning = True
-                            _sf_reasoning_style = "reasoning_effort"
-                    except Exception:
-                        pass
+                # Inspect the loaded tokenizer's chat template the same
+                # way the GGUF sniffer does. Native generation now
+                # forwards ``enable_thinking`` / ``reasoning_effort`` /
+                # ``preserve_thinking`` / ``tools`` into
+                # ``apply_chat_template``, so we can honestly advertise
+                # whatever the template supports.
+                _sf_flags = _detect_safetensors_features(
+                    backend, _chat_template
+                )
+                _sf_supports_reasoning = _sf_flags["supports_reasoning"]
+                _sf_reasoning_style = _sf_flags["reasoning_style"]
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -637,9 +672,11 @@ async def load_model(
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
-                    reasoning_always_on = False,
-                    supports_preserve_thinking = False,
-                    supports_tools = False,
+                    reasoning_always_on = _sf_flags["reasoning_always_on"],
+                    supports_preserve_thinking = _sf_flags[
+                        "supports_preserve_thinking"
+                    ],
+                    supports_tools = _sf_flags["supports_tools"],
                     chat_template = _chat_template,
                 )
 
@@ -964,19 +1001,10 @@ async def load_model(
         except Exception:
             pass
 
-        # Non-GGUF: gpt-oss Harmony surfaces reasoning via tokenizer-level
-        # channels; other safetensors reasoning/tools/preserve-thinking
-        # knobs are not forwarded to tokenizer.apply_chat_template yet, so
-        # we only advertise support for the Harmony case here.
-        _sf_supports_reasoning = False
-        _sf_reasoning_style = "enable_thinking"
-        if hasattr(backend, "_is_gpt_oss_model"):
-            try:
-                if backend._is_gpt_oss_model():
-                    _sf_supports_reasoning = True
-                    _sf_reasoning_style = "reasoning_effort"
-            except Exception:
-                pass
+        # Inspect the loaded tokenizer's chat template the same way the
+        # GGUF sniffer does so reasoning/tool flags come from the
+        # template instead of being hardcoded off.
+        _sf_flags = _detect_safetensors_features(backend, _chat_template)
 
         return LoadResponse(
             status = "loaded",
@@ -994,11 +1022,11 @@ async def load_model(
             requires_trust_remote_code = bool(
                 inference_config.get("trust_remote_code", False)
             ),
-            supports_reasoning = _sf_supports_reasoning,
-            reasoning_style = _sf_reasoning_style,
-            reasoning_always_on = False,
-            supports_preserve_thinking = False,
-            supports_tools = False,
+            supports_reasoning = _sf_flags["supports_reasoning"],
+            reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_always_on = _sf_flags["reasoning_always_on"],
+            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+            supports_tools = _sf_flags["supports_tools"],
             chat_template = _chat_template,
         )
 
@@ -1349,16 +1377,8 @@ async def get_status(
 
         # Non-GGUF: only gpt-oss Harmony is wired through the transformers
         # generation path. Other template-level reasoning / tool kwargs
-        # are not yet forwarded, so we do not advertise them here.
-        supports_reasoning = False
-        reasoning_style = "enable_thinking"
-        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
-            try:
-                if backend._is_gpt_oss_model():
-                    supports_reasoning = True
-                    reasoning_style = "reasoning_effort"
-            except Exception:
-                pass
+        # are now forwarded too, so we surface flags from the template.
+        _sf_flags = _detect_safetensors_features(backend, chat_template)
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -1378,11 +1398,11 @@ async def get_status(
             requires_trust_remote_code = bool(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
-            supports_reasoning = supports_reasoning,
-            reasoning_style = reasoning_style,
-            reasoning_always_on = False,
-            supports_preserve_thinking = False,
-            supports_tools = False,
+            supports_reasoning = _sf_flags["supports_reasoning"],
+            reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_always_on = _sf_flags["reasoning_always_on"],
+            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+            supports_tools = _sf_flags["supports_tools"],
             chat_template = chat_template,
         )
 
@@ -1737,7 +1757,6 @@ async def _proxy_to_external_provider(
             enabled_tools = payload.enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
-            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             stream = payload.stream,
         )
         try:
@@ -1959,11 +1978,8 @@ async def openai_chat_completions(
     Supports multimodal messages: ``content`` may be a plain string or a
     list of content parts (``text`` / ``image_url``).
 
-    Non-streaming (default): returns a single ChatCompletion JSON object.
-    Streaming:               returns SSE chunks matching OpenAI's format.
-
-    ``stream`` defaults to ``false`` to match OpenAI's spec; clients opt
-    into SSE by sending ``stream: true``.
+    Streaming (default):  returns SSE chunks matching OpenAI's format.
+    Non-streaming:        returns a single ChatCompletion JSON object.
 
     Automatically routes to the correct backend:
     - GGUF models → llama-server via LlamaCppBackend
@@ -2187,9 +2203,6 @@ async def openai_chat_completions(
 
         cancel_event = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
-        # parity). Naive curl / .NET / System.Text.Json clients omitting
-        # the field used to get SSE here and choke on deserialization (#5047).
         if payload.stream:
             return await _openai_passthrough_stream(
                 request,
@@ -2739,6 +2752,273 @@ async def openai_chat_completions(
         except Exception as e:
             raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
 
+    # Compute safetensors feature flags from the loaded tokenizer's
+    # chat template so the tool/reasoning toggles match what the
+    # template actually supports.
+    _sf_model_info = backend.models.get(backend.active_model_name, {})
+    _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
+    _sf_features = _detect_safetensors_features(backend, _sf_tpl)
+
+    cancel_event = threading.Event()
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    # ── Safetensors tool-calling path ─────────────────────────
+    # Mirrors the GGUF agentic loop: yields the same status /
+    # tool_start / tool_end / content event stream. Disabled in
+    # vision turns because tool-call XML and image inputs share the
+    # same render slot in most templates and the combination is
+    # currently untested. Also disabled for gpt-oss because Harmony
+    # emits tool calls through dedicated channels (not <tool_call>
+    # XML) and the parser would otherwise silently drop them; tool
+    # use for gpt-oss still works through the GGUF path.
+    _sf_is_gptoss = False
+    try:
+        _sf_is_gptoss = bool(
+            hasattr(backend, "_is_gpt_oss_model")
+            and backend._is_gpt_oss_model()
+        )
+    except Exception:
+        _sf_is_gptoss = False
+
+    _sf_use_tools = (
+        _effective_enable_tools(payload)
+        and _sf_features.get("supports_tools", False)
+        and image is None
+        and not _sf_is_gptoss
+    )
+
+    if _sf_use_tools and payload.stream:
+        from core.inference.tools import ALL_TOOLS
+
+        if payload.enabled_tools is not None:
+            _sf_tools_to_use = [
+                t
+                for t in ALL_TOOLS
+                if t["function"]["name"] in payload.enabled_tools
+            ]
+        else:
+            _sf_tools_to_use = ALL_TOOLS
+
+        _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
+        _sf_has_web = "web_search" in _sf_tool_names
+        _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
+
+        _sf_date_line = f"The current date is {_date.today().isoformat()}."
+        _sf_model_size_b = _extract_model_size_b(model_name)
+        _sf_is_small_model = _sf_model_size_b is not None and _sf_model_size_b < 9
+
+        if _sf_is_small_model:
+            _sf_web_tips = "Do not repeat the same search query."
+        else:
+            _sf_web_tips = (
+                "When you search and find a relevant URL in the results, "
+                "fetch its full content by calling web_search with the url parameter. "
+                "Do not repeat the same search query. If a search returns "
+                "no useful results, try rephrasing or fetching a result URL directly."
+            )
+        _sf_code_tips = (
+            "Use code execution for math, calculations, data processing, "
+            "or to parse and analyze information from tool results."
+        )
+
+        if _sf_has_web and _sf_has_code:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "tools rather than answering from memory. "
+                + _sf_web_tips
+                + " "
+                + _sf_code_tips
+            )
+        elif _sf_has_code:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "code execution rather than answering from memory. " + _sf_code_tips
+            )
+        elif _sf_has_web:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "web search for up-to-date or uncertain factual "
+                "information rather than answering from memory. " + _sf_web_tips
+            )
+        else:
+            _sf_nudge = ""
+
+        _sf_system_prompt = system_prompt
+        if _sf_nudge:
+            _sf_nudge += _TOOL_ACTION_NUDGE
+            if _sf_system_prompt:
+                _sf_system_prompt = (
+                    _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
+                )
+            else:
+                _sf_system_prompt = _sf_nudge
+
+        # Strip stale tool-call XML from prior assistant turns so the
+        # model doesn't see fragments from earlier conversations.
+        _sf_chat_messages = []
+        for _msg in chat_messages:
+            if _msg.get("role") == "assistant" and isinstance(
+                _msg.get("content"), str
+            ):
+                _sf_chat_messages.append(
+                    {
+                        **_msg,
+                        "content": _TOOL_XML_RE.sub(
+                            "", _msg["content"]
+                        ).strip(),
+                    }
+                )
+            else:
+                _sf_chat_messages.append(_msg)
+
+        def sf_generate_with_tools():
+            return backend.generate_chat_completion_with_tools(
+                messages = _sf_chat_messages,
+                tools = _sf_tools_to_use,
+                system_prompt = _sf_system_prompt or "",
+                temperature = payload.temperature,
+                top_p = payload.top_p,
+                top_k = payload.top_k,
+                min_p = payload.min_p,
+                max_tokens = payload.max_tokens,
+                repetition_penalty = payload.repetition_penalty,
+                cancel_event = cancel_event,
+                enable_thinking = payload.enable_thinking,
+                reasoning_effort = payload.reasoning_effort,
+                preserve_thinking = payload.preserve_thinking,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True,
+                max_tool_iterations = payload.max_tool_calls_per_message
+                if payload.max_tool_calls_per_message is not None
+                else 25,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                session_id = payload.session_id,
+            )
+
+        _sf_tool_sentinel = object()
+        _sf_cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _sf_tracker = _TrackedCancel(cancel_event, *_sf_cancel_keys)
+        _sf_tracker.__enter__()
+
+        async def sf_tool_stream():
+            try:
+                first_chunk = ChatCompletionChunk(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(role = "assistant"),
+                            finish_reason = None,
+                        )
+                    ],
+                )
+                yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                gen = sf_generate_with_tools()
+                prev_text = ""
+                while True:
+                    if cancel_event.is_set():
+                        break
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        return
+
+                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    if event is _sf_tool_sentinel:
+                        break
+
+                    if event["type"] == "status":
+                        if not event["text"]:
+                            prev_text = ""
+                        status_data = json.dumps(
+                            {
+                                "type": "tool_status",
+                                "content": event["text"],
+                            }
+                        )
+                        yield f"data: {status_data}\n\n"
+                        continue
+
+                    if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_start":
+                            prev_text = ""
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
+
+                    # content: cumulative text. Diff against the last
+                    # emitted cleaned snapshot so cross-chunk markup
+                    # is handled correctly.
+                    raw_cumulative = event.get("text", "")
+                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    new_text = clean_cumulative[len(prev_text) :]
+                    prev_text = clean_cumulative
+                    if not new_text:
+                        continue
+                    chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(content = new_text),
+                                finish_reason = None,
+                            )
+                        ],
+                    )
+                    yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                final_chunk = ChatCompletionChunk(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(),
+                            finish_reason = "stop",
+                        )
+                    ],
+                )
+                yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except asyncio.CancelledError:
+                cancel_event.set()
+                raise
+            except Exception as e:
+                import traceback
+
+                tb = traceback.format_exc()
+                logger.error(
+                    f"Error during safetensors tool streaming: {e}\n{tb}"
+                )
+                error_chunk = {
+                    "error": {
+                        "message": _friendly_error(e),
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+            finally:
+                _sf_tracker.__exit__(None, None, None)
+
+        return StreamingResponse(
+            sf_tool_stream(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     # Shared generation kwargs
     gen_kwargs = dict(
         messages = chat_messages,
@@ -2751,9 +3031,16 @@ async def openai_chat_completions(
         max_new_tokens = payload.max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
     )
-
-    # Choose generation path (adapter-controlled or standard)
-    cancel_event = threading.Event()
+    # Forward the reasoning kwargs into the template if the template
+    # supports them. The orchestrator drops any kwarg the worker does
+    # not accept, and the safe template wrapper inside the worker
+    # peels them off if the chat template itself does not accept them.
+    if payload.enable_thinking is not None:
+        gen_kwargs["enable_thinking"] = payload.enable_thinking
+    if payload.reasoning_effort is not None:
+        gen_kwargs["reasoning_effort"] = payload.reasoning_effort
+    if payload.preserve_thinking is not None:
+        gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
     if payload.use_adapter is not None:
 
@@ -2769,9 +3056,6 @@ async def openai_chat_completions(
             return backend.generate_chat_response(
                 cancel_event = cancel_event, **gen_kwargs
             )
-
-    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    created = int(time.time())
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:

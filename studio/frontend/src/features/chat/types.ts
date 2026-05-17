@@ -26,21 +26,11 @@ export interface ThreadRecord {
    * if a stale id is sent, the backend surfaces an
    * `_toolEvent.type="container_invalidated"` and the chat-adapter
    * clears this field so the following turn falls back to auto-create.
+   *
+   * Anthropic's code-execution path doesn't need this — each turn
+   * gets a fresh container server-side.
    */
   openaiCodeExecContainerId?: string | null;
-  /**
-   * Anthropic code_execution container id captured from a prior
-   * response on this thread. When set, the next turn sends a
-   * top-level `container` field on /v1/messages so filesystem state
-   * (files, packages, variables) persists across turns. When
-   * null/undefined, Anthropic auto-creates a fresh container.
-   *
-   * Anthropic containers expire after ~1 hour by default; on a stale
-   * id the backend surfaces `_toolEvent.type="container_invalidated"`
-   * and the chat-adapter clears this field so the following turn
-   * falls back to auto-create.
-   */
-  anthropicCodeExecContainerId?: string | null;
 }
 
 export interface MessageRecord {
