@@ -68,7 +68,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           // translate; top offset is set via a rule in index.css since sonner
           // hardcodes `top: 0` (not a CSS variable).
           "--toast-close-button-start": "unset",
-          "--toast-close-button-end": "16px",
+          "--toast-close-button-end": "8px",
           "--toast-close-button-transform": "none",
         } as React.CSSProperties
       }
