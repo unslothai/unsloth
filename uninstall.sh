@@ -29,18 +29,56 @@ _remove_path() {
     fi
 }
 
-# Read custom STUDIO_HOME from studio.conf if present. install.sh writes
-# UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so the install root is
-# three dirnames up. Used only to remove non-default-rooted installs.
-_custom_studio_home() {
-    _conf="$HOME/.local/share/unsloth/studio.conf"
-    [ -f "$_conf" ] || return 0
-    _exe=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'$/\1/p" "$_conf" | head -n1)
-    [ -n "$_exe" ] || return 0
-    _root=$(dirname "$(dirname "$(dirname "$_exe")")")
-    case "$_root" in
-        "$HOME/.unsloth/studio"|"") ;;
-        *) printf '%s\n' "$_root" ;;
+# Resolve a custom install root from any of:
+#   1. UNSLOTH_STUDIO_HOME / STUDIO_HOME env vars at uninstall time
+#   2. Default-mode studio.conf at $HOME/.local/share/unsloth/studio.conf
+#   3. Env-mode studio.conf at $<root>/share/studio.conf (discovered via 1)
+# install.sh writes UNSLOTH_EXE='<root>/unsloth_studio/bin/unsloth', so
+# the install root is three dirnames up. Prints each discovered non-default
+# root on its own line; the caller iterates and de-duplicates.
+_custom_studio_roots() {
+    _seen=""
+    _emit() {
+        _r="$1"
+        [ -z "$_r" ] && return 0
+        case "$_r" in "$HOME/.unsloth/studio"|/|"") return 0 ;; esac
+        case ":$_seen:" in *":$_r:"*) return 0 ;; esac
+        _seen="$_seen:$_r"
+        printf '%s\n' "$_r"
+    }
+    _from_conf() {
+        [ -f "$1" ] || return 0
+        # Tolerate paths containing apostrophes (install.sh emits '\'' for them).
+        _exe=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" "$1" | head -n1)
+        _exe=$(printf '%s' "$_exe" | sed "s/'\\\\''/'/g")
+        [ -n "$_exe" ] || return 0
+        _emit "$(dirname "$(dirname "$(dirname "$_exe")")")"
+    }
+    # 1. env vars (UNSLOTH_STUDIO_HOME wins over STUDIO_HOME, matching install.sh).
+    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+        _emit "$UNSLOTH_STUDIO_HOME"
+        _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
+    fi
+    if [ -n "${STUDIO_HOME:-}" ]; then
+        _emit "$STUDIO_HOME"
+        _from_conf "$STUDIO_HOME/share/studio.conf"
+    fi
+    # 2. default-mode conf.
+    _from_conf "$HOME/.local/share/unsloth/studio.conf"
+}
+
+# Remove $HOME/.local/bin/unsloth only if it's a Studio-managed symlink.
+# Studio's install.sh writes this as a symlink into the studio venv
+# (install.sh: `ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"`). A
+# pip-installed `unsloth` CLI is a regular file — leave it alone to avoid
+# wiping an unrelated install.
+_remove_cli_shim() {
+    _shim="$HOME/.local/bin/unsloth"
+    [ -L "$_shim" ] || return 0
+    _target=$(readlink "$_shim" 2>/dev/null || true)
+    case "$_target" in
+        */unsloth_studio/bin/unsloth) _remove_path "$_shim" ;;
+        *) ;;
     esac
 }
 
@@ -53,14 +91,13 @@ echo "Stopping any running Unsloth Studio servers..."
 _pkill_studio
 
 echo "Removing data and install directories..."
-_custom_root=$(_custom_studio_home || true)
-if [ -n "$_custom_root" ]; then
-    _remove_path "$_custom_root"
-fi
+_custom_studio_roots | while IFS= read -r _custom_root; do
+    [ -n "$_custom_root" ] && _remove_path "$_custom_root"
+done
 _remove_path "$HOME/.unsloth/studio"
 _remove_path "$HOME/.local/share/unsloth"
-# CLI shim (broken symlink once the venv is gone).
-_remove_path "$HOME/.local/bin/unsloth"
+# CLI shim: only the symlink Studio created, never a pip-installed file.
+_remove_cli_shim
 
 echo "Removing desktop shortcut and launcher lock..."
 _remove_path "$HOME/Desktop/Unsloth Studio"
@@ -113,3 +150,13 @@ echo ""
 echo "Unsloth Studio uninstalled."
 echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
 echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
+# Env-mode installs leave no breadcrumb in $HOME, so a custom root can
+# only be located if the user re-exports the variable. Print a hint when
+# neither var is set so the bare `curl | sh` flow doesn't silently miss.
+if [ -z "${UNSLOTH_STUDIO_HOME:-}" ] && [ -z "${STUDIO_HOME:-}" ]; then
+    echo ""
+    echo "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
+    echo "pointing at a custom directory, re-run this script with the same variable"
+    echo "set to also remove that install tree, e.g.:"
+    echo "  UNSLOTH_STUDIO_HOME=/your/path sh uninstall.sh"
+fi
