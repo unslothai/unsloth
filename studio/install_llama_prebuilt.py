@@ -3433,10 +3433,59 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
             ) from exc
         return target
 
+    def _try_repair_missing_slash(
+        member_name: str, link_name: str, archive_names: set[str]
+    ) -> str | None:
+        """Some upstream llama.cpp Mac releases (e.g. b9165, b9169) ship
+        symlinks whose linkname is missing the directory separator AND
+        the leading character of the file basename between the
+        top-level dir and the rest of the path:
+
+            llama-b9165/libggml-rpc.0.dylib -> llama-b9165ibggml-rpc.0.11.1.dylib
+
+        That cannot be resolved as written. Detect the pattern
+        (linkname starts with the top-level dir name but no following
+        slash) and search archive entries under that dir for a real
+        file whose basename ends with the mangled suffix. Only accept
+        when the suffix uniquely identifies a real archive entry.
+        Returns the corrected linkname expressed relative to the
+        member's parent directory -- callers join it with
+        `target.parent`, so a full `top/file` path would double the
+        prefix into `top/top/file`."""
+        if "/" not in member_name or "/" in link_name:
+            return None
+        top, _, _ = member_name.partition("/")
+        if not link_name.startswith(top) or len(link_name) <= len(top):
+            return None
+        bad_suffix = link_name[len(top) :]
+        if not bad_suffix or bad_suffix.startswith("/"):
+            return None
+        prefix = f"{top}/"
+        candidates = [
+            name
+            for name in archive_names
+            if name.startswith(prefix)
+            and "/" not in name[len(prefix) :]
+            and name[len(prefix) :].endswith(bad_suffix)
+        ]
+        if len(candidates) != 1:
+            return None
+        # Strip the top-level dir so the caller's `target.parent / Path(...)`
+        # composition resolves inside the staging dir, not into a duplicate
+        # `top/top/...` path.
+        return candidates[0][len(prefix) :]
+
     def safe_link_target(
-        base: Path, member_name: str, link_name: str, target: Path
+        base: Path,
+        member_name: str,
+        link_name: str,
+        target: Path,
+        archive_names: set[str],
     ) -> tuple[str, Path]:
         normalized = link_name.replace("\\", "/")
+        repaired = _try_repair_missing_slash(member_name, normalized, archive_names)
+        if repaired is not None:
+            normalized = repaired
         link_path = Path(normalized)
         if link_path.is_absolute():
             raise PrebuiltFallback(
@@ -3473,8 +3522,10 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
 
     def extract_tar_safely(source: Path, base: Path) -> None:
         pending_links: list[tuple[tarfile.TarInfo, Path]] = []
+        archive_names: set[str] = set()
         with tarfile.open(source, "r:gz") as archive:
             for member in archive.getmembers():
+                archive_names.add(member.name)
                 target = safe_extract_path(base, member.name)
                 if member.isdir():
                     target.mkdir(parents = True, exist_ok = True)
@@ -3501,7 +3552,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
             progressed = False
             for member, target in unresolved:
                 normalized_link, resolved_target = safe_link_target(
-                    base, member.name, member.linkname, target
+                    base, member.name, member.linkname, target, archive_names
                 )
                 if not resolved_target.exists() and not resolved_target.is_symlink():
                     next_round.append((member, target))

@@ -28,8 +28,20 @@ def _drive(coro):
 
 
 def _mock_http_client(monkeypatch, handler):
+    """Wire `handler` for both the shared `_http_client` AND any
+    per-call `httpx.AsyncClient(...)` instances. delete_openai_container
+    intentionally creates a fresh AsyncClient (see comment in
+    external_provider.delete_openai_container) so the test must
+    also intercept that constructor."""
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    real_async_client = httpx.AsyncClient
+
+    def _patched_async_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(ep_mod.httpx, "AsyncClient", _patched_async_client)
 
 
 def _make_client() -> ExternalProviderClient:
@@ -149,3 +161,41 @@ def test_delete_propagates_openai_4xx(monkeypatch):
 
     with pytest.raises(httpx.HTTPStatusError):
         _drive(_make_client().delete_openai_container("cntr_missing"))
+
+
+def test_list_route_filters_expired_containers(monkeypatch):
+    """OpenAI keeps containers in /v1/containers indefinitely with
+    status="expired" after their idle TTL passes — they can't be
+    used but still show up. The list route must drop them so the
+    picker only surfaces usable containers."""
+    from routes import inference as inf_mod
+    from models.inference import OpenAIContainerRequest
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json = {
+                "data": [
+                    {"id": "cntr_active", "name": "live", "status": "running"},
+                    {"id": "cntr_dead", "name": "old", "status": "expired"},
+                    {"id": "cntr_unknown", "name": "no-status"},
+                ],
+            },
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    def fake_resolve(_body):
+        return _make_client()
+
+    monkeypatch.setattr(inf_mod, "_resolve_openai_cloud_client", fake_resolve)
+
+    body = OpenAIContainerRequest(
+        encrypted_api_key = "enc",
+        provider_base_url = "https://api.openai.com/v1",
+    )
+    response = _drive(inf_mod.list_openai_containers(body, current_subject = "u"))
+    ids = [c.id for c in response.containers]
+    assert "cntr_active" in ids
+    assert "cntr_unknown" in ids  # missing status is treated as usable
+    assert "cntr_dead" not in ids
