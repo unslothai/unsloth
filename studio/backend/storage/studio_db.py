@@ -19,7 +19,7 @@ import threading
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
-from typing import Optional
+from typing import Any, Optional
 
 
 from utils.paths import studio_db_path, ensure_dir
@@ -153,6 +153,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            key TEXT NOT NULL PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
     )
 
 
@@ -908,5 +917,41 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             thread_ids,
         ).fetchall()
         return [_chat_message_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_chat_settings() -> dict[str, Any]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT key, value_json FROM chat_settings ORDER BY key"
+        ).fetchall()
+        settings: dict[str, Any] = {}
+        for row in rows:
+            settings[row["key"]] = _json_loads(row["value_json"], None)
+        return settings
+    finally:
+        conn.close()
+
+
+def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not settings:
+        return list_chat_settings()
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO chat_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in settings.items()],
+        )
+        conn.commit()
+        return list_chat_settings()
     finally:
         conn.close()
