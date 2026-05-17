@@ -1963,7 +1963,7 @@ async def openai_chat_completions(
     Streaming:               returns SSE chunks matching OpenAI's format.
 
     ``stream`` defaults to ``false`` to match OpenAI's spec; clients opt
-    into SSE by sending ``stream: true`` (see #5047).
+    into SSE by sending ``stream: true``.
 
     Automatically routes to the correct backend:
     - GGUF models → llama-server via LlamaCppBackend
@@ -2187,6 +2187,9 @@ async def openai_chat_completions(
 
         cancel_event = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
+        # parity). Naive curl / .NET / System.Text.Json clients omitting
+        # the field used to get SSE here and choke on deserialization (#5047).
         if payload.stream:
             return await _openai_passthrough_stream(
                 request,

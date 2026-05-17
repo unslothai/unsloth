@@ -305,6 +305,36 @@ class TestChatCompletionRequestToolFields:
         req = self._make()
         assert req.stream is False
 
+    def test_post_without_stream_field_decodes_to_stream_false_over_http(self):
+        # Wire-level guard for the same default: a POST body that omits
+        # `stream` entirely (the exact shape naive curl / .NET clients
+        # send) must deserialise into stream=False *and* the response
+        # must be `application/json`, never `text/event-stream`.
+        # Catches a class of regression that the constructor-level test
+        # above would silently miss -- e.g. someone adding a request
+        # middleware or alias that injects `stream=True` before the
+        # pydantic model is built.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        captured = {}
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def _echo(payload: ChatCompletionRequest):
+            captured["stream"] = payload.stream
+            return {"choices": [], "object": "chat.completion"}
+
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "text/event-stream" not in resp.headers["content-type"]
+        assert captured["stream"] is False
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [
