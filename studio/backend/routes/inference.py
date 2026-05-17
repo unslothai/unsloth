@@ -1737,6 +1737,7 @@ async def _proxy_to_external_provider(
             enabled_tools = payload.enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
+            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             stream = payload.stream,
         )
         try:
