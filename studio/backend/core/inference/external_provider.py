@@ -1581,6 +1581,24 @@ class ExternalProviderClient:
                         except _json.JSONDecodeError:
                             continue
 
+                        # DIAG: dump every raw SSE event when code_execution
+                        # is on so we can locate where Anthropic actually
+                        # surfaces `container.id` on the stream. Skip the
+                        # huge input_json_delta chunks — they're the bash
+                        # command text, not metadata.
+                        if code_execution_enabled:
+                            _ev_type = event.get("type")
+                            _skip = (
+                                _ev_type == "content_block_delta"
+                                and (event.get("delta") or {}).get("type")
+                                == "input_json_delta"
+                            )
+                            if not _skip:
+                                logger.info(
+                                    "DIAG anthropic SSE event: %s",
+                                    _json.dumps(event)[:2000],
+                                )
+
                         event_type = event.get("type")
                         if event_type == "content_block_delta":
                             delta_kind = (event.get("delta") or {}).get("type")
