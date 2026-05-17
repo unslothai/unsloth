@@ -305,30 +305,43 @@ class TestChatCompletionRequestToolFields:
         req = self._make()
         assert req.stream is False
 
-    def test_post_without_stream_field_decodes_to_stream_false_over_http(self):
+    def test_post_without_stream_field_decodes_to_stream_false_over_http(self, monkeypatch):
         # Wire-level guard for the same default: a POST body that omits
         # `stream` entirely (the exact shape naive curl / .NET clients
         # send) must deserialise into stream=False *and* the response
         # must be `application/json`, never `text/event-stream`.
-        # Catches a class of regression that the constructor-level test
-        # above would silently miss -- e.g. someone adding a request
-        # middleware or alias that injects `stream=True` before the
-        # pydantic model is built.
+        # Mounts the real `routes.inference.router` so this catches
+        # regressions in middleware/aliasing on the actual endpoint
+        # (e.g. someone adding a request layer that injects stream=True
+        # before pydantic builds the model). Backends are bypassed by
+        # routing through `provider_type` and stubbing the external
+        # provider proxy.
         from fastapi import FastAPI
+        from fastapi.responses import JSONResponse
         from fastapi.testclient import TestClient
 
-        captured = {}
-        app = FastAPI()
+        import routes.inference as inference_route
+        from auth.authentication import get_current_subject
 
-        @app.post("/v1/chat/completions")
-        async def _echo(payload: ChatCompletionRequest):
+        captured = {}
+
+        async def _fake_proxy(payload, request):
             captured["stream"] = payload.stream
-            return {"choices": [], "object": "chat.completion"}
+            return JSONResponse({"choices": [], "object": "chat.completion"})
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+
+        app = FastAPI()
+        app.include_router(inference_route.router)
+        app.dependency_overrides[get_current_subject] = lambda: "test-user"
 
         client = TestClient(app)
         resp = client.post(
-            "/v1/chat/completions",
-            json = {"messages": [{"role": "user", "content": "hi"}]},
+            "/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+            },
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("application/json")
