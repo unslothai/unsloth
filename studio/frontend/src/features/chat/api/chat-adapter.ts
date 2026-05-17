@@ -1014,6 +1014,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 openaiCodeExecContainerId = null;
                 anthropicCodeExecContainerId = null;
               }
+              // TEMP DIAGNOSTIC: container persistence races
+              console.log(
+                "[diag/code-exec read]",
+                JSON.stringify({
+                  unstable_threadId,
+                  activeThreadId: runtime.activeThreadId,
+                  resolvedThreadId,
+                  providerType: externalProvider.providerType,
+                  anthropicCodeExecContainerId,
+                  openaiCodeExecContainerId,
+                }),
+              );
               // Cross-thread inheritance: when the active thread has
               // no container yet, default to the one most recently
               // used on *any* other thread (provider-scoped).
@@ -1276,6 +1288,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   const newContainerId = toolEvent.container_id as
                     | string
                     | undefined;
+                  // TEMP DIAGNOSTIC: container persistence races
+                  console.log(
+                    "[diag/container_ready]",
+                    JSON.stringify({
+                      unstable_threadId,
+                      activeThreadId: useChatRuntimeStore.getState().activeThreadId,
+                      resolvedThreadId,
+                      newContainerId,
+                      providerType: externalProvider?.providerType,
+                    }),
+                  );
                   if (newContainerId && resolvedThreadId) {
                     const field =
                       externalProvider?.providerType === "anthropic"
@@ -1293,12 +1316,45 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         threadId: resolvedThreadId,
                         modelType: "base",
                       });
-                      await db.threads.update(resolvedThreadId, {
-                        [field]: newContainerId,
-                      });
-                    } catch {
-                      /* best-effort: container reuse is an optimization */
+                      const affected = await db.threads.update(
+                        resolvedThreadId,
+                        { [field]: newContainerId },
+                      );
+                      const verify = await db.threads.get(resolvedThreadId);
+                      console.log(
+                        "[diag/container_ready persist]",
+                        JSON.stringify({
+                          resolvedThreadId,
+                          field,
+                          newContainerId,
+                          affectedRows: affected,
+                          verifyField: (verify as Record<string, unknown> | undefined)?.[
+                            field
+                          ],
+                          verifyId: verify?.id,
+                        }),
+                      );
+                    } catch (err) {
+                      console.log(
+                        "[diag/container_ready ERROR]",
+                        JSON.stringify({
+                          resolvedThreadId,
+                          message:
+                            err instanceof Error ? err.message : String(err),
+                        }),
+                      );
                     }
+                  } else {
+                    console.log(
+                      "[diag/container_ready SKIP]",
+                      JSON.stringify({
+                        resolvedThreadId,
+                        newContainerId,
+                        reason: !newContainerId
+                          ? "no container id"
+                          : "no resolved thread id",
+                      }),
+                    );
                   }
                   continue;
                 }
