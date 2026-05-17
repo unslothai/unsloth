@@ -1280,11 +1280,29 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider?.providerType === "anthropic"
                         ? "anthropicCodeExecContainerId"
                         : "openaiCodeExecContainerId";
-                    void db.threads
-                      .update(resolvedThreadId, {
-                        [field]: newContainerId,
-                      })
-                      .catch(() => {});
+                    // On the first turn of a brand-new thread the row
+                    // may not be in Dexie yet when this SSE event
+                    // fires — db.threads.update silently affects 0
+                    // rows, the next turn re-reads null, and Anthropic
+                    // auto-creates a fresh container. Retry briefly so
+                    // assistant-ui's own DexieAdapter.initialize lands
+                    // the row first (with the correct modelType for
+                    // base / lora / compare contexts) and our update
+                    // sticks on a subsequent attempt.
+                    try {
+                      for (let attempt = 0; attempt < 10; attempt++) {
+                        const affected = await db.threads.update(
+                          resolvedThreadId,
+                          { [field]: newContainerId },
+                        );
+                        if (affected > 0) break;
+                        await new Promise((resolve) =>
+                          setTimeout(resolve, 50),
+                        );
+                      }
+                    } catch {
+                      /* best-effort: container reuse is an optimization */
+                    }
                   }
                   continue;
                 }
