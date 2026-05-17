@@ -14,26 +14,32 @@ try:
 except PackageNotFoundError:
     _version = "unknown"
 
+
 def _version_callback(value: bool):
     if value:
         typer.echo(f"unsloth {_version}")
         raise typer.Exit()
+
 
 app = typer.Typer(
     help = "Command-line interface for Unsloth training, inference, and export.",
     context_settings = {"help_option_names": ["-h", "--help"]},
 )
 
+
 @app.callback()
 def _main(
     version: bool = typer.Option(
-        None, "--version", "-V",
-        callback=_version_callback,
-        is_eager=True,
-        help="Show version and exit.",
+        None,
+        "--version",
+        "-V",
+        callback = _version_callback,
+        is_eager = True,
+        help = "Show version and exit.",
     ),
 ):
     pass
+
 
 app.command()(train)
 app.command()(inference)
