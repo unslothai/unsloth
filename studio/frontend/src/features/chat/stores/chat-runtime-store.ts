@@ -1,29 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { create } from "zustand";
 import { toast } from "sonner";
+import { create } from "zustand";
 import {
-  DEFAULT_INFERENCE_PARAMS,
+  type ChatPresetSource,
+  type Preset,
+  getPresetSource,
+} from "../presets/preset-policy";
+import {
   type ChatLoraSummary,
   type ChatModelSummary,
+  DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
 import {
-  getPresetSource,
-  type ChatPresetSource,
-} from "../presets/preset-policy";
+  loadChatSettingsWithLegacyImport,
+  savePersistedChatSettingsPatch,
+} from "../utils/chat-settings-storage";
 
-const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
-const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
-const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
-const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
-const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
-const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
-const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
-const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
-const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type ReasoningEffort =
@@ -35,71 +31,37 @@ export type ReasoningEffort =
   | "max"
   | "xhigh";
 
-function loadReasoningEffort(fallback: ReasoningEffort): ReasoningEffort {
-  if (!canUseStorage()) return fallback;
-  try {
-    const raw = localStorage.getItem(REASONING_EFFORT_KEY);
-    if (
-      raw === "none" ||
-      raw === "minimal" ||
-      raw === "low" ||
-      raw === "medium" ||
-      raw === "high" ||
-      raw === "max" ||
-      raw === "xhigh"
-    ) {
-      return raw;
-    }
-    return fallback;
-  } catch {
-    return fallback;
+let hasShownSettingsPersistenceWarning = false;
+let settingsMutationVersion = 0;
+let settingsSaveQueue: Promise<void> = Promise.resolve();
+
+function warnSettingsPersistenceFailure(): void {
+  if (hasShownSettingsPersistenceWarning) {
+    return;
   }
+  hasShownSettingsPersistenceWarning = true;
+  toast.warning("Chat settings could not be persisted", {
+    description: "Your changes apply now, but may reset after refresh.",
+  });
 }
-let hasShownInferencePersistenceWarning = false;
+
+function saveSettingsPatch(
+  patch: Parameters<typeof savePersistedChatSettingsPatch>[0],
+): void {
+  settingsMutationVersion += 1;
+  settingsSaveQueue = settingsSaveQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await savePersistedChatSettingsPatch(patch);
+      } catch {
+        warnSettingsPersistenceFailure();
+      }
+    });
+}
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
-}
-
-function loadBool(key: string, fallback: boolean): boolean {
-  if (!canUseStorage()) return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
-    return raw === "true";
-  } catch {
-    return fallback;
-  }
-}
-
-function saveBool(key: string, value: boolean): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, value ? "true" : "false");
-  } catch {
-    // ignore
-  }
-}
-
-function loadInt(key: string, fallback: number): number {
-  if (!canUseStorage()) return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isNaN(parsed) ? fallback : parsed;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveInt(key: string, value: number): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, String(value));
-  } catch {
-    // ignore
-  }
 }
 
 function loadString(key: string, fallback: string): string {
@@ -120,83 +82,11 @@ function saveString(key: string, value: string): void {
   }
 }
 
-function asFiniteNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function asString(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function asBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function loadInferenceParams(): InferenceParams {
-  if (!canUseStorage()) return DEFAULT_INFERENCE_PARAMS;
-  try {
-    const raw = localStorage.getItem(INFERENCE_PARAMS_KEY);
-    if (!raw) return DEFAULT_INFERENCE_PARAMS;
-    const parsed = JSON.parse(raw) as Partial<InferenceParams>;
-    return {
-      temperature: asFiniteNumber(parsed.temperature, DEFAULT_INFERENCE_PARAMS.temperature),
-      topP: asFiniteNumber(parsed.topP, DEFAULT_INFERENCE_PARAMS.topP),
-      topK: asFiniteNumber(parsed.topK, DEFAULT_INFERENCE_PARAMS.topK),
-      minP: asFiniteNumber(parsed.minP, DEFAULT_INFERENCE_PARAMS.minP),
-      repetitionPenalty: asFiniteNumber(
-        parsed.repetitionPenalty,
-        DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
-      ),
-      presencePenalty: asFiniteNumber(
-        parsed.presencePenalty,
-        DEFAULT_INFERENCE_PARAMS.presencePenalty,
-      ),
-      maxSeqLength: asFiniteNumber(
-        parsed.maxSeqLength,
-        DEFAULT_INFERENCE_PARAMS.maxSeqLength,
-      ),
-      maxTokens: asFiniteNumber(parsed.maxTokens, DEFAULT_INFERENCE_PARAMS.maxTokens),
-      systemPrompt: asString(parsed.systemPrompt, DEFAULT_INFERENCE_PARAMS.systemPrompt),
-      checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
-      trustRemoteCode: asBoolean(
-        parsed.trustRemoteCode,
-        DEFAULT_INFERENCE_PARAMS.trustRemoteCode ?? false,
-      ),
-    };
-  } catch {
-    return DEFAULT_INFERENCE_PARAMS;
-  }
-}
-
-function saveInferenceParams(params: InferenceParams): boolean {
-  if (!canUseStorage()) return false;
-  try {
-    const { checkpoint, ...rest } = params;
-    void checkpoint;
-    localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function loadPresetSource(): ChatPresetSource {
-  const activePreset = loadString(CHAT_ACTIVE_PRESET_KEY, "Default");
-  if (canUseStorage()) {
-    try {
-      const raw = localStorage.getItem(CHAT_ACTIVE_PRESET_SOURCE_KEY);
-      if (raw === "modified") {
-        return "modified";
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return getPresetSource(activePreset);
-}
-
 type ChatRuntimeStore = {
+  settingsHydrated: boolean;
   params: InferenceParams;
+  customPresets: Preset[];
+  activePreset: string;
   activePresetSource: ChatPresetSource;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
@@ -275,9 +165,12 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
+  setCustomPresets: (presets: Preset[]) => void;
+  setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
@@ -312,14 +205,17 @@ type ChatRuntimeStore = {
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
-export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
-  params: loadInferenceParams(),
-  activePresetSource: loadPresetSource(),
+export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
+  settingsHydrated: false,
+  params: DEFAULT_INFERENCE_PARAMS,
+  customPresets: [],
+  activePreset: "Default",
+  activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
   runningByThreadId: {},
   cancelByThreadId: {},
-  autoTitle: loadBool(AUTO_TITLE_KEY, false),
+  autoTitle: false,
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
   activeGgufVariant: null,
@@ -331,12 +227,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   reasoningAlwaysOn: false,
   reasoningEnabled: true,
   reasoningStyle: "enable_thinking",
-  reasoningEffort: loadReasoningEffort("medium"),
+  reasoningEffort: "medium",
   supportsReasoningOff: false,
   reasoningEffortLevels: ["low", "medium", "high"],
   lastOpenRouterChosenModel: null,
   supportsPreserveThinking: false,
-  preserveThinking: loadBool(PRESERVE_THINKING_KEY, false),
+  preserveThinking: false,
   supportsTools: false,
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
@@ -344,9 +240,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   codeToolsEnabled: false,
   toolStatus: null,
   generatingStatus: null,
-  autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
-  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 25),
-  toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
+  autoHealToolCalls: true,
+  maxToolCallsPerMessage: 25,
+  toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
   speculativeType: "default",
@@ -363,24 +259,80 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  hydratePersistedSettings: async () => {
+    if (get().settingsHydrated) {
+      return;
+    }
+    const hydrationVersion = settingsMutationVersion;
+    try {
+      const settings = await loadChatSettingsWithLegacyImport();
+      set((state) => {
+        if (state.settingsHydrated) {
+          return state;
+        }
+        if (settingsMutationVersion !== hydrationVersion) {
+          return { settingsHydrated: true };
+        }
+        const activePreset = settings.activePreset ?? state.activePreset;
+        const customPresets =
+          settings.customPresets?.map((preset) => ({
+            name: preset.name,
+            params: {
+              ...DEFAULT_INFERENCE_PARAMS,
+              ...preset.params,
+            },
+          })) ?? state.customPresets;
+        const params = {
+          ...state.params,
+          ...settings.inferenceParams,
+          checkpoint: state.params.checkpoint,
+        };
+        return {
+          settingsHydrated: true,
+          params,
+          customPresets,
+          activePreset,
+          activePresetSource:
+            settings.activePresetSource ?? getPresetSource(activePreset),
+          autoTitle: settings.autoTitle ?? state.autoTitle,
+          reasoningEffort: settings.reasoningEffort ?? state.reasoningEffort,
+          preserveThinking: settings.preserveThinking ?? state.preserveThinking,
+          autoHealToolCalls:
+            settings.autoHealToolCalls ?? state.autoHealToolCalls,
+          maxToolCallsPerMessage:
+            settings.maxToolCallsPerMessage ?? state.maxToolCallsPerMessage,
+          toolCallTimeout: settings.toolCallTimeout ?? state.toolCallTimeout,
+        };
+      });
+    } catch {
+      set((state) =>
+        state.settingsHydrated ? state : { settingsHydrated: true },
+      );
+      warnSettingsPersistenceFailure();
+    }
+  },
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set(() => {
-      const persisted = saveInferenceParams(params);
-      if (!persisted && !hasShownInferencePersistenceWarning) {
-        hasShownInferencePersistenceWarning = true;
-        toast.warning("Chat settings could not be persisted", {
-          description:
-            "Your changes apply now, but may reset after refresh.",
-        });
-      }
+      const { checkpoint: _checkpoint, ...persistedParams } = params;
+      saveSettingsPatch({ inferenceParams: persistedParams });
       return { params };
+    }),
+  setCustomPresets: (customPresets) =>
+    set(() => {
+      saveSettingsPatch({ customPresets });
+      return { customPresets };
+    }),
+  setActivePreset: (activePreset) =>
+    set(() => {
+      saveSettingsPatch({ activePreset });
+      return { activePreset };
     }),
   setActivePresetSource: (activePresetSource) =>
     set(() => {
-      saveString(CHAT_ACTIVE_PRESET_SOURCE_KEY, activePresetSource);
+      saveSettingsPatch({ activePresetSource });
       return { activePresetSource };
     }),
   setModels: (models) => set({ models }),
@@ -410,7 +362,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     }),
   setAutoTitle: (autoTitle) =>
     set(() => {
-      saveBool(AUTO_TITLE_KEY, autoTitle);
+      saveSettingsPatch({ autoTitle });
       return { autoTitle };
     }),
   setHfToken: (hfToken) =>
@@ -427,7 +379,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: ggufVariant ?? null,
     })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
+  setActiveThreadId: (activeThreadId) =>
+    set({ activeThreadId, contextUsage: null }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () =>
     set((state) => ({
@@ -471,18 +424,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
   setReasoningEffort: (reasoningEffort) =>
     set(() => {
-      if (canUseStorage()) {
-        try {
-          localStorage.setItem(REASONING_EFFORT_KEY, reasoningEffort);
-        } catch {
-          // ignore
-        }
-      }
+      saveSettingsPatch({ reasoningEffort });
       return { reasoningEffort };
     }),
   setPreserveThinking: (preserveThinking) =>
     set(() => {
-      saveBool(PRESERVE_THINKING_KEY, preserveThinking);
+      saveSettingsPatch({ preserveThinking });
       return { preserveThinking };
     }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
@@ -491,23 +438,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set(() => {
-      saveBool(AUTO_HEAL_TOOL_CALLS_KEY, autoHealToolCalls);
+      saveSettingsPatch({ autoHealToolCalls });
       return { autoHealToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set(() => {
-      saveInt(MAX_TOOL_CALLS_KEY, maxToolCallsPerMessage);
+      saveSettingsPatch({ maxToolCallsPerMessage });
       return { maxToolCallsPerMessage };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
     set(() => {
-      saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout);
+      saveSettingsPatch({ toolCallTimeout });
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
+  setChatTemplateOverride: (chatTemplateOverride) =>
+    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
