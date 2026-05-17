@@ -990,9 +990,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // container_id (if any) so subsequent turns in the same
             // thread reference the existing container instead of
             // auto-creating a fresh one. Empty string / undefined →
-            // backend falls back to container_auto. Anthropic doesn't
-            // use this (server-side per-turn container).
+            // backend falls back to container_auto. Anthropic uses
+            // the parallel `anthropicCodeExecContainerId` field below
+            // (sent as `container` on /v1/messages).
             let openaiCodeExecContainerId: string | null = null;
+            let anthropicCodeExecContainerId: string | null = null;
             const codeExecEnabledForThisTurn =
               codeToolsEnabled &&
               providerSupportsBuiltinCodeExecution(
@@ -1005,8 +1007,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 const thread = await db.threads.get(resolvedThreadId);
                 openaiCodeExecContainerId =
                   thread?.openaiCodeExecContainerId ?? null;
+                anthropicCodeExecContainerId =
+                  thread?.anthropicCodeExecContainerId ?? null;
               } catch {
                 openaiCodeExecContainerId = null;
+                anthropicCodeExecContainerId = null;
               }
               // Cross-thread inheritance: when the active thread has
               // no container yet, default to the one most recently
@@ -1172,6 +1177,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
                   }
                 : {}),
+              ...(anthropicCodeExecContainerId
+                ? {
+                    anthropic_code_exec_container_id:
+                      anthropicCodeExecContainerId,
+                  }
+                : {}),
               ...(supportsProviderPromptCaching(externalProvider.providerType)
                 ? {
                     enable_prompt_caching:
@@ -1265,9 +1276,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     | string
                     | undefined;
                   if (newContainerId && resolvedThreadId) {
+                    const field =
+                      externalProvider?.providerType === "anthropic"
+                        ? "anthropicCodeExecContainerId"
+                        : "openaiCodeExecContainerId";
                     void db.threads
                       .update(resolvedThreadId, {
-                        openaiCodeExecContainerId: newContainerId,
+                        [field]: newContainerId,
                       })
                       .catch(() => {});
                   }
@@ -1275,9 +1290,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
                 if (toolEvent.type === "container_invalidated") {
                   if (resolvedThreadId) {
+                    const field =
+                      externalProvider?.providerType === "anthropic"
+                        ? "anthropicCodeExecContainerId"
+                        : "openaiCodeExecContainerId";
                     void db.threads
                       .update(resolvedThreadId, {
-                        openaiCodeExecContainerId: null,
+                        [field]: null,
                       })
                       .catch(() => {});
                   }
