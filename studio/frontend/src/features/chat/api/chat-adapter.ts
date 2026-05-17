@@ -43,6 +43,7 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
+import { ensureThreadRecord } from "../runtime-provider";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
@@ -1280,11 +1281,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider?.providerType === "anthropic"
                         ? "anthropicCodeExecContainerId"
                         : "openaiCodeExecContainerId";
-                    void db.threads
-                      .update(resolvedThreadId, {
+                    // On the first turn of a brand-new thread the row
+                    // may not have been inserted into Dexie yet when
+                    // this SSE event fires; db.threads.update would
+                    // silently affect 0 rows and the next turn would
+                    // re-read null, causing Anthropic to auto-create a
+                    // new container. ensureThreadRecord materializes
+                    // the row so the update sticks.
+                    try {
+                      await ensureThreadRecord({
+                        threadId: resolvedThreadId,
+                        modelType: "base",
+                      });
+                      await db.threads.update(resolvedThreadId, {
                         [field]: newContainerId,
-                      })
-                      .catch(() => {});
+                      });
+                    } catch {
+                      /* best-effort: container reuse is an optimization */
+                    }
                   }
                   continue;
                 }
