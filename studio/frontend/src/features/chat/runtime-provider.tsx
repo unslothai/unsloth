@@ -88,6 +88,7 @@ const OPEN_DOCUMENT_CELL_VALUE_ATTRIBUTES = [
   "date-value",
   "time-value",
 ] as const;
+const OPEN_DOCUMENT_TEXT_BLOCK_NAMES = ["h", "p"] as const;
 const MAX_REPEATED_OPEN_DOCUMENT_ROWS = 100;
 const MAX_REPEATED_OPEN_DOCUMENT_COLUMNS = 100;
 
@@ -359,10 +360,7 @@ function extractOpenDocumentText(doc: XMLDocument): string {
   const body =
     doc.getElementsByTagNameNS(OFFICE_NAMESPACE, "body")[0] ??
     doc.documentElement;
-  const blocks = collectOpenDocumentElements(body, TEXT_NAMESPACE, [
-    "h",
-    "p",
-  ]);
+  const blocks = collectVisibleOpenDocumentTextBlocks(body);
 
   return blocks
     .map((block) => normalizeOpenDocumentText(extractOpenDocumentInlineText(block)))
@@ -429,7 +427,7 @@ function repeatOpenDocumentValue(value: string, count: number): string[] {
 }
 
 function extractOpenDocumentCellText(cell: Element): string {
-  const blocks = collectOpenDocumentElements(cell, TEXT_NAMESPACE, ["h", "p"]);
+  const blocks = collectVisibleOpenDocumentTextBlocks(cell);
   const text = blocks
     .map((block) => normalizeOpenDocumentText(extractOpenDocumentInlineText(block)))
     .filter(Boolean)
@@ -466,6 +464,10 @@ function extractOpenDocumentInlineText(node: Node): string {
   }
 
   const element = node as Element;
+  if (isHiddenOpenDocumentElement(element)) {
+    return "";
+  }
+
   if (element.namespaceURI === TEXT_NAMESPACE) {
     if (element.localName === "tab") {
       return "\t";
@@ -490,6 +492,47 @@ function extractOpenDocumentInlineText(node: Node): string {
 
 function normalizeOpenDocumentText(text: string): string {
   return text.replace(/[^\S\r\n\t]+/g, " ").trim();
+}
+
+function collectVisibleOpenDocumentTextBlocks(root: Element): Element[] {
+  const matches: Element[] = [];
+
+  for (const child of Array.from(root.children)) {
+    if (isHiddenOpenDocumentElement(child)) {
+      continue;
+    }
+
+    if (
+      child.namespaceURI === TEXT_NAMESPACE &&
+      OPEN_DOCUMENT_TEXT_BLOCK_NAMES.includes(
+        child.localName as (typeof OPEN_DOCUMENT_TEXT_BLOCK_NAMES)[number],
+      )
+    ) {
+      matches.push(child);
+    } else {
+      matches.push(...collectVisibleOpenDocumentTextBlocks(child));
+    }
+  }
+
+  return matches;
+}
+
+function isHiddenOpenDocumentElement(element: Element): boolean {
+  if (element.namespaceURI === OFFICE_NAMESPACE) {
+    return element.localName === "annotation" || element.localName === "change-info";
+  }
+
+  if (element.namespaceURI === TEXT_NAMESPACE) {
+    return (
+      element.localName === "tracked-changes" ||
+      element.localName === "changed-region" ||
+      element.localName === "deletion" ||
+      element.localName === "insertion" ||
+      element.localName === "format-change"
+    );
+  }
+
+  return false;
 }
 
 function collectOpenDocumentElements(
