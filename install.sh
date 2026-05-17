@@ -757,8 +757,8 @@ _spawn_terminal() {
             printf '  kill "$TAIL_PID" 2>/dev/null\n'
             printf ') &\n'
             printf 'WATCHER_PID=$!\n'
-            printf 'trap "shutdown_studio; kill $WATCHER_PID $TAIL_PID 2>/dev/null; exit" HUP INT TERM\n'
-            printf 'trap "rm -f \"$PID_FILE\" 2>/dev/null" EXIT\n'
+            printf "trap 'shutdown_studio; kill \"\$WATCHER_PID\" \"\$TAIL_PID\" 2>/dev/null; exit' HUP INT TERM\n"
+            printf "trap 'rm -f \"\$PID_FILE\" 2>/dev/null' EXIT\n"
             printf 'wait "$TAIL_PID" 2>/dev/null\n'
         } > "$_cmd_file" 2>/dev/null \
             && chmod +x "$_cmd_file" 2>/dev/null \
