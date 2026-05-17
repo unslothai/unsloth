@@ -1,11 +1,9 @@
 #!/usr/bin/env sh
-# Complete uninstaller for Unsloth Studio on macOS / Linux / WSL.
-# Removes the install dir, the launcher data dir, the desktop shortcut,
-# the macOS .app bundle, the Launch Services cache entry, and any
-# running studio server processes.
+# Unsloth Studio uninstaller (macOS / Linux / WSL).
+# Stops running servers and removes install dir, launcher data,
+# desktop shortcut, .app bundle, and Launch Services entry.
 #
 # Usage: curl -fsSL https://unsloth.ai/uninstall.sh | sh
-#    or: ./uninstall.sh
 
 set -e
 
