@@ -1581,24 +1581,6 @@ class ExternalProviderClient:
                         except _json.JSONDecodeError:
                             continue
 
-                        # DIAG: dump every raw SSE event when code_execution
-                        # is on so we can locate where Anthropic actually
-                        # surfaces `container.id` on the stream. Skip the
-                        # huge input_json_delta chunks — they're the bash
-                        # command text, not metadata.
-                        if code_execution_enabled:
-                            _ev_type = event.get("type")
-                            _skip = (
-                                _ev_type == "content_block_delta"
-                                and (event.get("delta") or {}).get("type")
-                                == "input_json_delta"
-                            )
-                            if not _skip:
-                                logger.info(
-                                    "DIAG anthropic SSE event: %s",
-                                    _json.dumps(event)[:2000],
-                                )
-
                         event_type = event.get("type")
                         if event_type == "content_block_delta":
                             delta_kind = (event.get("delta") or {}).get("type")
@@ -1613,41 +1595,9 @@ class ExternalProviderClient:
                         # output_tokens (and may overwrite the input fields
                         # with final values). Merge both into last_usage.
                         if event_type == "message_start":
-                            message_obj = event.get("message") or {}
-                            start_usage = message_obj.get("usage")
+                            start_usage = (event.get("message") or {}).get("usage")
                             if isinstance(start_usage, dict):
                                 last_usage.update(start_usage)
-                            # Latch the container id once. Anthropic ships
-                            # it as `message.container: {id, expires_at}`
-                            # on `message_start` whenever the
-                            # code_execution tool was attached, even on
-                            # the very first turn (when we didn't pass
-                            # `container` in the request). Emit
-                            # container_ready only when the value differs
-                            # from what we sent, so steady-state reuse
-                            # doesn't keep re-writing the same id to the
-                            # thread record.
-                            container_obj = message_obj.get("container")
-                            if (
-                                isinstance(container_obj, dict)
-                                and latched_container_id is None
-                            ):
-                                probe = container_obj.get("id")
-                                if isinstance(probe, str) and probe:
-                                    latched_container_id = probe
-                            if (
-                                latched_container_id
-                                and not container_id_emitted
-                                and latched_container_id
-                                != anthropic_code_exec_container_id
-                            ):
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "container_ready",
-                                        "container_id": latched_container_id,
-                                    }
-                                )
-                                container_id_emitted = True
 
                         if event_type == "content_block_start":
                             content_block = event.get("content_block") or {}
@@ -1895,6 +1845,36 @@ class ExternalProviderClient:
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
+                            # Anthropic reports the code_execution container
+                            # id on `message_delta.delta.container.{id,
+                            # expires_at}` (NOT on message_start — at start
+                            # the container hasn't been provisioned yet).
+                            # Latch on first sight and emit container_ready
+                            # only when the value differs from the inbound
+                            # id, so steady-state reuse doesn't re-write
+                            # the same id to the thread record every turn.
+                            delta_obj = event.get("delta") or {}
+                            container_obj = delta_obj.get("container")
+                            if (
+                                isinstance(container_obj, dict)
+                                and latched_container_id is None
+                            ):
+                                probe = container_obj.get("id")
+                                if isinstance(probe, str) and probe:
+                                    latched_container_id = probe
+                            if (
+                                latched_container_id
+                                and not container_id_emitted
+                                and latched_container_id
+                                != anthropic_code_exec_container_id
+                            ):
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "container_ready",
+                                        "container_id": latched_container_id,
+                                    }
+                                )
+                                container_id_emitted = True
                             stop_reason = event.get("delta", {}).get("stop_reason")
                             if stop_reason:
                                 if thinking_open:
