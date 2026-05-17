@@ -838,7 +838,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
 }) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
         <ComposerAddAttachment />
         <ComposerAudioUpload />
         <ReasoningToggle />

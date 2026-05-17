@@ -799,7 +799,7 @@
 	}
 
 	.composer-pill-btn {
-		@apply flex items-center gap-1.5 rounded-full px-2 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
