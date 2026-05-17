@@ -299,7 +299,8 @@ class TestChatCompletionRequestToolFields:
     def test_stream_defaults_false_matching_openai_spec(self):
         # OpenAI's /v1/chat/completions spec defaults `stream` to false.
         # Studio previously defaulted to true, which broke naive curl
-        # clients that omit `stream` (they expect a JSON blob, got SSE).
+        # clients (and .NET / System.Text.Json SDKs per #5047) that omit
+        # `stream` -- they expect a JSON blob, got SSE.
         # Pin the corrected default so it can't silently regress.
         req = self._make()
         assert req.stream is False

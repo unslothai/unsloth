@@ -1959,8 +1959,11 @@ async def openai_chat_completions(
     Supports multimodal messages: ``content`` may be a plain string or a
     list of content parts (``text`` / ``image_url``).
 
-    Streaming (default):  returns SSE chunks matching OpenAI's format.
-    Non-streaming:        returns a single ChatCompletion JSON object.
+    Non-streaming (default): returns a single ChatCompletion JSON object.
+    Streaming:               returns SSE chunks matching OpenAI's format.
+
+    ``stream`` defaults to ``false`` to match OpenAI's spec; clients opt
+    into SSE by sending ``stream: true`` (see #5047).
 
     Automatically routes to the correct backend:
     - GGUF models → llama-server via LlamaCppBackend
