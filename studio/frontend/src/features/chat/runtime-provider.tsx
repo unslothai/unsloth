@@ -22,6 +22,7 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
+import { strFromU8, unzipSync } from "fflate";
 import mammoth from "mammoth";
 import {
   type ReactElement,
@@ -73,6 +74,15 @@ type TitleResponse = {
     };
   }>;
 };
+
+const OPEN_DOCUMENT_SPREADSHEET_MIME =
+  "application/vnd.oasis.opendocument.spreadsheet";
+const OPEN_DOCUMENT_TEXT_MIME = "application/vnd.oasis.opendocument.text";
+const OFFICE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
+const TABLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
+const TEXT_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
+const MAX_REPEATED_OPEN_DOCUMENT_ROWS = 100;
+const MAX_REPEATED_OPEN_DOCUMENT_COLUMNS = 100;
 
 class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
@@ -258,6 +268,270 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   remove(): Promise<void> {
     return Promise.resolve();
   }
+}
+
+class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
+  accept = [
+    ".ods",
+    ".odt",
+    OPEN_DOCUMENT_SPREADSHEET_MIME,
+    OPEN_DOCUMENT_TEXT_MIME,
+  ].join(",");
+
+  add({ file }: { file: File }): Promise<PendingAttachment> {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    });
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const contentXml = await readOpenDocumentContentXml(attachment.file);
+    const doc = parseOpenDocumentXml(contentXml, attachment.name);
+    const isSpreadsheet = isOpenDocumentSpreadsheet(attachment);
+    const label = isSpreadsheet ? "ODS" : "ODT";
+    const text = isSpreadsheet
+      ? extractOpenDocumentSpreadsheetText(doc)
+      : extractOpenDocumentText(doc);
+
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        { type: "text", text: `[${label}: ${attachment.name}]\n${text}` },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+async function readOpenDocumentContentXml(file: File): Promise<string> {
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(await file.arrayBuffer()));
+  } catch (error) {
+    throw new Error(`Failed to read OpenDocument archive: ${file.name}`, {
+      cause: error,
+    });
+  }
+
+  const content = files["content.xml"];
+  if (!content) {
+    throw new Error(`OpenDocument file is missing content.xml: ${file.name}`);
+  }
+
+  return strFromU8(content);
+}
+
+function parseOpenDocumentXml(xml: string, filename: string): XMLDocument {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) {
+    throw new Error(`Failed to parse OpenDocument content.xml: ${filename}`);
+  }
+  return doc;
+}
+
+function isOpenDocumentSpreadsheet(attachment: PendingAttachment): boolean {
+  return (
+    attachment.contentType === OPEN_DOCUMENT_SPREADSHEET_MIME ||
+    attachment.name.toLowerCase().endsWith(".ods")
+  );
+}
+
+function extractOpenDocumentText(doc: XMLDocument): string {
+  const body =
+    doc.getElementsByTagNameNS(OFFICE_NAMESPACE, "body")[0] ??
+    doc.documentElement;
+  const blocks = collectOpenDocumentElements(body, TEXT_NAMESPACE, [
+    "h",
+    "p",
+  ]);
+
+  return blocks
+    .map((block) => normalizeOpenDocumentText(extractOpenDocumentInlineText(block)))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function extractOpenDocumentSpreadsheetText(doc: XMLDocument): string {
+  const tables = collectOpenDocumentElements(doc.documentElement, TABLE_NAMESPACE, [
+    "table",
+  ]);
+
+  return tables.map(extractOpenDocumentTableText).filter(Boolean).join("\n\n");
+}
+
+function extractOpenDocumentTableText(table: Element): string {
+  const rows = collectOpenDocumentElements(table, TABLE_NAMESPACE, [
+    "table-row",
+  ]).flatMap(extractOpenDocumentRowText);
+
+  if (rows.length === 0) {
+    return "";
+  }
+
+  const name = getOpenDocumentAttribute(table, TABLE_NAMESPACE, "name");
+  return name ? `[Sheet: ${name}]\n${rows.join("\n")}` : rows.join("\n");
+}
+
+function extractOpenDocumentRowText(row: Element): string[] {
+  const cells = getOpenDocumentChildElements(row, TABLE_NAMESPACE, [
+    "table-cell",
+    "covered-table-cell",
+  ]);
+  const rowCells = cells.flatMap(expandOpenDocumentCellText);
+  const line = rowCells.join("\t").replace(/\t+$/g, "");
+
+  if (!line.trim()) {
+    return [];
+  }
+
+  return repeatOpenDocumentValue(
+    line,
+    getOpenDocumentRepeatCount(
+      row,
+      "number-rows-repeated",
+      MAX_REPEATED_OPEN_DOCUMENT_ROWS,
+    ),
+  );
+}
+
+function expandOpenDocumentCellText(cell: Element): string[] {
+  return repeatOpenDocumentValue(
+    extractOpenDocumentCellText(cell),
+    getOpenDocumentRepeatCount(
+      cell,
+      "number-columns-repeated",
+      MAX_REPEATED_OPEN_DOCUMENT_COLUMNS,
+    ),
+  );
+}
+
+function repeatOpenDocumentValue(value: string, count: number): string[] {
+  return Array.from({ length: count }, () => value);
+}
+
+function extractOpenDocumentCellText(cell: Element): string {
+  const blocks = collectOpenDocumentElements(cell, TEXT_NAMESPACE, ["h", "p"]);
+  const text = blocks
+    .map((block) => normalizeOpenDocumentText(extractOpenDocumentInlineText(block)))
+    .filter(Boolean)
+    .join("\n");
+
+  if (text) {
+    return text;
+  }
+
+  return (
+    getOpenDocumentAttribute(cell, OFFICE_NAMESPACE, "string-value") ??
+    getOpenDocumentAttribute(cell, OFFICE_NAMESPACE, "value") ??
+    ""
+  );
+}
+
+function extractOpenDocumentInlineText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.nodeValue ?? "";
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return "";
+  }
+
+  const element = node as Element;
+  if (element.namespaceURI === TEXT_NAMESPACE) {
+    if (element.localName === "tab") {
+      return "\t";
+    }
+    if (element.localName === "line-break") {
+      return "\n";
+    }
+    if (element.localName === "s") {
+      return " ".repeat(
+        getOpenDocumentRepeatCount(
+          element,
+          "c",
+          MAX_REPEATED_OPEN_DOCUMENT_COLUMNS,
+          TEXT_NAMESPACE,
+        ),
+      );
+    }
+  }
+
+  return Array.from(element.childNodes).map(extractOpenDocumentInlineText).join("");
+}
+
+function normalizeOpenDocumentText(text: string): string {
+  return text.replace(/[^\S\r\n\t]+/g, " ").trim();
+}
+
+function collectOpenDocumentElements(
+  root: Element,
+  namespaceUri: string,
+  localNames: string[],
+): Element[] {
+  const matches: Element[] = [];
+
+  for (const child of Array.from(root.children)) {
+    if (
+      child.namespaceURI === namespaceUri &&
+      localNames.includes(child.localName)
+    ) {
+      matches.push(child);
+    } else {
+      matches.push(
+        ...collectOpenDocumentElements(child, namespaceUri, localNames),
+      );
+    }
+  }
+
+  return matches;
+}
+
+function getOpenDocumentChildElements(
+  root: Element,
+  namespaceUri: string,
+  localNames: string[],
+): Element[] {
+  return Array.from(root.children).filter(
+    (child) =>
+      child.namespaceURI === namespaceUri && localNames.includes(child.localName),
+  );
+}
+
+function getOpenDocumentRepeatCount(
+  element: Element,
+  name: string,
+  max: number,
+  namespaceUri = TABLE_NAMESPACE,
+): number {
+  const value = getOpenDocumentAttribute(element, namespaceUri, name);
+  if (!value) {
+    return 1;
+  }
+
+  const count = Number.parseInt(value, 10);
+  if (!Number.isFinite(count) || count < 1) {
+    return 1;
+  }
+  return Math.min(count, max);
+}
+
+function getOpenDocumentAttribute(
+  element: Element,
+  namespaceUri: string,
+  name: string,
+): string | null {
+  return element.getAttributeNS(namespaceUri, name);
 }
 
 function clip(input: string, maxLen: number): string {
@@ -703,6 +977,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
+        new OpenDocumentAttachmentAdapter(),
       ]),
     [],
   );
