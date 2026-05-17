@@ -741,33 +741,51 @@ _spawn_terminal() {
         _cmd_file="$DATA_DIR/launch-terminal.command"
         _logfile_q=$(printf '%s' "$LOG_FILE" | sed "s/'/'\\\\''/g")
         _pidfile_q=$(printf '%s' "$_pid_file" | sed "s/'/'\\\\''/g")
-        {
-            printf '#!/bin/bash\n'
-            printf "SERVER_PID=%s\n" "$_server_pid"
-            printf "PID_FILE='%s'\n" "$_pidfile_q"
-            printf 'shutdown_studio() {\n'
-            printf '  kill -TERM "$SERVER_PID" 2>/dev/null\n'
-            printf '  sleep 0.5\n'
-            printf '  kill -KILL "$SERVER_PID" 2>/dev/null\n'
-            printf '  rm -f "$PID_FILE" 2>/dev/null\n'
-            printf '}\n'
-            printf "tail -n 100 -F '%s' &\n" "$_logfile_q"
-            printf 'TAIL_PID=$!\n'
-            # Server gone -> kill tail so bash exits cleanly.
-            printf '(\n'
-            printf '  while kill -0 "$SERVER_PID" 2>/dev/null; do sleep 1; done\n'
-            printf '  kill "$TAIL_PID" 2>/dev/null\n'
-            printf ') &\n'
-            printf 'WATCHER_PID=$!\n'
-            printf "trap 'shutdown_studio; kill \"\$WATCHER_PID\" \"\$TAIL_PID\" 2>/dev/null; exit' HUP INT TERM\n"
-            printf "trap 'rm -f \"\$PID_FILE\" 2>/dev/null' EXIT\n"
-            printf 'wait "$TAIL_PID" 2>/dev/null\n'
-        } > "$_cmd_file" 2>/dev/null \
-            && chmod +x "$_cmd_file" 2>/dev/null \
-            && open -a Terminal "$_cmd_file" 2>/dev/null
-        # Foreground Terminal (Launch Services spawns us backgrounded).
-        osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
-        return 0
+        if {
+            {
+                printf '#!/bin/bash\n'
+                printf "SERVER_PID=%s\n" "$_server_pid"
+                printf "PID_FILE='%s'\n" "$_pidfile_q"
+                # Wait up to 12s for graceful shutdown before SIGKILL.
+                printf 'shutdown_studio() {\n'
+                printf '  kill -TERM "$SERVER_PID" 2>/dev/null\n'
+                printf '  _i=0\n'
+                printf '  while kill -0 "$SERVER_PID" 2>/dev/null && [ "$_i" -lt 24 ]; do\n'
+                printf '    sleep 0.5\n'
+                printf '    _i=$((_i + 1))\n'
+                printf '  done\n'
+                printf '  kill -0 "$SERVER_PID" 2>/dev/null && kill -KILL "$SERVER_PID" 2>/dev/null\n'
+                printf '  rm -f "$PID_FILE" 2>/dev/null\n'
+                printf '}\n'
+                printf "tail -n 100 -F '%s' &\n" "$_logfile_q"
+                printf 'TAIL_PID=$!\n'
+                # Server gone -> kill tail so bash exits cleanly.
+                printf '(\n'
+                printf '  while kill -0 "$SERVER_PID" 2>/dev/null; do sleep 1; done\n'
+                printf '  kill "$TAIL_PID" 2>/dev/null\n'
+                printf ') &\n'
+                printf 'WATCHER_PID=$!\n'
+                printf "trap 'shutdown_studio; kill \"\$WATCHER_PID\" \"\$TAIL_PID\" 2>/dev/null; exit' HUP INT TERM\n"
+                printf "trap 'rm -f \"\$PID_FILE\" 2>/dev/null' EXIT\n"
+                printf 'wait "$TAIL_PID" 2>/dev/null\n'
+            } > "$_cmd_file" 2>/dev/null \
+                && chmod +x "$_cmd_file" 2>/dev/null \
+                && open -a Terminal "$_cmd_file" 2>/dev/null
+        }; then
+            # Foreground Terminal (Launch Services spawns us backgrounded).
+            osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+            return 0
+        fi
+        # .command/open failed: kill orphan, fall through to generic fallback.
+        kill -TERM "$_server_pid" 2>/dev/null || true
+        _i=0
+        while kill -0 "$_server_pid" 2>/dev/null && [ "$_i" -lt 6 ]; do
+            sleep 0.5
+            _i=$((_i + 1))
+        done
+        kill -0 "$_server_pid" 2>/dev/null && kill -KILL "$_server_pid" 2>/dev/null || true
+        rm -f "$_pid_file" 2>/dev/null || true
+        echo "[WARN] Could not open Terminal; falling back to background launch" >&2
     else
         for _term in gnome-terminal konsole xfce4-terminal mate-terminal lxterminal xterm; do
             if command -v "$_term" >/dev/null 2>&1; then
@@ -1043,13 +1061,16 @@ DESKTOP_EOF
         _css_contents="$_css_app/Contents"
         _css_macos_dir="$_css_contents/MacOS"
         _css_res_dir="$_css_contents/Resources"
-        # mkdir -p follows symlinks; an old --tauri install may have left
-        # one here. Remove it so we don't write through to the target.
-        if [ -L "$_css_app" ]; then
-            rm -f "$_css_app" 2>/dev/null || {
-                echo "[ERROR] $_css_app exists as a symlink and cannot be removed; remove manually and re-run install" >&2
+        # Recreate bundle if root or any subpath is a symlink (mkdir -p follows them).
+        if [ -L "$_css_app" ] || [ -L "$_css_contents" ] \
+            || [ -L "$_css_macos_dir" ] || [ -L "$_css_res_dir" ]; then
+            rm -rf "$_css_app" 2>/dev/null || {
+                echo "[ERROR] $_css_app contains a symlinked bundle path; remove manually and re-run install" >&2
                 return 1
             }
+        elif [ -e "$_css_app" ] && [ ! -d "$_css_app" ]; then
+            echo "[ERROR] $_css_app exists but is not a directory; remove manually and re-run install" >&2
+            return 1
         fi
         mkdir -p "$_css_macos_dir" "$_css_res_dir"
 
