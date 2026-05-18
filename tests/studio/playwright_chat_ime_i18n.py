@@ -3,12 +3,16 @@
 
 """Studio chat composer IME + multilingual regression smoke.
 
-Covers two surfaces:
+Covers three surfaces:
   A. Stuck IME composition (issue #5318 / PR #5327): duplicate
      compositionstart with no compositionend left isComposing=true,
      dropping all subsequent keystrokes including ASCII.
   B. Multilingual paste round-trip across 31 scripts -- guards the
      controlled-textarea / React state plumbing against Unicode mangling.
+  C. Stuck compositionend (issue #5546): Chrome on Windows over WSL
+     fires compositionstart + compositionupdate but never compositionend,
+     wedging Send disabled after the IME commits. Verifies the
+     watchdog in useImeComposerInputHandlers releases the flag.
 
 Model-free; the bug surface is the composer, not inference.
 
@@ -424,6 +428,57 @@ with sync_playwright() as p:
     info("stuck-composition recovery PASS")
     clear()
 
+    # 6b. WSL + Windows Chrome repro for issue #5546: Chrome never emits
+    #     compositionend after the IME commit, so the watchdog has to
+    #     release the composing flag on its own once the events go silent.
+    #     This dispatches a realistic "compose, commit, then nothing"
+    #     sequence — no compositionend, no follow-up keystrokes — and
+    #     waits for the Send button to come back enabled.
+    step("BUG REPRO: stuck compositionend recovery (issue #5546)")
+    clear()
+    composer.click()
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'你'}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'你好'}));
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, el.value + '你好');
+            el.dispatchEvent(new InputEvent('input', {
+                bubbles:true, inputType:'insertCompositionText',
+                data:'你好', isComposing:true,
+            }));
+            // Deliberately omit compositionend — that is the WSL/Chrome
+            // bug surface. The watchdog in useImeComposerInputHandlers
+            // should reset isComposing after IME_STUCK_TIMEOUT_MS.
+        }"""
+    )
+    send_btn_5546 = page.locator('button[aria-label="Send message"]')
+    if send_btn_5546.count() == 0:
+        soft_fail("Send button not found for #5546 repro")
+    else:
+        # Watchdog is 2500ms; allow generous slack for slow CI.
+        try:
+            expect(send_btn_5546).not_to_be_disabled(timeout = 8_000)
+            info("Send button enabled after compositionend never fired")
+        except Exception:
+            shoot("06b-compositionend-watchdog-FAIL")
+            fail(
+                "Send button stayed disabled with no compositionend — "
+                "watchdog did not release the composing flag (issue #5546)."
+            )
+    after_value = read_value()
+    if "你好" not in after_value:
+        soft_fail(
+            f"compositionend-watchdog repro lost committed text: {after_value!r}"
+        )
+    shoot("06b-compositionend-watchdog")
+    info("compositionend watchdog recovery PASS")
+    clear()
+
     # 7. Final state. The change-password redirect emits benign 401 noise,
     #    so we filter via is_benign_* and only fail on real errors.
     shoot("07-final")
@@ -451,7 +506,8 @@ with sync_playwright() as p:
 
     info(
         f"DONE: ascii=OK paste={len(I18N_SAMPLES)}/{len(I18N_SAMPLES)} "
-        f"normal_composition=OK stuck_recovery=OK"
+        f"normal_composition=OK stuck_recovery=OK "
+        f"compositionend_watchdog=OK"
     )
     _watchdog.cancel()
     browser.close()

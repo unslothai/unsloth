@@ -71,3 +71,30 @@ def test_ime_playwright_script_does_not_read_studio_old_pw():
         "STUDIO_OLD_PW" not in code_only
     ), "IME Playwright script still references dead STUDIO_OLD_PW env var"
     assert 'os.environ["STUDIO_NEW_PW"]' in code_only
+
+
+def test_main_composer_has_stuck_compositionend_watchdog():
+    """Issue #5546: Chrome on Windows over WSL never emits compositionend
+    after the IME commit. The composer keeps a watchdog that releases the
+    composing flag once events go silent; without it Send stays disabled
+    forever and CJK input is effectively dropped."""
+    src = THREAD_TSX.read_text()
+    assert "IME_STUCK_TIMEOUT_MS" in src, (
+        "main composer is missing the stuck-compositionend watchdog "
+        "(issue #5546)"
+    )
+    assert "onCompositionUpdate" in src, (
+        "main composer is missing onCompositionUpdate wiring; the "
+        "watchdog only resets while the IME is actively emitting events"
+    )
+
+
+def test_compare_composer_has_stuck_compositionend_watchdog():
+    src = SHARED_TSX.read_text()
+    assert "IME_STUCK_TIMEOUT_MS" in src, (
+        "compare composer is missing the stuck-compositionend watchdog "
+        "(issue #5546)"
+    )
+    assert "onCompositionUpdate" in src, (
+        "compare composer is missing onCompositionUpdate wiring"
+    )

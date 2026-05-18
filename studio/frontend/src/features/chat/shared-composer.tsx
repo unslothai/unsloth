@@ -68,6 +68,11 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// Mirrors the threshold in thread.tsx — see the comment there. Chrome on
+// Windows-over-WSL (issue #5546) never fires `compositionend` after the
+// IME commit, so the compose flag would otherwise stay true forever.
+const IME_STUCK_TIMEOUT_MS = 2500;
+
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -284,6 +289,7 @@ export function SharedComposer({
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -474,10 +480,39 @@ export function SharedComposer({
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  function clearStuckImeTimer() {
+    if (stuckImeTimerRef.current) {
+      clearTimeout(stuckImeTimerRef.current);
+      stuckImeTimerRef.current = null;
+    }
+  }
+
   function setCompositionState(next: boolean) {
     composingRef.current = next;
     setIsComposing(next);
+    clearStuckImeTimer();
+    if (next) {
+      stuckImeTimerRef.current = setTimeout(() => {
+        stuckImeTimerRef.current = null;
+        composingRef.current = false;
+        setIsComposing(false);
+      }, IME_STUCK_TIMEOUT_MS);
+    }
   }
+
+  function refreshStuckImeTimer() {
+    if (!composingRef.current) {
+      return;
+    }
+    clearStuckImeTimer();
+    stuckImeTimerRef.current = setTimeout(() => {
+      stuckImeTimerRef.current = null;
+      composingRef.current = false;
+      setIsComposing(false);
+    }, IME_STUCK_TIMEOUT_MS);
+  }
+
+  useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
     if (composingRef.current) return;
@@ -752,6 +787,9 @@ export function SharedComposer({
         }}
         onCompositionStart={() => {
           setCompositionState(true);
+        }}
+        onCompositionUpdate={() => {
+          refreshStuckImeTimer();
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           setCompositionState(false);

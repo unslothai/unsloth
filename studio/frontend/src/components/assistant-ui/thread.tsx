@@ -353,15 +353,57 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// Fallback timeout for stuck IME composition. When Chrome on Windows talks
+// to a WSL-hosted Studio (issue #5546), `compositionend` never fires after
+// the candidate is committed, so `composingRef` stays true and Send stays
+// disabled. Every compositionupdate / non-composing input resets the timer;
+// only a true gap-after-commit lets it fire. 2500ms is well above a normal
+// candidate-window pause but short enough to recover before the user
+// notices the Send button is stuck.
+const IME_STUCK_TIMEOUT_MS = 2500;
+
 function useImeComposerInputHandlers() {
   const aui = useAui();
   const composingRef = useRef(false);
   const [isComposing, setIsComposing] = useState(false);
+  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const setCompositionState = useCallback((next: boolean) => {
-    composingRef.current = next;
-    setIsComposing(next);
+  const clearStuckTimer = useCallback(() => {
+    if (stuckTimerRef.current) {
+      clearTimeout(stuckTimerRef.current);
+      stuckTimerRef.current = null;
+    }
   }, []);
+
+  const setCompositionState = useCallback(
+    (next: boolean) => {
+      composingRef.current = next;
+      setIsComposing(next);
+      clearStuckTimer();
+      if (next) {
+        stuckTimerRef.current = setTimeout(() => {
+          stuckTimerRef.current = null;
+          composingRef.current = false;
+          setIsComposing(false);
+        }, IME_STUCK_TIMEOUT_MS);
+      }
+    },
+    [clearStuckTimer],
+  );
+
+  const refreshStuckTimer = useCallback(() => {
+    if (!composingRef.current) {
+      return;
+    }
+    clearStuckTimer();
+    stuckTimerRef.current = setTimeout(() => {
+      stuckTimerRef.current = null;
+      composingRef.current = false;
+      setIsComposing(false);
+    }, IME_STUCK_TIMEOUT_MS);
+  }, [clearStuckTimer]);
+
+  useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
   const setComposerText = useCallback(
     (value: string) => {
@@ -379,6 +421,10 @@ function useImeComposerInputHandlers() {
   const onCompositionStart = useCallback(() => {
     setCompositionState(true);
   }, [setCompositionState]);
+
+  const onCompositionUpdate = useCallback(() => {
+    refreshStuckTimer();
+  }, [refreshStuckTimer]);
 
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
@@ -399,6 +445,7 @@ function useImeComposerInputHandlers() {
   return {
     inputProps: {
       onCompositionStart,
+      onCompositionUpdate,
       onCompositionEnd,
       onChange,
     },
