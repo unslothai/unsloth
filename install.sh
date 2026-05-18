@@ -575,7 +575,7 @@ fi
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
-POLL_INTERVAL_SEC=1
+POLL_INTERVAL_SEC=0.25
 LOG_FILE="$DATA_DIR/studio.log"
 # why: in env-override mode multiple installs share an OS user; namespace the
 # lock and remember our own healthy port so we never attach to an unrelated
@@ -730,9 +730,65 @@ _spawn_terminal() {
     _cmd="$1"
     _os=$(uname)
     if [ "$_os" = "Darwin" ]; then
-        # Escape backslashes and double-quotes for AppleScript string
-        _cmd_escaped=$(printf '%s' "$_cmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        osascript -e "tell application \"Terminal\" to do script \"$_cmd_escaped\"" >/dev/null 2>&1 && return 0
+        # AppleEvents are TCC-denied from unsigned .app bundles; spawn
+        # Terminal via a .command file + Launch Services instead. Server
+        # is nohup'd so warm relaunches hit the fast-path; watcher + trap
+        # in the .command couple Terminal close <-> server shutdown.
+        # `exec` keeps the recorded PID equal to the studio process so
+        # signals reach studio directly rather than a wrapper shell.
+        nohup sh -c "exec $_cmd" >> "$LOG_FILE" 2>&1 &
+        _server_pid=$!
+        _pid_file="$DATA_DIR/studio-$_launch_port.pid"
+        printf '%d\n' "$_server_pid" > "$_pid_file" 2>/dev/null || true
+
+        _cmd_file="$DATA_DIR/launch-terminal.command"
+        _logfile_q=$(printf '%s' "$LOG_FILE" | sed "s/'/'\\\\''/g")
+        _pidfile_q=$(printf '%s' "$_pid_file" | sed "s/'/'\\\\''/g")
+        if {
+            {
+                printf '#!/bin/bash\n'
+                printf "SERVER_PID=%s\n" "$_server_pid"
+                printf "PID_FILE='%s'\n" "$_pidfile_q"
+                # Wait up to 12s for graceful shutdown before SIGKILL.
+                printf 'shutdown_studio() {\n'
+                printf '  kill -TERM "$SERVER_PID" 2>/dev/null\n'
+                printf '  _i=0\n'
+                printf '  while kill -0 "$SERVER_PID" 2>/dev/null && [ "$_i" -lt 24 ]; do\n'
+                printf '    sleep 0.5\n'
+                printf '    _i=$((_i + 1))\n'
+                printf '  done\n'
+                printf '  kill -0 "$SERVER_PID" 2>/dev/null && kill -KILL "$SERVER_PID" 2>/dev/null\n'
+                printf '  rm -f "$PID_FILE" 2>/dev/null\n'
+                printf '}\n'
+                printf "tail -n 100 -F '%s' &\n" "$_logfile_q"
+                printf 'TAIL_PID=$!\n'
+                # Server gone -> kill tail so bash exits cleanly.
+                printf '(\n'
+                printf '  while kill -0 "$SERVER_PID" 2>/dev/null; do sleep 1; done\n'
+                printf '  kill "$TAIL_PID" 2>/dev/null\n'
+                printf ') &\n'
+                printf 'WATCHER_PID=$!\n'
+                printf "trap 'shutdown_studio; kill \"\$WATCHER_PID\" \"\$TAIL_PID\" 2>/dev/null; exit' HUP INT TERM\n"
+                printf "trap 'rm -f \"\$PID_FILE\" 2>/dev/null' EXIT\n"
+                printf 'wait "$TAIL_PID" 2>/dev/null\n'
+            } > "$_cmd_file" 2>/dev/null \
+                && chmod +x "$_cmd_file" 2>/dev/null \
+                && open -a Terminal "$_cmd_file" 2>/dev/null
+        }; then
+            # Foreground Terminal (Launch Services spawns us backgrounded).
+            osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+            return 0
+        fi
+        # .command/open failed: kill orphan, fall through to generic fallback.
+        kill -TERM "$_server_pid" 2>/dev/null || true
+        _i=0
+        while kill -0 "$_server_pid" 2>/dev/null && [ "$_i" -lt 6 ]; do
+            sleep 0.5
+            _i=$((_i + 1))
+        done
+        kill -0 "$_server_pid" 2>/dev/null && kill -KILL "$_server_pid" 2>/dev/null || true
+        rm -f "$_pid_file" 2>/dev/null || true
+        echo "[WARN] Could not open Terminal; falling back to background launch" >&2
     else
         for _term in gnome-terminal konsole xfce4-terminal mate-terminal lxterminal xterm; do
             if command -v "$_term" >/dev/null 2>&1; then
@@ -1008,6 +1064,17 @@ DESKTOP_EOF
         _css_contents="$_css_app/Contents"
         _css_macos_dir="$_css_contents/MacOS"
         _css_res_dir="$_css_contents/Resources"
+        # Recreate bundle if root or any subpath is a symlink (mkdir -p follows them).
+        if [ -L "$_css_app" ] || [ -L "$_css_contents" ] \
+            || [ -L "$_css_macos_dir" ] || [ -L "$_css_res_dir" ]; then
+            rm -rf "$_css_app" 2>/dev/null || {
+                echo "[ERROR] $_css_app contains a symlinked bundle path; remove manually and re-run install" >&2
+                return 1
+            }
+        elif [ -e "$_css_app" ] && [ ! -d "$_css_app" ]; then
+            echo "[ERROR] $_css_app exists but is not a directory; remove manually and re-run install" >&2
+            return 1
+        fi
         mkdir -p "$_css_macos_dir" "$_css_res_dir"
 
         # Info.plist
@@ -1828,7 +1895,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.2" unsloth-zoo
+            "unsloth>=2026.5.4" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -1836,7 +1903,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.2" unsloth-zoo
+            "unsloth>=2026.5.4" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2004,7 +2071,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.5.2" unsloth-zoo
+            "unsloth>=2026.5.4" unsloth-zoo
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
             run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
@@ -2019,7 +2086,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.5.2" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.5.4" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2051,7 +2118,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.2" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.4" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
