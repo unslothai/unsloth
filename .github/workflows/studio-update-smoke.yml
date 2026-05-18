@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - 'install.sh'
+      - 'uninstall.sh'
       - 'studio/setup.sh'
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
@@ -139,9 +140,37 @@ jobs:
           kill "$PID" 2>/dev/null || true
           echo "post-update Studio /api/health OK"
 
+      - name: Uninstall and verify clean
+        # Round-trip the installer through uninstall.sh: confirms the
+        # uninstaller actually finds and removes everything install.sh +
+        # update wrote. Safety-guard scenarios (refuse-$HOME etc.) belong
+        # in a separate fast smoke job; this is the happy-path cleanup
+        # assertion that catches regressions where install.sh starts
+        # writing to a new location and uninstall.sh hasn't caught up.
+        run: |
+          set -o pipefail
+          sh uninstall.sh 2>&1 | tee logs/uninstall.log
+          leak=0
+          for p in \
+            "$HOME/.unsloth/studio" \
+            "$HOME/.local/share/unsloth" \
+            "$HOME/Desktop/Unsloth Studio.desktop" \
+            "$HOME/.local/bin/unsloth"; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::error::leak: $p"
+              ls -la "$p" 2>&1 | head -3
+              leak=$((leak + 1))
+            fi
+          done
+          [ "$leak" -eq 0 ] || exit 1
+          # Idempotent: re-runs exit 0 on an empty $HOME.
+          sh uninstall.sh 2>&1 | tail -5
+          sh uninstall.sh 2>&1 | tail -5
+          echo "PASS: install -> update -> uninstall round-trip clean"
+
       - name: Upload update logs
         # Always upload so a green run still leaves the install + two
-        # update logs reviewable.
+        # update logs + uninstall log reviewable.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -151,4 +180,5 @@ jobs:
             logs/update.log
             logs/update2.log
             logs/studio.log
+            logs/uninstall.log
           retention-days: 7
