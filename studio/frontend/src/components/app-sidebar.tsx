@@ -49,6 +49,7 @@ import {
   Edit03Icon,
   Globe02Icon,
   HelpCircleIcon,
+  Logout01Icon,
   Search01Icon,
   PowerIcon,
   PencilEdit02Icon,
@@ -77,6 +78,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { usePlatformStore } from "@/config/env";
+import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -756,6 +758,21 @@ export function AppSidebar() {
                 >
                   <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
                   <span>Help</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={async () => {
+                    // Best-effort server-side revocation; ignore network errors
+                    // so the local clear path still runs and the user lands on /login.
+                    try {
+                      await logout();
+                    } catch {
+                      clearAuthTokens();
+                    }
+                    void navigate({ to: "/login" });
+                  }}
+                >
+                  <HugeiconsIcon icon={Logout01Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Log out</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
