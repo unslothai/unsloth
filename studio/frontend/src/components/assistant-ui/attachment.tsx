@@ -184,7 +184,7 @@ const AttachmentUI: FC = () => {
         </AttachmentPreviewDialog>
         {isComposer && <AttachmentRemove />}
       </AttachmentPrimitive.Root>
-      <TooltipContent side="top">
+      <TooltipContent side="top" className="tooltip-compact">
         <AttachmentPrimitive.Name />
       </TooltipContent>
     </Tooltip>

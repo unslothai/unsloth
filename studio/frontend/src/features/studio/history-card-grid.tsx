@@ -13,7 +13,16 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
-import { deleteTrainingRun, listTrainingRuns } from "@/features/training";
+import {
+  deleteTrainingRun,
+  emitTrainingRunDeleted,
+  listTrainingRuns,
+  onTrainingRunDeleted,
+  onTrainingRunsChanged,
+  onTrainingRunUpdated,
+  useTrainingActions,
+  useTrainingRuntimeStore,
+} from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
@@ -47,7 +56,27 @@ const statusBadge: Record<
     className:
       "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
   },
+  resumed_later: {
+    label: "Continued",
+    className:
+      "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
+  },
 };
+
+function wasContinuedInVisibleRuns(
+  run: TrainingRunSummary,
+  runs: TrainingRunSummary[],
+): boolean {
+  if (run.status !== "stopped" || !run.output_dir) return false;
+  const startedAt = new Date(run.started_at).getTime();
+  return runs.some(
+    (other) =>
+      other.id !== run.id &&
+      other.output_dir === run.output_dir &&
+      (other.status === "stopped" || other.status === "completed") &&
+      new Date(other.started_at).getTime() > startedAt,
+  );
+}
 
 function catmullRomPath(points: { x: number; y: number }[]): string {
   if (points.length < 2) return "";
@@ -133,10 +162,12 @@ function formatRelativeTime(isoDate: string): string {
 
 interface HistoryCardGridProps {
   onSelectRun: (runId: string) => void;
+  onResumeStarted?: () => void;
 }
 
 export function HistoryCardGrid({
   onSelectRun,
+  onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -144,12 +175,20 @@ export function HistoryCardGrid({
   const [error, setError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
+  const { resumeTrainingRunFromHistory } = useTrainingActions();
+  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
   const pollIdRef = useRef(0);
+  const runsLengthRef = useRef(0);
+
+  useEffect(() => {
+    runsLengthRef.current = runs.length;
+  }, [runs.length]);
 
   const fetchRuns = useCallback(async (offset = 0, append = false, limit = PAGE_SIZE) => {
     // Cancel any in-flight poll so its stale response can't clobber this fresher fetch
@@ -186,6 +225,27 @@ export function HistoryCardGrid({
     };
   }, [fetchRuns]);
 
+  useEffect(() => {
+    const offUpdated = onTrainingRunUpdated((updated) => {
+      setRuns((prev) =>
+        prev.map((run) => (run.id === updated.id ? updated : run)),
+      );
+    });
+    const offDeleted = onTrainingRunDeleted((runId) => {
+      setRuns((prev) => prev.filter((run) => run.id !== runId));
+      setTotal((prev) => Math.max(0, prev - 1));
+    });
+    const offChanged = onTrainingRunsChanged(() => {
+      const limit = Math.max(PAGE_SIZE, runsLengthRef.current);
+      void fetchRuns(0, false, limit);
+    });
+    return () => {
+      offUpdated();
+      offDeleted();
+      offChanged();
+    };
+  }, [fetchRuns]);
+
   // Poll while any run is still "running" so the card shows live progress
   const hasRunningRun = runs.some((r) => r.status === "running");
   const visibleCount = runs.length;
@@ -218,9 +278,7 @@ export function HistoryCardGrid({
     setDeleteError(null);
     try {
       await deleteTrainingRun(deleteTarget);
-      // Optimistically remove the card so it disappears immediately
-      setRuns((prev) => prev.filter((r) => r.id !== deleteTarget));
-      setTotal((prev) => Math.max(0, prev - 1));
+      emitTrainingRunDeleted(deleteTarget);
       // Re-fetch preserving visible count so offsets stay consistent for "Load more"
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
@@ -231,6 +289,18 @@ export function HistoryCardGrid({
       setDeleteError("Failed to delete training run. Please try again.");
     }
     setDeleteTarget(null);
+  };
+
+  const handleResume = async (runId: string) => {
+    setResumeTarget(runId);
+    try {
+      const ok = await resumeTrainingRunFromHistory(runId);
+      if (ok) {
+        onResumeStarted?.();
+      }
+    } finally {
+      setResumeTarget(null);
+    }
   };
 
   if (!loading && error && runs.length === 0) {
@@ -264,18 +334,25 @@ export function HistoryCardGrid({
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {runs.map((run) => {
-          const badge = statusBadge[run.status] ?? statusBadge.error;
+          const wasContinued =
+            run.resumed_later || wasContinuedInVisibleRuns(run, runs);
+          const badge = wasContinued
+            ? statusBadge.resumed_later
+            : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
+          const canResume = run.can_resume && !wasContinued;
+          const isResuming = resumeTarget === run.id;
           return (
             <div
               role="button"
               tabIndex={0}
               key={run.id}
               className={cn(
-                "group relative flex cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
+                "group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
                 isRunning
                   ? "border-blue-400/50 dark:border-blue-500/30"
                   : "border-border/60",
+                canResume && "gap-2",
               )}
               onClick={() => onSelectRun(run.id)}
               onKeyDown={(e) => {
@@ -299,19 +376,47 @@ export function HistoryCardGrid({
                   {formatRelativeTime(run.started_at)}
                 </span>
               </div>
+              {canResume && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  disabled={isStarting || isResuming}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleResume(run.id);
+                  }}
+                >
+                  {isResuming ? "Resuming..." : "Resume training"}
+                </Button>
+              )}
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.model_name}
+                  title={run.display_name ?? run.model_name}
                 >
-                  {run.model_name}
+                  {run.display_name ?? run.model_name}
                 </p>
-                <p className="truncate text-xs text-muted-foreground">
+                {run.display_name && (
+                  <p
+                    className="truncate text-xs text-muted-foreground"
+                    title={run.model_name}
+                  >
+                    {run.model_name}
+                  </p>
+                )}
+                <p
+                  className="truncate text-xs text-muted-foreground"
+                  title={run.dataset_name}
+                >
                   {run.dataset_name}
                 </p>
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                <Sparkline values={run.loss_sparkline} id={run.id} />
+                <div className={cn(canResume && "h-7 overflow-hidden")}>
+                  <Sparkline values={run.loss_sparkline} id={run.id} />
+                </div>
               )}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                 <span>

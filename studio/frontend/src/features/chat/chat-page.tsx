@@ -2,41 +2,31 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type DeletedModelRef,
+  type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
-import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
-  SidebarProvider,
-  SidebarTrigger,
-  useSidebar,
-} from "@/components/ui/sidebar";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
+import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
+import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
+import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import {
-  ColumnInsertIcon,
-  PencilEdit02Icon,
-  Settings04Icon,
-} from "@hugeicons/core-free-icons";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { useSidebar } from "@/components/ui/sidebar";
+import { CustomizeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
-  type CSSProperties,
   type ReactElement,
-  type ReactNode,
   memo,
   useCallback,
   useEffect,
@@ -44,12 +34,26 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
+import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
+import {
+  buildExternalModelId,
+  isExternalModelId,
+  parseExternalModelId,
+} from "./external-providers";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  getProviderCapabilities,
+  providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinWebSearch,
+} from "./provider-capabilities";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import {
   clearTrainingCompareHandoff,
@@ -58,12 +62,13 @@ import {
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
+  type CompareHandles,
   CompareHandlesProvider,
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import { ThreadSidebar } from "./thread-sidebar";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 
@@ -71,6 +76,7 @@ type LoraCandidate = {
   id: string;
   baseModel: string;
   updatedAt?: number;
+  exportType?: "lora" | "merged" | "gguf";
 };
 
 function normalizeModelRef(value: string | null | undefined): string {
@@ -81,12 +87,13 @@ function pickBestLoraForBase(
   loras: LoraCandidate[],
   baseModel: string | null,
 ): LoraCandidate | null {
-  if (loras.length === 0) return null;
-  const sorted = [...loras].sort(
+  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
+  if (adapterOnly.length === 0) return null;
+  const sorted = [...adapterOnly].sort(
     (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
   );
   const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0];
+  if (!normalizedBase) return sorted[0] ?? null;
 
   const exact = sorted.find(
     (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
@@ -101,7 +108,7 @@ function pickBestLoraForBase(
       normalizedBase.includes(normalizedLoraBase)
     );
   });
-  return partial ?? sorted[0];
+  return partial ?? sorted[0] ?? null;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -133,8 +140,8 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
     >
-      <div className="min-h-0 flex-1">
-        <Thread />
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
       </div>
     </ChatRuntimeProvider>
   );
@@ -146,6 +153,17 @@ type CompareModelSelection = {
   ggufVariant?: string;
 };
 
+function modelMatchesDeleted(
+  model: { id: string; ggufVariant?: string | null },
+  deletedModel?: DeletedModelRef,
+): boolean {
+  if (!deletedModel || model.id !== deletedModel.id) return false;
+  return (
+    deletedModel.ggufVariant == null ||
+    (model.ggufVariant ?? null) === deletedModel.ggufVariant
+  );
+}
+
 /**
  * Detect if this is a LoRA base-vs-fine-tuned compare.
  * Returns true when the loaded checkpoint is a LoRA — in that case
@@ -154,7 +172,8 @@ type CompareModelSelection = {
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
     const cp = s.params.checkpoint;
-    return cp ? s.loras.some((l) => l.id === cp) : false;
+    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
+    return selected?.exportType === "lora";
   });
 }
 
@@ -163,11 +182,15 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }): ReactElement {
   const isLoraCompare = useIsLoraCompare();
 
@@ -179,9 +202,101 @@ const CompareContent = memo(function CompareContent({
       models={models}
       loraModels={loraModels}
       onFoldersChange={onFoldersChange}
+      onModelsChange={onModelsChange}
+      deleteDisabled={deleteDisabled}
     />
   );
 });
+
+/**
+ * A single column in the compare layout. Hosts one ChatRuntimeProvider
+ * and one Thread rendered with hideComposer — the composer is shared
+ * across both panes and rendered outside the pane flex.
+ *
+ * Each pane is a flex item with `flex-1 basis-0 min-h-0 min-w-0` so on
+ * mobile (flex-col) they share height equally, and on desktop (flex-row)
+ * they share width equally. The `min-*` constraints are required for
+ * the inner viewport to scroll internally instead of spilling into the
+ * page.
+ */
+function ComparePane({
+  modelType,
+  pairId,
+  initialThreadId,
+  handleName,
+  header,
+  borderClassName,
+}: {
+  modelType: "base" | "lora" | "model1" | "model2";
+  pairId: string;
+  initialThreadId: string | undefined;
+  handleName: string;
+  header: ReactElement;
+  borderClassName?: string;
+}): ReactElement {
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
+        borderClassName,
+      )}
+    >
+      {header}
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+        <ChatRuntimeProvider
+          modelType={modelType}
+          pairId={pairId}
+          initialThreadId={initialThreadId}
+          syncActiveThreadId={false}
+        >
+          <RegisterCompareHandle name={handleName} />
+          <Thread hideComposer={true} hideWelcome={true} />
+        </ChatRuntimeProvider>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Shared shell for both compare variants. A vertical flex column with
+ * the two panes as siblings and the shared composer docked at the
+ * bottom. On mobile the panes stack (flex-col); on desktop they sit
+ * side by side (md:flex-row).
+ *
+ * Flex is used rather than CSS grid for the pane container so that
+ * viewport sizing stays stable across viewport-size transitions. Grid
+ * rows with 1fr were triggering resize thrash in assistant-ui's
+ * autoscroll hook on breakpoint crossings, leaving it stuck in a
+ * scroll-to-bottom loop.
+ */
+function CompareShell({
+  handlesRef,
+  children,
+  composer,
+}: {
+  handlesRef: CompareHandles;
+  children: ReactElement;
+  composer: ReactElement;
+}): ReactElement {
+  return (
+    <CompareHandlesProvider handlesRef={handlesRef}>
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
+        <div
+          data-tour="chat-compare-view"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col md:flex-row"
+        >
+          {children}
+        </div>
+        <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
+          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
+          <p className="composer-footer-note">
+            LLMs can make mistakes. Double-check responses.
+          </p>
+        </div>
+      </div>
+    </CompareHandlesProvider>
+  );
+}
 
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
@@ -208,56 +323,92 @@ const LoraCompareContent = memo(function LoraCompareContent({
   }, [pairId]);
 
   return (
-    <CompareHandlesProvider handlesRef={handlesRef}>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          data-tour="chat-compare-view"
-          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
-        >
-          <div className="flex min-h-0 flex-col">
-            <div className="px-3 py-1.5">
+    <CompareShell
+      handlesRef={handlesRef}
+      composer={<SharedComposer handlesRef={handlesRef} />}
+    >
+      <>
+        <ComparePane
+          modelType="base"
+          pairId={pairId}
+          initialThreadId={baseThreadId}
+          handleName="base"
+          header={
+            <div className="shrink-0 px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
             </div>
-            <div className="min-h-0 flex-1">
-              <ChatRuntimeProvider
-                modelType="base"
-                pairId={pairId}
-                initialThreadId={baseThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="base" />
-                <Thread hideComposer={true} hideWelcome={true} />
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
-            <div className="px-3 py-1.5 text-start md:text-end">
+          }
+        />
+        <ComparePane
+          modelType="lora"
+          pairId={pairId}
+          initialThreadId={loraThreadId}
+          handleName="lora"
+          borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
+          header={
+            <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Fine-tuned (LoRA)
+                Fine-tuned
               </span>
             </div>
-            <div className="min-h-0 flex-1">
-              <ChatRuntimeProvider
-                modelType="lora"
-                pairId={pairId}
-                initialThreadId={loraThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="lora" />
-                <Thread hideComposer={true} hideWelcome={true} />
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-        </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
-          <SharedComposer handlesRef={handlesRef} />
-        </div>
-      </div>
-    </CompareHandlesProvider>
+          }
+        />
+      </>
+    </CompareShell>
   );
 });
+
+/**
+ * Per-pane header rendered inside GeneralCompareContent. Contains the
+ * model selector aligned with the global topbar height. The left pane
+ * reserves room for the mobile sidebar trigger; the right pane reserves
+ * room for the global settings button.
+ */
+function GeneralCompareHeader({
+  models,
+  loraModels,
+  value,
+  onValueChange,
+  onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
+  side,
+}: {
+  models: ModelOption[];
+  loraModels: LoraModelOption[];
+  value: string;
+  onValueChange: (
+    id: string,
+    meta: { isLora: boolean; ggufVariant?: string },
+  ) => void;
+  onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
+  side: "left" | "right";
+}): ReactElement {
+  return (
+    <div
+      className={cn(
+        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
+        side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
+      )}
+    >
+      <ModelSelector
+        models={models}
+        loraModels={loraModels}
+        value={value}
+        onValueChange={onValueChange}
+        onFoldersChange={onFoldersChange}
+        onModelsChange={onModelsChange}
+        deleteDisabled={deleteDisabled}
+        variant="ghost"
+        className="max-w-[80%] !h-[34px]"
+      />
+    </div>
+  );
+}
 
 /** General path: any two models, sequential load → generate. */
 const GeneralCompareContent = memo(function GeneralCompareContent({
@@ -265,11 +416,15 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   models,
   loraModels,
   onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
 }: {
   pairId: string;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -286,6 +441,19 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+
+  const handleModelsChange = useCallback(
+    (deletedModel?: DeletedModelRef) => {
+      if (modelMatchesDeleted(model1, deletedModel)) {
+        setModel1({ id: "", isLora: false });
+      }
+      if (modelMatchesDeleted(model2, deletedModel)) {
+        setModel2({ id: "", isLora: false });
+      }
+      onModelsChange?.(deletedModel);
+    },
+    [model1, model2, onModelsChange],
+  );
 
   useEffect(() => {
     let isActive = true;
@@ -312,197 +480,113 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   }, [pairId]);
 
   return (
-    <CompareHandlesProvider handlesRef={handlesRef}>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          data-tour="chat-compare-view"
-          className="grid min-h-0 flex-1 grid-cols-1 px-0 md:grid-cols-2"
-        >
-          <div className="flex min-h-0 flex-col">
-            <div className="flex items-center gap-2 px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Model 1
-              </span>
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                value={model1.id}
-                onValueChange={(id, meta) =>
-                  setModel1({
-                    id,
-                    isLora: meta.isLora,
-                    ggufVariant: meta.ggufVariant,
-                  })
-                }
-                onFoldersChange={onFoldersChange}
-                variant="ghost"
-                size="sm"
-                className="max-w-[50%]"
-              />
-            </div>
-            <div className="min-h-0 flex-1">
-              <ChatRuntimeProvider
-                modelType="model1"
-                pairId={pairId}
-                initialThreadId={model1ThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="model1" />
-                <Thread hideComposer={true} hideWelcome={true} />
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-          <div className="flex min-h-0 flex-col border-t border-border/60 md:border-t-0 md:border-l">
-            <div className="flex items-center gap-2 px-3 py-1.5 md:justify-end">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                Model 2
-              </span>
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                value={model2.id}
-                onValueChange={(id, meta) =>
-                  setModel2({
-                    id,
-                    isLora: meta.isLora,
-                    ggufVariant: meta.ggufVariant,
-                  })
-                }
-                onFoldersChange={onFoldersChange}
-                variant="ghost"
-                size="sm"
-                className="max-w-[50%]"
-              />
-            </div>
-            <div className="min-h-0 flex-1">
-              <ChatRuntimeProvider
-                modelType="model2"
-                pairId={pairId}
-                initialThreadId={model2ThreadId}
-                syncActiveThreadId={false}
-              >
-                <RegisterCompareHandle name="model2" />
-                <Thread hideComposer={true} hideWelcome={true} />
-              </ChatRuntimeProvider>
-            </div>
-          </div>
-        </div>
-        <div className="z-20 mx-auto w-full max-w-4xl shrink-0 border-t border-border/60 bg-background px-4 pt-2 pb-4">
-          <SharedComposer
-            handlesRef={handlesRef}
-            model1={model1}
-            model2={model2}
-          />
-        </div>
-      </div>
-    </CompareHandlesProvider>
+    <CompareShell
+      handlesRef={handlesRef}
+      composer={
+        <SharedComposer
+          handlesRef={handlesRef}
+          model1={model1}
+          model2={model2}
+        />
+      }
+    >
+      <>
+        <ComparePane
+          modelType="model1"
+          pairId={pairId}
+          initialThreadId={model1ThreadId}
+          handleName="model1"
+          header={
+            <GeneralCompareHeader
+              side="left"
+              models={models}
+              loraModels={loraModels}
+              value={model1.id}
+              onValueChange={(id, meta) =>
+                setModel1({
+                  id,
+                  isLora: meta.isLora,
+                  ggufVariant: meta.ggufVariant,
+                })
+              }
+              onFoldersChange={onFoldersChange}
+              onModelsChange={handleModelsChange}
+              deleteDisabled={deleteDisabled}
+            />
+          }
+        />
+        <ComparePane
+          modelType="model2"
+          pairId={pairId}
+          initialThreadId={model2ThreadId}
+          handleName="model2"
+          borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
+          header={
+            <GeneralCompareHeader
+              side="right"
+              models={models}
+              loraModels={loraModels}
+              value={model2.id}
+              onValueChange={(id, meta) =>
+                setModel2({
+                  id,
+                  isLora: meta.isLora,
+                  ggufVariant: meta.ggufVariant,
+                })
+              }
+              onFoldersChange={onFoldersChange}
+              onModelsChange={handleModelsChange}
+              deleteDisabled={deleteDisabled}
+            />
+          }
+        />
+      </>
+    </CompareShell>
   );
 });
 
-function InlineSidebar({
-  children,
-  side = "left",
-}: {
-  children: ReactNode;
-  side?: "left" | "right";
-}) {
-  const { state, isMobile, openMobile, setOpenMobile } = useSidebar();
-  const collapsed = state === "collapsed";
-
-  if (isMobile) {
-    return (
-      <Sheet open={openMobile} onOpenChange={setOpenMobile}>
-        <SheetContent side={side} className="w-[18rem] p-0">
-          <SheetHeader className="sr-only">
-            <SheetTitle>Chat sidebar</SheetTitle>
-            <SheetDescription>Chat threads and actions</SheetDescription>
-          </SheetHeader>
-          <div className="h-full overflow-auto">{children}</div>
-        </SheetContent>
-      </Sheet>
-    );
-  }
-
-  return (
-    <div
-      className="group shrink-0 h-full pb-3.5"
-      data-state={state}
-      data-collapsible={collapsed ? "offcanvas" : ""}
-      data-side={side}
-    >
-      <aside
-        data-sidebar="sidebar"
-        className={cn(
-          "bg-muted/70 text-sidebar-foreground h-full overflow-hidden rounded-2xl corner-squircle transition-[width] duration-200 ease-linear",
-          !collapsed && side === "right" && "border-l border-sidebar-border/70",
-          collapsed ? "w-0" : "w-(--sidebar-width)",
-        )}
-      >
-        <div className="flex h-full w-(--sidebar-width) flex-col">
-          {children}
-        </div>
-      </aside>
-    </div>
-  );
-}
-
-function TopBarActions({
-  onNewThread,
-  onNewCompare,
-  showCompare,
-}: {
-  onNewThread: () => void;
-  onNewCompare: () => void;
-  showCompare: boolean;
-}) {
-  const { state } = useSidebar();
-  if (state !== "collapsed") {
-    return null;
-  }
-  return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <Button variant="ghost" size="icon-sm" onClick={onNewThread}>
-            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">New Chat</TooltipContent>
-      </Tooltip>
-      {showCompare ? (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button variant="ghost" size="icon-sm" onClick={onNewCompare}>
-              <HugeiconsIcon icon={ColumnInsertIcon} strokeWidth={2} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Compare</TooltipContent>
-        </Tooltip>
-      ) : null}
-    </>
-  );
-}
-
-function getInitialSingleChatView(): ChatView {
-  const id = useChatRuntimeStore.getState().activeThreadId;
-  if (typeof id === "string" && id.length > 0 && !id.startsWith("__LOCALID_")) {
-    return { mode: "single", threadId: id };
-  }
-  return { mode: "single" };
-}
-
 export function ChatPage(): ReactElement {
-  // Do not set newThreadNonce here: each /chat mount would run ThreadNewChatSwitch
-  // and create spurious threads when navigating (e.g. Recipes / Export). New Chat
-  // explicitly sets a nonce in handleNewThread.
-  const [view, setView] = useState<ChatView>(getInitialSingleChatView);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const search = useSearch({ from: "/chat" });
+  const navigate = useNavigate();
+
+  const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
+  const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
+
+  useEffect(() => {
+    const threadId = search.thread;
+    if (!threadId) return;
+
+    let canceled = false;
+    void db.threads
+      .get(threadId)
+      .then((thread) => {
+        if (canceled || thread) return;
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        toast.info("Chat not found", {
+          description: "That thread no longer exists, so we opened a new chat.",
+        });
+        navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+          replace: true,
+        });
+      })
+      .catch(() => {
+        if (useChatRuntimeStore.getState().activeThreadId === threadId) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [navigate, search.thread]);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [viewBeforeCompare, setViewBeforeCompare] = useState<ChatView | null>(
-    null,
-  );
+  const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -512,12 +596,14 @@ export function ChatPage(): ReactElement {
     (state) => state.ggufContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
-  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
-  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
+  const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const modelOperationInProgress = useChatRuntimeStore(
+    (state) => state.modelLoading,
+  );
   const {
     refresh,
     selectModel,
@@ -527,6 +613,10 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const pendingNativeModelIntent = useNativeIntentStore(
+    (state) => state.pendingModelIntent,
+  );
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const refreshRef = useRef(refresh);
   const selectModelRef = useRef(selectModel);
 
@@ -534,14 +624,235 @@ export function ChatPage(): ReactElement {
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  const isExternalModel = useMemo(
+    () => isExternalModelId(inferenceParams.checkpoint),
+    [inferenceParams.checkpoint],
+  );
+  const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
+  const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
+  const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const activeExternalProvider = useMemo(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return null;
+    return (
+      externalProviders.find(
+        (p) => p.id === selection.providerId,
+      ) ?? null
+    );
+  }, [externalProviders, inferenceParams.checkpoint]);
+  const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
+  const activeProviderCapabilities = useMemo(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return null;
+    const provider = externalProviders.find(
+      (p) => p.id === selection.providerId,
+    );
+    const baseCapabilities = getProviderCapabilities(provider?.providerType);
+    if (!baseCapabilities) return baseCapabilities;
+    const anthropicThinkingEnabled =
+      provider?.providerType === "anthropic" &&
+      reasoningStyle === "reasoning_effort" &&
+      (supportsReasoningOff ? reasoningEnabled : true) &&
+      reasoningEffort !== "none";
+    if (!anthropicThinkingEnabled) return baseCapabilities;
+    return {
+      ...baseCapabilities,
+      temperature: false,
+      topK: false,
+    };
+  }, [
+    externalProviders,
+    inferenceParams.checkpoint,
+    reasoningEnabled,
+    reasoningStyle,
+    reasoningEffort,
+    supportsReasoningOff,
+  ]);
+  useEffect(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const provider = externalProviders.find((p) => p.id === selection.providerId);
+    const reasoningCaps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      { isReasoningProvider: provider?.isReasoningModel === true },
+    );
+    const state = useChatRuntimeStore.getState();
+    const preferredEffort = state.reasoningEffort;
+    const effortLevels = reasoningCaps.reasoningEffortLevels;
+    const clampedEffort = clampReasoningEffortToLevels(
+      preferredEffort,
+      effortLevels,
+    );
+    // Per-provider default effort. Anthropic gets the highest available
+    // level (xhigh on 4.6/4.7, high on 4.5) since Claude's adaptive
+    // thinking adjusts cost per turn — sitting at the top of the dial
+    // gives users the strongest answers and the model can still skip
+    // thinking when the turn is trivial. OpenAI gets "high" by default
+    // — the gpt-5.x reasoning models accept high across the board and
+    // it's the right cost/quality sweet spot for Responses-API tools
+    // (web search included). Everyone else gets "medium" as a balanced
+    // default. Users can pick another level via the Think dropdown.
+    const isAnthropic = provider?.providerType === "anthropic";
+    const isOpenAI = provider?.providerType === "openai";
+    const anthropicTopEffort = effortLevels.includes("xhigh")
+      ? "xhigh"
+      : effortLevels.includes("high")
+        ? "high"
+        : clampedEffort;
+    const openaiDefaultEffort = effortLevels.includes("high")
+      ? "high"
+      : effortLevels.includes("medium")
+        ? "medium"
+        : clampedEffort;
+    const nextReasoningEffort = reasoningCaps.supportsReasoning
+      ? isAnthropic
+        ? anthropicTopEffort
+        : isOpenAI
+          ? openaiDefaultEffort
+          : effortLevels.includes("medium")
+            ? "medium"
+            : clampedEffort
+      : state.reasoningEffort;
+    const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+      provider?.providerType,
+    );
+    const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+      provider?.providerType,
+      selection.modelId,
+      provider?.baseUrl,
+    );
+    // Kimi's k2.6/k2.5 default to thinking enabled on the server side
+    // (per https://platform.kimi.ai/docs/models). Mirror that default
+    // in the UI so the Think pill comes up clicked when the user picks
+    // a Kimi model. The Search pill stays off by default; the mutual-
+    // exclusion handlers in the composer flip the two when needed.
+    const isKimi = provider?.providerType === "kimi";
+    // Web search is on by default for the two providers we trust most
+    // for it: Anthropic (web_search_20250305 server tool, structured
+    // citations) and OpenAI (/v1/responses web_search, structured
+    // citations). Other providers stay off-by-default — OpenRouter's
+    // plugins shape and Kimi's $web_search builtin still work when the
+    // user opts in via the pill, but they're a notch less reliable so
+    // we don't pre-enable them.
+    const searchOnByDefault =
+      supportsBuiltinWebSearch &&
+      (provider?.providerType === "anthropic" ||
+        provider?.providerType === "openai");
+    useChatRuntimeStore.setState({
+      supportsReasoning: reasoningCaps.supportsReasoning,
+      reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+      reasoningStyle: reasoningCaps.reasoningStyle,
+      supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+      reasoningEffortLevels: effortLevels,
+      reasoningEffort: nextReasoningEffort,
+      reasoningEnabled: reasoningCaps.supportsReasoning
+        ? reasoningCaps.supportsReasoningOff
+          ? isKimi
+            ? true
+            : state.reasoningEnabled
+          : true
+        : state.reasoningEnabled,
+      supportsPreserveThinking: false,
+      // External models never give us a local tool runtime (no
+      // python sandbox), so `supportsTools` must be false. The two
+      // `supportsBuiltin*` flags pick up the slack for providers that
+      // run the tool server-side: `supportsBuiltinWebSearch` lights
+      // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
+      // `supportsBuiltinCodeExecution` lights up the Code pill
+      // (Anthropic Claude 4.x only, today).
+      supportsTools: false,
+      supportsBuiltinWebSearch,
+      supportsBuiltinCodeExecution,
+      toolsEnabled: searchOnByDefault,
+      codeToolsEnabled: false,
+    });
+  }, [externalProviders, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint);
-  }, [inferenceParams.checkpoint]);
+    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
+  }, [inferenceParams.checkpoint, isExternalModel]);
+
+  // Derive view from URL search params
+  const view = useMemo<ChatView>(() => {
+    if (search.compare) {
+      return {
+        mode: "compare",
+        pairId: search.compare,
+      };
+    }
+    if (search.thread) {
+      return { mode: "single", threadId: search.thread };
+    }
+    if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
+      return { mode: "single", threadId: activeThreadId };
+    }
+    if (search.new) {
+      return { mode: "single", newThreadNonce: search.new };
+    }
+    return { mode: "single" };
+  }, [search.thread, search.compare, search.new, activeThreadId]);
+
+  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const loadNativeModelIntent = useCallback(
+    async (intent: NativeIntent, loadingDescription: string) => {
+      const label =
+        intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
+      await selectModel({
+        id: label,
+        nativePathToken: intent.path.token,
+        isDownloaded: true,
+        loadingDescription,
+        forceReload: true,
+        throwOnError: true,
+      });
+      useNativeIntentStore.getState().clearModelIntent(intent.id);
+    },
+    [selectModel],
+  );
+  const handleNativeModelDropAutoLoad = useCallback(
+    (intent: NativeIntent) =>
+      loadNativeModelIntent(
+        intent,
+        hasActiveModel
+          ? "Replacing with dropped local GGUF model."
+          : "Loading dropped local GGUF model.",
+      ),
+    [hasActiveModel, loadNativeModelIntent],
+  );
+  const handleNativeModelPickerAutoLoad = useCallback(
+    (intent: NativeIntent) =>
+      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
+    [loadNativeModelIntent],
+  );
+  const canAutoLoadPickedNativeModel = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    return (
+      view.mode === "single" &&
+      nativePathLeasesSupported &&
+      !loadingModel &&
+      !modelLoading &&
+      !store.modelLoading &&
+      !store.params.checkpoint
+    );
+  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
+  const chooseNativeModel = useChooseNativeModel({
+    shouldAutoLoad: canAutoLoadPickedNativeModel,
+    onAutoLoad: handleNativeModelPickerAutoLoad,
+  });
+  const nativeModelDropState = useNativeModelDrop({
+    enabled: view.mode === "single",
+    nativePathLeasesSupported,
+    hasActiveModel,
+    isModelLoading: Boolean(loadingModel) || modelLoading,
+    onAutoLoad: handleNativeModelDropAutoLoad,
+  });
 
   const handleCheckpointChange = useCallback(
     (
       value: string,
       meta?: {
+        source?: string;
         isLora: boolean;
         ggufVariant?: string;
         isDownloaded?: boolean;
@@ -557,6 +868,115 @@ export function ChatPage(): ReactElement {
           (meta?.ggufVariant ?? null) === (currentVariant ?? null))
       )
         return;
+      if (meta?.source === "external" || isExternalModelId(value)) {
+        const selectedExternal = parseExternalModelId(value);
+        const selectedProvider = selectedExternal
+          ? externalProviders.find((p) => p.id === selectedExternal.providerId)
+          : null;
+        const reasoningCaps = getExternalReasoningCapabilities(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          {
+            isReasoningProvider:
+              selectedProvider?.isReasoningModel === true,
+          },
+        );
+        const preferredEffort = store.reasoningEffort;
+        const effortLevels = reasoningCaps.reasoningEffortLevels;
+        const clampedEffort = clampReasoningEffortToLevels(
+          preferredEffort,
+          effortLevels,
+        );
+        // Same per-provider default policy as the useEffect path above:
+        // Anthropic picks the highest available level, OpenAI picks
+        // "high", everyone else picks "medium".
+        const isAnthropic = selectedProvider?.providerType === "anthropic";
+        const isOpenAI = selectedProvider?.providerType === "openai";
+        const anthropicTopEffort = effortLevels.includes("xhigh")
+          ? "xhigh"
+          : effortLevels.includes("high")
+            ? "high"
+            : clampedEffort;
+        const openaiDefaultEffort = effortLevels.includes("high")
+          ? "high"
+          : effortLevels.includes("medium")
+            ? "medium"
+            : clampedEffort;
+        const nextReasoningEffort = reasoningCaps.supportsReasoning
+          ? isAnthropic
+            ? anthropicTopEffort
+            : isOpenAI
+              ? openaiDefaultEffort
+              : effortLevels.includes("medium")
+                ? "medium"
+                : clampedEffort
+          : store.reasoningEffort;
+        // Clear any cached router-picked openrouter/free model unless the
+        // user is staying on openrouter/free — otherwise the chip would
+        // keep showing a stale ":<chosen>" suffix from a previous model.
+        const stillOnOpenRouterFree =
+          selectedProvider?.providerType === "openrouter" &&
+          selectedExternal?.modelId === "openrouter/free";
+        setInferenceParams({
+          ...store.params,
+          checkpoint: value,
+        });
+        const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+          selectedProvider?.providerType,
+        );
+        const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
+        );
+        // See sibling useEffect above: Kimi's k2.x default to thinking
+        // enabled, so the Think pill comes up clicked. Search pill stays
+        // off by default; mutual exclusion flips them via the composer.
+        const isKimi = selectedProvider?.providerType === "kimi";
+        // Mirror of sibling useEffect: Anthropic and OpenAI get Search
+        // on-by-default since their server tools emit structured
+        // citations end-to-end. OpenRouter and Kimi stay off-by-default.
+        const searchOnByDefault =
+          supportsBuiltinWebSearch &&
+          (selectedProvider?.providerType === "anthropic" ||
+            selectedProvider?.providerType === "openai");
+        useChatRuntimeStore.setState({
+          activeGgufVariant: null,
+          ggufContextLength: null,
+          ggufMaxContextLength: null,
+          ggufNativeContextLength: null,
+          activeNativePathToken: null,
+          supportsReasoning: reasoningCaps.supportsReasoning,
+          reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+          reasoningStyle: reasoningCaps.reasoningStyle,
+          supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+          reasoningEffortLevels: effortLevels,
+          reasoningEffort: nextReasoningEffort,
+          reasoningEnabled: reasoningCaps.supportsReasoning
+            ? reasoningCaps.supportsReasoningOff
+              ? isKimi
+                ? true
+                : store.reasoningEnabled
+              : true
+            : store.reasoningEnabled,
+          supportsPreserveThinking: false,
+          // External models have no local tool runtime → supportsTools
+          // stays false. The two supportsBuiltin* flags carry the
+          // server-side capability info for each pill:
+          //   - Search → providerSupportsBuiltinWebSearch
+          //   - Code   → providerSupportsBuiltinCodeExecution
+          //              (Anthropic Claude 4.x only, today)
+          supportsTools: false,
+          supportsBuiltinWebSearch,
+          supportsBuiltinCodeExecution,
+          toolsEnabled: searchOnByDefault,
+          codeToolsEnabled: false,
+          ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
+        });
+        return;
+      }
+      // Local model picked → drop any cached openrouter/free chosen model.
+      useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -593,33 +1013,18 @@ export function ChatPage(): ReactElement {
         });
       })();
     },
-    [activeThreadId, modelsFromStore, selectModel, view],
+    [
+      activeThreadId,
+      externalProviders,
+      modelsFromStore,
+      selectModel,
+      setInferenceParams,
+      view,
+    ],
   );
   const handleEject = useCallback(() => {
     void ejectModel();
   }, [ejectModel]);
-  const handleNewThread = useCallback(() => {
-    // Skip if we are already on a fresh unsaved draft with no messages sent.
-    // Once the user sends a message, append() sets activeThreadId in the store,
-    // so we check the store to know whether the current draft has been sent.
-    if (
-      view.mode === "single" &&
-      !view.threadId &&
-      !useChatRuntimeStore.getState().activeThreadId
-    ) {
-      return;
-    }
-
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-    setView({ mode: "single", newThreadNonce: crypto.randomUUID() });
-  }, [view]);
-  const handleNewCompare = useCallback(() => {
-    setView({ mode: "compare", pairId: crypto.randomUUID() });
-    // Clear activeThreadId so compare panes do not inherit the single-chat
-    // thread ID as a fallback for session_id routing.
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-    useChatRuntimeStore.getState().setContextUsage(null);
-  }, []);
 
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
@@ -638,30 +1043,32 @@ export function ChatPage(): ReactElement {
     },
     [modelSelectorLocked],
   );
-  const openSettings = useCallback(() => setSettingsOpen(true), []);
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
-  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  const openSettings = useCallback(
+    () => setSettingsOpen(true),
+    [setSettingsOpen],
+  );
+  const closeSettings = useCallback(
+    () => setSettingsOpen(false),
+    [setSettingsOpen],
+  );
+  const { setPinned, isMobile } = useSidebar();
+  const openSidebar = useCallback(() => setPinned(true), [setPinned]);
 
   const enterCompare = useCallback(() => {
-    setViewBeforeCompare((prev) => prev ?? view);
-    setView({ mode: "compare", pairId: crypto.randomUUID() });
-    // Clear activeThreadId so compare panes do not inherit the single-chat
-    // thread ID as a fallback for session_id routing.
+    viewBeforeCompareRef.current = { ...search };
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
-  }, [view]);
+    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
+  }, [navigate, search]);
 
   const exitCompare = useCallback(() => {
-    if (!viewBeforeCompare) return;
-    setView(viewBeforeCompare);
-    setViewBeforeCompare(null);
+    const saved = viewBeforeCompareRef.current;
+    if (!saved) return;
+    viewBeforeCompareRef.current = null;
+    navigate({ to: "/chat", search: saved });
     // Restore context usage from the active thread's last assistant message.
-    // Use the thread ID from the saved view rather than the store, because
-    // activeThreadId may have been cleared on compare entry.
-    const store = useChatRuntimeStore.getState();
     const threadId =
-      ("threadId" in viewBeforeCompare ? viewBeforeCompare.threadId : null) ??
-      store.activeThreadId;
+      saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
       void db.messages
         .where("threadId")
@@ -669,18 +1076,14 @@ export function ChatPage(): ReactElement {
         .reverse()
         .first()
         .then((msg) => {
-          const saved = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = saved?.contextUsage as
-            | typeof store.contextUsage
-            | undefined;
-          if (usage) store.setContextUsage(usage);
+          const metadata = msg?.metadata as Record<string, unknown> | undefined;
+          const usage = metadata?.contextUsage as ReturnType<
+            typeof useChatRuntimeStore.getState
+          >["contextUsage"];
+          if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
         });
     }
-  }, [viewBeforeCompare]);
-
-  const handleThreadSelect = useCallback((nextView: ChatView) => {
-    setView(nextView);
-  }, []);
+  }, [navigate]);
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -688,8 +1091,50 @@ export function ChatPage(): ReactElement {
         id: model.id,
         name: model.name,
         description: model.description,
+        isGguf: model.isGguf,
       })),
     [modelsFromStore],
+  );
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      externalProviders.flatMap((provider) =>
+        provider.models.map((model) => {
+          // For OpenRouter's free router we know which underlying free
+          // model the gateway actually picked once a stream completes
+          // (chat-adapter latches `chunk.model` into the runtime store).
+          // Render the chip as `openrouter:<short-chosen>` — drop the
+          // redundant `/free` from the router id and the org prefix
+          // from the chosen id (e.g.
+          //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
+          //     -> openrouter:ring-2.6-1t-20260508:free
+          // ). The `:free` suffix on the chosen id already conveys
+          // 'free model', so the leading `/free` is noise.
+          let displayName = model;
+          if (
+            provider.providerType === "openrouter" &&
+            model === "openrouter/free" &&
+            lastOpenRouterChosenModel
+          ) {
+            const lastSlash = lastOpenRouterChosenModel.lastIndexOf("/");
+            const shortChosen =
+              lastSlash >= 0
+                ? lastOpenRouterChosenModel.slice(lastSlash + 1)
+                : lastOpenRouterChosenModel;
+            displayName = `openrouter:${shortChosen}`;
+          }
+          return {
+            id: buildExternalModelId(provider.id, model),
+            name: displayName,
+            providerId: provider.id,
+            providerName: provider.name,
+            providerType: provider.providerType,
+          };
+        }),
+      ),
+    [externalProviders, lastOpenRouterChosenModel],
   );
 
   const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
@@ -723,7 +1168,26 @@ export function ChatPage(): ReactElement {
         );
       })
       .catch(() => {});
-  }, []);
+  }, [navigate]);
+
+  const refreshModelLists = useCallback(
+    (deletedModel?: DeletedModelRef) => {
+      const { checkpoint } = useChatRuntimeStore.getState().params;
+      const activeGgufVariant =
+        useChatRuntimeStore.getState().activeGgufVariant;
+      if (
+        modelMatchesDeleted(
+          { id: checkpoint, ggufVariant: activeGgufVariant },
+          deletedModel,
+        )
+      ) {
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
+      void refresh();
+      refreshLocalModels();
+    },
+    [refresh, refreshLocalModels],
+  );
 
   const loraModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = lorasFromStore.map((lora) => ({
@@ -767,9 +1231,9 @@ export function ChatPage(): ReactElement {
           });
           await selectModelRef.current({ id: targetLora.id, isLora: true });
           if (canceled) return;
-          setView({ mode: "compare", pairId: crypto.randomUUID() });
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
+          navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
           return;
@@ -847,82 +1311,80 @@ export function ChatPage(): ReactElement {
   }, [modelSelectorLocked, tour.open]);
 
   return (
-    <div className="h-[calc(100dvh-4rem)] bg-background overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
-      <SidebarProvider
-        defaultOpen={true}
-        open={sidebarOpen}
-        onOpenChange={setSidebarOpen}
-        className="!min-h-0 h-full w-full max-w-7xl mx-auto px-2 sm:px-4"
-        style={
-          {
-            "--sidebar-width": "14rem",
-            "--sidebar-width-icon": "3rem",
-          } as CSSProperties
-        }
-      >
-        <InlineSidebar>
-          <ThreadSidebar
-            view={view}
-            onSelect={handleThreadSelect}
-            onNewThread={handleNewThread}
-            onNewCompare={handleNewCompare}
-            showCompare={canCompare}
-          />
-        </InlineSidebar>
-
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex h-11 shrink-0 items-center px-1.5 sm:px-2">
-            <div className="flex items-center gap-1">
-              <SidebarTrigger />
-              <TopBarActions
-                onNewThread={handleNewThread}
-                onNewCompare={handleNewCompare}
-                showCompare={canCompare}
-              />
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+        <NativeModelDropOverlay state={nativeModelDropState} />
+        <div
+          className={cn(
+            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
+            isMobile ? "pl-12 pr-1.5" : "pl-2",
+            view.mode === "compare" &&
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
+          )}
+        >
+          <div className="flex items-center gap-1">
+            {view.mode !== "compare" && (
               <ModelSelector
                 models={models}
                 loraModels={loraModels}
+                externalModels={externalModels}
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
+                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
+                onModelsChange={refreshModelLists}
+                deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
-                className="max-w-[62vw] sm:max-w-none"
+                showCloudIndicator={isExternalModel}
+                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
-              {loadingModel && loadToastDismissed ? (
-                <ModelLoadInlineStatus
-                  label={
-                    loadProgress?.phase === "starting"
-                      ? "Starting model…"
-                      : loadingModel.isDownloaded || loadingModel.isCachedLora
-                        ? "Loading model…"
-                        : "Downloading model…"
-                  }
-                  title={
-                    loadingModel.isDownloaded
-                      ? `Loading ${loadingModel.displayName} from cache.`
-                      : loadingModel.isCachedLora
-                        ? `Loading ${loadingModel.displayName} into memory.`
-                        : `Loading ${loadingModel.displayName}. This may include downloading.`
-                  }
-                  progressPercent={loadProgress?.percent}
-                  progressLabel={loadProgress?.label}
-                  onStop={cancelLoading}
-                />
-              ) : null}
-            </div>
-            {modelsError && (
-              <div className="ml-2 text-xs text-destructive truncate max-w-[28rem]">
-                {modelsError}
-              </div>
             )}
-            <div className="flex-1" />
+            {pendingNativeModelIntent && view.mode !== "compare" ? (
+              <NativeModelChip
+                intent={pendingNativeModelIntent}
+                nativeReadsDisabled={!nativePathLeasesSupported}
+                onLoad={(selection) => selectModel(selection)}
+              />
+            ) : null}
+            {loadingModel && loadToastDismissed ? (
+              <ModelLoadInlineStatus
+                label={
+                  loadProgress?.phase === "starting"
+                    ? "Starting model…"
+                    : loadingModel.isDownloaded || loadingModel.isCachedLora
+                      ? "Loading model…"
+                      : "Downloading model…"
+                }
+                title={
+                  loadingModel.isDownloaded
+                    ? `Loading ${loadingModel.displayName} from cache.`
+                    : loadingModel.isCachedLora
+                      ? `Loading ${loadingModel.displayName} into memory.`
+                      : `Loading ${loadingModel.displayName}. This may include downloading.`
+                }
+                progressPercent={loadProgress?.percent}
+                progressLabel={loadProgress?.label}
+                onStop={cancelLoading}
+              />
+            ) : null}
+            {!loadingModel && modelsError ? (
+              <div
+                className="relative top-0.5 pl-0.5"
+                role="status"
+                aria-live="polite"
+              >
+                <CopyableErrorChip message={modelsError} />
+              </div>
+            ) : null}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
             {view.mode === "single" && ggufContextLength && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
@@ -930,57 +1392,86 @@ export function ChatPage(): ReactElement {
                 cached={contextUsage.cachedTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
+                className="h-[34px]"
               />
             ) : null}
-            <button
-              type="button"
-              onClick={() => setSettingsOpen((o) => !o)}
-              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="Inference settings"
-              data-tour="chat-settings"
-            >
-              <HugeiconsIcon icon={Settings04Icon} className="size-5" />
-            </button>
+            {!settingsOpen && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(true)}
+                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Open configuration"
+                    data-tour="chat-settings"
+                  >
+                    <HugeiconsIcon
+                      icon={CustomizeIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
+                >
+                  Open configuration
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
-
-          {view.mode === "single" ? (
-            <SingleContent
-              key={view.threadId ?? "single"}
-              threadId={view.threadId}
-              newThreadNonce={view.newThreadNonce}
-            />
-          ) : (
-            <CompareContent
-              key={view.pairId}
-              pairId={view.pairId}
-              models={models}
-              loraModels={loraModels}
-              onFoldersChange={refreshLocalModels}
-            />
-          )}
         </div>
 
-        <ChatSettingsPanel
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-          params={inferenceParams}
-          onParamsChange={setInferenceParams}
-          autoTitle={autoTitle}
-          onAutoTitleChange={setAutoTitle}
-          onReloadModel={() => {
-            const state = useChatRuntimeStore.getState();
-            if (state.params.checkpoint) {
-              selectModel({
-                id: state.params.checkpoint,
-                ggufVariant: state.activeGgufVariant ?? undefined,
-                forceReload: true,
-                isDownloaded: true,
-                loadingDescription: "Reloading with updated chat template.",
-              });
-            }
-          }}
-        />
-      </SidebarProvider>
+        {view.mode === "single" ? (
+          <SingleContent
+            key={view.threadId ?? "single"}
+            threadId={view.threadId}
+            newThreadNonce={view.newThreadNonce}
+          />
+        ) : (
+          <CompareContent
+            key={view.pairId}
+            pairId={view.pairId}
+            models={models}
+            loraModels={loraModels}
+            onFoldersChange={refreshLocalModels}
+            onModelsChange={refreshModelLists}
+            deleteDisabled={modelOperationInProgress}
+          />
+        )}
+      </div>
+
+      <ChatSettingsPanel
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        params={inferenceParams}
+        onParamsChange={setInferenceParams}
+        isExternalModel={isExternalModel}
+        providerCapabilities={activeProviderCapabilities}
+        activeExternalProvider={activeExternalProvider}
+        onExternalProviderChange={(updatedProvider) => {
+          setExternalProviders(
+            externalProviders.map((provider) =>
+              provider.id === updatedProvider.id ? updatedProvider : provider,
+            ),
+          );
+        }}
+        externalProviderType={activeExternalProviderType}
+        onReloadModel={() => {
+          const state = useChatRuntimeStore.getState();
+          if (state.params.checkpoint) {
+            selectModel({
+              id: state.params.checkpoint,
+              ggufVariant: state.activeGgufVariant ?? undefined,
+              forceReload: true,
+              isDownloaded: true,
+              loadingDescription: "Reloading with updated chat template.",
+            });
+          }
+        }}
+      />
     </div>
   );
 }

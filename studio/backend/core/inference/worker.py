@@ -648,6 +648,36 @@ def run_inference_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
+    # Offline auto-detect: skip 25s of hf_hub_download retries per file
+    # if DNS is dead; cached files resolve instantly under HF_HUB_OFFLINE=1.
+    # Scope is this subprocess only -- orchestrator spawns a fresh worker
+    # per load (see core/inference/orchestrator.py), so the env cannot
+    # persist across loads.
+    if "HF_HUB_OFFLINE" not in os.environ:
+        import socket as _socket
+        import threading as _threading
+
+        # Probe on a daemon thread so concurrent sockets in the parent
+        # interpreter are not affected by socket.setdefaulttimeout.
+        _result: list = [None]
+
+        def _probe() -> None:
+            try:
+                _socket.gethostbyname("huggingface.co")
+                _result[0] = False
+            except Exception:
+                _result[0] = True
+
+        _t = _threading.Thread(target = _probe, daemon = True)
+        _t.start()
+        _t.join(2.0)
+        if _result[0] is None or _result[0] is True:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            logger.warning(
+                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker."
+            )
+
     import warnings
     from loggers.config import LogConfig
 
@@ -662,6 +692,98 @@ def run_inference_process(
     apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     model_name = config["model_name"]
+
+    # ── 0. MLX fast-path — skip torch/transformers entirely ──
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
+        try:
+            _activate_transformers_version(model_name)
+        except Exception:
+            pass
+        try:
+            from core.inference.mlx_inference import MLXInferenceBackend
+
+            backend = MLXInferenceBackend()
+            _send_response(
+                resp_queue,
+                {"type": "status", "message": "Loading model...", "ts": time.time()},
+            )
+            _handle_load(backend, config, resp_queue)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"MLX inference init failed: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                },
+            )
+            return
+
+        # Enter same command loop as GPU path
+        logger.info("MLX inference subprocess ready, entering command loop")
+        while True:
+            try:
+                cmd = cmd_queue.get(timeout = 1.0)
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+            if cmd is None:
+                continue
+            cmd_type = cmd.get("type", "")
+            try:
+                if cmd_type == "generate":
+                    cancel_event.clear()
+                    _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "load":
+                    if backend.active_model_name:
+                        backend.unload_model(backend.active_model_name)
+                    _handle_load(backend, cmd, resp_queue)
+                elif cmd_type == "unload":
+                    _handle_unload(backend, cmd, resp_queue)
+                elif cmd_type == "cancel":
+                    cancel_event.set()
+                elif cmd_type == "reset":
+                    cancel_event.set()
+                    backend.reset_generation_state()
+                    _send_response(resp_queue, {"type": "reset_ack", "ts": time.time()})
+                elif cmd_type == "status":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "status_response",
+                            "active_model": backend.active_model_name,
+                            "models": {
+                                k: {kk: vv for kk, vv in v.items() if kk != "model"}
+                                for k, v in backend.models.items()
+                            },
+                            "loading": list(backend.loading_models),
+                            "ts": time.time(),
+                        },
+                    )
+                elif cmd_type == "shutdown":
+                    return
+            except Exception as exc:
+                logger.error("MLX command error (%s): %s", cmd_type, exc)
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gen_error" if cmd_type == "generate" else "error",
+                        "request_id": cmd.get("request_id"),
+                        "error": str(exc),
+                        "stack": traceback.format_exc(limit = 20),
+                        "ts": time.time(),
+                    },
+                )
+        return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:

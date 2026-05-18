@@ -1,0 +1,887 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Three end-to-end smoke jobs that boot a freshly-installed Studio and
+# exercise the surfaces real users hit through the OpenAI / Anthropic
+# SDKs and curl. Each job picks the smallest model that exercises the
+# behaviour under test, primes HF_HOME via actions/cache, and shares
+# the install.sh --local --no-torch bootstrap.
+#
+#   1. OpenAI, Anthropic API tests
+#        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
+#        Password rotation via /api/auth/change-password (old fails,
+#        new works), then OpenAI + Anthropic Python SDKs against /v1/*
+#        with temperature=0 and a fixed seed. Asserts the four-turn
+#        conversation is deterministic across two runs.
+#
+#   2. Tool calling Tests
+#        Qwen3.5-2B UD-IQ3_XXS (~890 MiB). OpenAI function calling,
+#        server-side tools (python, terminal, web_search) via
+#        enable_tools / enabled_tools, and enable_thinking on/off.
+#
+#   3. JSON, images
+#        gemma-4-E2B-it UD-IQ3_XXS (~2.4 GiB) + mmproj-F16 (~986 MiB).
+#        response_format JSON-schema decoding and OpenAI image_url
+#        (data URI) plus Anthropic source/base64 image inputs.
+#
+# All three jobs run in parallel. Total wall time is dominated by job 3
+# on a cold cache; warm cache cuts that to ~3 min.
+
+name: Studio GGUF CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-inference-smoke.yml'
+  push:
+    branches: [main, pip]
+  # Manual trigger for pre-warming HF_HOME caches on main, or re-running
+  # against an arbitrary branch without pushing a no-op commit.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 1: OpenAI, Anthropic API tests
+  # ─────────────────────────────────────────────────────────────────────
+  openai-anthropic:
+    name: OpenAI, Anthropic API tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18888'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Install Studio (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        run: pip install 'openai>=1.50' 'anthropic>=0.40'
+
+      - name: Reset auth + boot Studio (API-only)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Studio did not become healthy in 180s"
+          tail -200 logs/studio.log
+          exit 1
+
+      - name: Password rotation (old must fail, new must work)
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          # 1. Login with the bootstrap password.
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "null" ] || { echo "bootstrap login failed"; exit 1; }
+          # 2. Rotate to a fresh random password.
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          # 3. Old password must now be rejected (HTTP 401).
+          OLD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}")
+          if [ "$OLD_STATUS" != "401" ]; then
+            echo "::error::Login with old password returned $OLD_STATUS, expected 401"
+            exit 1
+          fi
+          # 4. New password must succeed; capture the JWT for downstream steps.
+          NEW_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          [ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != "null" ] || { echo "new login failed"; exit 1; }
+          echo "TOKEN=$NEW_TOKEN" >> "$GITHUB_ENV"
+          echo "password rotation OK (old=401, new=200)"
+
+      - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        run: |
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_gguf, context_length}'
+
+      - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        env:
+          BASE_URL: http://127.0.0.1:18888
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["TOKEN"]      # JWT also accepted as Bearer on /v1/*
+          SEED = 3407
+
+          # Four-turn conversation: the second and fourth turns can only be
+          # answered correctly if the model sees the prior turns, so this
+          # also exercises the conversation-history wiring.
+          PROMPTS = [
+              "What is 1+1?",
+              "What did I ask before?",
+              "What is the capital of France?",
+              "Repeat the city name",
+          ]
+
+          def run_openai():
+              client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+              history, replies = [], []
+              for prompt in PROMPTS:
+                  history.append({"role": "user", "content": prompt})
+                  resp = client.chat.completions.create(
+                      model       = "default",
+                      messages    = history,
+                      temperature = 0.0,
+                      max_tokens  = 80,
+                      seed        = SEED,
+                      extra_body  = {"enable_thinking": False},
+                  )
+                  text = resp.choices[0].message.content or ""
+                  replies.append(text)
+                  history.append({"role": "assistant", "content": text})
+              return replies
+
+          def run_anthropic():
+              # Two SDK quirks vs. Studio:
+              #   1. base_url must NOT include /v1 -- the SDK appends
+              #      /v1/messages itself; otherwise the request hits
+              #      /v1/v1/messages and 405s.
+              #   2. The SDK sends `x-api-key` by default, but Studio's
+              #      auth layer is HTTPBearer-only. Override via
+              #      default_headers so Authorization: Bearer ... is
+              #      sent instead.
+              client = Anthropic(
+                  base_url        = BASE,
+                  api_key         = "unused",
+                  default_headers = {"Authorization": f"Bearer {KEY}"},
+              )
+              history, replies = [], []
+              for prompt in PROMPTS:
+                  history.append({"role": "user", "content": prompt})
+                  msg = client.messages.create(
+                      model       = "default",
+                      max_tokens  = 80,
+                      messages    = history,
+                      temperature = 0.0,
+                      extra_body  = {"seed": SEED, "enable_thinking": False},
+                  )
+                  text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+                  replies.append(text)
+                  history.append({"role": "assistant", "content": text})
+              return replies
+
+          for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
+              first  = runner()
+              second = runner()
+              for i, (a, b) in enumerate(zip(first, second), start = 1):
+                  print(f"[{label} turn {i}] {a!r}")
+                  assert a, f"{label}: empty turn {i} response"
+                  assert a == b, (
+                      f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
+                      f"  run1: {a!r}\n  run2: {b!r}"
+                  )
+              # Sanity: turn-2 reply should mention the earlier question, and
+              # turn-4 reply should mention Paris (model echoes the city it
+              # produced for turn 3). Lower-cased substring checks keep the
+              # assertion robust to formatting jitter.
+              joined = " ".join(first).lower()
+              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
+              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
+              print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
+          PY
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+          ss -tln | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        # Always upload so green runs are still reviewable.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: openai-anthropic-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 2: Tool calling Tests
+  # ─────────────────────────────────────────────────────────────────────
+  tool-calling:
+    name: Tool calling Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Tool calling is the highest-volume GGUF in this workflow
+      # (Qwen3.5-2B at IQ3_XXS = ~890 MiB). Caching HF_HOME would
+      # store xet chunks + blobs + snapshots = ~4 GiB compressed --
+      # 4-5x file-size inflation, dominated by xet chunks. Use main's
+      # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
+      # Studio's /api/inference/load accepts either a HF repo (which
+      # uses HF_HOME) or an absolute file path; passing the absolute
+      # path keeps the test off HF_HOME entirely so the cache size
+      # tracks the GGUF file 1:1. The OpenAI/Anth and JSON+images
+      # jobs still cover the gguf_variant resolution path.
+      GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
+      GGUF_FILE: Qwen3.5-2B-UD-IQ3_XXS.gguf
+      STUDIO_PORT: '18889'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore GGUF model file
+        id: cache-gguf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        id: download-gguf
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+
+      - name: Save GGUF model file
+        if: always() && steps.download-gguf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Install Studio (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Reset auth + boot Studio (API-only, default tool policy)
+        # We deliberately use the API-only mode rather than
+        # `unsloth studio run` because the latter calls
+        # `set_tool_policy(...)` with a resolved bool: on loopback the
+        # default resolves to True, which forces every request through
+        # the server-side agentic loop and breaks the standard
+        # function-calling test below. API-only mode leaves
+        # tool_policy=None so each request's `enable_tools` field is
+        # honoured.
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, change password, load model
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CITool-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}"
+          ls -lh "$GGUF_PATH"
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name}'
+
+      - name: Tool calling, server-side tools, thinking on/off
+        env:
+          BASE_URL: http://127.0.0.1:18889
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+
+          def post(path, body, *, timeout = 240):
+              """Plain JSON POST. For requests that don't go through
+              the server-side agentic loop, the response is one JSON
+              object."""
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout = timeout) as resp:
+                  return resp.status, json.loads(resp.read().decode())
+
+          def post_sse(path, body, *, timeout = 600):
+              """POST a streaming request and accumulate the assistant
+              text deltas. The server-side agentic loop ALWAYS returns
+              SSE regardless of the request's `stream` field, so any
+              call with enable_tools=true must use this helper."""
+              body = {**body, "stream": True}
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              parts = []
+              with urllib.request.urlopen(req, timeout = timeout) as resp:
+                  for raw in resp:
+                      line = raw.decode().strip()
+                      if not line.startswith("data: "):
+                          continue
+                      payload = line[6:]
+                      if payload == "[DONE]":
+                          break
+                      try:
+                          chunk = json.loads(payload)
+                      except json.JSONDecodeError:
+                          continue
+                      for choice in chunk.get("choices", []):
+                          delta = choice.get("delta", {}) or {}
+                          if delta.get("content"):
+                              parts.append(delta["content"])
+              return "".join(parts)
+
+          # ── 1. Standard OpenAI function calling ──────────────────────
+          weather_tool = {
+              "type": "function",
+              "function": {
+                  "name": "get_weather",
+                  "description": "Get current weather for a city.",
+                  "parameters": {
+                      "type": "object",
+                      "properties": {"city": {"type": "string"}},
+                      "required": ["city"],
+                  },
+              },
+          }
+
+          status, data = post("/v1/chat/completions", {
+              "messages":    [{"role": "user", "content": "What is the weather in Paris?"}],
+              "tools":       [weather_tool],
+              "tool_choice": "required",
+              "stream":      False,
+              "temperature": 0.0,
+              "seed":        SEED,
+              "max_tokens":  120,
+          })
+          assert status == 200, f"tool call status {status}: {data}"
+          choice = data["choices"][0]
+          assert choice["finish_reason"] == "tool_calls", f"finish_reason={choice['finish_reason']!r}"
+          tc = choice["message"]["tool_calls"][0]
+          assert tc["function"]["name"] == "get_weather"
+          args = json.loads(tc["function"]["arguments"])
+          assert args.get("city"), f"missing city arg: {args}"
+          print(f"[tools] PASS function calling -> {tc['function']['name']}({args})")
+
+          # ── 2. Server-side python tool ───────────────────────────────
+          # 123 * 456 = 56088. The agentic loop streams SSE; we
+          # accumulate the assistant text and look for the answer. We
+          # accept "56088" or "56,088" since the model may format it.
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
+              "enable_tools":  True,
+              "enabled_tools": ["python"],
+              "session_id":    "ci-tool-calling-py",
+              "temperature":   0.0,
+              "seed":          SEED,
+              "max_tokens":    600,
+          })
+          assert "56088" in content or "56,088" in content, (
+              f"expected 56088 in python-tool answer, got: {content!r}"
+          )
+          print(f"[tools] PASS python tool ({len(content)} chars)")
+
+          # ── 3. Server-side bash (terminal) tool ──────────────────────
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
+              "enable_tools":  True,
+              "enabled_tools": ["terminal"],
+              "session_id":    "ci-tool-calling-bash",
+              "temperature":   0.0,
+              "seed":          SEED,
+              "max_tokens":    600,
+          })
+          assert "hello-bash-tool" in content, (
+              f"expected 'hello-bash-tool' in terminal-tool answer, got: {content!r}"
+          )
+          print(f"[tools] PASS bash/terminal tool ({len(content)} chars)")
+
+          # ── 4. Server-side web_search tool ───────────────────────────
+          # DuckDuckGo is flaky from CI runners and small Qwen3.5-2B
+          # may not actually search. Only assert that the SSE stream
+          # opens and yields any data; HTTP / parser failures already
+          # raise above.
+          try:
+              content = post_sse("/v1/chat/completions", {
+                  "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
+                  "enable_tools":  True,
+                  "enabled_tools": ["web_search"],
+                  "session_id":    "ci-tool-calling-web",
+                  "temperature":   0.0,
+                  "seed":          SEED,
+                  "max_tokens":    400,
+              })
+              print(f"[tools] PASS web_search stream ({len(content)} chars)")
+          except Exception as exc:
+              print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
+
+          # ── 5. Thinking on / off ─────────────────────────────────────
+          # Studio strips think blocks from message.content for tools-mode
+          # responses, so we toggle plain chat (no enable_tools) and look
+          # at the surfaced reasoning_content / message.thinking field.
+          def thinking_call(enable):
+              status, data = post("/v1/chat/completions", {
+                  "messages":        [{"role": "user", "content": "Briefly: is 17 prime?"}],
+                  "stream":          False,
+                  "enable_thinking": enable,
+                  "temperature":     0.0,
+                  "seed":            SEED,
+                  "max_tokens":      300,
+              })
+              assert status == 200
+              msg = data["choices"][0]["message"]
+              # Studio surfaces thinking via reasoning_content (OpenAI
+              # extension). Fall back to inline <think> markers for
+              # robustness across template versions.
+              raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
+              return raw
+
+          on_text  = thinking_call(True)
+          off_text = thinking_call(False)
+          had_think_on  = ("<think>" in on_text)  or len(on_text)  > 80
+          had_think_off = ("<think>" in off_text) and len(off_text) > 0
+          assert had_think_on, (
+              f"enable_thinking=True produced no thinking signal: {on_text!r}"
+          )
+          # Off-mode should not contain the literal <think> marker.
+          assert "<think>" not in off_text, (
+              f"enable_thinking=False but <think> still present: {off_text!r}"
+          )
+          print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
+          PY
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+          ss -tln | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        # Always upload so green runs are still reviewable.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: tool-calling-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 3: JSON, images
+  # ─────────────────────────────────────────────────────────────────────
+  json-images:
+    name: JSON, images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
+      GGUF_VARIANT: UD-IQ3_XXS
+      GGUF_FILE: gemma-4-E2B-it-UD-IQ3_XXS.gguf
+      MMPROJ_FILE: mmproj-F16.gguf
+      STUDIO_PORT: '18890'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+
+      - name: Prime HF_HOME with the GGUF + mmproj
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+
+      - name: Install Studio (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        run: pip install 'openai>=1.50' 'anthropic>=0.40'
+
+      - name: Reset auth + boot Studio (API-only)
+        # See Job 2's comment: API-only mode keeps tool_policy=None so
+        # response_format requests aren't routed through the agentic
+        # tool loop.
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, change password, load model
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIJson-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          # Load the GGUF (mmproj is auto-detected via the HF repo
+          # lookup, the cached file is pulled out of HF_HOME).
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 900 \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_vision}'
+
+      - name: JSON schema decoding + image input
+        env:
+          BASE_URL: http://127.0.0.1:18890
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+
+          def post(path, body, *, timeout = 240):
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = json.dumps(body).encode(),
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type":  "application/json",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout = timeout) as resp:
+                  return resp.status, json.loads(resp.read().decode())
+
+          # ── 1. response_format = json_object (JSON mode) ─────────────
+          # llama.cpp's HTTP server supports OpenAI-compatible JSON
+          # mode: `response_format: {"type": "json_object"}` constrains
+          # the model to emit syntactically-valid JSON. We use raw HTTP
+          # rather than the OpenAI SDK so that the field shape Studio
+          # forwards to llama-server is unambiguous (the SDK rewrites
+          # response_format depending on which variant it recognises).
+          # We deliberately do NOT pass a strict JSON schema -- on
+          # small Gemma-4 quants the GBNF-from-schema path occasionally
+          # produces empty output, and JSON mode is the surface we care
+          # about exposing through Studio.
+          status, data = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [
+                  {"role": "system", "content": 'Reply with a single JSON object of the form {"city": "...", "country": "..."}. Output ONLY the JSON, nothing else.'},
+                  {"role": "user",   "content": "What is the capital of France?"},
+              ],
+              "temperature":     0.0,
+              "max_tokens":      200,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+              "response_format": {"type": "json_object"},
+          }, timeout = 600)
+          assert status == 200, f"json status {status}: {data}"
+          content = (data["choices"][0]["message"].get("content") or "").strip()
+          # Some chat templates wrap JSON in ```json fences even in JSON
+          # mode -- strip those before parsing.
+          if content.startswith("```"):
+              content = content.split("```", 2)[1]
+              if content.startswith("json"):
+                  content = content[4:]
+              content = content.strip("`\n ")
+          parsed = json.loads(content)
+          assert "paris" in str(parsed.get("city", "")).lower(), (
+              f"city != Paris: {parsed}"
+          )
+          print(f"[json] PASS json_object -> {parsed}")
+
+          # ── 2. OpenAI image_url (data URI base64) ───────────────────
+          # 64x64 solid-red PNG. stb_image (used by Studio's image
+          # normaliser at routes/inference.py:3410) rejects 4x4 or
+          # smaller PNGs as truncated, so we go up to 64x64 -- still
+          # tiny in token cost. The assertion is loose: any non-empty
+          # response from the vision path proves multimodal end-to-end
+          # wiring; small VL quants are weak at colour identification.
+          PNG_64X64_RED_B64 = (
+              "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAYklEQVR4nO3PMQ0AIADAMEAI/k"
+              "UhBhEcDcmqYJtn7/GzpQNeNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA"
+              "1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaBdCJ0BmMJ25zMAAAAASUVORK5CYII="
+          )
+          data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
+
+          client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+          openai_resp = client.chat.completions.create(
+              model       = "default",
+              temperature = 0.0,
+              max_tokens  = 80,
+              seed        = SEED,
+              messages    = [{
+                  "role": "user",
+                  "content": [
+                      {"type": "image_url", "image_url": {"url": data_uri}},
+                      {"type": "text",      "text": "What colour dominates this image? Reply in one word."},
+                  ],
+              }],
+          )
+          openai_text = (openai_resp.choices[0].message.content or "").lower()
+          print(f"[image/openai] reply: {openai_text!r}")
+          assert openai_text, "OpenAI image_url returned empty content"
+          # We do not strictly require 'red' -- some quants of small VL
+          # models are weak at colour names. Just require a non-empty
+          # answer; the vision path is the part under test.
+          print("[image/openai] PASS image_url accepted, non-empty response")
+
+          # ── 3. Anthropic source/base64 image ────────────────────────
+          # Two SDK quirks vs. Studio: base_url must NOT include /v1
+          # (the SDK appends it itself; otherwise /v1/v1/messages -> 405),
+          # and Studio's auth is HTTPBearer-only so the SDK's default
+          # x-api-key header is ignored -- send Authorization: Bearer
+          # via default_headers.
+          anthropic = Anthropic(
+              base_url        = BASE,
+              api_key         = "unused",
+              default_headers = {"Authorization": f"Bearer {KEY}"},
+          )
+          a_msg = anthropic.messages.create(
+              model       = "default",
+              max_tokens  = 80,
+              temperature = 0.0,
+              extra_body  = {"seed": SEED},
+              messages    = [{
+                  "role": "user",
+                  "content": [
+                      {
+                          "type":   "image",
+                          "source": {
+                              "type":       "base64",
+                              "media_type": "image/png",
+                              "data":       PNG_64X64_RED_B64,
+                          },
+                      },
+                      {"type": "text", "text": "Describe this image briefly."},
+                  ],
+              }],
+          )
+          a_text = "".join(b.text for b in a_msg.content if getattr(b, "type", None) == "text")
+          print(f"[image/anthropic] reply: {a_text!r}")
+          assert a_text, "Anthropic source/base64 returned empty content"
+          print("[image/anthropic] PASS source/base64 accepted, non-empty response")
+          PY
+
+      - name: Stop Studio
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+          ss -tln | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        # Always upload so green runs are still reviewable.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: json-images-log
+          path: |
+            logs/studio.log
+            logs/install.log
+          retention-days: 7

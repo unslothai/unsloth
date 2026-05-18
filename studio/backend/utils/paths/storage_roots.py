@@ -5,17 +5,59 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 
 
+def _infer_studio_home_from_venv() -> Path | None:
+    """Return parent dir of sys.prefix as STUDIO_HOME if running from an
+    installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
+    or bin shim) so a developer venv named unsloth_studio is not misidentified.
+    """
+    try:
+        prefix = Path(sys.prefix).resolve()
+    except (OSError, ValueError):
+        return None
+    if prefix.name != "unsloth_studio":
+        return None
+    candidate = prefix.parent
+    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
+    try:
+        has_sentinel = (candidate / "share" / "studio.conf").is_file() or (
+            candidate / "bin" / shim_name
+        ).is_file()
+    except OSError:
+        return None
+    if has_sentinel:
+        return candidate
+    return None
+
+
 def studio_root() -> Path:
+    """Studio install root.
+
+    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
+    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins when
+    both are set (the more specific signal beats the generic alias).
+    """
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve()
+        except (OSError, ValueError):
+            return Path(override).expanduser()
+    inferred = _infer_studio_home_from_venv()
+    if inferred is not None:
+        return inferred
     return Path.home() / ".unsloth" / "studio"
 
 
 def cache_root() -> Path:
     """Central cache directory for all studio downloads (models, datasets, etc.)."""
-    return Path.home() / ".unsloth" / "studio" / "cache"
+    return studio_root() / "cache"
 
 
 def assets_root() -> Path:
@@ -130,6 +172,51 @@ def lmstudio_model_dirs() -> list[Path]:
     return dirs
 
 
+def well_known_model_dirs() -> list[Path]:
+    """Return directories commonly used by other local LLM tools.
+
+    Used by the folder browser to offer quick-pick chips. Returns only
+    paths that exist on disk, so the UI never shows dead chips. Order
+    reflects a rough "likelihood the user has models here" -- LM Studio
+    and Ollama first, then the generic fallbacks.
+    """
+    candidates: list[Path] = []
+
+    # LM Studio (reuses the logic above, including settings.json override)
+    candidates.extend(lmstudio_model_dirs())
+
+    # Ollama -- both the user-level and common system-wide install paths
+    # (https://github.com/ollama/ollama/issues/733).
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        candidates.append(Path(ollama_env).expanduser())
+    candidates.append(Path.home() / ".ollama" / "models")
+    candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+
+    # HF hub cache root (separate from the explicit HF cache chip)
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    # Generic "my models" spots users tend to drop things into
+    for name in ("models", "Models"):
+        candidates.append(Path.home() / name)
+
+    # Deduplicate while preserving order; keep only extant dirs
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        try:
+            resolved = str(p.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        if Path(resolved).is_dir():
+            seen.add(resolved)
+            out.append(Path(resolved))
+    return out
+
+
 def _setup_cache_env() -> None:
     """Set cache environment variables for HuggingFace, uv, and vLLM.
 
@@ -189,21 +276,52 @@ def _clean_relative_path(
     return Path(*parts) if parts else Path()
 
 
+def _assert_contained(resolved: Path, root: Path) -> None:
+    """Raise ValueError if ``resolved`` realpaths outside ``root``."""
+    try:
+        resolved_real = Path(os.path.realpath(resolved))
+        root_real = Path(os.path.realpath(root))
+    except OSError as exc:
+        raise ValueError(f"path resolution failed: {exc}") from exc
+    try:
+        resolved_real.relative_to(root_real)
+    except ValueError as exc:
+        raise ValueError(
+            f"path escapes root: {resolved!s} -> {resolved_real!s} "
+            f"is not under {root_real!s}"
+        ) from exc
+
+
 def resolve_under_root(
     path_value: str | None,
     *,
     root: Path,
     strip_prefixes: tuple[str, ...] = (),
 ) -> Path:
+    """Resolve ``path_value`` and assert the result is under ``root``.
+
+    Absolutes are accepted only if already contained (so internal pre-resolved
+    paths re-enter idempotently); user-facing schemas reject absolutes upstream.
+    """
     if not path_value or not str(path_value).strip():
         return root
 
-    path = Path(str(path_value).strip()).expanduser()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+
     if path.is_absolute():
+        _assert_contained(path, root)
         return path
 
-    cleaned = _clean_relative_path(str(path), strip_prefixes = strip_prefixes)
-    return root / cleaned
+    cleaned = _clean_relative_path(raw, strip_prefixes = strip_prefixes)
+    candidate = root / cleaned
+    _assert_contained(candidate, root)
+    return candidate
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
@@ -231,9 +349,22 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_dataset_path(path_value: str) -> Path:
-    path = Path(path_value).expanduser()
+    raw = str(path_value or "").strip()
+    if "\x00" in raw:
+        raise ValueError("dataset path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"dataset path may not contain '..' segments: {raw!r}")
     if path.is_absolute():
-        return path
+        for root_fn in (datasets_root, dataset_uploads_root, recipe_datasets_root):
+            try:
+                _assert_contained(path, root_fn())
+                return path
+            except ValueError:
+                continue
+        raise ValueError(
+            f"dataset path must be relative or under a dataset root: {raw!r}"
+        )
 
     parts = [part for part in Path(path_value).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:
