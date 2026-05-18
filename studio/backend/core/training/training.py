@@ -41,16 +41,15 @@ from utils.paths import outputs_root
 logger = get_logger(__name__)
 
 
-def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
-    """Remove only in-flight ``tmp-checkpoint-*`` partials after a cancel.
+_HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
-    HF Trainer writes ``tmp-checkpoint-<step>/`` and atomically renames to
-    ``checkpoint-<step>/`` once the save completes. On Cancel the partial
-    can be left behind; that is the 67 MB residue PR #5375's hardening
-    pass set out to remove. Completed ``checkpoint-<int>/`` directories
-    are user-owned artefacts the user expects to resume from, so they
-    stay. Symlinks are skipped so containment cannot be bypassed via a
-    symlinked output_dir.
+
+def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+    """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
+
+    Completed ``checkpoint-<int>/`` dirs and any non-numeric-suffix tmp dir
+    are user-owned and survive. Symlinked output_dir / children are skipped
+    so containment cannot be bypassed.
     """
     out = Path(output_dir)
     if not out.exists() or not out.is_dir() or out.is_symlink():
@@ -63,7 +62,6 @@ def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
     try:
         out_real.relative_to(out_root_real)
     except ValueError:
-        # Refuse to delete anything outside the configured outputs root.
         logger.warning(
             "Skipping checkpoint cleanup - %s is not under outputs_root %s",
             out_real,
@@ -71,14 +69,10 @@ def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
         )
         return
     removed = 0
-    # HF Trainer's partials are `tmp-checkpoint-<step>` with an integer step.
-    # Restrict to that exact shape so a user `tmp-checkpoint-final`, etc.,
-    # is not deleted by the cancel cleanup.
-    _hf_tmp = re.compile(r"^tmp-checkpoint-\d+$")
     for entry in out.iterdir():
         if not entry.is_dir() or entry.is_symlink():
             continue
-        if not _hf_tmp.match(entry.name):
+        if not _HF_TMP_CHECKPOINT_RE.match(entry.name):
             continue
         try:
             shutil.rmtree(entry, ignore_errors = False)
@@ -387,8 +381,6 @@ class TrainingBackend:
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
 
-        # Drop in-flight tmp-checkpoint-<step> partials on explicit cancel.
-        # Completed checkpoint-<step>/ dirs stay so the user can resume.
         if cancelled and output_dir:
             try:
                 _cleanup_cancelled_checkpoints(output_dir)

@@ -393,16 +393,12 @@ ContentPart = Annotated[
 
 
 class ChatMessage(BaseModel):
-    """
-    A single message in the conversation.
+    """Single message in a chat conversation.
 
-    ``content`` may be a plain string (text-only) or a list of
-    content parts for multimodal messages (OpenAI vision format).
-    Assistant messages that only contain tool calls may set ``content``
-    to ``None`` with ``tool_calls`` populated. ``role="tool"`` messages
-    carry the result of a client-executed tool call; ``tool_call_id`` is
-    accepted as missing here and resolved at the ``ChatCompletionRequest``
-    layer by walking back to the preceding assistant turn.
+    ``content`` is a string or a list of multimodal content parts. Assistant
+    messages with only ``tool_calls`` populated may set ``content=None``.
+    Missing ``tool_call_id`` on ``role="tool"`` is resolved at the
+    ``ChatCompletionRequest`` layer by walking back to the preceding assistant.
     """
 
     role: Literal["system", "user", "assistant", "tool"] = Field(
@@ -434,15 +430,11 @@ class ChatMessage(BaseModel):
             raise ValueError('"name" is only valid on role="tool" messages.')
 
         if self.role == "tool":
-            # tool_call_id may be missing here; ChatCompletionRequest fills it
-            # from the prior assistant turn (with a random fallback) once it
-            # can see the whole conversation. Per-message we only enforce
-            # non-empty content.
+            # tool_call_id resolution happens at ChatCompletionRequest scope.
             if not self.content:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":
-            # Tolerate the post-Stop empty-assistant sentinel by
-            # collapsing content="" to None.
+            # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
                 self.content = None
         else:  # "user" | "system"
@@ -618,20 +610,15 @@ class ChatCompletionRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":
-        """Fill in tool_call_id by walking back to the preceding assistant turn.
+        """Fill missing tool_call_id by walking back to the preceding assistant.
 
-        OpenAI / Anthropic passthrough require tool result ids to match the
-        assistant's tool_calls[].id; a random hex stamp breaks that pairing.
-        For each role="tool" message with no tool_call_id, find the most
-        recent earlier role="assistant" message that has tool_calls, prefer
-        one whose function.name matches this message's name, otherwise take
-        the first unconsumed tool_call. Fall back to a synthesised id only
-        when no candidate assistant turn exists.
+        OpenAI / Anthropic passthrough require the result id to match the
+        assistant's tool_calls[].id. Prefer function.name match, else first
+        unconsumed tool_call; synth random id only if no candidate exists.
+        Crossing a user turn breaks the lookup.
         """
-        # Track which assistant tool_calls have already been claimed by a
-        # tool result so we don't reuse one id for two results. Pre-mark
-        # explicit `tool_call_id`s first; otherwise a sibling result with a
-        # missing id would walk back and pick the same call again.
+        # Pre-mark explicit ids first so a sibling missing-id result does not
+        # steal one already claimed by name.
         consumed: set[tuple[int, int]] = set()
 
         def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
@@ -658,9 +645,8 @@ class ChatCompletionRequest(BaseModel):
                 prev = self.messages[asst_idx]
                 if prev.role != "assistant" or not prev.tool_calls:
                     if prev.role == "user":
-                        break  # crossing a user turn invalidates the lookup
+                        break
                     continue
-                # Prefer a tool_call whose function name matches.
                 name_match = None
                 fallback = None
                 for tc_idx, tc in enumerate(prev.tool_calls):
