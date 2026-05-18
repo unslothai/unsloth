@@ -1737,6 +1737,7 @@ async def _proxy_to_external_provider(
             enabled_tools = payload.enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
+            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             stream = payload.stream,
         )
         try:
@@ -1958,8 +1959,11 @@ async def openai_chat_completions(
     Supports multimodal messages: ``content`` may be a plain string or a
     list of content parts (``text`` / ``image_url``).
 
-    Streaming (default):  returns SSE chunks matching OpenAI's format.
-    Non-streaming:        returns a single ChatCompletion JSON object.
+    Non-streaming (default): returns a single ChatCompletion JSON object.
+    Streaming:               returns SSE chunks matching OpenAI's format.
+
+    ``stream`` defaults to ``false`` to match OpenAI's spec; clients opt
+    into SSE by sending ``stream: true``.
 
     Automatically routes to the correct backend:
     - GGUF models → llama-server via LlamaCppBackend
@@ -2183,6 +2187,9 @@ async def openai_chat_completions(
 
         cancel_event = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
+        # parity). Naive curl / .NET / System.Text.Json clients omitting
+        # the field used to get SSE here and choke on deserialization (#5047).
         if payload.stream:
             return await _openai_passthrough_stream(
                 request,
