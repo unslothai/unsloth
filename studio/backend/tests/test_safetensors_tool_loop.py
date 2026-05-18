@@ -32,12 +32,16 @@ import threading
 import pytest
 
 from core.inference import safetensors_agentic
-from core.inference.safetensors_agentic import run_safetensors_tool_loop
+from core.inference.safetensors_agentic import (
+    _coerce_arguments,
+    run_safetensors_tool_loop,
+)
 from core.inference.tool_call_parser import (
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from utils.datasets import is_gpt_oss_model_name
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -207,7 +211,11 @@ def _make_loop(*, turns, exec_results = None, **kwargs):
     return run_safetensors_tool_loop(
         single_turn = _gen,
         messages = [{"role": "user", "content": "hi"}],
-        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        tools = [
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "function": {"name": "python"}},
+            {"type": "function", "function": {"name": "terminal"}},
+        ],
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
@@ -545,6 +553,149 @@ class TestChatTemplateHelper:
         tok = self._Tok(set())
         self.apply(tok, [])
         assert tok.call_count == 1
+
+
+# ────────────────────────────────────────────────────────────────────
+# Guardrails (allowlist, budget, streaming-leak, dedup, id offset,
+# auto_heal=False, canonical healed-arg key)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestGuardrails:
+    def test_disabled_tool_is_not_executed(self):
+        exec_fn = FakeExecuteTool([])
+        loop = run_safetensors_tool_loop(
+            single_turn = _fake_stream(
+                ['<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>']
+            ),
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
+            max_tool_iterations = 2,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        tool_ends = [e for e in events if e["type"] == "tool_end"]
+        assert tool_ends and "not enabled" in tool_ends[0]["result"].lower()
+
+    def test_empty_tools_list_does_not_enforce_allowlist(self):
+        exec_fn = FakeExecuteTool(["OK"])
+        loop = run_safetensors_tool_loop(
+            single_turn = _fake_stream(
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']
+            ),
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [],
+            execute_tool = exec_fn,
+            max_tool_iterations = 2,
+        )
+        _collect_events(loop)
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+
+    def test_max_iterations_zero_executes_no_tools(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>']
+            ],
+            exec_results = ["OK"],
+            max_tool_iterations = 0,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert events and events[-1] == {"type": "status", "text": ""}
+
+    def test_streaming_clips_before_tool_signal_no_leak(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "I will look this up. ",
+                    "Some more prose that's long enough to leave the buffer. ",
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>',
+                ],
+                ["all done"],
+            ],
+            exec_results = ["weather: sunny"],
+            max_tool_iterations = 2,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        for e in events:
+            if e["type"] == "content":
+                assert "<tool_call>" not in e["text"]
+                assert "web_search" not in e["text"]
+
+    def test_auto_heal_disabled_still_parses_valid_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ["done"],
+            ],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = False,
+            max_tool_iterations = 2,
+        )
+        _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+
+    def test_non_consecutive_duplicate_is_short_circuited(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                ["final"],
+            ],
+            exec_results = ["res-A", "res-B"],
+            max_tool_iterations = 4,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [
+            ("web_search", {"query": "A"}),
+            ("web_search", {"query": "B"}),
+        ]
+        tool_ends = [e for e in events if e["type"] == "tool_end"]
+        assert "already made this exact call" in tool_ends[-1]["result"]
+
+    def test_coerce_string_args_python_uses_code_key(self):
+        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {
+            "code": "print(1)"
+        }
+
+    def test_coerce_string_args_terminal_uses_command_key(self):
+        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {
+            "command": "ls -la"
+        }
+
+    def test_tool_call_ids_unique_across_loop_iterations(self):
+        loop, _exec = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
+                ["done"],
+            ],
+            exec_results = ["A", "B"],
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        ids = [e["tool_call_id"] for e in events if e["type"] == "tool_start"]
+        assert len(ids) == 2 and ids[0] != ids[1]
+
+
+# ────────────────────────────────────────────────────────────────────
+# Shared gpt-oss name detector
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestGptOssNameDetection:
+    def test_substring_match(self):
+        assert is_gpt_oss_model_name("unsloth/gpt-oss-20b") is True
+
+    def test_negative_known_non_oss_model(self):
+        assert is_gpt_oss_model_name("meta-llama/Llama-3.1-8B-Instruct") is False
+
+    def test_empty_or_none_returns_false(self):
+        assert is_gpt_oss_model_name("") is False
+        assert is_gpt_oss_model_name(None) is False
 
 
 if __name__ == "__main__":
