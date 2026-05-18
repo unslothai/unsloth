@@ -335,36 +335,55 @@ function Get-NvccMaxArch {
     return $null
 }
 
-# Detect driver's max CUDA version from nvidia-smi and return the highest
-# compatible PyTorch CUDA index tag (e.g. "cu128").
+# Pick the PyTorch CUDA index tag (e.g. "cu128") for the installed stack.
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
-# https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
-# capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
+# https://download.pytorch.org/whl/<tag>.
+#
+# Prefer the installed CUDA Toolkit version (already resolved into
+# $script:NvccPath by phase 1e and proven <= driver max). nvidia-smi's
+# "CUDA Version" line is only the driver's *max-supported* CUDA, which can
+# be a release ahead of the userland — picking cu130 off a "CUDA 13.0"
+# driver paired with a 12.9 toolkit ships a torch that silently falls back
+# to CPU. Fall back to the driver report only when no toolkit is resolved
+# (e.g. the function is called before phase 1e, or no GPU is present).
 function Get-PytorchCudaTag {
-    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
-        $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        if ($cmd) { $cmd.Source } else { $null }
+    $major = $null
+    $minor = $null
+    if ($script:NvccPath -and (Test-Path -LiteralPath $script:NvccPath)) {
+        try {
+            $verOut = & $script:NvccPath --version 2>&1 | Out-String
+            if ($verOut -match 'release\s+(\d+)\.(\d+)') {
+                $major = [int]$Matches[1]
+                $minor = [int]$Matches[2]
+            }
+        } catch { }
     }
-    if (-not $smiExe) { return "cu126" }
-
-    try {
-        # 2>&1 | Out-String merges stderr into stdout then converts to a single
-        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
-        # ErrorRecord objects leak into $output and break the -match.
-        $output = & $smiExe 2>&1 | Out-String
-        if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-            if ($major -ge 13) { return "cu130" }
-            if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
-            if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
-            if ($major -ge 12) { return "cu124" }
-            if ($major -ge 11) { return "cu118" }
-            return "cpu"
+    if ($null -eq $major) {
+        $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+            $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+            if ($cmd) { $cmd.Source } else { $null }
         }
-    } catch { }
-
+        if (-not $smiExe) { return "cu126" }
+        try {
+            # 2>&1 | Out-String merges stderr into stdout then converts to a single
+            # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
+            # ErrorRecord objects leak into $output and break the -match.
+            $output = & $smiExe 2>&1 | Out-String
+            if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+                $major = [int]$Matches[1]
+                $minor = [int]$Matches[2]
+            }
+        } catch { }
+    }
+    if ($null -ne $major) {
+        # PyTorch 2.10 offers: cu118, cu124, cu126, cu128, cu130
+        if ($major -ge 13) { return "cu130" }
+        if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
+        if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
+        if ($major -ge 12) { return "cu124" }
+        if ($major -ge 11) { return "cu118" }
+        return "cpu"
+    }
     return "cu126"
 }
 

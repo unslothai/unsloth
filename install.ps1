@@ -1213,24 +1213,124 @@ shell.Run cmd, 0, False
         substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
     }
 
-    # ── Choose the correct PyTorch index URL based on driver CUDA version ──
+    # ── Detect installed CUDA Toolkit version ──
+    # Returns "12.9" / "13.0" / $null. Checks CUDA_PATH and the standard
+    # toolkit install root. The toolkit version is the actual userland CUDA
+    # available to PyTorch; nvidia-smi only reports the driver's *max
+    # supported* CUDA, which can be a release ahead of the userland.
+    function Get-CudaToolkitVersion {
+        $candidates = @()
+        foreach ($scope in @('Process','Machine','User')) {
+            $cudaRoot = [Environment]::GetEnvironmentVariable('CUDA_PATH', $scope)
+            if ($cudaRoot) { $candidates += (Join-Path $cudaRoot 'bin\nvcc.exe') }
+        }
+        $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+        if (Test-Path -LiteralPath $toolkitBase) {
+            $highest = Get-ChildItem -Directory -LiteralPath $toolkitBase -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^v(\d+)\.(\d+)' } |
+                Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
+                Select-Object -First 1
+            if ($highest) { $candidates += (Join-Path $highest.FullName 'bin\nvcc.exe') }
+        }
+        $onPath = Get-Command nvcc -ErrorAction SilentlyContinue
+        if ($onPath) { $candidates += $onPath.Source }
+        foreach ($nvcc in $candidates) {
+            if ($nvcc -and (Test-Path -LiteralPath $nvcc)) {
+                try {
+                    $verOut = & $nvcc --version 2>&1 | Out-String
+                    if ($verOut -match 'release\s+(\d+\.\d+)') { return $Matches[1] }
+                } catch {}
+            }
+        }
+        return $null
+    }
+
+    # ── Read driver's max CUDA from nvidia-smi (bound on toolkit install) ──
+    $DriverMaxCuda = $null
+    if ($NvidiaSmiExe) {
+        try {
+            $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
+            if ($smiOut -match 'CUDA Version:\s+(\d+\.\d+)') { $DriverMaxCuda = $Matches[1] }
+        } catch {}
+    }
+
+    # ── Install CUDA Toolkit if missing, so Get-TorchIndexUrl can pick the ──
+    # PyTorch wheel from the *userland* CUDA version instead of nvidia-smi's
+    # driver-max ceiling. Mirrors phase 1e of setup.ps1; setup.ps1 still
+    # runs the full CUDA <-> VS Build Tools integration later. Bounded by
+    # the driver max so we never install a toolkit the driver can't load.
+    function Install-CudaToolkitIfMissing {
+        param([Parameter(Mandatory = $true)][string]$DriverMaxCuda)
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            substep "winget unavailable; skipping CUDA Toolkit install (studio setup will retry later)." "Yellow"
+            return
+        }
+        $drMajor = [int]$DriverMaxCuda.Split('.')[0]
+        $drMinor = [int]$DriverMaxCuda.Split('.')[1]
+        $available = @()
+        try {
+            $rawOutput = winget show Nvidia.CUDA --versions --accept-source-agreements 2>&1 | Out-String
+            foreach ($line in $rawOutput -split "`n") {
+                $line = $line.Trim()
+                if ($line -match '^\d+\.\d+') { $available += $line }
+            }
+        } catch {}
+        $best = $null
+        foreach ($ver in $available) {
+            $parts = $ver.Split('.')
+            $vMajor = [int]$parts[0]; $vMinor = [int]$parts[1]
+            if ($vMajor -lt $drMajor -or ($vMajor -eq $drMajor -and $vMinor -le $drMinor)) {
+                # winget show --versions returns the list in descending order,
+                # so the first compatible entry is the highest <= driver max.
+                $best = $ver
+                break
+            }
+        }
+        if (-not $best) {
+            substep "no CUDA Toolkit version <= driver $DriverMaxCuda available in winget (studio setup will retry later)." "Yellow"
+            return
+        }
+        substep "no CUDA Toolkit found; installing CUDA $best via winget (~3 GB, several minutes)..."
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            Invoke-InstallCommand { winget install --id=Nvidia.CUDA --version=$best -e --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+        } catch {}
+        $ErrorActionPreference = $prevEAP
+        Refresh-SessionPath
+    }
+
+    if ($HasNvidiaSmi -and -not $SkipTorch -and $DriverMaxCuda -and -not (Get-CudaToolkitVersion)) {
+        Write-TauriLog "STEP" "Installing CUDA Toolkit (winget)"
+        Install-CudaToolkitIfMissing -DriverMaxCuda $DriverMaxCuda
+    }
+
+    # ── Choose the correct PyTorch index URL based on installed CUDA ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
+    #
+    # Prefer the installed CUDA Toolkit version: it is the hard constraint
+    # on which PyTorch wheels can actually load. nvidia-smi's "CUDA Version"
+    # is only the driver's *max supported* CUDA (a ceiling) — picking cu130
+    # off a "CUDA 13.0" driver that actually has toolkit 12.9 ships a torch
+    # that silently falls back to CPU. The toolkit install above eliminates
+    # the no-toolkit case on first-time installs; the nvidia-smi fallback
+    # here only fires when winget is unavailable or has no compatible
+    # toolkit, and setup.ps1 retries the install in phase 1e.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
-        try {
-            $output = & $NvidiaSmiExe 2>&1 | Out-String
-            if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
-                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                    { return "$baseUrl/cu130" }
-                if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
-                if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
-                if ($major -ge 12) { return "$baseUrl/cu124" }
-                if ($major -ge 11) { return "$baseUrl/cu118" }
-                return "$baseUrl/cpu"
-            }
-        } catch {}
-        substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+        $cudaVer = Get-CudaToolkitVersion
+        if (-not $cudaVer) { $cudaVer = $DriverMaxCuda }
+        if ($cudaVer -match '^(\d+)\.(\d+)$') {
+            $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+            if ($major -ge 13)                    { return "$baseUrl/cu130" }
+            if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
+            if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
+            if ($major -ge 12) { return "$baseUrl/cu124" }
+            if ($major -ge 11) { return "$baseUrl/cu118" }
+            return "$baseUrl/cpu"
+        }
+        substep "could not determine CUDA version, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
@@ -1245,6 +1345,21 @@ shell.Run cmd, 0, False
         substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
         substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
         substep ".\install.ps1 --no-torch" "Yellow"
+        Write-Host ""
+    }
+
+    # ── Warn when CUDA wheel was picked from the driver report, not a toolkit ──
+    # Reached only when winget couldn't install a compatible CUDA Toolkit
+    # (no winget, or no <= driver-max version in winget's manifest). The
+    # PyTorch wheel may not load until a matching CUDA Toolkit is present;
+    # studio setup will retry the install, but if that also fails the user
+    # has to install it manually.
+    if ($HasNvidiaSmi -and -not $SkipTorch -and $TorchIndexFamily -like "cu*" -and -not (Get-CudaToolkitVersion)) {
+        Write-Host ""
+        substep "No CUDA Toolkit is installed; PyTorch wheel ($TorchIndexFamily) was picked from" "Yellow"
+        substep "your driver's max-CUDA report. Studio setup will retry the toolkit install;" "Yellow"
+        substep "if that also fails, install a CUDA Toolkit matching $TorchIndexFamily manually:" "Yellow"
+        substep "    https://developer.nvidia.com/cuda-toolkit-archive" "Yellow"
         Write-Host ""
     }
 
