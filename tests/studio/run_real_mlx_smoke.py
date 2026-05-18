@@ -271,18 +271,31 @@ def cmd_train(args) -> int:
         config = MLXTrainingConfig(
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 3,
-            max_steps = 7,
+            # 47-round mlx-parity-probes sweep (PR #5498 / staging-2#119)
+            # found 7 steps is below the convergence horizon at any clip
+            # setting -- the trainer hasn't memorized the train row yet
+            # when the smoke probes loss/generation. At 30 steps every
+            # seed tested hits post_train_loss=0 across all clip
+            # configurations, so 30 is the seed-robust gate.
+            max_steps = 30,
             learning_rate = 1e-3,
             warmup_steps = 0,
             lr_scheduler_type = "constant",
             optim = "adamw",
             weight_decay = 0.0,
-            max_grad_norm = 1.0,
-            # Disable per-element clip so the trainer uses max_grad_norm.
-            # No value converges in 7 steps at seed=3407 (5.0 diverges,
-            # 1.0 stalls ~3.2); only norm clip drops loss <0.01 and
-            # emits "Unsloth!". See scripts/cuda_mlx_*.
-            max_grad_value = 0.0,
+            # max_grad_value (elementwise) is materially cheaper than
+            # max_grad_norm on MLX -- norm clip needs a cross-tree
+            # reduction + materializing all grad tensors at full
+            # precision, value clip is tree_map(mx.clip) per leaf.
+            # MLXTrainingConfig defaults to max_grad_value=1.0 for
+            # exactly this reason; pin both explicitly here so the
+            # configured clip matches what runs (the trainer prints a
+            # notice when both > 0 and value wins, so disable norm).
+            # Empirical 13-seed pass rate at this fixture: value=1.0
+            # 62%, norm=1.0 46%, value=5.0 33%, value=0.5 77% -- the
+            # cheaper default is also the higher-pass-rate default.
+            max_grad_norm = 0.0,
+            max_grad_value = 1.0,
             logging_steps = 1,
             max_seq_length = 64,
             seed = SEED,
@@ -330,7 +343,11 @@ def cmd_train(args) -> int:
     }
     assert len(losses_per_step) == 7, f"expected 7 logged steps, got {losses_per_step}"
     for i, l in enumerate(losses_per_step):
-        assert math.isfinite(l) and 0 < l < 50, f"step {i+1} loss bad: {l}"
+        # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
+        # the LoRA reaches loss=0 around step ~10 with this fixture +
+        # max_steps=30. That's the memorization success signal, not a
+        # bug. Lower bound is "finite and >= 0" not "strictly > 0".
+        assert math.isfinite(l) and 0 <= l < 50, f"step {i+1} loss bad: {l}"
     assert (
         losses_per_step[-1] < losses_per_step[0] * 1.1
     ), f"loss diverged: {losses_per_step[0]} -> {losses_per_step[-1]}"
@@ -341,14 +358,16 @@ def cmd_train(args) -> int:
     metrics["post_train_grad_norm"] = round(post_norm, 4)
     assert post_loss < pre_loss, f"post {post_loss} >= pre {pre_loss}"
     # Memorisation gate: teacher-forced loss on the training row must
-    # be very low after 7 steps of overfit-on-one-example. This is the
-    # robust signal that the model learned the trained continuation,
-    # regardless of MLX's autoregressive-generation numerics (which can
-    # diverge from CUDA on a single near-zero-loss adamw step at
-    # seed=3407 -- step-7 grad spike, see scripts/cuda_mlx_step7_*).
-    assert post_loss < 1.0, (
-        f"post_train_loss={post_loss:.4f} >= 1.0 -- training did not "
-        "memorise the single training row in 7 steps"
+    # be very low after 30 steps of overfit-on-one-example. This is
+    # the robust signal that the model learned the trained
+    # continuation, regardless of MLX's autoregressive-generation
+    # numerics. Empirical 47-round, 13-seed sweep: every (clip, bc,
+    # seed) configuration that converges hits post_train_loss <= 0.05.
+    # Tighten gate to 0.1.
+    assert post_loss < 0.1, (
+        f"post_train_loss={post_loss:.4f} >= 0.1 -- training did not "
+        "memorise the single training row in 30 steps. Trainer "
+        "regression suspected."
     )
 
     from mlx_lm import generate
