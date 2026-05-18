@@ -155,6 +155,19 @@ export async function authFetch(
     });
   } catch (err) {
     if (err instanceof TypeError) {
+      // A TypeError from fetch covers three distinct cases:
+      //   1. Browser is offline (web build only).
+      //   2. Backend is reachable but refused the connection (process down).
+      //   3. CORS / DNS / proxy misconfiguration.
+      // In Tauri we ship the backend in-process, so a TypeError almost
+      // always means the supervisor died; the original wording is right.
+      // In the web build, lying about a backend crash when the user is
+      // simply offline sends them on the wrong recovery path.
+      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+        throw new Error(
+          "You appear to be offline. Check your network connection and try again.",
+        );
+      }
       throw new Error("Studio isn't running -- please relaunch it.");
     }
     throw err;
