@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Generator, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -459,6 +459,32 @@ def detect_reasoning_flags(
     return flags
 
 
+def _is_mtp_model_name(
+    model_identifier: Optional[str],
+    gguf_path: Optional[str] = None,
+) -> bool:
+    """Name-based MTP detector. Fallback for the metadata signal."""
+    for cand in (model_identifier, Path(gguf_path).name if gguf_path else None):
+        if cand and "-mtp" in cand.lower():
+            return True
+    return False
+
+
+def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
+    """User passed --spec-type / --spec-default? llama-server accumulates
+    repeated --spec-type, so we suppress auto-emit when this is true."""
+    if not extra_args:
+        return False
+    for raw in extra_args:
+        tok = str(raw)
+        if not tok.startswith("--"):
+            continue
+        flag = tok.split("=", 1)[0]
+        if flag in ("--spec-type", "--spec-default"):
+            return True
+    return False
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -514,6 +540,8 @@ class LlamaCppBackend:
         # Last N layers reuse KV from earlier layers and don't allocate
         # their own cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
         self._shared_kv_layers: Optional[int] = None
+        # MTP head count (llama.cpp #22673); >0 enables --spec-type draft-mtp.
+        self._nextn_predict_layers: Optional[int] = None
         self._lock = threading.Lock()
         # Wraps load_model() end-to-end so concurrent loads serialise
         # and never coexist as two llama-server processes (#5401).
@@ -1104,6 +1132,26 @@ class LlamaCppBackend:
         return out
 
     @staticmethod
+    def _build_windows_path_dirs(
+        binary_dir: str, prefix: str, cuda_path: str
+    ) -> list[str]:
+        """Ordered PATH entries the win32 branch of start_llama_server
+        prepends so llama-server.exe resolves cudart / cublas DLLs:
+        binary_dir, pip nvidia wheels, CUDA_PATH/bin, CUDA_PATH/bin/x64.
+        Extracted so test_windows_gpu_detection_mock asserts against
+        production logic, not a hand-copy. #5106."""
+        path_dirs = [binary_dir]
+        path_dirs.extend(LlamaCppBackend._windows_pip_nvidia_dll_dirs(prefix))
+        if cuda_path:
+            cuda_bin = os.path.join(cuda_path, "bin")
+            if os.path.isdir(cuda_bin):
+                path_dirs.append(cuda_bin)
+            cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+            if os.path.isdir(cuda_bin_x64):
+                path_dirs.append(cuda_bin_x64)
+        return path_dirs
+
+    @staticmethod
     def _select_gpus(
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
@@ -1618,6 +1666,7 @@ class LlamaCppBackend:
         self._ssm_inner_size = None
         self._ssm_state_size = None
         self._shared_kv_layers = None
+        self._nextn_predict_layers = None
 
         try:
             WANTED = {
@@ -1700,6 +1749,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
+                                        f"{arch}.nextn_predict_layers": "nextn_predict_layers",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -2533,22 +2583,65 @@ class LlamaCppBackend:
                 # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
                 # ref: https://github.com/ggml-org/llama.cpp/pull/19164
                 # ref: https://github.com/ggml-org/llama.cpp/pull/18471
-                # ``"default"`` -> let llama-server pick a sensible spec
-                # config via ``--spec-default``. Explicit type names are
-                # passed through with the manual draft tuning we've shipped
-                # historically so power users keep their overrides.
-                _valid_spec_types = {"ngram-simple", "ngram-mod"}
+                # draft-mtp: MTP heads on Unsloth's *-MTP GGUFs
+                # (llama.cpp #22673). Auto-enabled via nextn_predict_layers,
+                # fallback to -MTP in name. GPU: MTP-only. CPU/Mac: chain
+                # with ngram-mod. See unsloth.ai/docs/models/qwen3.6#mtp-guide.
+                _valid_spec_types = {"ngram-simple", "ngram-mod", "draft-mtp"}
                 normalized_spec = (
                     speculative_type.lower().strip() if speculative_type else None
                 )
+                is_mtp_model = bool(self._nextn_predict_layers) or (
+                    _is_mtp_model_name(model_identifier, model_path)
+                )
+                user_owns_spec_type = _extra_args_set_spec_type(extra_args)
+                # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
                 if (
-                    normalized_spec
-                    and normalized_spec != "off"
+                    is_mtp_model
                     and not effective_is_vision
+                    and not user_owns_spec_type
+                    and normalized_spec in (None, "", "default")
                 ):
+                    normalized_spec = "draft-mtp"
+                if user_owns_spec_type:
+                    # User --spec-type wins (it accumulates if repeated).
+                    normalized_spec = None
+                    self._speculative_type = None
+                if normalized_spec and normalized_spec != "off" and not effective_is_vision:
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
                         self._speculative_type = "default"
+                    elif normalized_spec == "draft-mtp":
+                        if gpus:
+                            cmd.extend(
+                                [
+                                    "--spec-type",
+                                    "draft-mtp",
+                                    "--spec-draft-n-max",
+                                    "6",
+                                ]
+                            )
+                        else:
+                            cmd.extend(
+                                [
+                                    "--spec-type",
+                                    "draft-mtp",
+                                    "--spec-draft-n-max",
+                                    "3",
+                                    "--spec-type",
+                                    "ngram-mod",
+                                    "--spec-ngram-mod-n-match",
+                                    "24",
+                                    "--spec-ngram-mod-n-min",
+                                    "48",
+                                    "--spec-ngram-mod-n-max",
+                                    "6",
+                                ]
+                            )
+                        self._speculative_type = "draft-mtp"
+                        logger.info(
+                            f"Spec decoding: draft-mtp ({'GPU' if gpus else 'CPU/Mac'})"
+                        )
                     elif normalized_spec in _valid_spec_types:
                         cmd.extend(["--spec-type", normalized_spec])
                         if normalized_spec == "ngram-mod":
@@ -2663,23 +2756,12 @@ class LlamaCppBackend:
                 binary_dir = str(Path(binary).parent)
 
                 if sys.platform == "win32":
-                    # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
-                    # be on PATH. Order: binary_dir, torch's pip-installed
-                    # nvidia wheels, then a system CUDA toolkit. Pip wheels
-                    # are the canonical source per Studio's install design
-                    # (mirrors the Linux LD_LIBRARY_PATH block below) and
-                    # CUDA_PATH covers users with a system toolkit. #5106.
-                    path_dirs = [binary_dir]
-                    path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
-                    cuda_path = os.environ.get("CUDA_PATH", "")
-                    if cuda_path:
-                        cuda_bin = os.path.join(cuda_path, "bin")
-                        if os.path.isdir(cuda_bin):
-                            path_dirs.append(cuda_bin)
-                        # Some CUDA installs put DLLs in bin\x64
-                        cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
-                        if os.path.isdir(cuda_bin_x64):
-                            path_dirs.append(cuda_bin_x64)
+                    # See _build_windows_path_dirs for ordering. #5106.
+                    path_dirs = self._build_windows_path_dirs(
+                        binary_dir,
+                        sys.prefix,
+                        os.environ.get("CUDA_PATH", ""),
+                    )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
                 else:
@@ -2964,7 +3046,15 @@ class LlamaCppBackend:
         if self._is_vision or is_vision:
             req_spec = "off"
         else:
-            req_spec = _norm(speculative_type) or "off"
+            raw_spec = _norm(speculative_type)
+            req_spec = raw_spec or "off"
+            # Mirror load_model's auto-promotion so repeat /load matches.
+            if (
+                raw_spec in (None, "default")
+                and _is_mtp_model_name(model_identifier, gguf_path)
+                and not _extra_args_set_spec_type(extra_args)
+            ):
+                req_spec = "draft-mtp"
         backend_spec = _norm(self._speculative_type) or "off"
         if req_spec != backend_spec:
             return False
@@ -3052,6 +3142,7 @@ class LlamaCppBackend:
             self._ssm_inner_size = None
             self._ssm_state_size = None
             self._shared_kv_layers = None
+            self._nextn_predict_layers = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
