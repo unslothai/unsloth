@@ -45,6 +45,7 @@ TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _VERBOSE=false
+_SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
 for arg in "$@"; do
@@ -65,6 +66,7 @@ for arg in "$@"; do
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
+        --shortcuts-only) _SHORTCUTS_ONLY=true ;;
     esac
 done
 
@@ -1232,6 +1234,22 @@ elif grep -qi microsoft /proc/version 2>/dev/null; then
     OS="wsl"
 fi
 step "platform" "$OS"
+
+# Regenerate desktop launcher / .app bundle without touching the venv. Used by
+# `unsloth studio update` so updates pick up new launcher logic the same way a
+# fresh install would.
+if [ "$_SHORTCUTS_ONLY" = true ]; then
+    if [ "$TAURI_MODE" = true ]; then
+        exit 0
+    fi
+    VENV_ABS_BIN="$VENV_DIR/bin"
+    if [ ! -x "$VENV_ABS_BIN/unsloth" ]; then
+        echo "ERROR: unsloth binary missing at $VENV_ABS_BIN/unsloth; run install.sh first." >&2
+        exit 1
+    fi
+    create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
+    exit 0
+fi
 
 # ── Architecture detection & Python version ──
 _ARCH=$(uname -m)

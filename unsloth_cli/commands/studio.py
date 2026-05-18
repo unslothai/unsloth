@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 import types
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -1064,6 +1066,70 @@ def _run_setup_script(*, verbose: bool = False) -> None:
         raise typer.Exit(result.returncode)
 
 
+_INSTALLER_URL = "https://unsloth.ai/install.sh"
+
+
+def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
+    """Re-run installer shortcut creation so updates refresh the launcher.
+
+    setup.sh only touches the venv; the macOS .app bundle, the Linux .desktop
+    entry, and the shared launch-studio.sh stub bake their paths at install
+    time. Without this call, `unsloth studio update` leaves the user's icon
+    pointing at the old install.
+    """
+    # Windows: setup.ps1 already owns Start Menu / Desktop .lnk creation on
+    # update, so no extra step is needed.
+    if platform.system() == "Windows":
+        return
+
+    env = {**os.environ}
+    if verbose:
+        env["UNSLOTH_VERBOSE"] = "1"
+
+    # Local install: reuse the install.sh from the same checkout (matches the
+    # behavior of `install.sh --local` and avoids a network fetch).
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    candidates: list[Path] = []
+    if local_repo:
+        candidates.append(Path(local_repo) / "install.sh")
+    candidates.append(_PACKAGE_ROOT / "install.sh")
+
+    args = ["--shortcuts-only"]
+    if verbose:
+        args.append("--verbose")
+
+    for script in candidates:
+        try:
+            if script.is_file():
+                subprocess.run(["bash", str(script), *args], env = env, check = False)
+                return
+        except OSError:
+            continue
+
+    # PyPI installs do not ship install.sh; fetch the upstream copy.
+    try:
+        request = urllib.request.Request(
+            _INSTALLER_URL, headers = {"User-Agent": "unsloth-studio-update"}
+        )
+        with urllib.request.urlopen(request, timeout = 30) as response:
+            installer = response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        typer.echo(
+            f"  refresh-launcher  skipped: could not fetch {_INSTALLER_URL} ({exc})"
+        )
+        return
+
+    try:
+        subprocess.run(
+            ["bash", "-s", "--", *args],
+            input = installer,
+            env = env,
+            check = False,
+        )
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
+
+
 @studio_app.command(hidden = True)
 def setup(
     verbose: bool = typer.Option(
@@ -1106,6 +1172,7 @@ def update(
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     _run_setup_script(verbose = verbose)
+    _refresh_desktop_shortcuts(verbose = verbose)
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
