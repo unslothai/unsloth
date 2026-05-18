@@ -32,6 +32,7 @@ import type {
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -742,6 +743,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
+      if (isExternalRequest && !loadConnectionsEnabled()) {
+        toast.error("Connections are disabled.", {
+          description:
+            "Turn on Enable connections in Settings > Connections to use hosted models.",
+        });
+        throw new Error("Connections disabled.");
+      }
       const externalProvider = isExternalRequest
         ? loadExternalProviders().find(
             (provider) => provider.id === externalSelection.providerId,
