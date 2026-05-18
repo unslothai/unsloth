@@ -125,21 +125,23 @@ class TestChatMessageToolRoles:
         )
         assert msg.content is None
 
-    def test_tool_role_missing_tool_call_id_synthesised(self):
-        # Frontend drops the id on second-round POST; validator synthesises one.
+    def test_tool_role_missing_tool_call_id_left_for_request_validator(self):
+        # Per-message: missing tool_call_id is now allowed at this layer.
+        # ChatCompletionRequest's walkback fills it in from the prior
+        # assistant tool_calls; see test_inference_model_validation.py for
+        # the resolution coverage.
         msg = ChatMessage(role = "tool", content = '{"temperature": 72}')
-        assert msg.tool_call_id is not None
-        assert msg.tool_call_id.startswith("call_")
-        assert len(msg.tool_call_id) >= len("call_") + 8
+        assert msg.tool_call_id is None
+        assert msg.content == '{"temperature": 72}'
 
-    def test_tool_role_empty_tool_call_id_synthesised(self):
+    def test_tool_role_empty_tool_call_id_left_for_request_validator(self):
         msg = ChatMessage(
             role = "tool",
             tool_call_id = "",
             content = '{"temperature": 72}',
         )
-        assert msg.tool_call_id is not None
-        assert msg.tool_call_id.startswith("call_")
+        # Empty-string is treated the same as missing by the walkback.
+        assert msg.tool_call_id in (None, "")
 
     # ── Role-aware content requirements ────────────────────────────
 
@@ -299,10 +301,56 @@ class TestChatCompletionRequestToolFields:
     def test_stream_defaults_false_matching_openai_spec(self):
         # OpenAI's /v1/chat/completions spec defaults `stream` to false.
         # Studio previously defaulted to true, which broke naive curl
-        # clients that omit `stream` (they expect a JSON blob, got SSE).
+        # clients (and .NET / System.Text.Json SDKs per #5047) that omit
+        # `stream` -- they expect a JSON blob, got SSE.
         # Pin the corrected default so it can't silently regress.
         req = self._make()
         assert req.stream is False
+
+    def test_post_without_stream_field_decodes_to_stream_false_over_http(
+        self, monkeypatch
+    ):
+        # Wire-level guard for the same default: a POST body that omits
+        # `stream` entirely (the exact shape naive curl / .NET clients
+        # send) must deserialise into stream=False *and* the response
+        # must be `application/json`, never `text/event-stream`.
+        # Mounts the real `routes.inference.router` so this catches
+        # regressions in middleware/aliasing on the actual endpoint
+        # (e.g. someone adding a request layer that injects stream=True
+        # before pydantic builds the model). Backends are bypassed by
+        # routing through `provider_type` and stubbing the external
+        # provider proxy.
+        from fastapi import FastAPI
+        from fastapi.responses import JSONResponse
+        from fastapi.testclient import TestClient
+
+        import routes.inference as inference_route
+        from auth.authentication import get_current_subject
+
+        captured = {}
+
+        async def _fake_proxy(payload, request):
+            captured["stream"] = payload.stream
+            return JSONResponse({"choices": [], "object": "chat.completion"})
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+
+        app = FastAPI()
+        app.include_router(inference_route.router)
+        app.dependency_overrides[get_current_subject] = lambda: "test-user"
+
+        client = TestClient(app)
+        resp = client.post(
+            "/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "text/event-stream" not in resp.headers["content-type"]
+        assert captured["stream"] is False
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(

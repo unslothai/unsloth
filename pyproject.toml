@@ -69,6 +69,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
+    "unsloth_zoo>=2026.5.2",
     "wheel>=0.42.0",
     "packaging",
     "numpy",

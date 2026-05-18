@@ -49,6 +49,30 @@ export function supportsProviderReasoningToggle(
   );
 }
 
+// Known text-only providers on their main chat endpoint.
+const NON_VISION_PROVIDER_TYPES = new Set<string>([
+  "cohere",
+  "deepseek",
+  "mistral",
+]);
+// Providers whose vision-tier model selection accepts images.
+const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+]);
+
+// false = known text-only, true = known vision, null = unknown (default-allow).
+export function providerTypeSupportsVision(
+  providerType: string | null | undefined,
+): boolean | null {
+  if (providerType == null) return null;
+  if (NON_VISION_PROVIDER_TYPES.has(providerType)) return false;
+  if (VISION_CAPABLE_PROVIDER_TYPES.has(providerType)) return true;
+  return null;
+}
+
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 

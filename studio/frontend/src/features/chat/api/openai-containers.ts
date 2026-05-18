@@ -10,6 +10,7 @@
  */
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import { encryptProviderApiKey } from "./providers-api";
 
 export interface OpenAIContainerSummary {
@@ -42,13 +43,7 @@ function fromRaw(raw: RawSummary): OpenAIContainerSummary {
 }
 
 async function parseError(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: string };
-    if (body && typeof body.detail === "string") return body.detail;
-  } catch {
-    /* fall through */
-  }
-  return `HTTP ${response.status}`;
+  return readFastApiError(response, "HTTP");
 }
 
 interface AuthInputs {
