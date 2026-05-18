@@ -27,6 +27,7 @@ _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
 _DEFAULT_LLAMA_TAG="latest"
 _DEFAULT_LLAMA_FORCE_COMPILE_REF="master"
 _STUDIO_HOME_IS_CUSTOM=${_STUDIO_HOME_IS_CUSTOM:-false}
+_STUDIO_OWNED_MARKER=${_STUDIO_OWNED_MARKER:-.unsloth-studio-owned}
 
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
@@ -640,7 +641,6 @@ install_transformers() {
     # ownership marker before rm -rf so unrelated dirs survive. Gated on the
     # canonical comparison so an override pointing at the legacy default still
     # behaves like a default install.
-    _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
     _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
     _studio_home_canon="$STUDIO_HOME"
     if [ -d "$_studio_home_canon" ]; then
