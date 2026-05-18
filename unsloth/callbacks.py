@@ -142,18 +142,19 @@ class ActivationNoveltyCallback(TrainerCallback):
             # This keeps shapes consistent across variable-length batches and
             # avoids unbounded memory growth from buffering full tensors.
             if out.dim() == 3:
-                out = out.mean(dim = 1)          # (batch, hidden)
+                out = out.mean(dim = 1)  # (batch, hidden)
             elif out.dim() > 3:
                 out = out.flatten(2).mean(dim = 1)
-            batch_mean_abs = out.abs().mean(dim = 0)   # (hidden,)
+            batch_mean_abs = out.abs().mean(dim = 0)  # (hidden,)
             # Welford-style incremental mean — O(hidden) memory at all times.
             self._running_count += 1
             if self._running_mean_abs is None:
                 self._running_mean_abs = batch_mean_abs
             else:
-                self._running_mean_abs = self._running_mean_abs + (
-                    batch_mean_abs - self._running_mean_abs
-                ) / self._running_count
+                self._running_mean_abs = (
+                    self._running_mean_abs
+                    + (batch_mean_abs - self._running_mean_abs) / self._running_count
+                )
 
         self._handle = layer.register_forward_hook(_hook)
 
