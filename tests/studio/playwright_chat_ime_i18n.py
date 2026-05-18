@@ -540,6 +540,85 @@ with sync_playwright() as p:
     info("keydown re-pin gate PASS")
     clear()
 
+    # 6d. Keydown re-pin must also re-arm the watchdog. On the WSL+Chrome
+    #     stuck-compositionend path the IME never fires a follow-up
+    #     compositionend or non-composing input, so after the IME keydown
+    #     re-pins composingRef the watchdog has to take it back to false on
+    #     its own — otherwise Send re-locks permanently after the very
+    #     scenario this PR was supposed to fix. (Codex P1, commit 597af0d0.)
+    step("BUG REPRO: keydown re-pin re-arms watchdog (#5546 follow-up regression)")
+    clear()
+    composer.click()
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'你'}));
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, el.value + '你好');
+            el.dispatchEvent(new InputEvent('input', {
+                bubbles:true, inputType:'insertCompositionText',
+                data:'你好', isComposing:true,
+            }));
+        }"""
+    )
+    send_btn_rearm = page.locator('button[aria-label="Send message"]')
+    # First watchdog cycle: wait for it to clear composingRef.
+    try:
+        expect(send_btn_rearm).not_to_be_disabled(timeout = 8_000)
+    except Exception:
+        soft_fail("watchdog did not clear before re-arm test (first cycle)")
+    # IME-confirm keydown re-pins composingRef. Without the re-arm fix the
+    # watchdog would never run again and Send would stay blocked at the
+    # submit-time guard forever, even though no follow-up IME event arrives.
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles:true, key:'Enter', code:'Enter', keyCode:229,
+                isComposing:true,
+            }));
+        }"""
+    )
+    # Second watchdog cycle: a real submit attempt now must eventually be
+    # allowed. Trigger requestSubmit() after the re-armed watchdog window
+    # plus a little slack; on the buggy build the form stays gated forever.
+    rearm_probe = page.evaluate(
+        """async (selector) => {
+            const ta = document.querySelector(selector);
+            const form = ta && ta.closest('form');
+            if (!form || !ta) return {ok: false, reason: 'composer missing'};
+            const before = ta.value;
+            // Wait past the 2500ms watchdog + slack so the re-armed timer
+            // fires. If the fix is missing this still resolves but the
+            // submit will not flush the textarea.
+            await new Promise(r => setTimeout(r, 3500));
+            try { form.requestSubmit(); } catch (e) {}
+            // Give the submit handler a tick to flush state.
+            await new Promise(r => setTimeout(r, 250));
+            return {ok: true, before, after: ta.value};
+        }""",
+        'textarea[aria-label="Message input"]',
+    )
+    if rearm_probe.get("ok") and rearm_probe.get("after") == rearm_probe.get(
+        "before"
+    ):
+        shoot("06d-keydown-rearm-FAIL")
+        fail(
+            "After the keydown re-pin the watchdog never re-armed; Send "
+            "stayed permanently locked on the WSL+Chrome stuck-end path "
+            "(#5546 follow-up Codex P1)."
+        )
+    info(
+        "watchdog re-armed after keydown re-pin: textarea flushed from "
+        f"{rearm_probe.get('before')!r} to {rearm_probe.get('after')!r}"
+    )
+    shoot("06d-keydown-rearm")
+    info("keydown re-pin re-arm PASS")
+    clear()
+
     # 7. Final state. The change-password redirect emits benign 401 noise,
     #    so we filter via is_benign_* and only fail on real errors.
     shoot("07-final")
@@ -568,7 +647,8 @@ with sync_playwright() as p:
     info(
         f"DONE: ascii=OK paste={len(I18N_SAMPLES)}/{len(I18N_SAMPLES)} "
         f"normal_composition=OK stuck_recovery=OK "
-        f"compositionend_watchdog=OK keydown_repin=OK"
+        f"compositionend_watchdog=OK keydown_repin=OK "
+        f"keydown_repin_rearm=OK"
     )
     _watchdog.cancel()
     browser.close()

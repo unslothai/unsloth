@@ -719,10 +719,13 @@ export function SharedComposer({
     // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
     // Don't hijack it. See issue #5318. Re-pin composingRef in case the stuck
     // watchdog (#5546) cleared it during a long candidate-window pause; this
-    // keeps a follow-up click-Send from submitting preedit text.
+    // keeps a follow-up click-Send from submitting preedit text. Re-arm the
+    // watchdog on the same path — without it the WSL+Chrome no-compositionend
+    // case would leave composingRef pinned forever after an IME keypress and
+    // re-lock Send.
     if (e.nativeEvent.isComposing || e.keyCode === 229) {
       composingRef.current = true;
-      clearStuckImeTimer();
+      refreshStuckImeTimer();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {

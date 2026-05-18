@@ -448,14 +448,17 @@ function useImeComposerInputHandlers() {
   // keyCode 229) would otherwise reach handleSubmit with composingRef=false
   // and submit the preedit text. Re-arm composingRef synchronously from the
   // native event so the form-submit gate keeps blocking until compositionend.
+  // Re-arm the watchdog at the same time — otherwise the WSL+Chrome path
+  // this PR targets (no compositionend, no follow-up input event) would
+  // leave composingRef pinned true indefinitely and Send blocked again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         composingRef.current = true;
-        clearStuckTimer();
+        refreshStuckTimer();
       }
     },
-    [clearStuckTimer],
+    [refreshStuckTimer],
   );
 
   return {

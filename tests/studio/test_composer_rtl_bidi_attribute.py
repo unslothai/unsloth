@@ -119,3 +119,54 @@ def test_compare_composer_keydown_repins_composing_during_ime():
         "compare composer keydown gate must re-pin composingRef when the "
         "browser still considers the IME active"
     )
+
+
+def _extract_block(src: str, anchor: str, opener: str = "(", closer: str = ")") -> str:
+    """Return the source between the first balanced opener/closer that
+    starts at or after `anchor`. Used to scope assertions to a specific
+    handler so a re-arm call in some other function does not satisfy
+    the gate test."""
+    start = src.find(anchor)
+    assert start != -1, f"anchor {anchor!r} not found"
+    open_idx = src.find(opener, start)
+    assert open_idx != -1, f"opener {opener!r} after {anchor!r} not found"
+    depth = 0
+    for i in range(open_idx, len(src)):
+        c = src[i]
+        if c == opener:
+            depth += 1
+        elif c == closer:
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+    raise AssertionError(f"unbalanced {opener!r}/{closer!r} after {anchor!r}")
+
+
+def test_main_composer_keydown_rearms_watchdog():
+    """After the keydown re-pin sets composingRef=true the watchdog must
+    be re-armed; otherwise the WSL+Chrome no-compositionend path this PR
+    targets would lock Send permanently after any IME keypress
+    (Codex P1 on commit 597af0d0)."""
+    src = THREAD_TSX.read_text()
+    block = _extract_block(src, "const onKeyDown = useCallback")
+    assert "refreshStuckTimer" in block, (
+        "main composer keydown gate must call refreshStuckTimer after "
+        "re-pinning composingRef so the watchdog runs again on the "
+        "stuck-compositionend path"
+    )
+    assert "clearStuckTimer();" not in block.replace(
+        "clearStuckTimer\n", ""
+    ).replace("clearStuckTimer,", ""), (
+        "main composer keydown gate must not leave the watchdog only "
+        "cleared — that's the Codex P1 regression"
+    )
+
+
+def test_compare_composer_keydown_rearms_watchdog():
+    """Same re-arm contract for the compare-mode composer."""
+    src = SHARED_TSX.read_text()
+    block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
+    assert "refreshStuckImeTimer" in block, (
+        "compare composer keydown gate must call refreshStuckImeTimer "
+        "after re-pinning composingRef"
+    )
