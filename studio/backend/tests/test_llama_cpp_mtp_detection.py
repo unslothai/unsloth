@@ -504,11 +504,11 @@ def _shim(**over):
     """Base = the case the shim exists for: MTP GGUF whose repo also
     ships an mmproj, recent binary, no caller spec override."""
     kw = dict(
-        mtp_detected=True,
-        effective_is_vision=True,
-        supports_mtp=True,
-        speculative_type=None,
-        extra_args=None,
+        mtp_detected = True,
+        effective_is_vision = True,
+        supports_mtp = True,
+        speculative_type = None,
+        extra_args = None,
     )
     kw.update(over)
     return _mtp_should_force_text_only(**kw)
@@ -520,35 +520,35 @@ def test_shim_engages_for_mtp_vision_repo_with_recent_binary():
 
 @pytest.mark.parametrize("spec", [None, "", "default", "DEFAULT", "draft-mtp"])
 def test_shim_engages_for_auto_default_or_explicit_draft_mtp(spec):
-    assert _shim(speculative_type=spec) is True
+    assert _shim(speculative_type = spec) is True
 
 
 def test_shim_skips_non_mtp_model_entirely():
     # The core guarantee: non-MTP GGUFs are never affected.
-    assert _shim(mtp_detected=False) is False
+    assert _shim(mtp_detected = False) is False
 
 
 def test_shim_skips_when_not_effective_vision():
     # No mmproj would be attached anyway -> nothing to bypass; the
     # existing draft-mtp auto-promotion already handles this case.
-    assert _shim(effective_is_vision=False) is False
+    assert _shim(effective_is_vision = False) is False
 
 
 def test_shim_skips_when_binary_lacks_mtp():
     # Outdated prebuilt: keep today's behavior (mmproj/vision), do not
     # sacrifice image input for an MTP path the binary cannot run.
-    assert _shim(supports_mtp=False) is False
+    assert _shim(supports_mtp = False) is False
 
 
 def test_shim_opts_out_on_explicit_off():
-    assert _shim(speculative_type="off") is False
+    assert _shim(speculative_type = "off") is False
 
 
 @pytest.mark.parametrize("spec", ["ngram-mod", "ngram-simple", "something"])
 def test_shim_opts_out_on_explicit_non_mtp_spec(spec):
     # User explicitly chose another speculative mode on a vision MTP
     # model -> respect it, do not silently disable their mmproj.
-    assert _shim(speculative_type=spec) is False
+    assert _shim(speculative_type = spec) is False
 
 
 @pytest.mark.parametrize(
@@ -560,8 +560,8 @@ def test_shim_opts_out_on_explicit_non_mtp_spec(spec):
     ],
 )
 def test_shim_opts_out_when_user_manages_spec_via_extra_args(extra_args):
-    assert _shim(extra_args=extra_args) is False
+    assert _shim(extra_args = extra_args) is False
 
 
 def test_shim_passes_through_unrelated_extra_args():
-    assert _shim(extra_args=["--threads", "8", "--no-warmup"]) is True
+    assert _shim(extra_args = ["--threads", "8", "--no-warmup"]) is True
