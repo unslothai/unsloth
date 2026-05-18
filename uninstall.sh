@@ -132,6 +132,19 @@ _custom_studio_roots() {
     _emit() {
         _r="$1"
         [ -z "$_r" ] && return 0
+        # Tilde expansion (env vars are not subject to it on quoted assignment),
+        # matches install.sh's _resolve_studio_destinations. The literal "~/"
+        # pattern is intentional; SC2088 is a false positive here.
+        # shellcheck disable=SC2088
+        case "$_r" in
+            "~") _r="$HOME" ;;
+            "~/"*) _r="$HOME/${_r#'~/'}" ;;
+        esac
+        # Canonicalize so syntactic variants ($HOME/../$USER, trailing slash)
+        # resolve to the same path and hit the _is_unsafe_root deny list.
+        # shellcheck disable=SC1007
+        _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
+        [ -n "$_canon" ] && _r="$_canon"
         case "$_r" in "$HOME/.unsloth/studio"|/|"") return 0 ;; esac
         case ":$_seen:" in *":$_r:"*) return 0 ;; esac
         _seen="$_seen:$_r"
@@ -145,16 +158,17 @@ _custom_studio_roots() {
         [ -n "$_exe" ] || return 0
         _emit "$(dirname "$(dirname "$(dirname "$_exe")")")"
     }
-    # 1. env vars (UNSLOTH_STUDIO_HOME wins over STUDIO_HOME, matching install.sh).
+    # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is
+    # ignored when both are set. Otherwise uninstalling install A could also
+    # delete install B if the user has STUDIO_HOME left over from B.
     if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
         _emit "$UNSLOTH_STUDIO_HOME"
         _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
-    fi
-    if [ -n "${STUDIO_HOME:-}" ]; then
+    elif [ -n "${STUDIO_HOME:-}" ]; then
         _emit "$STUDIO_HOME"
         _from_conf "$STUDIO_HOME/share/studio.conf"
     fi
-    # 2. default-mode conf.
+    # Default-mode conf.
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
 }
 
