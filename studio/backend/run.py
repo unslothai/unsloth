@@ -640,14 +640,21 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    # Run server in a daemon thread
+    # Run server in a daemon thread.
+    # Use an explicit new_event_loop() + run_until_complete() instead of
+    # asyncio.run() to avoid nest_asyncio's global patches to asyncio.run
+    # interfering when called from a thread while Colab/IPython already has
+    # a running loop on the main thread.
     def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            asyncio.run(_server.serve())
+            loop.run_until_complete(_server.serve())
         except BaseException as exc:
             startup_errors.append(exc)
             startup_failed.set()
         finally:
+            loop.close()
             if not ready_event.is_set():
                 startup_failed.set()
 

@@ -106,8 +106,16 @@ def start(port: int = 8888):
 
     logger.info("   Server started!")
 
-    # Brief pause to let Colab's proxy infrastructure register the port
-    time.sleep(2)
+    # Poll health endpoint to confirm the server is truly reachable before
+    # showing the link and registering the iframe — avoids the race where
+    # ready_event fires but the Colab proxy hasn't registered the port yet.
+    import urllib.request
+    for _ in range(40):
+        try:
+            urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout=1)
+            break
+        except Exception:
+            time.sleep(0.5)
 
     # Show the clickable link with real URL
     show_link(port)

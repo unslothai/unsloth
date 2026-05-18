@@ -317,6 +317,9 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
+    # Colab's serve_kernel_port_as_iframe embeds the app from *.prod.colab.dev
+    _is_colab = bool(os.environ.get("COLAB_BACKEND_URL") or os.environ.get("COLAB_GPU"))
+    frame_ancestors = "*.prod.colab.dev" if _is_colab else "'none'"
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
@@ -326,7 +329,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
-        "frame-ancestors 'none'; "
+        f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
         "base-uri 'self'"
     )
@@ -342,7 +345,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if nonce is not None:
             del response.headers[_CSP_SCRIPT_NONCE_HEADER]
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        response.headers.setdefault("X-Frame-Options", "DENY")
+        # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
+        # DENY would block serve_kernel_port_as_iframe regardless of CSP.
+        _is_colab = bool(os.environ.get("COLAB_BACKEND_URL") or os.environ.get("COLAB_GPU"))
+        if not _is_colab:
+            response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(
