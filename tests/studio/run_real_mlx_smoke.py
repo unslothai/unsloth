@@ -278,11 +278,6 @@ def cmd_train(args) -> int:
             optim = "adamw",
             weight_decay = 0.0,
             max_grad_norm = 1.0,
-            # Disable per-element clip so the trainer uses max_grad_norm.
-            # No value converges in 7 steps at seed=3407 (5.0 diverges,
-            # 1.0 stalls ~3.2); only norm clip drops loss <0.01 and
-            # emits "Unsloth!". See scripts/cuda_mlx_*.
-            max_grad_value = 0.0,
             logging_steps = 1,
             max_seq_length = 64,
             seed = SEED,
@@ -301,14 +296,11 @@ def cmd_train(args) -> int:
             args = config,
         )
 
-        def _on_step(
-            step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens, grad_norm = None
-        ):
+        def _on_step(step, total, loss, lr, tok_s, peak_gb, elapsed, num_tokens):
             losses_per_step.append(round(float(loss), 4))
-            grad_text = f"  grad={grad_norm:.4f}" if grad_norm is not None else ""
             print(
                 f"  step {step}/{total}  loss={loss:.4f}  lr={lr:.2e}  "
-                f"tok/s={tok_s:.0f}  peak={peak_gb:.2f}GB{grad_text}",
+                f"tok/s={tok_s:.0f}  peak={peak_gb:.2f}GB",
                 flush = True,
             )
 
@@ -340,16 +332,6 @@ def cmd_train(args) -> int:
     metrics["post_train_loss"] = round(post_loss, 4)
     metrics["post_train_grad_norm"] = round(post_norm, 4)
     assert post_loss < pre_loss, f"post {post_loss} >= pre {pre_loss}"
-    # Memorisation gate: teacher-forced loss on the training row must
-    # be very low after 7 steps of overfit-on-one-example. This is the
-    # robust signal that the model learned the trained continuation,
-    # regardless of MLX's autoregressive-generation numerics (which can
-    # diverge from CUDA on a single near-zero-loss adamw step at
-    # seed=3407 -- step-7 grad spike, see scripts/cuda_mlx_step7_*).
-    assert post_loss < 1.0, (
-        f"post_train_loss={post_loss:.4f} >= 1.0 -- training did not "
-        "memorise the single training row in 7 steps"
-    )
 
     from mlx_lm import generate
 
@@ -363,23 +345,9 @@ def cmd_train(args) -> int:
             verbose = False,
         )
     metrics["in_memory_generation"] = in_mem_out
-    # Soft check: the autoregressive completion *should* contain the
-    # trained token, but a single near-zero-loss adamw step can perturb
-    # the final logits enough that greedy decoding picks a wrong first
-    # token even when teacher-forced loss is essentially zero. Surface
-    # the mismatch in metrics so regressions are still visible, but
-    # don't gate on it -- the post_train_loss assertion above is the
-    # real memorisation gate, and the lora / merged / gguf reload paths
-    # below each have their own soft-checked generation assertion.
-    metrics["in_memory_generation_has_expected"] = EXPECT_IN_OUTPUT in in_mem_out
-    if EXPECT_IN_OUTPUT not in in_mem_out:
-        print(
-            f"  [WARN] in-memory completion did not contain "
-            f"{EXPECT_IN_OUTPUT!r} (post_train_loss={post_loss:.4f}, "
-            f"completion={in_mem_out!r}). Continuing -- the trained "
-            "weights still need to round-trip through save/reload.",
-            flush = True,
-        )
+    assert (
+        EXPECT_IN_OUTPUT in in_mem_out
+    ), f"in-memory generation gibberish: {in_mem_out!r}"
 
     # Save LoRA. unsloth-zoo#627 fixed FastMLXModel.from_pretrained(lora_dir)
     # so the cold-start reload below works on the saved adapter dir directly.
@@ -494,47 +462,9 @@ def cmd_reload(args) -> int:
         out = generate(m, t, prompt = PROMPT, max_tokens = 48, verbose = False)
     metrics["generation"] = out
     print(f"  [reload:{args.format}] output: {out!r}", flush = True)
-
-    # Verify save/reload preserved the trained weights via teacher-
-    # forced loss on the training row: the reloaded model should have
-    # approximately the same loss on TRAIN_TEXT as the in-memory model
-    # had at post_train_loss. This is the real save/reload invariant
-    # and is robust to MLX's known near-zero-loss adamw greedy-decode
-    # perturbation (step-7 grad spike at seed=3407, see
-    # scripts/cuda_mlx_step7_*) which can flip the first generated
-    # token while leaving teacher-forced loss essentially identical.
-    train_metrics_path = save_dir.parent / "train_metrics.json"
-    in_mem_loss = None
-    in_mem_out = None
-    if train_metrics_path.exists():
-        try:
-            tm = json.loads(train_metrics_path.read_text())
-            in_mem_loss = tm.get("post_train_loss")
-            in_mem_out = tm.get("in_memory_generation")
-        except Exception:
-            in_mem_loss = None
-    metrics["in_memory_generation_ref"] = in_mem_out
-    metrics["in_memory_post_train_loss"] = in_mem_loss
-    metrics["reload_completion_matches_in_memory"] = (
-        in_mem_out is not None and out == in_mem_out
-    )
-    if isinstance(in_mem_loss, (int, float)) and math.isfinite(in_mem_loss):
-        reload_loss, _ = _compute_loss_and_grad_norm(m, t, TRAIN_TEXT)
-        metrics["reload_post_train_loss"] = round(reload_loss, 4)
-        # float16 round-trip should be near-exact for LoRA + merged;
-        # 0.2 tolerates the dequant noise we have seen empirically.
-        assert abs(reload_loss - float(in_mem_loss)) < 0.2, (
-            f"reload {args.format!r} loss diverged from in-memory: "
-            f"reload={reload_loss:.4f}, in-memory={in_mem_loss:.4f}"
-        )
-    else:
-        # Fallback when train_metrics.json wasn't found (older
-        # workdir layouts): keep a non-empty-completion gate.
-        body = out.replace(PROMPT, "", 1).strip()
-        assert len(body) >= 4, (
-            f"reload {args.format!r} produced no usable output for "
-            f"{PROMPT!r}: {out!r}"
-        )
+    assert (
+        EXPECT_IN_OUTPUT in out
+    ), f"reload {args.format!r} produced gibberish for {PROMPT!r}: {out!r}"
 
     metrics["final_peak_gpu_gb"] = round(_peak_gpu_gb(), 3)
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
@@ -587,18 +517,9 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(
             f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}"
         )
-    # llama.cpp uses different tokenisation + sampling internals than
-    # mlx_lm, so the GGUF reload completion does not have to match the
-    # in-memory completion exactly. Require non-empty, non-prompt-only
-    # output to catch real save/reload corruption (zero-weight model,
-    # tokenizer mismatch). Surface whether EXPECT_IN_OUTPUT appears in
-    # the metrics for visibility without gating on it.
-    body = (proc.stdout or "").replace(PROMPT, "", 1).strip()
-    metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in (proc.stdout or "")
-    assert len(body) >= 4, (
-        f"GGUF reload produced no usable output for {PROMPT!r}: "
-        f"{proc.stdout[:400]!r}"
-    )
+    assert EXPECT_IN_OUTPUT in (
+        proc.stdout or ""
+    ), f"GGUF reload gibberish for {PROMPT!r}: {proc.stdout[:400]!r}"
 
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
     _write_metrics(save_dir.parent / "gguf_reload_metrics.json", metrics)
