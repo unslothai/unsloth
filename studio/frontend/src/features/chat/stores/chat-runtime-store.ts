@@ -480,6 +480,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set((state) => {
+      if (!state.settingsHydrated) {
+        return { params };
+      }
       const changedParams = getChangedInferenceParams(params, state.params);
       if (hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
