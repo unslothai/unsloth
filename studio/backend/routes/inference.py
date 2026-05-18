@@ -1282,12 +1282,23 @@ async def get_status(
     try:
         llama_backend = get_llama_cpp_backend()
 
-        # MTP capability probe (cached). Drives the UI update banner.
+        # MTP probe + freshness check (both cached). Drive the UI banner.
         try:
-            _caps = type(llama_backend).probe_server_capabilities()
+            _bin = type(llama_backend)._find_llama_server_binary()
+            _caps = type(llama_backend).probe_server_capabilities(_bin)
             _supports_mtp = bool(_caps.get("supports_mtp", False))
         except Exception:
+            _bin = None
             _supports_mtp = True  # fail open
+        try:
+            from utils.llama_cpp_freshness import check_prebuilt_freshness
+
+            _freshness = check_prebuilt_freshness(_bin)
+        except Exception:
+            _freshness = {}
+        _stale = bool(_freshness.get("stale"))
+        _installed_tag = _freshness.get("installed_tag")
+        _latest_tag = _freshness.get("latest_tag")
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
@@ -1332,6 +1343,9 @@ async def get_status(
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
                 llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
             )
 
         # Otherwise, report Unsloth backend status
@@ -1393,6 +1407,9 @@ async def get_status(
             supports_tools = False,
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
+            llama_cpp_prebuilt_stale = _stale,
+            llama_cpp_installed_tag = _installed_tag,
+            llama_cpp_latest_tag = _latest_tag,
         )
 
     except Exception as e:
