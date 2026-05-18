@@ -66,7 +66,6 @@ import {
   HeadphonesIcon,
   LightbulbIcon,
   LightbulbOffIcon,
-  LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
@@ -246,24 +245,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
-          <GeneratingSpinner />
           {!hideComposer && <ComposerAnimated />}
         </div>
-      </div>
-    </div>
-  );
-};
-
-const GeneratingSpinner: FC = () => {
-  const status = useChatRuntimeStore((s) => s.generatingStatus);
-  if (!status) {
-    return null;
-  }
-  return (
-    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
       </div>
     </div>
   );
