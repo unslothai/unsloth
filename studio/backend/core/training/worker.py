@@ -1025,6 +1025,36 @@ def run_training_process(
         "ignore"  # Suppress warnings at C-level before imports
     )
 
+    # Offline auto-detect: skip ~25s of HF retries per call when DNS is
+    # dead. Scoped to this subprocess (orchestrator spawns a fresh one).
+    if "HF_HUB_OFFLINE" not in os.environ:
+        import socket as _socket
+        import threading as _threading
+
+        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
+        _result: list = [None]
+
+        def _probe() -> None:
+            try:
+                _socket.gethostbyname("huggingface.co")
+                _result[0] = False
+            except Exception:
+                _result[0] = True
+
+        _t = _threading.Thread(target = _probe, daemon = True)
+        _t.start()
+        _t.join(2.0)
+        if _result[0] is None or _result[0] is True:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # logger isn't configured yet; print to stderr instead.
+            print(
+                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
+                file = sys.stderr,
+                flush = True,
+            )
+
     import warnings
     from loggers.config import LogConfig
 
