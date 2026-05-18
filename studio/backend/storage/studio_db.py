@@ -934,6 +934,21 @@ def list_chat_messages(thread_id: str) -> list[dict]:
         conn.close()
 
 
+def get_chat_message(thread_id: str, message_id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT * FROM chat_messages
+            WHERE thread_id = ? AND id = ?
+            """,
+            (thread_id, message_id),
+        ).fetchone()
+        return _chat_message_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
     if not thread_ids:
         return []

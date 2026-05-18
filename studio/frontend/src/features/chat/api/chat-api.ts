@@ -372,6 +372,17 @@ export async function listChatMessages(
   return data.messages;
 }
 
+export async function getChatMessage(
+  threadId: string,
+  messageId: string,
+): Promise<MessageRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<MessageRecord>(response);
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {

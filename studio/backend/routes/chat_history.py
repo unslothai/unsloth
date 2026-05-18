@@ -16,6 +16,7 @@ from storage.studio_db import (
     count_chat_threads,
     delete_chat_threads,
     get_chat_thread,
+    get_chat_message,
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
@@ -224,6 +225,20 @@ async def get_thread_messages(
     return ChatMessageListResponse(
         messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
     )
+
+
+@router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
+async def get_thread_message(
+    thread_id: str,
+    message_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    if get_chat_thread(thread_id) is None:
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    message = get_chat_message(thread_id, message_id)
+    if message is None:
+        raise HTTPException(status_code = 404, detail = f"Message {message_id} not found")
+    return ChatMessage(**message)
 
 
 @router.put("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)

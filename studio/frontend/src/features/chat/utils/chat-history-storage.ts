@@ -5,6 +5,7 @@ import {
   buildBackendChatExport,
   clearBackendChats,
   deleteChatThreads,
+  getChatMessage,
   getChatThread,
   listChatMessages,
   listChatThreads,
@@ -295,6 +296,7 @@ export async function getStoredChatThread(
   if (backendThread && !isChatThreadDeleted(backendThread.id)) {
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
+  if (isLegacyChatImportDone()) return undefined;
   return legacyThread && !isChatThreadDeleted(legacyThread.id)
     ? legacyThread
     : undefined;
@@ -319,6 +321,7 @@ export async function ensureStoredChatThread(
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
   if (!legacyThread || isChatThreadDeleted(legacyThread.id)) return undefined;
+  if (!fallback && isLegacyChatImportDone()) return undefined;
   return importLegacyThread(legacyThread);
 }
 
@@ -350,9 +353,40 @@ export async function listStoredChatMessages(
     }
     return merged.messages;
   }
+  if (backendMessages && isLegacyChatImportDone()) return [];
   return legacyMessages.filter(
     (message) => !isChatThreadDeleted(message.threadId),
   );
+}
+
+export async function getStoredChatMessage(
+  threadId: string,
+  messageId: string,
+): Promise<MessageRecord | undefined> {
+  if (isChatThreadDeleted(threadId)) return undefined;
+  const legacyMessage = await db.messages.get(messageId);
+  const matchingLegacyMessage =
+    legacyMessage?.threadId === threadId ? legacyMessage : undefined;
+  let backendMessage: MessageRecord | null;
+  try {
+    backendMessage = await getChatMessage(threadId, messageId);
+  } catch (error) {
+    if (matchingLegacyMessage) {
+      return matchingLegacyMessage;
+    }
+    throw error;
+  }
+  if (backendMessage) {
+    if (
+      matchingLegacyMessage &&
+      messageNeedsBackfill(backendMessage, matchingLegacyMessage)
+    ) {
+      return mergeLegacyMessageFields(backendMessage, matchingLegacyMessage);
+    }
+    return backendMessage;
+  }
+  if (isLegacyChatImportDone()) return undefined;
+  return matchingLegacyMessage;
 }
 
 export async function listStoredChatThreads(
@@ -369,8 +403,11 @@ export async function listStoredChatThreads(
     await importLegacyChatsIfNeeded().catch(() => undefined);
     backendThreads = await listChatThreads(args).catch(() => backendThreads);
   }
+  const includeLegacyOnly = !backendThreads || !isLegacyChatImportDone();
   const byId = new Map<string, ThreadRecord>();
-  for (const thread of legacyThreads) byId.set(thread.id, thread);
+  if (includeLegacyOnly) {
+    for (const thread of legacyThreads) byId.set(thread.id, thread);
+  }
   for (const thread of backendThreads ?? []) {
     if (!isChatThreadDeleted(thread.id)) byId.set(thread.id, thread);
   }
@@ -485,20 +522,22 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     if (isChatThreadDeleted(message.threadId)) continue;
     messagesById.set(message.id, message);
   }
+  const includeLegacyOnly = backend === null || !isLegacyChatImportDone();
   for (const thread of legacyThreads as ThreadRecord[]) {
-    if (isChatThreadDeleted(thread.id) || backendThreadIds.has(thread.id)) {
+    if (
+      isChatThreadDeleted(thread.id) ||
+      backendThreadIds.has(thread.id) ||
+      !includeLegacyOnly
+    ) {
       continue;
     }
     threadsById.set(thread.id, thread);
   }
-  const includeLegacyOnlyMessages = backend === null || !isLegacyChatImportDone();
   for (const message of legacyMessages as MessageRecord[]) {
     if (isChatThreadDeleted(message.threadId)) {
       continue;
     }
-    if (!includeLegacyOnlyMessages && backendThreadIds.has(message.threadId)) {
-      continue;
-    }
+    if (!includeLegacyOnly) continue;
     if (!messagesById.has(message.id)) {
       messagesById.set(message.id, message);
     }

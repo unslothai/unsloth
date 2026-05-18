@@ -36,6 +36,7 @@ let customPresetsMutationVersion = 0;
 let activePresetMutationVersion = 0;
 let activePresetSourceMutationVersion = 0;
 let settingsSaveQueue: Promise<void> = Promise.resolve();
+let settingsHydrationPromise: Promise<void> | null = null;
 
 function warnSettingsPersistenceFailure(): void {
   if (hasShownSettingsPersistenceWarning) {
@@ -448,26 +449,34 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     if (get().settingsHydrated) {
       return;
     }
-    const hydrationVersions = getSettingsHydrationVersions();
-    try {
-      const settings = await loadChatSettingsWithLegacyImport();
-      set((state) => {
-        if (state.settingsHydrated) {
-          return state;
-        }
-        const nextState: Partial<ChatRuntimeStore> = {
-          settingsHydrated: true,
-          ...getHydratedPresetState(settings, state, hydrationVersions.presets),
-          ...getHydratedSettingsState(settings, state, hydrationVersions),
-        };
-        return nextState;
-      });
-    } catch {
-      set((state) =>
-        state.settingsHydrated ? state : { settingsHydrated: true },
-      );
-      warnSettingsPersistenceFailure();
+    if (settingsHydrationPromise) {
+      return settingsHydrationPromise;
     }
+    settingsHydrationPromise = (async () => {
+      const hydrationVersions = getSettingsHydrationVersions();
+      try {
+        const settings = await loadChatSettingsWithLegacyImport();
+        set((state) => {
+          if (state.settingsHydrated) {
+            return state;
+          }
+          const nextState: Partial<ChatRuntimeStore> = {
+            settingsHydrated: true,
+            ...getHydratedPresetState(settings, state, hydrationVersions.presets),
+            ...getHydratedSettingsState(settings, state, hydrationVersions),
+          };
+          return nextState;
+        });
+      } catch {
+        set((state) =>
+          state.settingsHydrated ? state : { settingsHydrated: true },
+        );
+        warnSettingsPersistenceFailure();
+      } finally {
+        settingsHydrationPromise = null;
+      }
+    })();
+    return settingsHydrationPromise;
   },
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
