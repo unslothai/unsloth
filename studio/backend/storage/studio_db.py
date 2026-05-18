@@ -127,10 +127,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             model_id TEXT,
             pair_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            openai_code_exec_container_id TEXT,
+            anthropic_code_exec_container_id TEXT
         )
         """
     )
+    chat_thread_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
+    }
+    if "openai_code_exec_container_id" not in chat_thread_cols:
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT"
+        )
+    if "anthropic_code_exec_container_id" not in chat_thread_cols:
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -641,6 +654,10 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "pairId": data.get("pair_id") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
+        "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
+        "anthropicCodeExecContainerId": data.get(
+            "anthropic_code_exec_container_id"
+        ),
     }
 
 
@@ -669,15 +686,17 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, archived, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
                 model_id = excluded.model_id,
                 pair_id = excluded.pair_id,
                 archived = excluded.archived,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                openai_code_exec_container_id = excluded.openai_code_exec_container_id,
+                anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id
             """,
             (
                 thread["id"],
@@ -687,6 +706,8 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("pairId"),
                 1 if thread.get("archived") else 0,
                 int(thread["createdAt"]),
+                thread.get("openaiCodeExecContainerId"),
+                thread.get("anthropicCodeExecContainerId"),
             ),
         )
         conn.commit()
@@ -703,6 +724,14 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
         "pairId": ("pair_id", patch.get("pairId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
+        "openaiCodeExecContainerId": (
+            "openai_code_exec_container_id",
+            patch.get("openaiCodeExecContainerId"),
+        ),
+        "anthropicCodeExecContainerId": (
+            "anthropic_code_exec_container_id",
+            patch.get("anthropicCodeExecContainerId"),
+        ),
     }
     assignments = []
     values = []

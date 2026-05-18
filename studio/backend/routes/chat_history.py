@@ -38,6 +38,8 @@ class ChatThread(BaseModel):
     pairId: Optional[str] = None
     archived: bool = False
     createdAt: int
+    openaiCodeExecContainerId: Optional[str] = None
+    anthropicCodeExecContainerId: Optional[str] = None
 
 
 class ChatThreadPatch(BaseModel):
@@ -47,6 +49,8 @@ class ChatThreadPatch(BaseModel):
     pairId: Optional[str] = None
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
+    openaiCodeExecContainerId: Optional[str] = None
+    anthropicCodeExecContainerId: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
