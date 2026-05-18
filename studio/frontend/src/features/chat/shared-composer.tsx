@@ -525,6 +525,19 @@ export function SharedComposer({
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id || model2?.id);
 
+    // Compare mode with neither pane having a model selected: the
+    // SharedComposer would otherwise fall through to the per-handle
+    // append branch, which races both panes into auto-loading the same
+    // model and leaves one pane with an empty bubble + 1000000 tok/s
+    // (issue #5569). Stop here and tell the user to pick models first
+    // so the per-pane picker state stays the source of truth.
+    if (hasCompareHandles && !isGeneralizedCompare && model1 !== undefined && model2 !== undefined) {
+      toast.error("Pick a model in each pane to compare", {
+        description: "Use the model dropdowns at the top of each pane, then send your prompt.",
+      });
+      return;
+    }
+
     if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
       // Single mode: the loaded model's runtime capability is known
       // here. Compare mode defers — each ensureModelLoaded below sets
