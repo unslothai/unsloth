@@ -66,7 +66,6 @@ import {
   HeadphonesIcon,
   LightbulbIcon,
   LightbulbOffIcon,
-  LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
@@ -86,7 +85,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -246,24 +245,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
-          <GeneratingSpinner />
           {!hideComposer && <ComposerAnimated />}
         </div>
-      </div>
-    </div>
-  );
-};
-
-const GeneratingSpinner: FC = () => {
-  const status = useChatRuntimeStore((s) => s.generatingStatus);
-  if (!status) {
-    return null;
-  }
-  return (
-    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
       </div>
     </div>
   );
@@ -305,14 +288,19 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const hasPendingAttachments = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) => attachment.status.type === "running",
+    ),
+  );
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current) {
+      if (disabled || isComposingRef.current || hasPendingAttachments) {
         event.preventDefault();
       }
     },
-    [disabled, isComposingRef],
+    [disabled, hasPendingAttachments, isComposingRef],
   );
 
   const composerContent = (
@@ -324,7 +312,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         placeholder="Send a message..."
         className="aui-composer-input composer-input"
         minRows={1}
-        maxRows={6}
+        maxRows={12}
         autoFocus={!disabled}
         disabled={disabled}
         aria-label="Message input"
@@ -334,8 +322,8 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing}
-        blockSend={() => isComposingRef.current}
+        disabled={disabled || isComposing || hasPendingAttachments}
+        blockSend={() => isComposingRef.current || hasPendingAttachments}
       />
     </>
   );

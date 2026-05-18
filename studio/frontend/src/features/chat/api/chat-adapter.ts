@@ -3,7 +3,7 @@
 
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { getAuthToken } from "@/features/auth/session";
 import { apiUrl } from "@/lib/api-base";
 import {

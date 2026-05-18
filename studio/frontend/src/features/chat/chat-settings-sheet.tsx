@@ -62,7 +62,7 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type ExternalProviderConfig,
