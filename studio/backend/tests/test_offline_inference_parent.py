@@ -114,7 +114,10 @@ class TestEnvOffline:
 
 class TestTransformersVersionOfflineShortCircuits:
     def test_tokenizer_config_skips_urllib_when_offline(
-        self, monkeypatch, clean_offline_env, tmp_path,
+        self,
+        monkeypatch,
+        clean_offline_env,
+        tmp_path,
     ):
         # No local config, env is offline -> must NOT call urlopen.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -128,7 +131,10 @@ class TestTransformersVersionOfflineShortCircuits:
             assert _check_tokenizer_config_needs_v5(unique) is False
 
     def test_config_550_skips_urllib_when_offline(
-        self, monkeypatch, clean_offline_env, tmp_path,
+        self,
+        monkeypatch,
+        clean_offline_env,
+        tmp_path,
     ):
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         unique = f"unsloth/never-cached-{tmp_path.name}-cfg"
@@ -181,12 +187,16 @@ class TestLoraDetectOffline:
         # once. Other call sites in from_identifier may also hit it; the
         # essential check is that it's bounded, not zero (which would
         # indicate we silently skip the check and miss cached LoRA repos).
-        assert mock.call_count >= 1, \
-            "LoRA-detect path must consult hf_model_info even offline; the " \
+        assert mock.call_count >= 1, (
+            "LoRA-detect path must consult hf_model_info even offline; the "
             "OfflineModeIsEnabled short-circuit is what makes it cheap"
+        )
 
     def test_cached_lora_detected_when_api_unreachable(
-        self, monkeypatch, clean_offline_env, tmp_path,
+        self,
+        monkeypatch,
+        clean_offline_env,
+        tmp_path,
     ):
         """Even when the HF API is unreachable, a cached adapter_config.json
         in the snapshot must mark the repo as a LoRA."""
@@ -241,7 +251,7 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
         # Locate the offline auto-detect block.
         m = re.search(
             r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ\s*:.*?'
-            r'print\([^)]*HF_HUB_OFFLINE=1[^)]*\)',
+            r"print\([^)]*HF_HUB_OFFLINE=1[^)]*\)",
             src,
             flags = re.DOTALL,
         )
@@ -251,6 +261,6 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             "training worker still calls socket.setdefaulttimeout; "
             "concurrent sockets would inherit the probe timeout"
         )
-        assert "threading" in block and "Thread" in block, (
-            "training worker probe must run on a daemon thread"
-        )
+        assert (
+            "threading" in block and "Thread" in block
+        ), "training worker probe must run on a daemon thread"
