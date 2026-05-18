@@ -21,35 +21,57 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Optional-dependency stubs.  Use `setdefault`-on-failed-import instead
+# of an unconditional `sys.modules.setdefault(...)` so we never shadow a
+# real module that just has not been imported yet -- otherwise later
+# tests in the same pytest session that do `import httpx` (etc.) would
+# receive our stub and fail with AttributeError on real-API access.
+def _install_stub_if_missing(name: str, factory) -> None:
+    try:
+        __import__(name)
+    except ImportError:
+        sys.modules[name] = factory()
 
-_structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+def _build_loggers_stub() -> _types.ModuleType:
+    mod = _types.ModuleType("loggers")
+    mod.get_logger = lambda name: __import__("logging").getLogger(name)
+    return mod
+
+
+def _build_structlog_stub() -> _types.ModuleType:
+    mod = _types.ModuleType("structlog")
+    mod.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    return mod
+
+
+def _build_httpx_stub() -> _types.ModuleType:
+    mod = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+    ):
+        setattr(mod, _exc, type(_exc, (Exception,), {}))
+    mod.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    mod.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    return mod
+
+
+_install_stub_if_missing("loggers", _build_loggers_stub)
+_install_stub_if_missing("structlog", _build_structlog_stub)
+_install_stub_if_missing("httpx", _build_httpx_stub)
 
 import pytest
 
