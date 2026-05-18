@@ -62,9 +62,12 @@ _MAX_REPROMPTS = 3
 #   1. Trailing intent at end of buffer: "Let me clone the repo."
 #   2. Numbered or bulleted list under a "Let me ...:" header.
 #   3. Bare trailing colon: "Let me check the repo:"
+# "let me know" is a closing phrase, not a mid-plan signal; exclude it via
+# negative lookahead so a final "If you need anything else, let me know."
+# does not trigger spurious auto-continues.
 _TRAILING_PLAN_INTENT = re.compile(
     r"(?i)("
-    r"let me|now let me|i['’]ll now|next,?\s*i['’]ll|"
+    r"let me(?!\s+know\b)|now let me|i['’]ll now|next,?\s*i['’]ll|"
     r"i['’]m going to|i will now|let['’]s now"
     r")[^.!?\n]*[.!?]?\s*$"
 )
