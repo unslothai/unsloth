@@ -2632,10 +2632,10 @@ class LlamaCppBackend:
                 #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
                 #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
                 #
-                # Params from llama.cpp docs (docs/speculative.md):
-                #   --spec-ngram-size-n 24  (small n not recommended)
-                #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
-                #     dense models can reduce these)
+                # Params from llama.cpp server README:
+                #   --spec-ngram-mod-n-match 24 (lookup length)
+                #   --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+                #   (MoEs need long drafts; dense models can reduce these)
                 # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
                 # ref: https://github.com/ggml-org/llama.cpp/pull/19164
                 # ref: https://github.com/ggml-org/llama.cpp/pull/18471
@@ -2695,6 +2695,8 @@ class LlamaCppBackend:
                             else:
                                 # CPU/Mac: chain ngram-mod + MTP in one
                                 # comma-separated --spec-type (not repeated).
+                                # ngram-mod knobs match llama.cpp defaults
+                                # (n-match 24, n-min 48, n-max 64).
                                 cmd.extend(
                                     [
                                         "--spec-type",
@@ -2706,7 +2708,7 @@ class LlamaCppBackend:
                                         "--spec-ngram-mod-n-min",
                                         "48",
                                         "--spec-ngram-mod-n-max",
-                                        "6",
+                                        "64",
                                     ]
                                 )
                             self._speculative_type = "draft-mtp"
@@ -2716,13 +2718,15 @@ class LlamaCppBackend:
                     elif normalized_spec in _valid_spec_types:
                         cmd.extend(["--spec-type", normalized_spec])
                         if normalized_spec == "ngram-mod":
+                            # llama.cpp defaults; legacy --spec-ngram-size-n
+                            # / --draft-{min,max} were removed for ngram-mod.
                             cmd.extend(
                                 [
-                                    "--spec-ngram-size-n",
+                                    "--spec-ngram-mod-n-match",
                                     "24",
-                                    "--draft-min",
+                                    "--spec-ngram-mod-n-min",
                                     "48",
-                                    "--draft-max",
+                                    "--spec-ngram-mod-n-max",
                                     "64",
                                 ]
                             )

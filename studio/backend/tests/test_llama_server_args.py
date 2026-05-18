@@ -55,7 +55,7 @@ from core.inference.llama_server_args import (
             "--spec-ngram-mod-n-min",
             "48",
             "--spec-ngram-mod-n-max",
-            "6",
+            "64",
         ],
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
