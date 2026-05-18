@@ -24,6 +24,8 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  CHAT_REASONING_ENABLED_KEY,
+  loadOptionalBool,
   type ReasoningEffort,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -253,6 +255,10 @@ export function useChatModelRuntime() {
         }
 
         // Restore reasoning/tools support flags and context length
+        const hydratingExistingModel =
+          selectedCheckpoint !== statusRes.active_model ||
+          useChatRuntimeStore.getState().activeGgufVariant !==
+            (statusRes.gguf_variant ?? null);
         const supportsReasoning = statusRes.supports_reasoning ?? false;
         const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
         const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
@@ -262,6 +268,9 @@ export function useChatModelRuntime() {
             : (["low", "medium", "high"] as const);
         const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
         const supportsTools = statusRes.supports_tools ?? false;
+        const storedReasoningEnabled = loadOptionalBool(
+          CHAT_REASONING_ENABLED_KEY,
+        );
         const currentGgufContextLength = statusRes.is_gguf
           ? (statusRes.context_length ?? null)
           : null;
@@ -337,7 +346,11 @@ export function useChatModelRuntime() {
         });
 
         // Set reasoning default for Qwen3.5/3.6 small models
-        if (supportsReasoning) {
+        if (
+          supportsReasoning &&
+          hydratingExistingModel &&
+          storedReasoningEnabled === null
+        ) {
           let reasoningDefault = true;
           const mid = statusRes.active_model.toLowerCase();
           if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
@@ -440,6 +453,9 @@ export function useChatModelRuntime() {
       const previousCheckpoint = currentCheckpoint;
       const previousVariant =
         useChatRuntimeStore.getState().activeGgufVariant ?? null;
+      const reloadingSameModel =
+        previousCheckpoint === modelId &&
+        (ggufVariant ?? null) === (previousVariant ?? null);
       const previousModel = previousCheckpoint
         ? models.find((entry) => entry.id === previousCheckpoint)
         : undefined;
@@ -605,6 +621,8 @@ export function useChatModelRuntime() {
             const keepCustomCtx = null;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
+            const supportsReasoning = loadResponse.supports_reasoning ?? false;
+            const supportsTools = loadResponse.supports_tools ?? false;
             const reasoningEffortLevels =
               reasoningStyle === "reasoning_effort"
                 ? (["low", "medium", "high"] as const)
@@ -620,17 +638,27 @@ export function useChatModelRuntime() {
               ggufNativeContextLength: reportedNativeCtx,
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
-              supportsReasoning: loadResponse.supports_reasoning ?? false,
+              supportsReasoning,
               reasoningAlwaysOn,
-              reasoningEnabled: reasoningAlwaysOn ? true : reasoningDefault,
+              reasoningEnabled: reasoningAlwaysOn
+                ? true
+                : reloadingSameModel && supportsReasoning
+                  ? stateBeforeUnload.reasoningEnabled
+                  : reasoningDefault,
               reasoningStyle,
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
               reasoningEffortLevels,
               reasoningEffort: clampedReasoningEffort,
               supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
-              supportsTools: loadResponse.supports_tools ?? false,
-              toolsEnabled: loadResponse.supports_tools ?? false,
-              codeToolsEnabled: loadResponse.supports_tools ?? false,
+              supportsTools,
+              toolsEnabled:
+                reloadingSameModel && supportsTools
+                  ? stateBeforeUnload.toolsEnabled
+                  : supportsTools,
+              codeToolsEnabled:
+                reloadingSameModel && supportsTools
+                  ? stateBeforeUnload.codeToolsEnabled
+                  : supportsTools,
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
               speculativeType: loadedSpec,

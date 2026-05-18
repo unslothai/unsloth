@@ -22,8 +22,11 @@ const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
 const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
+export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
+export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
+export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type ReasoningEffort =
@@ -62,13 +65,18 @@ function canUseStorage(): boolean {
 }
 
 function loadBool(key: string, fallback: boolean): boolean {
-  if (!canUseStorage()) return fallback;
+  const raw = loadOptionalBool(key);
+  return raw ?? fallback;
+}
+
+export function loadOptionalBool(key: string): boolean | null {
+  if (!canUseStorage()) return null;
   try {
     const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
+    if (raw === null) return null;
     return raw === "true";
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -329,7 +337,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
-  reasoningEnabled: true,
+  reasoningEnabled: loadBool(CHAT_REASONING_ENABLED_KEY, true),
   reasoningStyle: "enable_thinking",
   reasoningEffort: loadReasoningEffort("medium"),
   supportsReasoningOff: false,
@@ -340,8 +348,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   supportsTools: false,
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
-  toolsEnabled: false,
-  codeToolsEnabled: false,
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
@@ -465,7 +473,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
     })),
-  setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setReasoningEnabled: (reasoningEnabled) =>
+    set(() => {
+      saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      return { reasoningEnabled };
+    }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
@@ -485,8 +497,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       saveBool(PRESERVE_THINKING_KEY, preserveThinking);
       return { preserveThinking };
     }),
-  setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
-  setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
+  setToolsEnabled: (toolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      return { toolsEnabled };
+    }),
+  setCodeToolsEnabled: (codeToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
+      return { codeToolsEnabled };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
