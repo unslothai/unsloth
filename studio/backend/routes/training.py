@@ -900,27 +900,56 @@ async def stream_training_progress(
 
 @router.get("/activations")
 def get_activations(
+    job_id: Optional[str] = None,
     output_dir: Optional[str] = None,
     since_step: Optional[int] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Return activation log data for the current (or specified) training run.
+    Return activation data for a training run.
 
-    Reads ``activation_logs/metadata.json`` and ``activation_logs/activation_log.jsonl``
-    from the training output directory.  Returns ``{"metadata": {...}, "records": [...]}``
-    with an empty records list when no data is available yet.
+    Priority: DB (by job_id) → JSONL files (by output_dir or active backend dir).
+    Returns ``{"metadata": {...}, "records": [...]}`` with an empty records list
+    when no data is available yet.
     """
     import json as _json_mod
+    from storage.studio_db import get_activation_metadata, get_activation_records
 
-    # Resolve the output directory to search for activation logs
+    # Resolve job_id from the active backend if not provided
+    resolved_job_id = job_id
+    if not resolved_job_id:
+        try:
+            backend = get_training_backend()
+            resolved_job_id = getattr(backend, "current_job_id", None) or None
+        except Exception:
+            pass
+
+    # ── 1. Try DB first ───────────────────────────────────────────────────────
+    if resolved_job_id:
+        try:
+            db_meta = get_activation_metadata(resolved_job_id)
+            if db_meta is not None:
+                db_records = get_activation_records(resolved_job_id, since_step)
+                wire_records = [
+                    {
+                        "step": r["step"],
+                        "loss": r["loss"],
+                        "layers": r["layers"],
+                        **({"grad_norms": r["grad_norms"]} if r.get("grad_norms") else {}),
+                        **({"lora_norms": r["lora_norms"]} if r.get("lora_norms") else {}),
+                    }
+                    for r in db_records
+                ]
+                return {"metadata": db_meta, "records": wire_records}
+        except Exception as exc:
+            logger.warning("DB activation read failed, falling back to files: %s", exc)
+
+    # ── 2. Fall back to JSONL files ───────────────────────────────────────────
     candidate_dirs: list[Path] = []
 
     if output_dir:
         candidate_dirs.append(Path(output_dir))
     else:
-        # Try the current backend's active output dir (set as soon as training begins)
-        # then fall back to _output_dir (set on completion)
         try:
             backend = get_training_backend()
             active_out = getattr(backend, "_active_output_dir", None)
@@ -932,7 +961,6 @@ def get_activations(
         except Exception:
             pass
 
-    # Find the activation_logs directory
     activation_dir: Optional[Path] = None
     for base in candidate_dirs:
         candidate = base / "activation_logs"
