@@ -121,7 +121,7 @@ def test_detect_safetensors_features_passes_template_through_to_classifier():
     one place. Confirm both branches behave."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name="unsloth/Qwen3-0.6B")
+    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
     flags = _detect_safetensors_features(backend, QWEN3_TEMPLATE)
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
@@ -130,7 +130,7 @@ def test_detect_safetensors_features_passes_template_through_to_classifier():
 def test_detect_safetensors_features_none_template_returns_all_false():
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name="unsloth/Qwen3-0.6B")
+    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
     flags = _detect_safetensors_features(backend, None)
     assert flags == {
         "supports_reasoning": False,
@@ -217,7 +217,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
     from routes.inference import _detect_safetensors_features
 
     flags = _detect_safetensors_features(
-        SimpleNamespace(active_model_name=orch.active_model_name), tpl
+        SimpleNamespace(active_model_name = orch.active_model_name), tpl
     )
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
@@ -253,7 +253,7 @@ def test_orchestrator_missing_chat_template_info_falls_back_to_all_false():
     assert tpl is None
 
     flags = _detect_safetensors_features(
-        SimpleNamespace(active_model_name=orch.active_model_name), tpl
+        SimpleNamespace(active_model_name = orch.active_model_name), tpl
     )
     assert flags["supports_tools"] is False
 
@@ -280,10 +280,10 @@ def test_worker_load_reply_payload_includes_chat_template_info():
 
     backend = _StubBackend("unsloth/Qwen3-0.6B", QWEN3_TEMPLATE)
     mc = SimpleNamespace(
-        identifier="unsloth/Qwen3-0.6B",
-        display_name="Qwen3-0.6B",
-        is_vision=False,
-        is_lora=False,
+        identifier = "unsloth/Qwen3-0.6B",
+        display_name = "Qwen3-0.6B",
+        is_vision = False,
+        is_lora = False,
     )
 
     # Mirror the worker's payload-build block exactly.
@@ -295,9 +295,11 @@ def test_worker_load_reply_payload_includes_chat_template_info():
         "is_gguf": False,
     }
     _bm = getattr(backend, "models", {}) or {}
-    _entry = _bm.get(mc.identifier) or _bm.get(
-        getattr(backend, "active_model_name", None)
-    ) or {}
+    _entry = (
+        _bm.get(mc.identifier)
+        or _bm.get(getattr(backend, "active_model_name", None))
+        or {}
+    )
     _tpl_info = _entry.get("chat_template_info")
     if isinstance(_tpl_info, dict):
         model_info["chat_template_info"] = {
@@ -325,10 +327,10 @@ def test_worker_load_reply_payload_survives_missing_template():
 
     backend = _StubBackend()
     mc = SimpleNamespace(
-        identifier="legacy/no-template",
-        display_name="legacy",
-        is_vision=False,
-        is_lora=False,
+        identifier = "legacy/no-template",
+        display_name = "legacy",
+        is_vision = False,
+        is_lora = False,
     )
 
     model_info = {
@@ -357,8 +359,8 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(
-        active_model_name="unsloth/Qwen3-0.6B",
-        models={
+        active_model_name = "unsloth/Qwen3-0.6B",
+        models = {
             "unsloth/Qwen3-0.6B": {
                 "is_vision": False,
                 "chat_template_info": {

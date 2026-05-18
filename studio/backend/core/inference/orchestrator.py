@@ -714,9 +714,9 @@ class InferenceOrchestrator:
                     # subprocess.
                     _tpl_info = model_info.get("chat_template_info")
                     if isinstance(_tpl_info, dict):
-                        self.models[self.active_model_name][
-                            "chat_template_info"
-                        ] = _tpl_info
+                        self.models[self.active_model_name]["chat_template_info"] = (
+                            _tpl_info
+                        )
                     self.loading_models.discard(model_name)
                     logger.info(
                         "Model '%s' loaded successfully in subprocess", model_name

@@ -353,9 +353,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # supports_tools=False for every safetensors model.
             try:
                 _bm = getattr(backend, "models", {}) or {}
-                _entry = _bm.get(mc.identifier) or _bm.get(
-                    getattr(backend, "active_model_name", None)
-                ) or {}
+                _entry = (
+                    _bm.get(mc.identifier)
+                    or _bm.get(getattr(backend, "active_model_name", None))
+                    or {}
+                )
                 _tpl_info = _entry.get("chat_template_info")
                 if isinstance(_tpl_info, dict):
                     model_info["chat_template_info"] = {
