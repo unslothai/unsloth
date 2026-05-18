@@ -1239,15 +1239,15 @@ step "platform" "$OS"
 # `unsloth studio update` so updates pick up new launcher logic the same way a
 # fresh install would.
 if [ "$_SHORTCUTS_ONLY" = true ]; then
-    if [ "$TAURI_MODE" = true ]; then
-        exit 0
+    # Skip shortcut regen in Tauri mode (the desktop app owns its own shortcuts).
+    if [ "$TAURI_MODE" != true ]; then
+        VENV_ABS_BIN="$VENV_DIR/bin"
+        if [ ! -x "$VENV_ABS_BIN/unsloth" ]; then
+            echo "ERROR: unsloth binary missing at $VENV_ABS_BIN/unsloth; run install.sh first." >&2
+            exit 1
+        fi
+        create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
     fi
-    VENV_ABS_BIN="$VENV_DIR/bin"
-    if [ ! -x "$VENV_ABS_BIN/unsloth" ]; then
-        echo "ERROR: unsloth binary missing at $VENV_ABS_BIN/unsloth; run install.sh first." >&2
-        exit 1
-    fi
-    create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
     exit 0
 fi
 
