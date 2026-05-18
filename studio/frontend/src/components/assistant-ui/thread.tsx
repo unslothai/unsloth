@@ -66,7 +66,6 @@ import {
   HeadphonesIcon,
   LightbulbIcon,
   LightbulbOffIcon,
-  LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
@@ -86,7 +85,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -246,24 +245,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
-          <GeneratingSpinner />
           {!hideComposer && <ComposerAnimated />}
         </div>
-      </div>
-    </div>
-  );
-};
-
-const GeneratingSpinner: FC = () => {
-  const status = useChatRuntimeStore((s) => s.generatingStatus);
-  if (!status) {
-    return null;
-  }
-  return (
-    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
       </div>
     </div>
   );
@@ -305,14 +288,19 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const hasPendingAttachments = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) => attachment.status.type === "running",
+    ),
+  );
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current) {
+      if (disabled || isComposingRef.current || hasPendingAttachments) {
         event.preventDefault();
       }
     },
-    [disabled, isComposingRef],
+    [disabled, hasPendingAttachments, isComposingRef],
   );
 
   const composerContent = (
@@ -324,15 +312,18 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         placeholder="Send a message..."
         className="aui-composer-input composer-input"
         minRows={1}
-        maxRows={6}
+        maxRows={12}
         autoFocus={!disabled}
         disabled={disabled}
         aria-label="Message input"
+        // dir="auto": browser picks LTR/RTL from the first strong char;
+        // no effect on Latin / CJK / Devanagari.
+        dir="auto"
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing}
-        blockSend={() => isComposingRef.current}
+        disabled={disabled || isComposing || hasPendingAttachments}
+        blockSend={() => isComposingRef.current || hasPendingAttachments}
       />
     </>
   );
@@ -555,12 +546,12 @@ const ReasoningToggle: FC = () => {
             type="button"
             disabled={disabled}
             className={cn(
-              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
               disabled
                 ? "cursor-not-allowed opacity-40"
                 : effectiveReasoningVisualEnabled
-                  ? "bg-primary/10 text-primary hover:bg-primary/20"
-                  : "text-muted-foreground hover:bg-muted-foreground/15",
+                  ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                  : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
             )}
             aria-label={`Reasoning effort: ${reasoningEffort}`}
           >
@@ -673,12 +664,12 @@ const PreserveThinkingToggle: FC = () => {
       disabled={disabled}
       onClick={() => setPreserveThinking(!preserveThinking)}
       className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
         disabled
           ? "cursor-not-allowed opacity-40"
           : preserveThinking
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
       )}
       aria-label={
         preserveThinking ? "Disable preserve think" : "Enable preserve think"
@@ -845,7 +836,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
 }) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
         <ComposerAddAttachment />
         <ComposerAudioUpload />
         <ReasoningToggle />
@@ -1161,6 +1152,8 @@ const EditComposer: FC = () => {
         <ComposerPrimitive.Input
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
+          // See main composer above for the dir="auto" rationale.
+          dir="auto"
           {...inputProps}
         />
         <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
