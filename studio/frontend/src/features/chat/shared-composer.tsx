@@ -523,15 +523,21 @@ export function SharedComposer({
       handlesRef.current["model1"] || handlesRef.current["model2"],
     );
     const isGeneralizedCompare =
-      hasCompareHandles && Boolean(model1?.id || model2?.id);
+      hasCompareHandles && Boolean(model1?.id && model2?.id);
 
-    // Compare mode with neither pane having a model selected: the
-    // SharedComposer would otherwise fall through to the per-handle
-    // append branch, which races both panes into auto-loading the same
-    // model and leaves one pane with an empty bubble + 1000000 tok/s
-    // (issue #5569). Stop here and tell the user to pick models first
-    // so the per-pane picker state stays the source of truth.
-    if (hasCompareHandles && !isGeneralizedCompare && model1 !== undefined && model2 !== undefined) {
+    // Generalized compare mode requires BOTH panes to have a model
+    // selected. If either is empty:
+    //   - the per-handle racing dispatch produces an empty bubble + a
+    //     1000000 tok/s readout on the empty side (issue #5569).
+    //   - the half-selected case (one model picked, one empty) clears
+    //     the composer and leaves the empty pane with a dangling user
+    //     prompt and no response because startRun is only called for
+    //     the side with an id.
+    // Both are confusing UX, so block the send and tell the user to
+    // pick a model in each pane. hasCompareHandles is true only inside
+    // GeneralCompareContent, so LoraCompare and single-pane chats are
+    // unaffected.
+    if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
         description: "Use the model dropdowns at the top of each pane, then send your prompt.",
       });
