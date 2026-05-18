@@ -264,7 +264,8 @@ def run_safetensors_tool_loop(
             safety_tc = None
             if has_tool_signal(content_accum):
                 safety_tc = parse_tool_calls_from_text(
-                    content_accum, id_offset = next_call_id,
+                    content_accum,
+                    id_offset = next_call_id,
                 )
             if not safety_tc:
                 # Final answer arrived. Streaming already emitted the
@@ -284,7 +285,8 @@ def run_safetensors_tool_loop(
         else:
             # DRAINING: parse the tool calls out of the full content.
             tool_calls = parse_tool_calls_from_text(
-                content_accum, id_offset = next_call_id,
+                content_accum,
+                id_offset = next_call_id,
             )
             if not tool_calls and auto_heal_tool_calls:
                 # Drained but parser found nothing. Surface the raw
@@ -341,7 +343,9 @@ def run_safetensors_tool_loop(
                 if already_ran_ok:
                     result = DUPLICATE_CALL_NUDGE
                 else:
-                    eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+                    eff_timeout = (
+                        None if tool_call_timeout >= 9999 else tool_call_timeout
+                    )
                     try:
                         result = execute_tool(
                             tool_name,

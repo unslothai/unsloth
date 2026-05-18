@@ -62,4 +62,6 @@ def apply_chat_template_for_generation(
             break
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
+    raise RuntimeError(
+        "apply_chat_template_for_generation: no attempt produced a result"
+    )

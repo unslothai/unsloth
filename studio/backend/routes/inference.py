@@ -3029,6 +3029,7 @@ async def openai_chat_completions(
         # server-tool path returns synchronous JSON to OpenAI clients
         # that did not request streaming.
         try:
+
             def _drain_to_text():
                 full_text = ""
                 gen = sf_generate_with_tools()
