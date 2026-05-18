@@ -655,9 +655,7 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
-        "anthropicCodeExecContainerId": data.get(
-            "anthropic_code_exec_container_id"
-        ),
+        "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
     }
 
 
