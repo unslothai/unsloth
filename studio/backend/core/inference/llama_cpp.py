@@ -1059,16 +1059,11 @@ class LlamaCppBackend:
     def _build_windows_path_dirs(
         binary_dir: str, prefix: str, cuda_path: str
     ) -> list[str]:
-        """Ordered PATH entries the win32 branch of
-        ``start_llama_server`` prepends to the inherited env so
-        llama-server.exe can resolve cudart / cublas DLLs. Extracted as
-        a staticmethod so the test in
-        ``studio/backend/tests/test_5106_windows_gpu_detection_mock.py``
-        asserts against the exact production logic instead of a local
-        reconstruction. Order: binary_dir first (Windows DLL search
-        step 1, application directory), then pip nvidia wheels (mirrors
-        Linux LD_LIBRARY_PATH), then optional system CUDA toolkit
-        (``CUDA_PATH/bin`` and ``CUDA_PATH/bin/x64``). #5106."""
+        """Ordered PATH entries the win32 branch of start_llama_server
+        prepends so llama-server.exe resolves cudart / cublas DLLs:
+        binary_dir, pip nvidia wheels, CUDA_PATH/bin, CUDA_PATH/bin/x64.
+        Extracted so test_windows_gpu_detection_mock asserts against
+        production logic, not a hand-copy. #5106."""
         path_dirs = [binary_dir]
         path_dirs.extend(LlamaCppBackend._windows_pip_nvidia_dll_dirs(prefix))
         if cuda_path:
@@ -2518,9 +2513,7 @@ class LlamaCppBackend:
                 binary_dir = str(Path(binary).parent)
 
                 if sys.platform == "win32":
-                    # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
-                    # be on PATH. See _build_windows_path_dirs for the
-                    # ordering rationale (#5106).
+                    # See _build_windows_path_dirs for ordering. #5106.
                     path_dirs = self._build_windows_path_dirs(
                         binary_dir,
                         sys.prefix,
