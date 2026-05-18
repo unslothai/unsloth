@@ -186,6 +186,5 @@ def test_login_jsx_declares_exactly_one_password_input():
     # rather than the spelling so a rename does not falsely fail.
     pw_ids = [x for x in ids if "password" in x]
     assert len(pw_ids) == 1, (
-        f"login JSX must declare exactly one password-typed input; "
-        f"found {pw_ids!r}"
+        f"login JSX must declare exactly one password-typed input; " f"found {pw_ids!r}"
     )
