@@ -582,3 +582,165 @@ class TestDownloadMmprojOfflineCacheFallback:
                 hf_token = None,
             )
         assert out is None
+
+
+class TestListLocalGgufVariantsSubdir:
+    """Subdir layouts like ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf`` must
+    produce distinct quant labels, not collapse on basename."""
+
+    def test_two_subdir_variants_do_not_collapse(self, tmp_path):
+        from utils.models.model_config import list_local_gguf_variants
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "BF16").mkdir()
+        (tmp_path / "BF16" / "foo.gguf").write_bytes(b"\0" * 100)
+        (tmp_path / "Q4_K_M").mkdir()
+        (tmp_path / "Q4_K_M" / "foo.gguf").write_bytes(b"\0" * 50)
+
+        variants, _ = list_local_gguf_variants(str(tmp_path))
+        quants = {v.quant for v in variants}
+        assert "BF16" in quants, f"BF16 missing from {quants}"
+        assert "Q4_K_M" in quants, f"Q4_K_M missing from {quants}"
+        assert len(variants) == 2
+
+    def test_find_local_gguf_by_variant_locates_subdir(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "BF16").mkdir()
+        target = tmp_path / "BF16" / "foo.gguf"
+        target.write_bytes(b"\0" * 10)
+
+        out = _find_local_gguf_by_variant(str(tmp_path), "BF16")
+        assert out is not None
+        assert Path(out).name == "foo.gguf"
+
+
+class TestListGgufVariantsPermanentErrors:
+    """Permanent HF errors must surface; cache fallback only on transient."""
+
+    def test_repository_not_found_re_raises(self, hf_cache, clean_offline_env):
+        from utils.models.model_config import list_gguf_variants
+
+        _build_cache(hf_cache, "u/repo-gguf", {"foo-Q4_K_M.gguf": 1})
+
+        class _RepoNotFound(Exception):
+            pass
+
+        _RepoNotFound.__name__ = "RepositoryNotFoundError"
+
+        def boom(*a, **k):
+            raise _RepoNotFound("repo deleted")
+
+        with patch("huggingface_hub.model_info", boom):
+            with pytest.raises(Exception) as exc_info:
+                list_gguf_variants("u/repo-gguf")
+        assert type(exc_info.value).__name__ == "RepositoryNotFoundError"
+
+    def test_gated_repo_re_raises(self, hf_cache, clean_offline_env):
+        from utils.models.model_config import list_gguf_variants
+
+        _build_cache(hf_cache, "u/gated-gguf", {"foo-Q4_K_M.gguf": 1})
+
+        class _GatedRepo(Exception):
+            pass
+
+        _GatedRepo.__name__ = "GatedRepoError"
+
+        def boom(*a, **k):
+            raise _GatedRepo("auth required")
+
+        with patch("huggingface_hub.model_info", boom):
+            with pytest.raises(Exception) as exc_info:
+                list_gguf_variants("u/gated-gguf")
+        assert type(exc_info.value).__name__ == "GatedRepoError"
+
+    def test_transient_error_still_falls_back_to_cache(
+        self, hf_cache, clean_offline_env
+    ):
+        from utils.models.model_config import list_gguf_variants
+
+        _build_cache(hf_cache, "u/transient-gguf", {"foo-Q4_K_M.gguf": 1})
+
+        def boom(*a, **k):
+            raise OSError("network down")
+
+        with patch("huggingface_hub.model_info", boom):
+            variants, _ = list_gguf_variants("u/transient-gguf")
+        assert any(v.quant == "Q4_K_M" for v in variants)
+
+
+class TestDetectGgufFromCacheExcludesMmproj:
+    """A partial cache with only a vision projector must not route the
+    projector as the main model."""
+
+    def test_mmproj_only_returns_none(self, hf_cache):
+        from utils.models.model_config import _detect_gguf_from_hf_cache
+
+        _build_cache(
+            hf_cache,
+            "u/vision-only-mmproj",
+            {"mmproj-vision-F16.gguf": 1},
+        )
+        assert _detect_gguf_from_hf_cache("u/vision-only-mmproj") is None
+
+    def test_main_plus_mmproj_returns_main(self, hf_cache):
+        from utils.models.model_config import _detect_gguf_from_hf_cache
+
+        _build_cache(
+            hf_cache,
+            "u/vision-full",
+            {
+                "model-Q4_K_M.gguf": 1,
+                "mmproj-vision-F16.gguf": 1,
+            },
+        )
+        out = _detect_gguf_from_hf_cache("u/vision-full")
+        assert out is not None
+        assert "mmproj" not in out.lower()
+
+
+class TestProbeDnsDeadNoGlobalTimeoutMutation:
+    """``_probe_dns_dead`` must not change ``socket.setdefaulttimeout``
+    process-wide -- concurrent sockets without explicit timeout would
+    inherit it for the probe window."""
+
+    def test_default_timeout_unchanged_when_dns_up(self, monkeypatch):
+        import socket as _socket
+        from core.inference.llama_cpp import _probe_dns_dead
+
+        prev = _socket.getdefaulttimeout()
+        set_calls = []
+
+        original_set = _socket.setdefaulttimeout
+
+        def tracking_set(value):
+            set_calls.append(value)
+            original_set(value)
+
+        monkeypatch.setattr(_socket, "setdefaulttimeout", tracking_set)
+        monkeypatch.setattr(_socket, "gethostbyname", lambda h: "127.0.0.1")
+
+        try:
+            _probe_dns_dead("example.invalid", timeout = 0.5)
+        finally:
+            # Restore exact state regardless of any test-side mutation.
+            original_set(prev)
+
+        assert set_calls == [], (
+            f"_probe_dns_dead mutated socket.setdefaulttimeout {set_calls}; "
+            "must isolate timeout to the probe thread"
+        )
+
+    def test_returns_dead_when_resolver_wedges(self, monkeypatch):
+        import socket as _socket
+        from core.inference.llama_cpp import _probe_dns_dead
+
+        # Simulate a wedged resolver: thread blocks forever.
+        def wedged(host):
+            import threading
+
+            threading.Event().wait()
+
+        monkeypatch.setattr(_socket, "gethostbyname", wedged)
+        assert _probe_dns_dead("example.invalid", timeout = 0.1) is True

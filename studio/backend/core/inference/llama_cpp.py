@@ -102,17 +102,22 @@ _SWA_CACHE_LOCK = threading.Lock()
 
 
 def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
-    """Quick blocking DNS check. Restores any prior default timeout."""
-    prev = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(timeout)
-    try:
+    """Quick DNS check. Runs on a daemon thread so concurrent sockets
+    in the same process are not affected by socket.setdefaulttimeout."""
+    result: list[Optional[bool]] = [None]
+
+    def _probe() -> None:
         try:
             socket.gethostbyname(host)
-            return False
+            result[0] = False
         except Exception:
-            return True
-    finally:
-        socket.setdefaulttimeout(prev)
+            result[0] = True
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout)
+    # Thread still running -> resolver wedged -> treat as dead.
+    return True if result[0] is None else result[0]
 
 
 @contextlib.contextmanager

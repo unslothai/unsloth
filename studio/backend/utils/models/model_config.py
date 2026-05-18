@@ -1370,7 +1370,17 @@ def list_gguf_variants(
     try:
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
     except Exception as e:
-        # API failed; fall back to local snapshot if fully downloaded.
+        # Permanent errors (deleted/gated/bad revision) must surface to
+        # the caller; serving stale cache here would mask the real cause.
+        # Matches the early-return in ``detect_gguf_model_remote``.
+        if type(e).__name__ in (
+            "RepositoryNotFoundError",
+            "GatedRepoError",
+            "RevisionNotFoundError",
+            "EntryNotFoundError",
+        ):
+            raise
+        # API failed transiently; fall back to local snapshot if fully downloaded.
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
             logger.warning(
@@ -1473,16 +1483,13 @@ def list_local_gguf_variants(
             size = f.stat().st_size
         except OSError:
             size = 0
-        quant = _extract_quant_label(f.name)
+        # Pass the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
+        # produce distinct quant labels instead of collapsing on basename.
+        rel = f.relative_to(p).as_posix()
+        quant = _extract_quant_label(rel)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
-        # Only compute the (potentially expensive) relative path when this
-        # is the first file we've seen for this quant -- after that we'd
-        # discard the result anyway. Use posix-style separators so the
-        # filename matches what ``list_gguf_variants`` (the remote HF
-        # API path) returns on every platform; otherwise Windows would
-        # emit ``BF16\foo.gguf`` here.
         if quant not in quant_first_file:
-            quant_first_file[quant] = f.relative_to(p).as_posix()
+            quant_first_file[quant] = rel
 
     variants = [
         GgufVariantInfo(
@@ -1510,10 +1517,13 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     # Recurse into subdirectories so variants stored under a quant-named
     # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
+    # Match against the relative path so the quant label can come from
+    # the directory name when the basename omits it.
     matches = sorted(
         f
         for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
+        if not _is_mmproj(f.name)
+        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
     )
     if matches:
         return str(matches[0].resolve())
@@ -1521,11 +1531,16 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
 
 def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
-    """Best GGUF filename for *repo_id* from the local HF cache, or None."""
+    """Best GGUF filename for *repo_id* from the local HF cache, or None.
+
+    Excludes mmproj (vision projector) files so a partial cache that
+    only has the projector cannot route the projector as the main model.
+    """
     for snap in _iter_hf_cache_snapshots(repo_id):
         rel_files = [
             f.relative_to(snap).as_posix()
             for f in _iter_gguf_files(snap, recursive = True)
+            if not _is_mmproj(f.name)
         ]
         if rel_files:
             return _pick_best_gguf(rel_files)
