@@ -56,7 +56,7 @@ export function ModelLoadDescription({
   return (
     <div className="relative flex min-h-12 w-full items-stretch gap-2">
       <div className="flex h-full shrink-0 items-center self-center">
-        <Spinner className="size-4 text-foreground" />
+        <Spinner className="size-3.5 text-muted-foreground" />
       </div>
       <div className="min-w-0 flex-1 pr-5">
         {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}

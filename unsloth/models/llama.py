@@ -2109,11 +2109,24 @@ def unsloth_fast_generate(
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # For num_logits_to_keep
-    num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep
+    # (with @deprecate_kwarg through 4.51.x, removed in 4.52+). Pick the
+    # spelling the actual runtime forward accepts so generation
+    # _validate_model_kwargs does not reject the legacy name.
+    num_logits_to_keep = kwargs.pop("num_logits_to_keep", None)
     logits_to_keep = kwargs.get("logits_to_keep", None)
+    if num_logits_to_keep is not None and logits_to_keep is None:
+        kwargs["logits_to_keep"] = num_logits_to_keep
+        logits_to_keep = num_logits_to_keep
     if num_logits_to_keep is None and logits_to_keep is None:
-        kwargs["num_logits_to_keep"] = 1
+        try:
+            _fwd_params = inspect.signature(self.forward).parameters
+        except (TypeError, ValueError):
+            _fwd_params = {}
+        if "logits_to_keep" in _fwd_params:
+            kwargs["logits_to_keep"] = 1
+        elif "num_logits_to_keep" in _fwd_params:
+            kwargs["num_logits_to_keep"] = 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
