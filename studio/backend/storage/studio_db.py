@@ -861,21 +861,11 @@ def sync_chat_messages(
     messages: list[dict],
     prune_missing: bool = False,
 ) -> list[dict]:
-    keep_ids = {m["id"] for m in messages}
     conn = get_connection()
     try:
         conn.execute("BEGIN")
         if prune_missing:
-            if keep_ids:
-                placeholders = ",".join("?" for _ in keep_ids)
-                conn.execute(
-                    f"DELETE FROM chat_messages WHERE thread_id = ? AND id NOT IN ({placeholders})",
-                    (thread_id, *keep_ids),
-                )
-            else:
-                conn.execute(
-                    "DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,)
-                )
+            conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
         conn.executemany(
             """
             INSERT INTO chat_messages
