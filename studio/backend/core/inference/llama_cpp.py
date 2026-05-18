@@ -4083,9 +4083,7 @@ class LlamaCppBackend:
         # _MAX_CONTINUES). itertools.count keeps `continue` semantics
         # intact in the loop body below.
         for iteration in _itertools.count():
-            if iteration >= (
-                max_tool_iterations + _reprompt_count + _continue_count
-            ):
+            if iteration >= (max_tool_iterations + _reprompt_count + _continue_count):
                 break
             if cancel_event is not None and cancel_event.is_set():
                 return
