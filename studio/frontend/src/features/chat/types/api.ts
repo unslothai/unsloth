@@ -158,6 +158,34 @@ export interface InferenceStatusResponse {
   speculative_type?: string | null;
 }
 
+export interface ApiMonitorEntry {
+  id: string;
+  endpoint: string;
+  method: string;
+  model: string;
+  prompt: string;
+  reply: string;
+  status: "running" | "completed" | "cancelled" | "error";
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  duration_ms?: number | null;
+  context_length?: number | null;
+  context_usage?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  error?: string | null;
+}
+
+export interface ApiMonitorResponse {
+  status: "idle" | "ready" | "generating";
+  active_model?: string | null;
+  context_length?: number | null;
+  active_requests: number;
+  entries: ApiMonitorEntry[];
+}
+
 export interface AudioGenerationResponse {
   id: string;
   object: string;

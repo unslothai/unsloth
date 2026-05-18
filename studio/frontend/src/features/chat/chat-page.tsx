@@ -39,6 +39,7 @@ import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
+import { ApiMonitorPanel } from "./components/api-monitor-panel";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
@@ -1395,6 +1396,7 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
+            {view.mode === "single" ? <ApiMonitorPanel /> : null}
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild>
