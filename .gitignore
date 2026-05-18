@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *.class
 unsloth_compiled_cache/
+# Notebook-validator runtime PyPI metadata cache (CI repopulates).
+scripts/data/pypi_cache/
 # ML artifacts (large files)
 feature/
 outputs/
@@ -24,8 +26,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -228,3 +230,4 @@ setup_leo.sh
 server.pid
 *.log
 package-lock.json
+llama.cpp/

@@ -50,7 +50,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import type {
   DeletedModelRef,
   LoraModelOption,
@@ -175,7 +175,10 @@ function ModelRow({
     return (
       <Tooltip>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs break-all">
+        <TooltipContent
+          side="left"
+          className="tooltip-compact max-w-xs break-all"
+        >
           {label}
           <span className="block text-[10px] mt-1">{vramTooltipText}</span>
         </TooltipContent>
@@ -187,7 +190,10 @@ function ModelRow({
     return (
       <Tooltip>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs break-all">
+        <TooltipContent
+          side="left"
+          className="tooltip-compact max-w-xs break-all"
+        >
           {tooltipText}
         </TooltipContent>
       </Tooltip>

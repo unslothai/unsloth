@@ -20,7 +20,73 @@ import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
-STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+
+# Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
+# sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
+# the installer's env var has expired), then legacy ~/.unsloth/studio.
+# UNSLOTH_STUDIO_HOME wins when both env vars are set.
+def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
+    """Sentinel check (studio.conf or bin shim) so a dev venv named
+    unsloth_studio is not misidentified as a custom Studio root.
+    """
+    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
+    return (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "bin" / shim_name
+    ).is_file()
+
+
+def _resolve_studio_home() -> tuple[Path, bool]:
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve(), True
+        except (OSError, ValueError):
+            return Path(override).expanduser(), True
+    try:
+        prefix = Path(sys.prefix).resolve()
+        if prefix.name == "unsloth_studio":
+            inferred = prefix.parent
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+            if inferred != legacy and _looks_like_installer_managed_studio_home(
+                inferred
+            ):
+                return inferred, True
+    except (OSError, ValueError):
+        pass
+    return Path.home() / ".unsloth" / "studio", False
+
+
+STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
+
+
+def _ensure_studio_env_exported() -> None:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH only for real
+    custom roots so subprocesses inherit the right install. Called from each
+    studio subcommand entry rather than at import time, to avoid leaking env
+    state into unrelated importers (tests, --help, CLI introspection).
+    """
+    if not _STUDIO_HOME_IS_CUSTOM:
+        return
+    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
+    # suppress the inferred custom root.
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
+    # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
+    try:
+        _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
+        _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
+    except (OSError, ValueError):
+        _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
+    if _is_legacy:
+        _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
+    else:
+        _llama_dir = STUDIO_HOME / "llama.cpp"
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
+
+
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"
@@ -65,6 +131,26 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+def _stream_for_subprocess(stream):
+    """Return *stream* if it has a real OS file descriptor, else None.
+
+    subprocess.run on Windows refuses to inherit std handles unless
+    they're passed explicitly (otherwise close_fds=True forces
+    bInheritHandles=False, and a CREATE_NO_WINDOW child ends up with
+    no stdio at all). When sys.stdout / sys.stderr is a real fd-backed
+    stream we want to hand it through; when it's been captured by a
+    test harness (pytest's capsys, an in-memory wrapper, etc) we fall
+    back to None so subprocess uses its default.
+    """
+    if stream is None:
+        return None
+    try:
+        stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    return stream
 
 
 def _studio_venv_python() -> Optional[Path]:
@@ -427,6 +513,8 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # Runs before any subcommand; covers run/setup/update/etc in one place.
+    _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
         return
 
@@ -930,10 +1018,43 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             powershell_args.extend(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
             )
-        powershell_args.extend(["-ExecutionPolicy", "Bypass", "-File", str(script)])
+        # Use -Command + `*>&1` instead of -File so setup.ps1's
+        # Write-Host output (PowerShell Information stream / #6) is
+        # merged into the success stream and reaches the parent's
+        # stdout. With -File, Information stream output is dropped
+        # whenever stdout is a pipe, which is exactly the situation
+        # CI hits with `unsloth studio update --local 2>&1 | tee
+        # logs/update.log`. Single-quote escaping handles paths that
+        # contain apostrophes.
+        script_pwsh_literal = str(script).replace("'", "''")
+        powershell_args.extend(
+            [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"& '{script_pwsh_literal}' *>&1",
+            ]
+        )
+        # Explicitly hand stdin/stdout/stderr to the child so the
+        # CI tee actually sees setup.ps1's output. Without this,
+        # subprocess.run on Windows uses close_fds=True (default,
+        # since Python 3.7) which sets bInheritHandles=False on
+        # CreateProcess. With CREATE_NO_WINDOW also set (via
+        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
+        # child has neither a console nor any inherited std
+        # handles, so PowerShell's Write-Host -- and even
+        # [Console]::Out.WriteLine -- writes to nothing. Passing
+        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
+        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
+        # explicitly inheritable, which works alongside
+        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
+        # CI was the smoking gun (run 25533694490 and 25534292239).
         result = subprocess.run(
             powershell_args,
             env = env,
+            stdin = _stream_for_subprocess(sys.stdin),
+            stdout = _stream_for_subprocess(sys.stdout),
+            stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
     else:
@@ -1000,8 +1121,10 @@ def desktop_capabilities(
 ):
     payload = {
         "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
+        "supports_desktop_backend_ownership": True,
         "version": "unknown",
     }
     try:

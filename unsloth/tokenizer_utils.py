@@ -1580,6 +1580,12 @@ def patch_sft_trainer_tokenizer():
     except:
         return
     all_imports = dir(trl.trainer.sft_trainer)
+    # Make typing names available to the exec'd source bodies. TRL >= 1.x
+    # type-hints _prepare_dataset / _prepare_non_packed_dataloader with
+    # `Union[...]` and friends; without these imports in the exec namespace
+    # those become NameErrors at exec time. Mirrors the pattern used in
+    # unsloth/models/_utils.py:patch_linear_scaling.
+    from typing import Union, Optional, List, Any, Callable, Tuple, Dict, Iterator  # noqa: F401
 
     for (
         function_name,
