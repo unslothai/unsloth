@@ -2663,10 +2663,7 @@ class LlamaCppBackend:
                     # User --spec-type wins (it accumulates if repeated).
                     normalized_spec = None
                     self._speculative_type = None
-                if (
-                    normalized_spec
-                    and normalized_spec != "off"
-                ):
+                if normalized_spec and normalized_spec != "off":
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
                         self._speculative_type = "default"
