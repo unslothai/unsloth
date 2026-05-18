@@ -86,6 +86,25 @@ def test_custom_params():
     assert cb.log_key == "my_novelty"
 
 
+def test_window_zero_raises():
+    with pytest.raises(ValueError, match = "window"):
+        _import_callback()(window = 0)
+
+
+def test_window_negative_raises():
+    with pytest.raises(ValueError, match = "window"):
+        _import_callback()(window = -1)
+
+
+def test_layer_idx_out_of_range_does_not_crash():
+    """An out-of-range layer_idx should print a warning and skip, not raise."""
+    cb = _import_callback()(layer_idx = 99)
+    model = _TinyModel()  # has exactly 1 MLP layer
+    args, state, control = _make_state_control()
+    cb.on_train_begin(args, state, control, model = model)
+    assert cb._handle is None
+
+
 # ---------------------------------------------------------------------------
 # Novelty computation
 # ---------------------------------------------------------------------------

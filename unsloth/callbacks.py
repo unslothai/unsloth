@@ -100,6 +100,8 @@ class ActivationNoveltyCallback(TrainerCallback):
         log_key: str = "activation_novelty",
         layer_getter: Optional[Callable[[nn.Module], nn.Module]] = None,
     ) -> None:
+        if window < 1:
+            raise ValueError(f"window must be >= 1, got {window}")
         self.layer_idx = layer_idx
         self.novelty_threshold = novelty_threshold
         self.window = window
@@ -122,6 +124,13 @@ class ActivationNoveltyCallback(TrainerCallback):
             return self.layer_getter(model)
         mlp_layers = _find_mlp_layers(model)
         if not mlp_layers:
+            return None
+        if self.layer_idx >= len(mlp_layers) or self.layer_idx < -len(mlp_layers):
+            print(
+                f"Unsloth (ActivationNoveltyCallback): layer_idx {self.layer_idx} is "
+                f"out of range for {len(mlp_layers)} MLP layer(s) found. "
+                f"Pass layer_getter= to specify the target module manually."
+            )
             return None
         return mlp_layers[self.layer_idx]
 
