@@ -1063,7 +1063,28 @@ def _run_setup_script(*, verbose: bool = False) -> None:
         result = subprocess.run(["bash", str(script)], env = env)
 
     if result.returncode != 0:
+        _print_windows_exe_lock_hint_if_relevant()
         raise typer.Exit(result.returncode)
+
+
+def _print_windows_exe_lock_hint_if_relevant() -> None:
+    """When pip's reinstall fails because unsloth.exe is locked, point users
+    at the python -m workaround. Best-effort: detection looks for our running
+    unsloth.exe in the venv Scripts dir and assumes pip's WinError 32 lock.
+    """
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    if not exe.exists():
+        return
+    typer.echo("")
+    typer.echo("Windows holds unsloth.exe open while it is running, so pip")
+    typer.echo("cannot replace it. Re-run the update via the venv python:")
+    typer.echo(f"    {sys.executable} -m unsloth_cli studio update --local")
 
 
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
