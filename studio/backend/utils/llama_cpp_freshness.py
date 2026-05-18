@@ -65,7 +65,9 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
                 marker = json.loads(candidate.read_text(encoding = "utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug(
-                    "failed to parse install marker", path = str(candidate), error = str(exc)
+                    "failed to parse install marker",
+                    path = str(candidate),
+                    error = str(exc),
                 )
                 marker = None
             break
@@ -122,14 +124,21 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        json.JSONDecodeError,
+    ) as exc:
         logger.debug("freshness fetch failed", repo = repo, error = str(exc))
         return None
     tag = data.get("tag_name")
     return tag if isinstance(tag, str) and tag else None
 
 
-def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
+def latest_published_release(
+    repo: str, *, force_refresh: bool = False
+) -> Optional[str]:
     """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
     None when offline and never previously cached."""
     if not repo:
