@@ -472,9 +472,7 @@ with sync_playwright() as p:
             )
     after_value = read_value()
     if "你好" not in after_value:
-        soft_fail(
-            f"compositionend-watchdog repro lost committed text: {after_value!r}"
-        )
+        soft_fail(f"compositionend-watchdog repro lost committed text: {after_value!r}")
     shoot("06b-compositionend-watchdog")
     info("compositionend watchdog recovery PASS")
     clear()

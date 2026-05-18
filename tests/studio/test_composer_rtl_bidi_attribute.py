@@ -80,8 +80,7 @@ def test_main_composer_has_stuck_compositionend_watchdog():
     forever and CJK input is effectively dropped."""
     src = THREAD_TSX.read_text()
     assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "main composer is missing the stuck-compositionend watchdog "
-        "(issue #5546)"
+        "main composer is missing the stuck-compositionend watchdog " "(issue #5546)"
     )
     assert "onCompositionUpdate" in src, (
         "main composer is missing onCompositionUpdate wiring; the "
@@ -92,9 +91,8 @@ def test_main_composer_has_stuck_compositionend_watchdog():
 def test_compare_composer_has_stuck_compositionend_watchdog():
     src = SHARED_TSX.read_text()
     assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "compare composer is missing the stuck-compositionend watchdog "
-        "(issue #5546)"
+        "compare composer is missing the stuck-compositionend watchdog " "(issue #5546)"
     )
-    assert "onCompositionUpdate" in src, (
-        "compare composer is missing onCompositionUpdate wiring"
-    )
+    assert (
+        "onCompositionUpdate" in src
+    ), "compare composer is missing onCompositionUpdate wiring"
