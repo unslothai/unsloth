@@ -305,14 +305,19 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const hasPendingAttachments = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) => attachment.status.type === "running",
+    ),
+  );
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current) {
+      if (disabled || isComposingRef.current || hasPendingAttachments) {
         event.preventDefault();
       }
     },
-    [disabled, isComposingRef],
+    [disabled, hasPendingAttachments, isComposingRef],
   );
 
   const composerContent = (
@@ -334,8 +339,8 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing}
-        blockSend={() => isComposingRef.current}
+        disabled={disabled || isComposing || hasPendingAttachments}
+        blockSend={() => isComposingRef.current || hasPendingAttachments}
       />
     </>
   );
