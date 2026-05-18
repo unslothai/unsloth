@@ -297,9 +297,14 @@ def MistralForCausalLM_fast_forward(
     if labels is not None:
         labels = labels.to(lm_head_device)
 
+    # Merge the legacy and new spellings before any branching so the
+    # decode-time last-token slice fires on the normal generation path
+    # too, not just the hidden-states path. transformers 4.50 renamed
+    # num_logits_to_keep -> logits_to_keep; callers may supply either.
+    num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+
     # If we are in GRPO mode, return raw hidden states
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         return CausalLMOutputWithPast(

@@ -2110,23 +2110,22 @@ def unsloth_fast_generate(
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
     # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep
-    # (with @deprecate_kwarg through 4.51.x, removed in 4.52+). Pick the
-    # spelling the actual runtime forward accepts so generation
-    # _validate_model_kwargs does not reject the legacy name.
-    num_logits_to_keep = kwargs.pop("num_logits_to_keep", None)
-    logits_to_keep = kwargs.get("logits_to_keep", None)
-    if num_logits_to_keep is not None and logits_to_keep is None:
-        kwargs["logits_to_keep"] = num_logits_to_keep
-        logits_to_keep = num_logits_to_keep
-    if num_logits_to_keep is None and logits_to_keep is None:
-        try:
-            _fwd_params = inspect.signature(self.forward).parameters
-        except (TypeError, ValueError):
-            _fwd_params = {}
-        if "logits_to_keep" in _fwd_params:
-            kwargs["logits_to_keep"] = 1
-        elif "num_logits_to_keep" in _fwd_params:
-            kwargs["num_logits_to_keep"] = 1
+    # (with @deprecate_kwarg through 4.51.x, removed in 4.52+). Pop both
+    # spellings, then re-emit under whichever the runtime forward
+    # actually accepts so _validate_model_kwargs does not reject either
+    # legacy callers on new transformers OR new callers on old
+    # transformers.
+    _provided_num = kwargs.pop("num_logits_to_keep", None)
+    _provided_logits = kwargs.pop("logits_to_keep", None)
+    _provided = _provided_logits if _provided_logits is not None else _provided_num
+    try:
+        _fwd_params = inspect.signature(self.forward).parameters
+    except (TypeError, ValueError):
+        _fwd_params = {}
+    if "logits_to_keep" in _fwd_params:
+        kwargs["logits_to_keep"] = _provided if _provided is not None else 1
+    elif "num_logits_to_keep" in _fwd_params:
+        kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
