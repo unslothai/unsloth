@@ -26,6 +26,26 @@ function formatRelative(createdAt: number): string {
   return "Older";
 }
 
+/**
+ * Substring-token filter. cmdk's default `commandScore` returns a small
+ * non-zero score when the query shares a few characters with an item
+ * (out of order), so a unique marker like `UNIQUEMARKER567890` ends up
+ * "matching" an unrelated `What's 2+2?` row instead of triggering the
+ * "No chats match." empty state. We require every whitespace-delimited
+ * token in the query to appear (case-insensitive substring) in the
+ * item's value before returning a non-zero score.
+ */
+function strictFilter(value: string, search: string): number {
+  const query = search.trim().toLowerCase();
+  if (query.length === 0) return 1;
+  const haystack = value.toLowerCase();
+  const tokens = query.split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    if (!haystack.includes(token)) return 0;
+  }
+  return 1;
+}
+
 export function ChatSearchDialog() {
   const isOpen = useChatSearchStore((s) => s.isOpen);
   const setOpen = useChatSearchStore((s) => s.setOpen);
@@ -54,7 +74,7 @@ export function ChatSearchDialog() {
       className="shadow-border corner-squircle w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
-      <Command className="rounded-none p-0">
+      <Command className="rounded-none p-0" filter={strictFilter}>
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
             icon={SearchIcon}
