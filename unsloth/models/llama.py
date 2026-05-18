@@ -1498,7 +1498,13 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+        # HF accepts logits_to_keep as a 1-D LongTensor of positions
+        # (selective decode); skip the int max() in that case to avoid
+        # `max(int, Tensor)` raising on the implicit bool cast.
+        if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+            num_logits_to_keep = 0
+        else:
+            num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
         # Move items to same device as lm_head
         hidden_states = hidden_states.to(lm_head_device)

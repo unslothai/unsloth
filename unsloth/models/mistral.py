@@ -301,7 +301,15 @@ def MistralForCausalLM_fast_forward(
     # decode-time last-token slice fires on the normal generation path
     # too, not just the hidden-states path. transformers 4.50 renamed
     # num_logits_to_keep -> logits_to_keep; callers may supply either.
-    num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+    # HF also accepts logits_to_keep as a 1-D LongTensor of positions
+    # (selective decode); skip the int max() in that case to avoid
+    # `max(int, Tensor)` raising on the implicit bool cast. Downstream
+    # int slicing is unchanged, so tensor callers fall through with
+    # num_logits_to_keep == 0, matching pre-merge behavior.
+    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+        num_logits_to_keep = 0
+    else:
+        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
     # If we are in GRPO mode, return raw hidden states
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
