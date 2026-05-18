@@ -2414,19 +2414,27 @@ class LlamaCppBackend:
                         if gpus:
                             cmd.extend(
                                 [
-                                    "--spec-type", "draft-mtp",
-                                    "--spec-draft-n-max", "6",
+                                    "--spec-type",
+                                    "draft-mtp",
+                                    "--spec-draft-n-max",
+                                    "6",
                                 ]
                             )
                         else:
                             cmd.extend(
                                 [
-                                    "--spec-type", "draft-mtp",
-                                    "--spec-draft-n-max", "3",
-                                    "--spec-type", "ngram-mod",
-                                    "--spec-ngram-mod-n-match", "24",
-                                    "--spec-ngram-mod-n-min", "48",
-                                    "--spec-ngram-mod-n-max", "6",
+                                    "--spec-type",
+                                    "draft-mtp",
+                                    "--spec-draft-n-max",
+                                    "3",
+                                    "--spec-type",
+                                    "ngram-mod",
+                                    "--spec-ngram-mod-n-match",
+                                    "24",
+                                    "--spec-ngram-mod-n-min",
+                                    "48",
+                                    "--spec-ngram-mod-n-max",
+                                    "6",
                                 ]
                             )
                         self._speculative_type = "draft-mtp"
