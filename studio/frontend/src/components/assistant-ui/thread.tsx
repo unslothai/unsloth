@@ -324,7 +324,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         placeholder="Send a message..."
         className="aui-composer-input composer-input"
         minRows={1}
-        maxRows={6}
+        maxRows={16}
         autoFocus={!disabled}
         disabled={disabled}
         aria-label="Message input"
