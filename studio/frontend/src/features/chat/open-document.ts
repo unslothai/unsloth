@@ -238,29 +238,13 @@ function extractOpenDocumentRowText(
       "number-columns-repeated",
       MAX_OPEN_DOCUMENT_COLUMN_INDEX,
     );
-    if (isCoveredCell) {
-      columnIndex = advanceOpenDocumentColumnIndex(columnIndex, repeat);
-      continue;
-    }
-
-    const text = extractOpenDocumentCellText(cell);
-    let emitted = 0;
-    for (
-      let i = 0;
-      i < repeat && emitted < MAX_REPEATED_OPEN_DOCUMENT_COLUMNS;
-      i++
-    ) {
-      const hiddenEnd = getHiddenOpenDocumentColumnEnd(
-        hiddenColumns,
-        columnIndex + i,
-      );
-      if (hiddenEnd === null) {
-        rowCells.push(text);
-        emitted++;
-      } else {
-        i += hiddenEnd - columnIndex - i - 1;
-      }
-    }
+    appendOpenDocumentVisibleCells(
+      rowCells,
+      hiddenColumns,
+      columnIndex,
+      repeat,
+      isCoveredCell ? "" : extractOpenDocumentCellText(cell),
+    );
     columnIndex = advanceOpenDocumentColumnIndex(columnIndex, repeat);
   }
 
@@ -278,6 +262,32 @@ function extractOpenDocumentRowText(
       MAX_REPEATED_OPEN_DOCUMENT_ROWS,
     ),
   );
+}
+
+function appendOpenDocumentVisibleCells(
+  rowCells: string[],
+  hiddenColumns: HiddenOpenDocumentColumnRange[],
+  columnIndex: number,
+  repeat: number,
+  text: string,
+): void {
+  let emitted = 0;
+  for (
+    let i = 0;
+    i < repeat && emitted < MAX_REPEATED_OPEN_DOCUMENT_COLUMNS;
+    i++
+  ) {
+    const hiddenEnd = getHiddenOpenDocumentColumnEnd(
+      hiddenColumns,
+      columnIndex + i,
+    );
+    if (hiddenEnd === null) {
+      rowCells.push(text);
+      emitted++;
+    } else {
+      i += hiddenEnd - columnIndex - i - 1;
+    }
+  }
 }
 
 function repeatOpenDocumentValue<T>(value: T, count: number): T[] {
