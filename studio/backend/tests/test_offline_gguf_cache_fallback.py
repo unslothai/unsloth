@@ -744,3 +744,85 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
         monkeypatch.setattr(_socket, "gethostbyname", wedged)
         assert _probe_dns_dead("example.invalid", timeout = 0.1) is True
+
+
+class TestWaitForHealthRetriesOnReadError:
+    """A TCP RST mid-read while llama-server is still binding the port
+    (Windows: WinError 10054) must not abort the health-poll loop --
+    that masks a legitimate 'still warming up' state as a fatal load."""
+
+    def test_read_error_then_success(self, monkeypatch):
+        import httpx
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend()
+        backend._port = 65500
+
+        class _FakeProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            def wait(self, timeout = None):
+                return 0
+
+        backend._process = _FakeProc()
+        backend._stdout_thread = None
+        backend._stdout_lines = []
+
+        calls = {"n": 0}
+
+        def fake_get(url, timeout = None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ReadError("WinError 10054")
+            if calls["n"] == 2:
+                raise httpx.RemoteProtocolError("short read")
+            if calls["n"] == 3:
+                raise httpx.WriteError("peer dropped")
+
+            class _OK:
+                status_code = 200
+
+            return _OK()
+
+        monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
+        assert backend._wait_for_health(timeout = 5.0, interval = 0.01) is True
+        assert calls["n"] == 4, (
+            f"_wait_for_health should retry past ReadError/RemoteProtocol/Write; "
+            f"saw {calls['n']} attempts"
+        )
+
+    def test_real_process_exit_still_short_circuits(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend()
+        backend._port = 65501
+
+        class _DeadProc:
+            returncode = 137
+
+            def poll(self):
+                return 137
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            def wait(self, timeout = None):
+                return 137
+
+        backend._process = _DeadProc()
+        backend._stdout_thread = None
+        backend._stdout_lines = ["fatal: out of memory"]
+        assert backend._wait_for_health(timeout = 5.0, interval = 0.01) is False

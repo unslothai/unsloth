@@ -528,6 +528,9 @@ class LlamaCppBackend:
         self._requested_n_ctx: int = 0
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        # llama-server tee log (see _drain_stdout / _kill_process).
+        self._llama_log_fh = None
+        self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
 
@@ -1507,6 +1510,11 @@ class LlamaCppBackend:
         This prevents a pipe-buffer deadlock on Windows where the default
         pipe buffer is only ~4 KB.  Without draining, llama-server blocks
         on writes and never becomes healthy.
+
+        Each line is also teed to ``self._llama_log_fh`` when set so a
+        post-mortem (especially in CI) has the full subprocess output
+        even if the crash predates the drain-thread join in
+        ``_wait_for_health``.
         """
         try:
             for line in self._process.stdout:
@@ -1514,6 +1522,14 @@ class LlamaCppBackend:
                 if line:
                     self._stdout_lines.append(line)
                     logger.debug(f"[llama-server] {line}")
+                    fh = getattr(self, "_llama_log_fh", None)
+                    if fh is not None:
+                        try:
+                            fh.write(line + "\n")
+                            fh.flush()
+                        except (ValueError, OSError):
+                            # Log file closed under us; tee silently.
+                            pass
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
@@ -2725,6 +2741,32 @@ class LlamaCppBackend:
                 self._kill_process()
 
                 self._stdout_lines = []
+                # Tee llama-server output to a dedicated log file so a
+                # post-mortem in CI (or after a remote-debug session)
+                # has the full subprocess trail even when the parent
+                # only stored the last 50 lines. Path lives under the
+                # studio home so it ships in the same place all other
+                # Studio logs live.
+                self._llama_log_fh = None
+                try:
+                    log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                    log_dir.mkdir(parents = True, exist_ok = True)
+                    self._llama_log_path = (
+                        log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
+                    )
+                    self._llama_log_fh = open(
+                        self._llama_log_path,
+                        "w",
+                        encoding = "utf-8",
+                        buffering = 1,
+                    )
+                    logger.info(
+                        f"llama-server stdout/stderr -> {self._llama_log_path}"
+                    )
+                except OSError as e:
+                    # Best-effort; never block the load on logging.
+                    logger.debug(f"Could not open llama-server log file: {e}")
+                    self._llama_log_path = None
                 self._process = subprocess.Popen(
                     cmd,
                     stdout = subprocess.PIPE,
@@ -3021,6 +3063,13 @@ class LlamaCppBackend:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
+            fh = getattr(self, "_llama_log_fh", None)
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+                self._llama_log_fh = None
 
     @staticmethod
     def _kill_orphaned_servers():
@@ -3232,7 +3281,17 @@ class LlamaCppBackend:
                 resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except (
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                # ReadError covers TCP RST mid-read while llama-server is
+                # still binding the port (Windows: WinError 10054). The
+                # crash-detection branch above catches a real exit; this
+                # one keeps a transient socket close from masking it.
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+            ):
                 pass
 
             time.sleep(interval)
