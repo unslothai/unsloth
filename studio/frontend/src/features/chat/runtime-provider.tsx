@@ -9,9 +9,9 @@ import {
   CompositeAttachmentAdapter,
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
+  type LocalRuntimeOptions,
   type PendingAttachment,
   Suggestions,
-  type LocalRuntimeOptions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -34,21 +34,19 @@ import {
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
-import {
-  deleteChatThreads,
-  getChatThread,
-  listChatMessages,
-  listChatThreads,
-  saveChatMessage,
-  saveChatThread,
-  updateChatThread,
-} from "./api/chat-api";
-import { db } from "./db";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
+  deleteStoredChatThreads,
+  ensureStoredChatThread,
+  getStoredChatThread,
+  listStoredChatMessages,
+  listStoredChatThreads,
+  saveStoredChatMessage,
+  updateStoredChatThread,
+} from "./utils/chat-history-storage";
+import {
   isChatThreadDeleted,
-  markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 
@@ -427,13 +425,8 @@ export async function ensureThreadRecord({
   if (isChatThreadDeleted(threadId)) {
     return;
   }
-  const existing = await getChatThread(threadId);
+  const existing = await ensureStoredChatThread(threadId);
   if (existing) {
-    return;
-  }
-  const legacy = await db.threads.get(threadId);
-  if (legacy && !isChatThreadDeleted(threadId)) {
-    await saveChatThread(legacy);
     return;
   }
 
@@ -449,80 +442,16 @@ export async function ensureThreadRecord({
   };
 
   try {
-    await saveChatThread(record);
+    await ensureStoredChatThread(threadId, record);
   } catch (error) {
     // assistant-ui can issue overlapping first-message persistence calls.
     // If another call created the same thread while this one was waiting,
     // treat initialization as successful and let the message write continue.
-    if (await getChatThread(threadId)) {
+    if (await getStoredChatThread(threadId)) {
       return;
     }
     throw error;
   }
-}
-
-async function deleteThreadRows(threadId: string): Promise<void> {
-  await deleteChatThreads([threadId]);
-}
-
-async function getThreadWithLegacyFallback(
-  threadId: string,
-): Promise<ThreadRecord | undefined> {
-  return (await getChatThread(threadId)) ?? (await db.threads.get(threadId));
-}
-
-async function ensureThreadInBackend(
-  threadId: string,
-  fallback?: ThreadRecord,
-): Promise<ThreadRecord | undefined> {
-  const backendThread = await getChatThread(threadId);
-  if (backendThread) return backendThread;
-  const thread = fallback ?? (await db.threads.get(threadId));
-  if (!thread || isChatThreadDeleted(thread.id)) return undefined;
-  await saveChatThread(thread);
-  return thread;
-}
-
-async function getMessagesWithLegacyFallback(
-  threadId: string,
-): Promise<MessageRecord[]> {
-  const [backendMessages, backendThread, legacyMessages] = await Promise.all([
-    listChatMessages(threadId),
-    getChatThread(threadId),
-    db.messages.where("threadId").equals(threadId).toArray(),
-  ]);
-  if (backendMessages.length > 0 || backendThread) {
-    if (legacyMessages.length === 0) return backendMessages;
-    const byId = new Map(legacyMessages.map((message) => [message.id, message]));
-    for (const message of backendMessages) byId.set(message.id, message);
-    return Array.from(byId.values());
-  }
-  return legacyMessages;
-}
-
-async function listThreadsWithLegacyFallback(args: {
-  modelType?: ModelType;
-  pairId?: string;
-  includeArchived?: boolean;
-}): Promise<ThreadRecord[]> {
-  const backendThreads = await listChatThreads(args);
-  const legacyQuery = args.pairId
-    ? db.threads.where("pairId").equals(args.pairId)
-    : args.modelType
-      ? db.threads.where("modelType").equals(args.modelType)
-      : db.threads.toCollection();
-  const legacyThreads = await legacyQuery.toArray();
-  const byId = new Map<string, ThreadRecord>();
-  for (const thread of legacyThreads) {
-    if (isChatThreadDeleted(thread.id)) continue;
-    if (args.includeArchived === false && thread.archived) continue;
-    byId.set(thread.id, thread);
-  }
-  for (const thread of backendThreads) {
-    if (isChatThreadDeleted(thread.id)) continue;
-    byId.set(thread.id, thread);
-  }
-  return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function createStudioDbAdapter(
@@ -531,7 +460,7 @@ function createStudioDbAdapter(
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
-      const thread = await getThreadWithLegacyFallback(remoteId);
+      const thread = await getStoredChatThread(remoteId);
       if (!thread) {
         throw new Error(`Thread ${remoteId} not found`);
       }
@@ -543,7 +472,7 @@ function createStudioDbAdapter(
     },
 
     async list() {
-      const threads = await listThreadsWithLegacyFallback({ modelType });
+      const threads = await listStoredChatThreads({ modelType });
       return {
         threads: threads.map((t) => ({
           status: (t.archived ? "archived" : "regular") as
@@ -561,28 +490,27 @@ function createStudioDbAdapter(
     },
 
     async rename(remoteId: string, newTitle: string) {
-      await ensureThreadInBackend(remoteId);
-      await updateChatThread(remoteId, { title: newTitle });
+      await ensureStoredChatThread(remoteId);
+      await updateStoredChatThread(remoteId, { title: newTitle });
     },
 
     async archive(remoteId: string) {
-      await ensureThreadInBackend(remoteId);
-      await updateChatThread(remoteId, { archived: true });
+      await ensureStoredChatThread(remoteId);
+      await updateStoredChatThread(remoteId, { archived: true });
     },
 
     async unarchive(remoteId: string) {
-      await ensureThreadInBackend(remoteId);
-      await updateChatThread(remoteId, { archived: false });
+      await ensureStoredChatThread(remoteId);
+      await updateStoredChatThread(remoteId, { archived: false });
     },
 
     async delete(remoteId: string) {
-      markChatThreadDeleted(remoteId);
-      await deleteThreadRows(remoteId);
+      await deleteStoredChatThreads([remoteId]);
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
       const autoTitle = useChatRuntimeStore.getState().autoTitle;
-      const thread = await getThreadWithLegacyFallback(remoteId);
+      const thread = await getStoredChatThread(remoteId);
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {
@@ -593,15 +521,15 @@ function createStudioDbAdapter(
       }
 
       async function persistTitle(title: string): Promise<void> {
-        await ensureThreadInBackend(remoteId, thread);
-        await updateChatThread(remoteId, { title });
+        await ensureStoredChatThread(remoteId, thread);
+        await updateStoredChatThread(remoteId, { title });
         if (!pairId) return;
-        const paired = (await listThreadsWithLegacyFallback({ pairId })).find(
+        const paired = (await listStoredChatThreads({ pairId })).find(
           (t) => t.id !== remoteId,
         );
         if (paired) {
-          await ensureThreadInBackend(paired.id, paired);
-          await updateChatThread(paired.id, { title });
+          await ensureStoredChatThread(paired.id, paired);
+          await updateStoredChatThread(paired.id, { title });
         }
       }
 
@@ -630,7 +558,7 @@ function createStudioDbAdapter(
 
       // Compare: wait until both threads done.
       if (pairId) {
-        const paired = (await listThreadsWithLegacyFallback({ pairId })).find(
+        const paired = (await listStoredChatThreads({ pairId })).find(
           (t) => t.id !== remoteId,
         );
 
@@ -681,7 +609,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           user: 1,
           assistant: 2,
         };
-        const msgs = await getMessagesWithLegacyFallback(remoteId);
+        const msgs = await listStoredChatMessages(remoteId);
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;
@@ -742,14 +670,14 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
         if (isChatThreadDeleted(remoteId)) {
-          await deleteThreadRows(remoteId);
+          await deleteStoredChatThreads([remoteId]);
           return;
         }
         // Keep single-chat runtime state in sync once a new chat is first
         // persisted. Compare panes intentionally do not write global activeThreadId.
-        const thread = await getThreadWithLegacyFallback(remoteId);
+        const thread = await getStoredChatThread(remoteId);
         if (thread) {
-          await ensureThreadInBackend(remoteId, thread);
+          await ensureStoredChatThread(remoteId, thread);
         }
         if (thread?.modelType === "base" && !thread.pairId) {
           const store = useChatRuntimeStore.getState();
@@ -761,12 +689,12 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const attachments =
           message.role === "user" ? cloneAttachments(message.attachments) : [];
         const custom = message.metadata?.custom;
-        const existing = (await getMessagesWithLegacyFallback(remoteId)).find(
+        const existing = (await listStoredChatMessages(remoteId)).find(
           (m) => m.id === message.id,
         );
         const createdAt =
           existing?.createdAt ?? message.createdAt?.getTime?.() ?? Date.now();
-        await saveChatMessage({
+        await saveStoredChatMessage({
           id: message.id,
           threadId: remoteId,
           parentId: parentId ?? null,
@@ -941,13 +869,13 @@ function ThreadBackendAutosave({
         .getItemById(threadId)
         .initialize();
       if (isChatThreadDeleted(remoteId)) {
-        await deleteThreadRows(remoteId);
+        await deleteStoredChatThreads([remoteId]);
         return;
       }
-      await ensureThreadInBackend(remoteId);
+      await ensureStoredChatThread(remoteId);
       await syncExportedRepositoryToBackend(remoteId, exported);
       if (isChatThreadDeleted(remoteId)) {
-        await deleteThreadRows(remoteId);
+        await deleteStoredChatThreads([remoteId]);
         return;
       }
 

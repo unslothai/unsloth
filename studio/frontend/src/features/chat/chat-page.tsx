@@ -36,21 +36,20 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import {
-  getChatThread,
-  listChatMessages,
-  listChatThreads,
-  listLocalModels,
-} from "./api/chat-api";
+import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
-import { db } from "./db";
 import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import {
+  clearTrainingCompareHandoff,
+  getTrainingCompareHandoff,
+} from "./lib/training-compare-handoff";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -58,11 +57,6 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
-import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
-import {
-  clearTrainingCompareHandoff,
-  getTrainingCompareHandoff,
-} from "./lib/training-compare-handoff";
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
@@ -75,6 +69,11 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import {
+  getStoredChatThread,
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
 
 type LoraCandidate = {
   id: string;
@@ -132,35 +131,6 @@ function messageHasImage(message: MessageRecord): boolean {
     }
   }
   return false;
-}
-
-async function getChatThreadWithLegacyFallback(threadId: string) {
-  return (await getChatThread(threadId)) ?? (await db.threads.get(threadId));
-}
-
-async function listChatMessagesWithLegacyFallback(threadId: string) {
-  const [backendThread, backendMessages, legacyMessages] = await Promise.all([
-    getChatThread(threadId),
-    listChatMessages(threadId),
-    db.messages.where("threadId").equals(threadId).toArray(),
-  ]);
-  if (backendThread || backendMessages.length > 0) {
-    if (legacyMessages.length === 0) return backendMessages;
-    const byId = new Map(legacyMessages.map((message) => [message.id, message]));
-    for (const message of backendMessages) byId.set(message.id, message);
-    return Array.from(byId.values());
-  }
-  return legacyMessages;
-}
-
-async function listPairThreadsWithLegacyFallback(pairId: string) {
-  const [backendThreads, legacyThreads] = await Promise.all([
-    listChatThreads({ pairId }).catch(() => []),
-    db.threads.where("pairId").equals(pairId).toArray(),
-  ]);
-  const byId = new Map(legacyThreads.map((thread) => [thread.id, thread]));
-  for (const thread of backendThreads) byId.set(thread.id, thread);
-  return Array.from(byId.values());
 }
 
 const SingleContent = memo(function SingleContent({
@@ -341,7 +311,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    listPairThreadsWithLegacyFallback(pairId).then((threads) => {
+    listStoredChatThreads({ pairId }).then((threads) => {
       if (!isActive) return;
       setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
       setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
@@ -486,7 +456,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    listPairThreadsWithLegacyFallback(pairId).then((threads) => {
+    listStoredChatThreads({ pairId }).then((threads) => {
       if (!isActive) return;
       setModel1ThreadId(
         threads.find((t) => t.modelType === "model1" || t.modelType === "base")
@@ -589,7 +559,7 @@ export function ChatPage(): ReactElement {
     if (!threadId) return;
 
     let canceled = false;
-    void getChatThreadWithLegacyFallback(threadId)
+    void getStoredChatThread(threadId)
       .then((thread) => {
         if (canceled || thread) return;
         useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -1009,10 +979,9 @@ export function ChatPage(): ReactElement {
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
-          const thread = await getChatThreadWithLegacyFallback(activeThreadId);
+          const thread = await getStoredChatThread(activeThreadId);
           if (thread?.modelId && thread.modelId !== value) {
-            const messages =
-              await listChatMessagesWithLegacyFallback(activeThreadId);
+            const messages = await listStoredChatMessages(activeThreadId);
             if (messages.length > 0) {
               const hasImage = messages.some(messageHasImage);
               const targetModel = modelsFromStore.find(
@@ -1097,7 +1066,7 @@ export function ChatPage(): ReactElement {
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
-      void listChatMessagesWithLegacyFallback(threadId)
+      void listStoredChatMessages(threadId)
         .then(
           (messages) =>
             [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],

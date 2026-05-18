@@ -19,13 +19,11 @@ import type {
   ExportedMessageRepository,
   ThreadMessage,
 } from "@assistant-ui/react";
-import {
-  getChatThread,
-  saveChatThread,
-  syncChatMessages,
-} from "../api/chat-api";
-import { db } from "../db";
 import type { MessageRecord } from "../types";
+import {
+  ensureStoredChatThread,
+  syncStoredChatMessages,
+} from "./chat-history-storage";
 
 function cloneContent(
   content: ThreadMessage["content"],
@@ -88,13 +86,8 @@ export async function syncExportedRepositoryToBackend(
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
-  if (!(await getChatThread(remoteId))) {
-    const legacyThread = await db.threads.get(remoteId);
-    if (legacyThread) {
-      await saveChatThread(legacyThread);
-    }
-  }
-  await syncChatMessages(
+  await ensureStoredChatThread(remoteId);
+  await syncStoredChatMessages(
     remoteId,
     exp.messages.map(({ message, parentId }) =>
       exportedItemToRecord(remoteId, parentId, message),

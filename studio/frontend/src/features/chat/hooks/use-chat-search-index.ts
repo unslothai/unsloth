@@ -2,14 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
+import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import type { MessageRecord } from "../types";
 import {
-  CHAT_HISTORY_UPDATED_EVENT,
-  listChatMessages,
-  listChatThreads,
-} from "../api/chat-api";
-import { db } from "../db";
-import type { MessageRecord, ThreadRecord } from "../types";
-import { isChatThreadDeleted } from "../utils/chat-thread-tombstones";
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "../utils/chat-history-storage";
 
 export interface ChatSearchItem {
   type: "single" | "compare";
@@ -45,20 +43,9 @@ function truncate(text: string, max: number): string {
 }
 
 async function buildIndex(): Promise<ChatSearchItem[]> {
-  const [backendThreads, legacyThreads] = await Promise.all([
-    listChatThreads({ includeArchived: false }).catch(() => []),
-    db.threads.orderBy("createdAt").reverse().toArray() as Promise<
-      ThreadRecord[]
-    >,
-  ]);
-  const backendIds = new Set(backendThreads.map((t) => t.id));
-  const all = [
-    ...backendThreads,
-    ...legacyThreads.filter(
-      (t) => !backendIds.has(t.id) && !isChatThreadDeleted(t.id),
-    ),
-  ];
-  const active = all.filter((t) => !t.archived).slice(0, THREAD_LIMIT);
+  const active = (
+    await listStoredChatThreads({ includeArchived: false })
+  ).slice(0, THREAD_LIMIT);
 
   const itemThreadIds = new Map<
     string,
@@ -96,31 +83,16 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
     }
   }
 
-  // One query for all messages across all relevant threads, then group by
-  // threadId in memory. Avoids N sequential awaits.
   const allThreadIds = Array.from(itemThreadIds.values()).flatMap(
     (e) => e.threadIds,
   );
-  const backendMessagesByThread = await Promise.all(
+  const storedMessagesByThread = await Promise.all(
     allThreadIds.map(async (threadId) => ({
       threadId,
-      messages: await listChatMessages(threadId).catch(() => []),
+      messages: await listStoredChatMessages(threadId),
     })),
   );
-  const backendMessageIds = new Set(
-    backendMessagesByThread.flatMap((entry) => entry.messages.map((m) => m.id)),
-  );
-  const legacyMessages =
-    allThreadIds.length > 0
-      ? ((await db.messages
-          .where("threadId")
-          .anyOf(allThreadIds)
-          .toArray()) as MessageRecord[])
-      : [];
-  const messages = [
-    ...backendMessagesByThread.flatMap((entry) => entry.messages),
-    ...legacyMessages.filter((m) => !backendMessageIds.has(m.id)),
-  ];
+  const messages = storedMessagesByThread.flatMap((entry) => entry.messages);
 
   const byThreadId = new Map<string, MessageRecord[]>();
   for (const m of messages) {

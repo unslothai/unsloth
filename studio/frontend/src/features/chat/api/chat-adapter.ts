@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthToken } from "@/features/auth/session";
+import { apiUrl } from "@/lib/api-base";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
-import { getAuthToken } from "@/features/auth/session";
-import { apiUrl } from "@/lib/api-base";
 import { db } from "../db";
 import {
   getExternalProviderApiKey,
@@ -27,14 +27,18 @@ import {
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { isMultimodalResponse } from "../types/api";
+import type {
+  OpenAIChatCompletionsRequest,
+  OpenAIMessageContent,
+} from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import {
   generateAudio,
-  getChatThread,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -47,10 +51,6 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
-import type {
-  OpenAIChatCompletionsRequest,
-  OpenAIMessageContent,
-} from "../types/api";
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -420,8 +420,7 @@ async function resolveUseAdapter(
     return undefined;
   }
   try {
-    const thread =
-      (await getChatThread(threadId)) ?? (await db.threads.get(threadId));
+    const thread = await getStoredChatThread(threadId);
     if (!thread?.pairId) {
       return undefined;
     }
