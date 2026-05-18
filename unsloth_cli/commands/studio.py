@@ -1243,13 +1243,8 @@ def update(
 
 def _release_self_exe_lock_windows() -> None:
     """Rename the running unsloth.exe out of the way so pip's reinstall can
-    drop a new copy on Windows.
-
-    Windows refuses to delete an .exe whose image is mapped into a running
-    process, but allows renaming it. pip's editable reinstall otherwise fails
-    with WinError 32 on the second `unsloth studio update` run inside the
-    same shim. The leftover *.exe.deleteme is unlinked at the start of the
-    next update once the shim it belonged to has exited.
+    drop a new copy on Windows. setup.ps1 also retries this from its own
+    PowerShell process, which is the truly reliable path.
     """
     if platform.system() != "Windows":
         return
@@ -1257,6 +1252,7 @@ def _release_self_exe_lock_windows() -> None:
         venv_scripts = Path(sys.executable).resolve().parent
     except OSError:
         return
+    # python.exe sits in the venv Scripts dir alongside unsloth.exe
     exe = venv_scripts / "unsloth.exe"
     if not exe.exists():
         return
@@ -1268,8 +1264,9 @@ def _release_self_exe_lock_windows() -> None:
         pass
     try:
         exe.rename(stale)
-    except OSError:
-        pass
+    except OSError as e:
+        # Not fatal -- setup.ps1 retries the rename from a sibling process.
+        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
 
 
 # ── unsloth studio reset-password ────────────────────────────────────

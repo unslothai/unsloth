@@ -1842,6 +1842,24 @@ if ($CuTag -eq "cpu") {
     }
 }
 
+# Free the running unsloth.exe entry point so pip can replace it. Windows
+# refuses to delete a mapped .exe, but any process (including this one) can
+# rename it -- the path-to-inode mapping is updated even while the image is
+# loaded by an ancestor (the user's `unsloth.exe studio update`).
+$VenvScriptsDir = Join-Path $VenvDir "Scripts"
+$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
+if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
+    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
+    if (Test-Path -LiteralPath $StaleUnslothExe) {
+        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
+    } catch {
+        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
+    }
+}
+
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
