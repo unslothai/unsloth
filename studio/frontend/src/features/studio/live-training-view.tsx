@@ -8,13 +8,79 @@ import {
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { ReactElement } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
-import { NeuronHeatmapSection } from "./sections/neuron-heatmap-section";
+import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-section";
 import { DeadNeuronPanel } from "./sections/dead-neuron-panel";
 import { ProgressSection } from "./sections/progress-section";
 import { TrainingStartOverlay } from "./training-start-overlay";
+import { useActivationData } from "@/features/training/hooks/use-activation-data";
+
+function InterpretabilitySection({
+  isTraining,
+  jobId,
+}: {
+  isTraining: boolean;
+  jobId: string | null;
+}): ReactElement {
+  const { metadata, records, loading } = useActivationData({ isTraining, jobId });
+  const [stepIndex, setStepIndex] = useState<number>(0);
+
+  // Keep step index at the latest record after training finishes
+  useEffect(() => {
+    if (!isTraining) setStepIndex(Math.max(0, records.length - 1));
+  }, [records.length, isTraining]);
+
+  const handleStepChange = useCallback(
+    (idx: number) => {
+      if (idx === -1) {
+        setStepIndex((prev) => Math.min(prev + 1, records.length - 1));
+      } else {
+        setStepIndex(Math.max(0, Math.min(idx, records.length - 1)));
+      }
+    },
+    [records.length],
+  );
+
+  // During training always show the latest; after training the slider drives it
+  const displayIndex = isTraining ? Math.max(0, records.length - 1) : stepIndex;
+  const record = records[displayIndex] ?? null;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex gap-4 items-stretch min-h-[400px]">
+        <div className="w-[340px] shrink-0">
+          <NeuronHeatmapSection
+            isTraining={isTraining}
+            records={records}
+            metadata={metadata}
+            loading={loading}
+            record={record}
+            stepIndex={stepIndex}
+            onStepChange={handleStepChange}
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <DeadNeuronPanel
+            isTraining={isTraining}
+            records={records}
+            stepIndex={displayIndex}
+            onStepChange={handleStepChange}
+          />
+        </div>
+      </div>
+      {!isTraining && records.length > 1 && (
+        <ReplayControls
+          stepIndex={stepIndex}
+          totalSteps={records.length}
+          onStepChange={handleStepChange}
+          currentStep={record?.step ?? 0}
+        />
+      )}
+    </div>
+  );
+}
 
 export function LiveTrainingView(): ReactElement {
   const runtime = useTrainingRuntimeStore(
@@ -123,20 +189,10 @@ export function LiveTrainingView(): ReactElement {
 
           <TabsContent value="interpretability">
             {config.enableActivationCapture ? (
-              <div className="flex gap-4 items-stretch min-h-[400px]">
-                <div className="w-[340px] shrink-0">
-                  <NeuronHeatmapSection
-                    isTraining={viewData.isTrainingRunning}
-                    jobId={runtime.jobId}
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <DeadNeuronPanel
-                    isTraining={viewData.isTrainingRunning}
-                    jobId={runtime.jobId}
-                  />
-                </div>
-              </div>
+              <InterpretabilitySection
+                isTraining={viewData.isTrainingRunning}
+                jobId={runtime.jobId}
+              />
             ) : (
               <div className="flex flex-col items-center justify-center min-h-[300px] gap-3 text-center text-muted-foreground">
                 <p className="text-sm">Neuron activation capture is disabled.</p>

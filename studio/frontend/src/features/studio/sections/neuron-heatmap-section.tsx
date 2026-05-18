@@ -22,7 +22,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import { useActivationData } from "@/features/training/hooks/use-activation-data";
 import type { ActivationMetadata, ActivationRecord } from "@/features/training/api/train-api";
 
 // ── Color palette ────────────────────────────────────────────────────────────
@@ -67,6 +66,7 @@ const CELL_SIZE = 8;        // px — drawn width/height of each squircle cell
 const CELL_GAP  = 1;        // px — gap between cells (makes squircle corners visible)
 const CELL_SLOT = CELL_SIZE + CELL_GAP; // slot size used for positioning & hit-testing
 const CELL_RADIUS = 2;      // corner radius for squircle look
+const TOP_MARGIN  = 8;      // top padding so the first row label isn't clipped
 
 function buildPalette(
   low:  [number, number, number],
@@ -140,6 +140,7 @@ function niceInterval(minStride: number): number {
 type HeatmapLayout = {
   cellSlot: number;         // slot size (CELL_SIZE + CELL_GAP) for hit-testing (canvas buffer pixels)
   leftMargin: number;       // left axis margin in canvas buffer pixels (for hit-testing)
+  topMargin: number;        // top padding in canvas buffer pixels (for hit-testing)
   numLayers: number;
   numChannels: number;
   layerKeys: string[];
@@ -177,6 +178,7 @@ function drawHeatmap(
   const cRadius = CELL_RADIUS * s;  // corner radius
   const lMargin = LEFT_MARGIN   * s;  // left axis area
   const bMargin = BOTTOM_MARGIN * s;  // bottom axis area
+  const tMargin = TOP_MARGIN    * s;  // top padding
 
   // transposed=false (normal/compact): layers → X, channels → Y  (portrait)
   // transposed=true  (expanded):       channels → X, layers → Y  (landscape)
@@ -185,7 +187,7 @@ function drawHeatmap(
 
   // Only resize when dimensions actually change to avoid layout reflow on every draw.
   const newW = Math.round(lMargin + gridW);
-  const newH = Math.round(gridH + bMargin);
+  const newH = Math.round(tMargin + gridH + bMargin);
   if (canvas.width !== newW || canvas.height !== newH) {
     canvas.width  = newW;
     canvas.height = newH;
@@ -209,7 +211,7 @@ function drawHeatmap(
     for (let ci = 0; ci < layer.mean_abs.length; ci++) {
       const v  = layer.mean_abs[ci];
       const cx = lMargin + (transposed ? ci : li) * cSlot;
-      const cy =           (transposed ? li : ci) * cSlot;
+      const cy = tMargin + (transposed ? li : ci) * cSlot;
       ctx.fillStyle = v > clampMax ? outlierColor : paletteColor(v / clampMax, palette);
       ctx.beginPath();
       ctx.roundRect(cx, cy, cSize, cSize, cRadius);
@@ -230,18 +232,18 @@ function drawHeatmap(
   ctx.textBaseline  = "middle";
   for (let yi = 0; yi < yCount; yi += yStride) {
     const label = transposed ? String(layerKeys[yi]) : String(capturedChannels[yi] ?? yi);
-    ctx.fillText(label, lMargin - 4 * s, yi * cSlot + cSize / 2);
+    ctx.fillText(label, lMargin - 4 * s, tMargin + yi * cSlot + cSize / 2);
   }
   if ((yCount - 1) % yStride !== 0) {
     const label = transposed
       ? String(layerKeys[yCount - 1])
       : String(capturedChannels[yCount - 1] ?? yCount - 1);
-    ctx.fillText(label, lMargin - 4 * s, (yCount - 1) * cSlot + cSize / 2);
+    ctx.fillText(label, lMargin - 4 * s, tMargin + (yCount - 1) * cSlot + cSize / 2);
   }
 
   // Y-axis title (rotated)
   ctx.save();
-  ctx.translate(8 * s, gridH / 2);
+  ctx.translate(8 * s, tMargin + gridH / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillStyle    = TITLE_COLOR;
   ctx.font         = `${11 * s}px sans-serif`;
@@ -260,13 +262,13 @@ function drawHeatmap(
   ctx.textBaseline  = "top";
   for (let xi = 0; xi < xCount; xi += xStride) {
     const label = transposed ? String(capturedChannels[xi] ?? xi) : String(layerKeys[xi]);
-    ctx.fillText(label, lMargin + xi * cSlot + cSize / 2, gridH + 3 * s);
+    ctx.fillText(label, lMargin + xi * cSlot + cSize / 2, tMargin + gridH + 3 * s);
   }
   if ((xCount - 1) % xStride !== 0) {
     const label = transposed
       ? String(capturedChannels[xCount - 1] ?? xCount - 1)
       : String(layerKeys[xCount - 1]);
-    ctx.fillText(label, lMargin + (xCount - 1) * cSlot + cSize / 2, gridH + 3 * s);
+    ctx.fillText(label, lMargin + (xCount - 1) * cSlot + cSize / 2, tMargin + gridH + 3 * s);
   }
 
   // X-axis title
@@ -276,14 +278,19 @@ function drawHeatmap(
   ctx.textBaseline = "bottom";
   ctx.fillText(transposed ? "Channel →" : "Layer →", lMargin + gridW / 2, canvas.height);
 
-  return { cellSlot: cSlot, leftMargin: lMargin, numLayers, numChannels, layerKeys, capturedChannels, globalMax, clampMax, transposed };
+  return { cellSlot: cSlot, leftMargin: lMargin, topMargin: tMargin, numLayers, numChannels, layerKeys, capturedChannels, globalMax, clampMax, transposed };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Props = {
   isTraining: boolean;
-  jobId: string | null;
+  records: ActivationRecord[];
+  metadata: ActivationMetadata | null;
+  loading: boolean;
+  record: ActivationRecord | null;
+  stepIndex: number;
+  onStepChange: (idx: number) => void;
 };
 
 // ── Tooltip type ─────────────────────────────────────────────────────────────
@@ -339,7 +346,7 @@ function HeatmapCanvas({
           const numCh   = capturedChannels.length || record.layers[lKeys[0]]?.mean_abs.length || 1;
           // expanded → transposed=true: channels on X axis, layers on Y axis
           const naturalW = LEFT_MARGIN + numCh   * CELL_SLOT;
-          const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN;
+          const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN + TOP_MARGIN;
           // Fill as much width as possible; cap height to ~65% of viewport
           const maxH        = window.innerHeight * 0.65;
           const visualScale = Math.min(cw / naturalW, maxH / naturalH, 8);
@@ -383,7 +390,7 @@ function HeatmapCanvas({
       const scaleX = canvas.width  / rect.width;
       const scaleY = canvas.height / rect.height;
       const cx = (e.clientX - rect.left) * scaleX;
-      const cy = (e.clientY - rect.top)  * scaleY;
+      const cy = (e.clientY - rect.top)  * scaleY - layout.topMargin;
 
       const li = layout.transposed
         ? Math.floor(cy / layout.cellSlot)
@@ -550,7 +557,7 @@ function ColorLegend({
 const SPEEDS = [0.5, 1, 2, 3, 5, 10] as const;
 type Speed = (typeof SPEEDS)[number];
 
-function ReplayControls({
+export function ReplayControls({
   stepIndex,
   totalSteps,
   onStepChange,
@@ -702,31 +709,7 @@ function ReplayControls({
 
 // ── Main section ──────────────────────────────────────────────────────────────
 
-export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement {
-  const { metadata, records, loading } = useActivationData({ isTraining, jobId });
-
-  const [stepIndex, setStepIndex] = useState<number>(0);
-
-  // During training: always show the latest record
-  const displayIndex = isTraining ? Math.max(0, records.length - 1) : stepIndex;
-  const record: ActivationRecord | null = records[displayIndex] ?? null;
-
-  // Keep step index at end after training completes
-  useEffect(() => {
-    if (!isTraining) setStepIndex(Math.max(0, records.length - 1));
-  }, [records.length, isTraining]);
-
-  const handleStepChange = useCallback(
-    (idx: number) => {
-      if (idx === -1) {
-        setStepIndex((prev) => Math.min(prev + 1, records.length - 1));
-      } else {
-        setStepIndex(Math.max(0, Math.min(idx, records.length - 1)));
-      }
-    },
-    [records.length],
-  );
-
+export function NeuronHeatmapSection({ isTraining, records, metadata, loading, record, stepIndex, onStepChange }: Props): ReactElement {
   const numLayers = metadata?.num_layers ?? (record ? Object.keys(record.layers).length : 0);
   const numChannels = metadata?.captured_channels?.length ?? 0;
   const [expanded, setExpanded] = useState(false);
@@ -781,15 +764,6 @@ export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement
 
         {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
 
-        {!isTraining && records.length > 1 && (
-          <ReplayControls
-            stepIndex={stepIndex}
-            totalSteps={records.length}
-            onStepChange={handleStepChange}
-            currentStep={record?.step ?? 0}
-          />
-        )}
-
         {!loading && records.length === 0 && (
           <p className="text-center text-[11px] text-muted-foreground">
             Activation data will appear here during training
@@ -816,7 +790,7 @@ export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement
               <ReplayControls
                 stepIndex={stepIndex}
                 totalSteps={records.length}
-                onStepChange={handleStepChange}
+                onStepChange={onStepChange}
                 currentStep={record?.step ?? 0}
               />
             )}

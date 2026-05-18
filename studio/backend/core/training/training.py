@@ -248,6 +248,7 @@ class TrainingBackend:
             "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "gpu_ids": kwargs.get("gpu_ids"),
+            "enable_activation_capture": kwargs.get("enable_activation_capture", False),
         }
 
         # Full finetuning always runs in 16-bit. LoRA/QLoRA and CPT preserve the
