@@ -50,8 +50,8 @@ def apply_chat_template_for_generation(
         try:
             return tokenizer.apply_chat_template(
                 messages,
-                tokenize=False,
-                add_generation_prompt=True,
+                tokenize = False,
+                add_generation_prompt = True,
                 **kwargs,
             )
         except TypeError as e:
@@ -63,5 +63,5 @@ def apply_chat_template_for_generation(
     if last_exc is not None:
         raise last_exc
     return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages, tokenize = False, add_generation_prompt = True
     )
