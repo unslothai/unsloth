@@ -204,7 +204,9 @@ def _install_package_wheel_first(
                 "(this may take several minutes)..."
             )
         else:
-            pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
+            pypi_status_message = (
+                f"Installing {display_name} from PyPI for faster training..."
+            )
 
     _send_status(event_queue, pypi_status_message)
 
