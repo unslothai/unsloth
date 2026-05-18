@@ -135,6 +135,15 @@ function parseManualModelIds(text: string): string[] {
   return out;
 }
 
+// Remote providers where pasting model IDs is a useful escape hatch.
+// Major providers (openai, anthropic, gemini, ...) accept large per-model
+// parameter surfaces that differ across models, so we keep their catalog
+// curated and never expose manual entry. OpenRouter drops unsupported
+// parameters server-side, so manual IDs are safe there. Self-hosted
+// backends (llama_cpp, vllm, ollama, custom) already qualify via
+// isCustomProvider.
+const MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES = new Set<string>(["openrouter"]);
+
 function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
   if (providerType === "anthropic") {
     return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
@@ -509,10 +518,10 @@ export function ChatProvidersSettings({
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
     const manualOnly = isCustomProvider || curated;
-    // Remote-mode providers can also accept manual IDs as a fallback
-    // when the user knows the model name (no live API call needed).
+    const remoteAllowsManual =
+      MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType);
     const manualIds = parseManualModelIds(manualModelIds);
-    const allowManual = manualOnly || manualIds.length > 0;
+    const allowManual = manualOnly || remoteAllowsManual;
     const modelsToSave = pruneProviderModelIds(
       providerType,
       allowManual
@@ -529,7 +538,7 @@ export function ChatProvidersSettings({
         toast.error("Add at least one model ID.");
         return;
       }
-    } else if (manualIds.length > 0) {
+    } else if (remoteAllowsManual && manualIds.length > 0) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -537,7 +546,7 @@ export function ChatProvidersSettings({
     } else {
       if (availableModels.length === 0) {
         toast.error(
-          "Load available models or enter model IDs manually below.",
+          "Load available models first, then choose which to enable.",
         );
         return;
       }
@@ -614,8 +623,11 @@ export function ChatProvidersSettings({
     const entry = registryByType.get(existing.providerType);
     const curated = entry?.model_list_mode === "curated";
     const manualOnly = isEditingCustomProvider || curated;
+    const remoteAllowsManual = MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(
+      existing.providerType,
+    );
     const manualIds = parseManualModelIds(manualModelIds);
-    const allowManual = manualOnly || manualIds.length > 0;
+    const allowManual = manualOnly || remoteAllowsManual;
     const modelsToSave = pruneProviderModelIds(
       existing.providerType,
       allowManual
@@ -627,7 +639,12 @@ export function ChatProvidersSettings({
         ]
       : [...selectedModelIds],
     );
-    if (manualOnly || manualIds.length > 0) {
+    if (manualOnly) {
+      if (modelsToSave.length === 0) {
+        toast.error("Add at least one model ID.");
+        return;
+      }
+    } else if (remoteAllowsManual && manualIds.length > 0) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -635,7 +652,7 @@ export function ChatProvidersSettings({
     } else {
       if (availableModels.length === 0) {
         toast.error(
-          "Load available models or enter model IDs manually below.",
+          "Load available models first, then choose which to enable.",
         );
         return;
       }
@@ -1202,7 +1219,8 @@ export function ChatProvidersSettings({
                       />
                     </div>
                   </div>
-                ) : (
+                ) : availableModels.length === 0 &&
+                  !MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? null : (
                   <div className="space-y-3 px-4 py-4">
                     {availableModels.length === 0 ? null : (
                       <>
@@ -1271,27 +1289,32 @@ export function ChatProvidersSettings({
                         </ul>
                       </>
                     )}
-                    {/* Fallback: paste model IDs when the live catalog is unavailable. */}
-                    <div className="space-y-2">
-                      <Label
-                        htmlFor="provider-manual-models"
-                        className="text-sm font-medium"
-                      >
-                        {availableModels.length === 0
-                          ? "Or enter model IDs manually (one per line or comma-separated)"
-                          : "Additional model IDs (one per line or comma-separated)"}
-                      </Label>
-                      <Textarea
-                        id="provider-manual-models"
-                        value={manualModelIds}
-                        onChange={(event) =>
-                          setManualModelIds(event.target.value)
-                        }
-                        placeholder={"model-id-1\nmodel-id-2"}
-                        rows={4}
-                        className="min-h-[80px] resize-y font-mono text-sm"
-                      />
-                    </div>
+                    {/* OpenRouter strips unsupported params server-side, so
+                        pasting model IDs is safe. Major providers stay
+                        catalog-only because their parameter surface
+                        differs per model. */}
+                    {MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? (
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor="provider-manual-models"
+                          className="text-sm font-medium"
+                        >
+                          {availableModels.length === 0
+                            ? "Or enter model IDs manually (one per line or comma-separated)"
+                            : "Additional model IDs (one per line or comma-separated)"}
+                        </Label>
+                        <Textarea
+                          id="provider-manual-models"
+                          value={manualModelIds}
+                          onChange={(event) =>
+                            setManualModelIds(event.target.value)
+                          }
+                          placeholder={"model-id-1\nmodel-id-2"}
+                          rows={4}
+                          className="min-h-[80px] resize-y font-mono text-sm"
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </motion.div>
