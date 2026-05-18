@@ -2241,8 +2241,12 @@ def run_training_process(
                                     "model_name": getattr(self, "_model_name", None),
                                     "num_layers": len(getattr(self, "_layers", [])),
                                     "hidden_size": getattr(self, "_hidden_size", None),
-                                    "intermediate_size": getattr(self, "_intermediate_size", None),
-                                    "captured_channels": getattr(self, "_sampled_channels", []),
+                                    "intermediate_size": getattr(
+                                        self, "_intermediate_size", None
+                                    ),
+                                    "captured_channels": getattr(
+                                        self, "_sampled_channels", []
+                                    ),
                                     "capture_interval": cfg.capture_interval,
                                     "max_channels": cfg.max_channels,
                                     "capture_mlp_out": cfg.capture_mlp_out,
@@ -2252,7 +2256,9 @@ def run_training_process(
                                 }
                                 upsert_activation_metadata(job_id, _meta)
                             except Exception as _e:
-                                logger.warning("DB activation metadata write failed: %s", _e)
+                                logger.warning(
+                                    "DB activation metadata write failed: %s", _e
+                                )
 
                     def flush(self):
                         # Snapshot buffer BEFORE super().flush() clears it
@@ -2278,7 +2284,9 @@ def run_training_process(
                                     None,
                                 )
                             except Exception as _e:
-                                logger.warning("DB activation record write failed: %s", _e)
+                                logger.warning(
+                                    "DB activation record write failed: %s", _e
+                                )
 
                 # Target ~30 replay frames; fall back to every step when total unknown
                 _cfg_max_steps = config.get("max_steps", 0) or 0
@@ -2289,7 +2297,9 @@ def run_training_process(
                     output_dir = os.path.join(output_dir, "activation_logs"),
                     capture_interval = _act_interval,
                 )
-                _act_capture = _StudioActivationCapture(trainer.model, _act_config, _job_id)
+                _act_capture = _StudioActivationCapture(
+                    trainer.model, _act_config, _job_id
+                )
                 _act_cb = ActivationCaptureCallback(_act_capture)
                 trainer.extra_hf_callbacks = [_act_cb]
                 logger.info("ActivationCaptureCallback registered for %s\n", output_dir)
