@@ -717,8 +717,14 @@ export function SharedComposer({
 
   function onKeyDown(e: KeyboardEvent) {
     // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
-    // Don't hijack it. See issue #5318.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // Don't hijack it. See issue #5318. Re-pin composingRef in case the stuck
+    // watchdog (#5546) cleared it during a long candidate-window pause; this
+    // keeps a follow-up click-Send from submitting preedit text.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
+      composingRef.current = true;
+      clearStuckImeTimer();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {

@@ -477,6 +477,65 @@ with sync_playwright() as p:
     info("compositionend watchdog recovery PASS")
     clear()
 
+    # 6c. Watchdog-race repro: after the watchdog clears composingRef during a
+    #     long candidate pause, a subsequent IME keydown (browser still sees
+    #     isComposing=true / keyCode 229) must not slip preedit text through
+    #     the form submit. The onKeyDown gate re-pins composingRef so the
+    #     handleSubmit / blockSend guards keep refusing. The Send button stays
+    #     visually enabled (watchdog has already cleared the React state); the
+    #     refusal happens at form.requestSubmit() time, not at the button.
+    step("BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)")
+    clear()
+    composer.click()
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'半'}));
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, el.value + '半角');
+            el.dispatchEvent(new InputEvent('input', {
+                bubbles:true, inputType:'insertCompositionText',
+                data:'半角', isComposing:true,
+            }));
+        }"""
+    )
+    send_btn_keydown = page.locator('button[aria-label="Send message"]')
+    # Wait past the watchdog so composingRef has cleared.
+    try:
+        expect(send_btn_keydown).not_to_be_disabled(timeout = 8_000)
+    except Exception:
+        soft_fail("watchdog did not clear before keydown re-pin test")
+    # Fire the IME-confirm Enter (keyCode 229, isComposing=true) then trigger
+    # the form submit synchronously. With the keydown gate, composingRef is
+    # re-pinned before handleSubmit runs and the submit is prevented; the
+    # textarea must still hold the preedit text.
+    submit_probe = composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles:true, key:'Enter', code:'Enter', keyCode:229,
+                isComposing:true,
+            }));
+            const form = el.closest('form');
+            const before = el.value;
+            try { form && form.requestSubmit(); } catch (e) {}
+            return {before, after: el.value, cleared: before !== '' && el.value === ''};
+        }"""
+    )
+    if submit_probe.get("cleared"):
+        shoot("06c-keydown-repin-FAIL")
+        fail(
+            "Form submitted after an IME keydown -- preedit text leaked "
+            "through the watchdog gap (#5546 follow-up regression)."
+        )
+    info(f"Form submit refused after IME keydown; textarea retained {submit_probe.get('after')!r}")
+    shoot("06c-keydown-repin")
+    info("keydown re-pin gate PASS")
+    clear()
+
     # 7. Final state. The change-password redirect emits benign 401 noise,
     #    so we filter via is_benign_* and only fail on real errors.
     shoot("07-final")
@@ -505,7 +564,7 @@ with sync_playwright() as p:
     info(
         f"DONE: ascii=OK paste={len(I18N_SAMPLES)}/{len(I18N_SAMPLES)} "
         f"normal_composition=OK stuck_recovery=OK "
-        f"compositionend_watchdog=OK"
+        f"compositionend_watchdog=OK keydown_repin=OK"
     )
     _watchdog.cancel()
     browser.close()

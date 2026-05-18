@@ -96,3 +96,26 @@ def test_compare_composer_has_stuck_compositionend_watchdog():
     assert (
         "onCompositionUpdate" in src
     ), "compare composer is missing onCompositionUpdate wiring"
+
+
+def test_main_composer_keydown_repins_composing_during_ime():
+    """Issue #5546 watchdog can clear composingRef during a long candidate
+    pause; the IME keydown gate must re-pin it so a follow-up Enter does not
+    submit preedit text."""
+    src = THREAD_TSX.read_text()
+    assert "onKeyDown" in src, "main composer is missing onKeyDown IME gate"
+    assert "e.nativeEvent.isComposing" in src and "keyCode === 229" in src, (
+        "main composer keydown gate must check both nativeEvent.isComposing "
+        "and the IME keyCode 229 sentinel"
+    )
+
+
+def test_compare_composer_keydown_repins_composing_during_ime():
+    """Compare composer onKeyDown re-pins composingRef on IME keypress so a
+    follow-up click-Send during the watchdog window does not slip preedit
+    text through."""
+    src = SHARED_TSX.read_text()
+    assert "composingRef.current = true" in src, (
+        "compare composer keydown gate must re-pin composingRef when the "
+        "browser still considers the IME active"
+    )

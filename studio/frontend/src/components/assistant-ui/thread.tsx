@@ -80,6 +80,7 @@ import {
   type CompositionEvent,
   type FC,
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
@@ -442,12 +443,28 @@ function useImeComposerInputHandlers() {
     [setComposerText, setCompositionState],
   );
 
+  // If the watchdog cleared the composing flags during a long candidate-window
+  // pause, a subsequent IME keypress (browser-side isComposing=true / IME
+  // keyCode 229) would otherwise reach handleSubmit with composingRef=false
+  // and submit the preedit text. Re-arm composingRef synchronously from the
+  // native event so the form-submit gate keeps blocking until compositionend.
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        composingRef.current = true;
+        clearStuckTimer();
+      }
+    },
+    [clearStuckTimer],
+  );
+
   return {
     inputProps: {
       onCompositionStart,
       onCompositionUpdate,
       onCompositionEnd,
       onChange,
+      onKeyDown,
     },
     isComposing,
     isComposingRef: composingRef,
