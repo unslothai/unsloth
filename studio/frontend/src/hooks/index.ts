@@ -7,6 +7,10 @@ export { useGpuUtilization } from "./use-gpu-utilization";
 export { useHardwareInfo } from "./use-hardware-info";
 export { useHfModelSearch } from "./use-hf-model-search";
 export { useRecommendedModelVram } from "./use-recommended-model-vram";
+export {
+  useGgufRecommendedFit,
+  type GgufRepoFit,
+} from "./use-gguf-recommended-fit";
 export { useHfDatasetSearch } from "./use-hf-dataset-search";
 export { useHfDatasetSplits } from "./use-hf-dataset-splits";
 export { useHfTokenValidation } from "./use-hf-token-validation";

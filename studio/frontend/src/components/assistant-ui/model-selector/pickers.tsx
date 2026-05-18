@@ -29,7 +29,9 @@ import type {
 } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import {
+  type GgufRepoFit,
   useDebouncedValue,
+  useGgufRecommendedFit,
   useGpuInfo,
   useHfModelSearch,
   useInfiniteScroll,
@@ -768,6 +770,26 @@ export function HubModelPicker({
   }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);
+  // GGUF repos do not expose safetensors -- fit comes from the smallest
+  // .gguf variant's file size instead.
+  const idsForGgufFit = useMemo(() => {
+    const ids = showHfSection
+      ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
+      : visibleRecommendedIds;
+    return ids.filter((id) => isKnownGgufRepo(id));
+  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
+  const ggufFitByRepo = useGgufRecommendedFit(
+    idsForGgufFit,
+    gpu.available ? gpu.memoryTotalGb : undefined,
+    gpu.available ? gpu.systemRamAvailableGb : undefined,
+  );
+  const ggufFitToVramStatus = (
+    fit: GgufRepoFit | undefined,
+  ): VramFitStatus | null => {
+    if (fit === "oom") return "exceeds";
+    if (fit === "tight") return "tight";
+    return null;
+  };
 
   const recommendedSet = useMemo(
     () =>
@@ -1277,7 +1299,9 @@ export function HubModelPicker({
                           }
                         }}
                         vramStatus={
-                          isKnownGgufRepo(id) ? null : (vram?.status ?? null)
+                          isKnownGgufRepo(id)
+                            ? ggufFitToVramStatus(ggufFitByRepo.get(id))
+                            : (vram?.status ?? null)
                         }
                         vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
@@ -1330,7 +1354,9 @@ export function HubModelPicker({
                         }
                       }}
                       vramStatus={
-                        isKnownGgufRepo(id) ? null : (vram?.status ?? null)
+                        isKnownGgufRepo(id)
+                          ? ggufFitToVramStatus(ggufFitByRepo.get(id))
+                          : (vram?.status ?? null)
                       }
                       vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                       gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
@@ -1384,7 +1410,9 @@ export function HubModelPicker({
                           }
                         }}
                         vramStatus={
-                          isSearchGguf ? null : (vram?.status ?? null)
+                          isSearchGguf
+                            ? ggufFitToVramStatus(ggufFitByRepo.get(id))
+                            : (vram?.status ?? null)
                         }
                         vramEst={isSearchGguf ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
