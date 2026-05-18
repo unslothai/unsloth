@@ -135,13 +135,7 @@ function parseManualModelIds(text: string): string[] {
   return out;
 }
 
-// Remote providers where pasting model IDs is a useful escape hatch.
-// Major providers (openai, anthropic, gemini, ...) accept large per-model
-// parameter surfaces that differ across models, so we keep their catalog
-// curated and never expose manual entry. OpenRouter drops unsupported
-// parameters server-side, so manual IDs are safe there. Self-hosted
-// backends (llama_cpp, vllm, ollama, custom) already qualify via
-// isCustomProvider.
+// Remote providers safe for manual model IDs (openrouter drops unused params).
 const MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES = new Set<string>(["openrouter"]);
 
 function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
@@ -339,10 +333,7 @@ export function ChatProvidersSettings({
               updatedAt,
             };
           });
-        // Server is authoritative when it has rows. If the server has none
-        // but localStorage does, keep the local list so the model picker
-        // (which renders from the same store) doesn't lose entries the
-        // user can still use. The next provider add/edit promotes them.
+        // Don't wipe localStorage providers when the server has no rows.
         if (syncedProviders.length === 0 && providersRef.current.length > 0) {
           return;
         }
@@ -1289,10 +1280,7 @@ export function ChatProvidersSettings({
                         </ul>
                       </>
                     )}
-                    {/* OpenRouter strips unsupported params server-side, so
-                        pasting model IDs is safe. Major providers stay
-                        catalog-only because their parameter surface
-                        differs per model. */}
+                    {/* Manual IDs allowed for openrouter only. */}
                     {MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? (
                       <div className="space-y-2">
                         <Label
