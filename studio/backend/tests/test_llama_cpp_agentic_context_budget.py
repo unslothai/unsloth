@@ -107,7 +107,10 @@ def test_estimate_tokens_includes_tool_definitions():
             "function": {
                 "name": "web_search",
                 "description": "Search the web for a query. " * 50,
-                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                },
             },
         }
     ]
@@ -182,7 +185,9 @@ def test_estimate_tokens_falls_back_on_non_serializable():
         (4096, int(0.95 * 4096 * _CHARS_PER_TOKEN_ESTIMATE), True),
     ],
 )
-def test_budget_threshold_matches_loop_arithmetic(ctx_length, prompt_chars, expect_trip):
+def test_budget_threshold_matches_loop_arithmetic(
+    ctx_length, prompt_chars, expect_trip
+):
     msgs = [{"role": "user", "content": "x" * prompt_chars}]
     projected = _estimate_conversation_tokens(msgs)
     budget = int(_CONTEXT_BUDGET_RATIO * ctx_length)

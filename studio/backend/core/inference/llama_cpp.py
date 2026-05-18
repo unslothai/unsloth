@@ -4077,9 +4077,7 @@ class LlamaCppBackend:
             # answer rather than letting llama-server return "request
             # exceeds context size".  See issue #5562.
             if iteration > 0 and self._effective_context_length:
-                _projected_tokens = _estimate_conversation_tokens(
-                    conversation, tools
-                )
+                _projected_tokens = _estimate_conversation_tokens(conversation, tools)
                 _budget_tokens = int(
                     _CONTEXT_BUDGET_RATIO * self._effective_context_length
                 )
