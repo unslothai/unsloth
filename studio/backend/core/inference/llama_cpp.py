@@ -2651,9 +2651,10 @@ class LlamaCppBackend:
                 )
                 user_owns_spec_type = _extra_args_set_spec_type(extra_args)
                 # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
+                # llama.cpp #22673: MTP is compatible with mmproj, so the
+                # vision gate previously here was wrong.
                 if (
                     is_mtp_model
-                    and not effective_is_vision
                     and not user_owns_spec_type
                     and normalized_spec in (None, "", "default")
                 ):
@@ -2665,7 +2666,6 @@ class LlamaCppBackend:
                 if (
                     normalized_spec
                     and normalized_spec != "off"
-                    and not effective_is_vision
                 ):
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
@@ -3112,22 +3112,16 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        # Vision GGUFs silently drop speculative decoding in
-        # load_model (the spec gate is "not is_vision"); treat the
-        # request's value as "off" so a vision load with
-        # speculative_type="default" still matches.
-        if self._is_vision or is_vision:
-            req_spec = "off"
-        else:
-            raw_spec = _norm(speculative_type)
-            req_spec = raw_spec or "off"
-            # Mirror load_model's auto-promotion so repeat /load matches.
-            if (
-                raw_spec in (None, "default")
-                and _is_mtp_model_name(model_identifier, gguf_path)
-                and not _extra_args_set_spec_type(extra_args)
-            ):
-                req_spec = "draft-mtp"
+        # Mirror load_model's auto-promotion. Vision is no longer a
+        # spec blocker (llama.cpp #22673: MTP is compatible with mmproj).
+        raw_spec = _norm(speculative_type)
+        req_spec = raw_spec or "off"
+        if (
+            raw_spec in (None, "default")
+            and _is_mtp_model_name(model_identifier, gguf_path)
+            and not _extra_args_set_spec_type(extra_args)
+        ):
+            req_spec = "draft-mtp"
         backend_spec = _norm(self._speculative_type) or "off"
         if req_spec != backend_spec:
             return False
