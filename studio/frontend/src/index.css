@@ -996,6 +996,35 @@
 	}
 }
 
+/* Selectable toast text; non-selectable toast buttons. */
+[data-sonner-toast],
+[data-sonner-toast] [data-content],
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+/* Text cursor only on actual text nodes, so the toast container does
+   not pretend to be an input. */
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	cursor: text;
+}
+
+[data-sonner-toast] button,
+[data-sonner-toast] [data-button],
+[data-sonner-toast] [data-cancel],
+[data-sonner-toast] [data-close-button] {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: pointer;
+}
+
 /* Flat scrollbar chrome */
 * {
 	scrollbar-width: thin;

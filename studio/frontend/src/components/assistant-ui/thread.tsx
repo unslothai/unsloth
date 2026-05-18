@@ -85,7 +85,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 export const Thread: FC<{
   hideComposer?: boolean;

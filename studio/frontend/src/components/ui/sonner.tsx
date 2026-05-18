@@ -65,6 +65,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--border-radius": "var(--radius)",
         } as React.CSSProperties
       }
+      // No swipe gestures; keeps toast text selectable.
+      swipeDirections={[]}
       toastOptions={{
         classNames: {
           toast: "cn-toast",

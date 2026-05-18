@@ -14,7 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Trash2Icon } from "lucide-react";
 import { useCallback, useState, type ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 interface ModelDeleteActionProps {
   ariaLabel: string;
