@@ -71,6 +71,7 @@ import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import {
   getStoredChatThread,
+  isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
@@ -315,6 +316,10 @@ const LoraCompareContent = memo(function LoraCompareContent({
       if (!isActive) return;
       setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
       setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+    }).catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
     });
     return () => {
       isActive = false;
@@ -466,6 +471,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
           ?.id,
       );
+    }).catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
     });
     return () => {
       isActive = false;
@@ -1077,6 +1086,11 @@ export function ChatPage(): ReactElement {
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
+        })
+        .catch((error) => {
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            throw error;
+          }
         });
     }
   }, [navigate]);

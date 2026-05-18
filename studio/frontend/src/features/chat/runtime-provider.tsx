@@ -40,6 +40,7 @@ import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
+  isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
   saveStoredChatMessage,
@@ -472,7 +473,15 @@ function createStudioDbAdapter(
     },
 
     async list() {
-      const threads = await listStoredChatThreads({ modelType });
+      let threads: ThreadRecord[];
+      try {
+        threads = await listStoredChatThreads({ modelType });
+      } catch (error) {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+        threads = [];
+      }
       return {
         threads: threads.map((t) => ({
           status: (t.archived ? "archived" : "regular") as
@@ -609,7 +618,15 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           user: 1,
           assistant: 2,
         };
-        const msgs = await listStoredChatMessages(remoteId);
+        let msgs: MessageRecord[];
+        try {
+          msgs = await listStoredChatMessages(remoteId);
+        } catch (error) {
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            throw error;
+          }
+          msgs = [];
+        }
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;

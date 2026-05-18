@@ -98,6 +98,15 @@ function sortMessages(messages: MessageRecord[]): MessageRecord[] {
   });
 }
 
+export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === "Invalid or expired token" ||
+      error.message === "Request failed (401)" ||
+      error.message === "Studio isn't running -- please relaunch it.")
+  );
+}
+
 function normalizeLegacyMessages(messages: MessageRecord[]): MessageRecord[] {
   let previousId: string | null = null;
   return sortMessages(messages).map((message) => {

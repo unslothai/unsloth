@@ -7,6 +7,7 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
+  isExpectedBackgroundChatStorageError,
   listStoredChatThreads,
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
@@ -57,10 +58,19 @@ export function useChatSidebarItems() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const threads = await listStoredChatThreadsWithMessages({
-        includeArchived: false,
-      });
-      if (!cancelled) setAllThreads(threads);
+      try {
+        const threads = await listStoredChatThreadsWithMessages({
+          includeArchived: false,
+        });
+        if (!cancelled) {
+          setAllThreads(threads);
+        }
+      } catch (error) {
+        if (isExpectedBackgroundChatStorageError(error)) {
+          return;
+        }
+        throw error;
+      }
     }
     void load();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
