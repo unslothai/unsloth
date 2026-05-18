@@ -258,11 +258,26 @@ jobs:
 
       - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
         run: |
-          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
-            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-            --max-time 600 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
-            | jq '{status, display_name, is_gguf, context_length}'
+          # Retry the load step a few times so a transient TCP RST during
+          # llama-server warm-up (Windows runner image churn,
+          # windows-latest -> windows-2025-vs2026 rollout) doesn't fail
+          # the whole job. The Studio backend's _wait_for_health now
+          # catches httpx.ReadError too; this retry layer covers the
+          # cases the backend can't recover from on its own.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 600 \
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name, is_gguf, context_length}' /tmp/load.json
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
         env:
@@ -350,6 +365,19 @@ jobs:
         shell: cmd
         run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
+      - name: Collect llama-server logs
+        if: always()
+        shell: bash
+        # Copy llama-server's own stdout/stderr (teed by Studio under
+        # ~/.unsloth/studio/logs/llama-server/) into the workspace so
+        # upload-artifact can pick it up. Crucial for diagnosing a
+        # subprocess crash where Studio's traceback only shows the
+        # symptom (httpx ReadError) but not the cause.
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || \
+            echo "no llama-server logs to collect"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -358,6 +386,7 @@ jobs:
           path: |
             logs/studio.log
             logs/install.log
+            logs/llama-server/*.log
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────────────
@@ -561,11 +590,21 @@ jobs:
           # a normal path.
           GGUF_PATH="${GITHUB_WORKSPACE//\\//}/gguf-cache/${GGUF_FILE}"
           ls -lh "$GGUF_PATH"
-          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
-            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-            --max-time 600 \
-            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
-            | jq '{status, display_name}'
+          # Retry: same rationale as the OpenAI/Anthropic job.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 600 \
+              -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name}' /tmp/load.json
 
       - name: Tool calling, server-side tools, thinking on/off
         env:
@@ -768,6 +807,19 @@ jobs:
         shell: cmd
         run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
+      - name: Collect llama-server logs
+        if: always()
+        shell: bash
+        # Copy llama-server's own stdout/stderr (teed by Studio under
+        # ~/.unsloth/studio/logs/llama-server/) into the workspace so
+        # upload-artifact can pick it up. Crucial for diagnosing a
+        # subprocess crash where Studio's traceback only shows the
+        # symptom (httpx ReadError) but not the cause.
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || \
+            echo "no llama-server logs to collect"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -776,6 +828,7 @@ jobs:
           path: |
             logs/studio.log
             logs/install.log
+            logs/llama-server/*.log
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────────────
@@ -970,11 +1023,21 @@ jobs:
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
           echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
-            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-            --max-time 900 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
-            | jq '{status, display_name, is_vision}'
+          # Retry: same rationale as the OpenAI/Anthropic and Tool calling jobs.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 900 \
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name, is_vision}' /tmp/load.json
 
       - name: JSON schema decoding + image input
         env:
@@ -1156,6 +1219,19 @@ jobs:
         shell: cmd
         run: echo Stop Studio (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
 
+      - name: Collect llama-server logs
+        if: always()
+        shell: bash
+        # Copy llama-server's own stdout/stderr (teed by Studio under
+        # ~/.unsloth/studio/logs/llama-server/) into the workspace so
+        # upload-artifact can pick it up. Crucial for diagnosing a
+        # subprocess crash where Studio's traceback only shows the
+        # symptom (httpx ReadError) but not the cause.
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || \
+            echo "no llama-server logs to collect"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1164,4 +1240,5 @@ jobs:
           path: |
             logs/studio.log
             logs/install.log
+            logs/llama-server/*.log
           retention-days: 7
