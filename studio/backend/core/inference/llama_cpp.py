@@ -915,6 +915,61 @@ class LlamaCppBackend:
 
         return None
 
+    # ── llama-server capability probe ─────────────────────────────
+
+    # Cached on (path, mtime); `unsloth studio update` bumps mtime.
+    _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
+
+    @classmethod
+    def probe_server_capabilities(
+        cls, binary: Optional[str] = None
+    ) -> dict[str, object]:
+        """Parse `llama-server --help` for feature flags. Returns
+        {found, mtp_token, supports_mtp}. mtp_token is "draft-mtp"
+        (older) or "mtp" (renamed upstream), or None."""
+        bin_path = binary or cls._find_llama_server_binary()
+        if not bin_path or not Path(bin_path).is_file():
+            return {"found": False, "mtp_token": None, "supports_mtp": False}
+        try:
+            mtime = int(Path(bin_path).stat().st_mtime)
+        except OSError:
+            mtime = 0
+        cache_key = (bin_path, mtime)
+        cached = cls._capability_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        mtp_token: Optional[str] = None
+        try:
+            result = subprocess.run(
+                [bin_path, "--help"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                check = False,
+            )
+            help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            spec_line = ""
+            for line in help_text.splitlines():
+                if "--spec-type" in line:
+                    spec_line = line
+                    break
+            # PR #22673 used draft-mtp; later renamed to mtp.
+            if "draft-mtp" in spec_line:
+                mtp_token = "draft-mtp"
+            elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
+                mtp_token = "mtp"
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug(f"llama-server --help probe failed: {exc}")
+
+        info = {
+            "found": True,
+            "mtp_token": mtp_token,
+            "supports_mtp": mtp_token is not None,
+        }
+        cls._capability_cache[cache_key] = info
+        return info
+
     # ── GPU allocation ────────────────────────────────────────────
 
     @staticmethod
@@ -2616,36 +2671,50 @@ class LlamaCppBackend:
                         cmd.append("--spec-default")
                         self._speculative_type = "default"
                     elif normalized_spec == "draft-mtp":
-                        if gpus:
-                            cmd.extend(
-                                [
-                                    "--spec-type",
-                                    "draft-mtp",
-                                    "--spec-draft-n-max",
-                                    "6",
-                                ]
+                        # Probe binary; fail gracefully on outdated prebuilts.
+                        # Use whichever token the binary advertises
+                        # (older: draft-mtp; renamed upstream: mtp).
+                        caps = self.probe_server_capabilities(binary)
+                        mtp_token = caps.get("mtp_token") if caps else None
+                        if not mtp_token:
+                            logger.warning(
+                                "MTP GGUF detected but llama-server lacks "
+                                "--spec-type mtp/draft-mtp; run "
+                                "`unsloth studio update`. Loading without "
+                                "speculative decoding."
                             )
+                            self._speculative_type = None
                         else:
-                            cmd.extend(
-                                [
-                                    "--spec-type",
-                                    "draft-mtp",
-                                    "--spec-draft-n-max",
-                                    "3",
-                                    "--spec-type",
-                                    "ngram-mod",
-                                    "--spec-ngram-mod-n-match",
-                                    "24",
-                                    "--spec-ngram-mod-n-min",
-                                    "48",
-                                    "--spec-ngram-mod-n-max",
-                                    "6",
-                                ]
+                            if gpus:
+                                cmd.extend(
+                                    [
+                                        "--spec-type",
+                                        mtp_token,
+                                        "--spec-draft-n-max",
+                                        "6",
+                                    ]
+                                )
+                            else:
+                                cmd.extend(
+                                    [
+                                        "--spec-type",
+                                        mtp_token,
+                                        "--spec-draft-n-max",
+                                        "3",
+                                        "--spec-type",
+                                        "ngram-mod",
+                                        "--spec-ngram-mod-n-match",
+                                        "24",
+                                        "--spec-ngram-mod-n-min",
+                                        "48",
+                                        "--spec-ngram-mod-n-max",
+                                        "6",
+                                    ]
+                                )
+                            self._speculative_type = "draft-mtp"
+                            logger.info(
+                                f"Spec decoding: {mtp_token} ({'GPU' if gpus else 'CPU/Mac'})"
                             )
-                        self._speculative_type = "draft-mtp"
-                        logger.info(
-                            f"Spec decoding: draft-mtp ({'GPU' if gpus else 'CPU/Mac'})"
-                        )
                     elif normalized_spec in _valid_spec_types:
                         cmd.extend(["--spec-type", normalized_spec])
                         if normalized_spec == "ngram-mod":
