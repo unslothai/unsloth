@@ -119,7 +119,10 @@ try:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -141,7 +144,10 @@ except ImportError:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -406,6 +412,57 @@ def _validate_native_mmproj_companion(
         ) from exc
 
 
+def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
+    """Lowercase + strip a settings string, mapping blank/None to None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        return stripped or None
+    return value
+
+
+def _request_matches_loaded_settings(
+    request: LoadRequest, llama_backend: LlamaCppBackend
+) -> bool:
+    """True iff every runtime setting on the request matches the loaded
+    server. Caller has already checked model+variant+is_loaded. See #5401."""
+    # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask
+    # an Auto-vs-explicit slider flip.
+    if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
+        llama_backend.cache_type_kv
+    ):
+        return False
+    # Vision loads silently drop speculative decoding (llama_cpp.py gates
+    # spec on ``not is_vision``), so treat the request as ``off`` against
+    # the backend's ``None`` to avoid forcing a redundant reload.
+    if llama_backend.is_vision:
+        req_spec = "off"
+    else:
+        req_spec = _normalise_settings_str(request.speculative_type) or "off"
+    backend_spec = _normalise_settings_str(llama_backend.speculative_type) or "off"
+    if req_spec != backend_spec:
+        return False
+    if (request.chat_template_override or None) != (
+        llama_backend.chat_template_override or None
+    ):
+        return False
+    # llama_extra_args=None means "inherit"; only an explicit list that
+    # differs forces a reload. On the inherit path, refuse to match if
+    # stored extras contain any shadow flag, so the reload path can
+    # strip them instead of leaving a stale override in effect.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    if request.llama_extra_args is None:
+        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+            return False
+    else:
+        if list(request.llama_extra_args) != backend_extra:
+            return False
+    return True
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -461,6 +518,11 @@ async def load_model(
             extra_llama_args = validate_extra_args(request.llama_extra_args)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
+        # Re-narrow []-from-None back to None so the inheritance path
+        # below can tell "caller omitted" from "caller explicit []".
+        extra_llama_args: Optional[list[str]] = (
+            None if request.llama_extra_args is None else extra_llama_args
+        )
 
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
@@ -479,6 +541,9 @@ async def load_model(
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
+                # Also require runtime settings to match so Apply changes
+                # aren't silently dropped (#5401).
+                and _request_matches_loaded_settings(request, llama_backend)
             ):
                 logger.info(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
@@ -613,6 +678,70 @@ async def load_model(
                 )
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
+            # Inherit llama_extra_args from the previous load when the
+            # request omits the field (the chat-settings Apply path
+            # does not round-trip them; explicit [] still clears).
+            # Inheritance is gated on (model_identifier, hf_variant)
+            # to refuse cross-model pickup, and shadowing flags are
+            # stripped so an inherited override can't win the last-wins
+            # CLI parse against a freshly-supplied first-class field.
+            if request.llama_extra_args is None and llama_backend.extra_args:
+                source = llama_backend.extra_args_source
+                # Compare against the resolved variant, not the request
+                # field: callers commonly omit gguf_variant for local
+                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
+                # variant`` is the variant load_model was actually
+                # invoked with (see the HF / local branches below), so
+                # both sides of the comparison key off the same string.
+                resolved_variant = config.gguf_variant
+                same_source = bool(
+                    source
+                    and source[0]
+                    and source[0].lower() == model_identifier.lower()
+                    and (source[1] or "").lower() == (resolved_variant or "").lower()
+                )
+                if not same_source:
+                    logger.info(
+                        "Not inheriting llama_extra_args: stored args came "
+                        "from %s, loading %s",
+                        source,
+                        (model_identifier, resolved_variant),
+                    )
+                    # Cross-model: clear explicitly so the backend
+                    # doesn't inherit via "no opinion" semantics.
+                    extra_llama_args = []
+                else:
+                    # Strip only the groups whose first-class field
+                    # was actually set by the caller, so an inherited
+                    # --chat-template-file survives an Apply that omits
+                    # chat_template_override.
+                    fields_set = getattr(request, "model_fields_set", set())
+                    stripped = strip_shadowing_flags(
+                        llama_backend.extra_args,
+                        strip_context = "max_seq_length" in fields_set,
+                        strip_cache = "cache_type_kv" in fields_set,
+                        strip_spec = "speculative_type" in fields_set,
+                        strip_template = "chat_template_override" in fields_set,
+                    )
+                    try:
+                        extra_llama_args = validate_extra_args(stripped)
+                    except ValueError:
+                        # Should not happen on already-validated args; degrade
+                        # to no-extras rather than 400 if managed flags changed.
+                        logger.warning(
+                            "Stored llama_extra_args failed revalidation; "
+                            "loading without them: %s",
+                            stripped,
+                        )
+                        extra_llama_args = []
+                    else:
+                        if extra_llama_args:
+                            logger.info(
+                                "Inheriting llama_extra_args from previous "
+                                "load (same model, shadow-stripped): %s",
+                                extra_llama_args,
+                            )
+
             # Route to HF mode or local mode based on config
             # Run in a thread so the event loop stays free for progress
             # polling and other requests during the (potentially long)
@@ -645,6 +774,10 @@ async def load_model(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    # Pass the resolved variant so _extra_args_source
+                    # is keyed off the same string the inheritance
+                    # check at the top of /load uses (#5401 followup).
+                    hf_variant = config.gguf_variant,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
