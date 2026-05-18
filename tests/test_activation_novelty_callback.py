@@ -187,6 +187,24 @@ def test_no_hook_without_model():
     assert cb._handle is None
 
 
+def test_hook_ignores_eval_mode_activations():
+    """Hook must not accumulate stats when the module is in eval mode."""
+    cb = _import_callback()(layer_getter = lambda m: m.mlp)
+    model = _TinyModel()
+    args, state, control = _make_state_control()
+
+    cb.on_train_begin(args, state, control, model = model)
+    model.eval()
+    _ = model(torch.randn(4, 16))
+    assert cb._running_mean_abs is None
+    assert cb._running_count == 0
+
+    model.train()
+    _ = model(torch.randn(4, 16))
+    assert cb._running_mean_abs is not None
+    cb.on_train_end(args, state, control)
+
+
 def test_auto_layer_detection():
     """_find_mlp_layers should locate the 'mlp' sub-module automatically."""
     cb = _import_callback()()  # no layer_getter

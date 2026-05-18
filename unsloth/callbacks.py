@@ -144,6 +144,8 @@ class ActivationNoveltyCallback(TrainerCallback):
             return
 
         def _hook(_module, _input, output):
+            if not _module.training:
+                return
             out = output[0] if isinstance(output, tuple) else output
             out = out.detach().float()
             # For transformer MLP outputs (batch, seq, hidden): average over
