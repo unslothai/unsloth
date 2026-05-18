@@ -2627,8 +2627,7 @@ class LlamaCppBackend:
                     # budget needs to reserve extra VRAM for the draft
                     # model's KV cache + compute graph.
                     _normalized_spec = (
-                        speculative_type.lower().strip()
-                        if speculative_type else None
+                        speculative_type.lower().strip() if speculative_type else None
                     )
                     _mtp_will_engage = bool(
                         (
