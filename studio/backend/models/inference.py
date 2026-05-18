@@ -349,6 +349,21 @@ class InferenceStatusResponse(BaseModel):
             "False -> recommend `unsloth studio update`."
         ),
     )
+    llama_cpp_prebuilt_stale: bool = Field(
+        False,
+        description = (
+            "Installed llama.cpp prebuilt is >=3 days behind the latest "
+            "release. True -> show `unsloth studio update` banner."
+        ),
+    )
+    llama_cpp_installed_tag: Optional[str] = Field(
+        None,
+        description = "Installed llama.cpp tag, or None if unknown.",
+    )
+    llama_cpp_latest_tag: Optional[str] = Field(
+        None,
+        description = "Latest published llama.cpp tag, or None if GitHub unreachable.",
+    )
 
 
 # =====================================================================
