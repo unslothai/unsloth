@@ -32,7 +32,9 @@ export type ReasoningEffort =
   | "xhigh";
 
 let hasShownSettingsPersistenceWarning = false;
-let settingsMutationVersion = 0;
+let customPresetsMutationVersion = 0;
+let activePresetMutationVersion = 0;
+let activePresetSourceMutationVersion = 0;
 let settingsSaveQueue: Promise<void> = Promise.resolve();
 
 function warnSettingsPersistenceFailure(): void {
@@ -48,7 +50,6 @@ function warnSettingsPersistenceFailure(): void {
 function saveSettingsPatch(
   patch: Parameters<typeof savePersistedChatSettingsPatch>[0],
 ): void {
-  settingsMutationVersion += 1;
   settingsSaveQueue = settingsSaveQueue
     .catch(() => undefined)
     .then(async () => {
@@ -205,6 +206,190 @@ type ChatRuntimeStore = {
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
+type PersistedChatSettings = Awaited<
+  ReturnType<typeof loadChatSettingsWithLegacyImport>
+>;
+type PersistedInferenceParams = NonNullable<
+  PersistedChatSettings["inferenceParams"]
+>;
+type PersistedInferenceParamKey = keyof PersistedInferenceParams;
+type ScalarSettingKey =
+  | "autoTitle"
+  | "reasoningEffort"
+  | "preserveThinking"
+  | "autoHealToolCalls"
+  | "maxToolCallsPerMessage"
+  | "toolCallTimeout";
+
+type PresetHydrationVersions = {
+  customPresets: number;
+  activePreset: number;
+  activePresetSource: number;
+};
+
+type SettingsHydrationVersions = {
+  inferenceParams: Record<PersistedInferenceParamKey, number>;
+  scalarSettings: Record<ScalarSettingKey, number>;
+  presets: PresetHydrationVersions;
+};
+
+const PERSISTED_INFERENCE_PARAM_KEYS = [
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "repetitionPenalty",
+  "presencePenalty",
+  "maxSeqLength",
+  "maxTokens",
+  "systemPrompt",
+  "trustRemoteCode",
+] as const satisfies readonly PersistedInferenceParamKey[];
+
+const SCALAR_SETTING_KEYS = [
+  "autoTitle",
+  "reasoningEffort",
+  "preserveThinking",
+  "autoHealToolCalls",
+  "maxToolCallsPerMessage",
+  "toolCallTimeout",
+] as const satisfies readonly ScalarSettingKey[];
+
+const inferenceParamMutationVersions = Object.fromEntries(
+  PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
+) as Record<PersistedInferenceParamKey, number>;
+const scalarSettingMutationVersions = Object.fromEntries(
+  SCALAR_SETTING_KEYS.map((key) => [key, 0]),
+) as Record<ScalarSettingKey, number>;
+
+function hasKeys(value: object): boolean {
+  return Object.keys(value).length > 0;
+}
+
+function getSettingsHydrationVersions(): SettingsHydrationVersions {
+  return {
+    inferenceParams: { ...inferenceParamMutationVersions },
+    scalarSettings: { ...scalarSettingMutationVersions },
+    presets: {
+      customPresets: customPresetsMutationVersion,
+      activePreset: activePresetMutationVersion,
+      activePresetSource: activePresetSourceMutationVersion,
+    },
+  };
+}
+
+function setInferenceParam(
+  params: InferenceParams,
+  key: PersistedInferenceParamKey,
+  value: PersistedInferenceParams[PersistedInferenceParamKey],
+): void {
+  (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
+}
+
+function getChangedInferenceParams(
+  nextParams: InferenceParams,
+  currentParams: InferenceParams,
+): PersistedInferenceParams {
+  const changedParams: PersistedInferenceParams = {};
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    const nextValue = nextParams[key];
+    if (Object.is(nextValue, currentParams[key])) {
+      continue;
+    }
+    inferenceParamMutationVersions[key] += 1;
+    if (nextValue !== undefined) {
+      setInferenceParam(changedParams as InferenceParams, key, nextValue);
+    }
+  }
+  return changedParams;
+}
+
+function getHydratedCustomPresets(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+): Preset[] {
+  return (
+    settings.customPresets?.map((preset) => ({
+      name: preset.name,
+      params: {
+        ...DEFAULT_INFERENCE_PARAMS,
+        ...preset.params,
+      },
+    })) ?? state.customPresets
+  );
+}
+
+function getHydratedPresetState(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+  versions: PresetHydrationVersions,
+): Partial<
+  Pick<
+    ChatRuntimeStore,
+    "customPresets" | "activePreset" | "activePresetSource"
+  >
+> {
+  const nextState: Partial<
+    Pick<
+      ChatRuntimeStore,
+      "customPresets" | "activePreset" | "activePresetSource"
+    >
+  > = {};
+  if (customPresetsMutationVersion === versions.customPresets) {
+    nextState.customPresets = getHydratedCustomPresets(settings, state);
+  }
+  if (activePresetMutationVersion === versions.activePreset) {
+    nextState.activePreset = settings.activePreset ?? state.activePreset;
+  }
+  if (activePresetSourceMutationVersion === versions.activePresetSource) {
+    const activePreset = nextState.activePreset ?? state.activePreset;
+    nextState.activePresetSource =
+      settings.activePresetSource ?? getPresetSource(activePreset);
+  }
+  return nextState;
+}
+
+function getHydratedSettingsState(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+  versions: SettingsHydrationVersions,
+): Partial<ChatRuntimeStore> {
+  const nextState: Partial<ChatRuntimeStore> = {};
+  const params = { ...state.params };
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    const value = settings.inferenceParams?.[key];
+    if (
+      value !== undefined &&
+      inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+    ) {
+      setInferenceParam(params, key, value);
+    }
+  }
+  nextState.params = params;
+  for (const key of SCALAR_SETTING_KEYS) {
+    const value = settings[key];
+    if (
+      value !== undefined &&
+      scalarSettingMutationVersions[key] === versions.scalarSettings[key]
+    ) {
+      (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
+    }
+  }
+  return nextState;
+}
+
+function setScalarSettingVersion<K extends ScalarSettingKey>(
+  key: K,
+  value: ChatRuntimeStore[K],
+  currentValue: ChatRuntimeStore[K],
+): void {
+  if (Object.is(value, currentValue)) {
+    return;
+  }
+  scalarSettingMutationVersions[key] += 1;
+  saveSettingsPatch({ [key]: value });
+}
+
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   params: DEFAULT_INFERENCE_PARAMS,
@@ -263,46 +448,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     if (get().settingsHydrated) {
       return;
     }
-    const hydrationVersion = settingsMutationVersion;
+    const hydrationVersions = getSettingsHydrationVersions();
     try {
       const settings = await loadChatSettingsWithLegacyImport();
       set((state) => {
         if (state.settingsHydrated) {
           return state;
         }
-        if (settingsMutationVersion !== hydrationVersion) {
-          return { settingsHydrated: true };
-        }
-        const activePreset = settings.activePreset ?? state.activePreset;
-        const customPresets =
-          settings.customPresets?.map((preset) => ({
-            name: preset.name,
-            params: {
-              ...DEFAULT_INFERENCE_PARAMS,
-              ...preset.params,
-            },
-          })) ?? state.customPresets;
-        const params = {
-          ...state.params,
-          ...settings.inferenceParams,
-          checkpoint: state.params.checkpoint,
-        };
-        return {
+        const nextState: Partial<ChatRuntimeStore> = {
           settingsHydrated: true,
-          params,
-          customPresets,
-          activePreset,
-          activePresetSource:
-            settings.activePresetSource ?? getPresetSource(activePreset),
-          autoTitle: settings.autoTitle ?? state.autoTitle,
-          reasoningEffort: settings.reasoningEffort ?? state.reasoningEffort,
-          preserveThinking: settings.preserveThinking ?? state.preserveThinking,
-          autoHealToolCalls:
-            settings.autoHealToolCalls ?? state.autoHealToolCalls,
-          maxToolCallsPerMessage:
-            settings.maxToolCallsPerMessage ?? state.maxToolCallsPerMessage,
-          toolCallTimeout: settings.toolCallTimeout ?? state.toolCallTimeout,
+          ...getHydratedPresetState(settings, state, hydrationVersions.presets),
+          ...getHydratedSettingsState(settings, state, hydrationVersions),
         };
+        return nextState;
       });
     } catch {
       set((state) =>
@@ -315,23 +473,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
-    set(() => {
-      const { checkpoint: _checkpoint, ...persistedParams } = params;
-      saveSettingsPatch({ inferenceParams: persistedParams });
+    set((state) => {
+      const changedParams = getChangedInferenceParams(params, state.params);
+      if (hasKeys(changedParams)) {
+        saveSettingsPatch({ inferenceParams: changedParams });
+      }
       return { params };
     }),
   setCustomPresets: (customPresets) =>
     set(() => {
+      customPresetsMutationVersion += 1;
       saveSettingsPatch({ customPresets });
       return { customPresets };
     }),
   setActivePreset: (activePreset) =>
     set(() => {
+      activePresetMutationVersion += 1;
       saveSettingsPatch({ activePreset });
       return { activePreset };
     }),
   setActivePresetSource: (activePresetSource) =>
     set(() => {
+      activePresetSourceMutationVersion += 1;
       saveSettingsPatch({ activePresetSource });
       return { activePresetSource };
     }),
@@ -361,8 +524,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { cancelByThreadId: next };
     }),
   setAutoTitle: (autoTitle) =>
-    set(() => {
-      saveSettingsPatch({ autoTitle });
+    set((state) => {
+      setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
   setHfToken: (hfToken) =>
@@ -423,13 +586,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ lastOpenRouterChosenModel }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
   setReasoningEffort: (reasoningEffort) =>
-    set(() => {
-      saveSettingsPatch({ reasoningEffort });
+    set((state) => {
+      setScalarSettingVersion(
+        "reasoningEffort",
+        reasoningEffort,
+        state.reasoningEffort,
+      );
       return { reasoningEffort };
     }),
   setPreserveThinking: (preserveThinking) =>
-    set(() => {
-      saveSettingsPatch({ preserveThinking });
+    set((state) => {
+      setScalarSettingVersion(
+        "preserveThinking",
+        preserveThinking,
+        state.preserveThinking,
+      );
       return { preserveThinking };
     }),
   setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
@@ -437,18 +608,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
-    set(() => {
-      saveSettingsPatch({ autoHealToolCalls });
+    set((state) => {
+      setScalarSettingVersion(
+        "autoHealToolCalls",
+        autoHealToolCalls,
+        state.autoHealToolCalls,
+      );
       return { autoHealToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
-    set(() => {
-      saveSettingsPatch({ maxToolCallsPerMessage });
+    set((state) => {
+      setScalarSettingVersion(
+        "maxToolCallsPerMessage",
+        maxToolCallsPerMessage,
+        state.maxToolCallsPerMessage,
+      );
       return { maxToolCallsPerMessage };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
-    set(() => {
-      saveSettingsPatch({ toolCallTimeout });
+    set((state) => {
+      setScalarSettingVersion(
+        "toolCallTimeout",
+        toolCallTimeout,
+        state.toolCallTimeout,
+      );
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),

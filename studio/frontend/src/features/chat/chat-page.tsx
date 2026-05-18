@@ -574,8 +574,15 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (s) => s.hydratePersistedSettings,
+  );
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
+
+  useEffect(() => {
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   useEffect(() => {
     const threadId = search.thread;
