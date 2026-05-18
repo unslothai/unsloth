@@ -307,9 +307,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
   const hasPendingAttachments = useAuiState(({ composer }) =>
     composer.attachments.some(
-      (attachment) =>
-        attachment.status.type !== "complete" &&
-        attachment.status.type !== "requires-action",
+      (attachment) => attachment.status.type === "running",
     ),
   );
 
