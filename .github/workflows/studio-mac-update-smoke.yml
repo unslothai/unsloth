@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'install.sh'
+      - 'uninstall.sh'
       - 'studio/setup.sh'
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
@@ -137,6 +138,38 @@ jobs:
           kill "$PID" 2>/dev/null || true
           echo "post-update Studio /api/health OK"
 
+      - name: Uninstall and verify clean
+        # Round-trip through uninstall.sh on real macOS. As a side effect
+        # this exercises the macOS-only .app bundle + Launch Services
+        # removal path (~/Applications/Unsloth Studio.app, lsregister -u)
+        # which is not testable from a Linux runner. Skips gracefully if
+        # uninstall.sh has not landed yet (lets this workflow merge
+        # before #5497).
+        run: |
+          set -o pipefail
+          if [ ! -f uninstall.sh ]; then
+            echo "uninstall.sh not present in this tree; skipping round-trip"
+            : > logs/uninstall.log
+            exit 0
+          fi
+          sh uninstall.sh 2>&1 | tee logs/uninstall.log
+          leak=0
+          for p in \
+            "$HOME/.unsloth/studio" \
+            "$HOME/.local/share/unsloth" \
+            "$HOME/Applications/Unsloth Studio.app" \
+            "$HOME/Desktop/Unsloth Studio.app" \
+            "$HOME/.local/bin/unsloth"; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::error::leak: $p"
+              leak=$((leak + 1))
+            fi
+          done
+          [ "$leak" -eq 0 ] || exit 1
+          sh uninstall.sh 2>&1 | tail -5
+          sh uninstall.sh 2>&1 | tail -5
+          echo "PASS: mac install -> update -> uninstall round-trip clean"
+
       - name: Upload update logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -147,4 +180,5 @@ jobs:
             logs/update.log
             logs/update2.log
             logs/studio.log
+            logs/uninstall.log
           retention-days: 7
