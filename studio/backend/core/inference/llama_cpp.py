@@ -3119,7 +3119,19 @@ class LlamaCppBackend:
                 resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except (
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+            ):
+                # ReadError / RemoteProtocolError cover the Windows
+                # "WinError 10054 -- existing connection forcibly
+                # closed" case where llama-server accepts the probe
+                # then dies mid-response. Swallow so the next loop
+                # iteration runs the self._process.poll() branch and
+                # surfaces the exit code + last stdout instead of an
+                # opaque 500.
                 pass
 
             time.sleep(interval)
