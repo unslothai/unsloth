@@ -21,6 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+
 # Optional-dependency stubs.  Use `setdefault`-on-failed-import instead
 # of an unconditional `sys.modules.setdefault(...)` so we never shadow a
 # real module that just has not been imported yet -- otherwise later
