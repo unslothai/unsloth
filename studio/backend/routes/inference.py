@@ -2631,6 +2631,7 @@ async def openai_chat_completions(
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            api_monitor.finish(monitor_id, "cancelled")
                             return
 
                         event = await asyncio.to_thread(next, gen, _tool_sentinel)
@@ -2814,6 +2815,7 @@ async def openai_chat_completions(
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            api_monitor.finish(monitor_id, "cancelled")
                             return
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
@@ -3059,6 +3061,7 @@ async def openai_chat_completions(
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
@@ -3915,6 +3918,7 @@ async def _responses_stream(
         resp = None
         lines_iter = None
         stream_failed = False
+        stream_cancelled = False
         try:
             req = client.build_request("POST", target_url, json = body)
             try:
@@ -3940,6 +3944,7 @@ async def _responses_stream(
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
                 if await request.is_disconnected():
+                    stream_cancelled = True
                     break
                 if not raw_line:
                     continue
@@ -4062,6 +4067,9 @@ async def _responses_stream(
                 pass
 
         if stream_failed:
+            return
+        if stream_cancelled:
+            api_monitor.finish(monitor_id, "cancelled")
             return
 
         # ── Closing events for tool calls ──
