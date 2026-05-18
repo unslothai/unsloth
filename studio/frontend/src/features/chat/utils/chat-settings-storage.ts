@@ -30,6 +30,8 @@ const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
 const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
 const LEGACY_CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
+const LEGACY_CHAT_SETTINGS_IMPORT_KEY =
+  "unsloth_chat_settings_imported_to_studio_db";
 
 const NUMERIC_INFERENCE_FIELDS = [
   "temperature",
@@ -81,6 +83,19 @@ function getStorageItem(key: string): string | null {
     return localStorage.getItem(key);
   } catch {
     return null;
+  }
+}
+
+function isLegacySettingsImportDone(): boolean {
+  return getStorageItem(LEGACY_CHAT_SETTINGS_IMPORT_KEY) === "true";
+}
+
+function markLegacySettingsImportDone(): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(LEGACY_CHAT_SETTINGS_IMPORT_KEY, "true");
+  } catch {
+    // ignore
   }
 }
 
@@ -334,12 +349,17 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
     return legacySettings;
   }
 
-  const legacySettings = loadLegacyChatSettings();
-  if (isEmptyChatSettings(legacySettings)) {
+  if (isLegacySettingsImportDone()) {
     return dbSettings;
   }
 
-  return {
+  const legacySettings = loadLegacyChatSettings();
+  if (isEmptyChatSettings(legacySettings)) {
+    markLegacySettingsImportDone();
+    return dbSettings;
+  }
+
+  const mergedSettings = {
     ...legacySettings,
     ...dbSettings,
     inferenceParams: {
@@ -347,6 +367,15 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
       ...dbSettings.inferenceParams,
     },
   };
+  try {
+    const savedSettings = sanitizeChatSettings(
+      await saveChatSettingsPatch(mergedSettings),
+    );
+    markLegacySettingsImportDone();
+    return savedSettings;
+  } catch {
+    return mergedSettings;
+  }
 }
 
 export async function savePersistedChatSettingsPatch(

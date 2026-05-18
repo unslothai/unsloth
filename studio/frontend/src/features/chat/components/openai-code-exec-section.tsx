@@ -50,11 +50,15 @@ import {
   listOpenAIContainers,
   type OpenAIContainerSummary,
 } from "../api/openai-containers";
-import { db } from "../db";
+import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import type { ExternalProviderConfig } from "../external-providers";
-import { useLiveQuery } from "../db";
 import { ensureThreadRecord } from "../runtime-provider";
 import { InfoHint } from "../chat-settings-sheet";
+import {
+  getStoredChatThread,
+  listStoredChatThreads,
+  updateStoredChatThread,
+} from "../utils/chat-history-storage";
 
 const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
@@ -141,11 +145,34 @@ export function OpenAICodeExecSection({
     useState<OpenAIContainerSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const thread = useLiveQuery(
-    async () => (activeThreadId ? db.threads.get(activeThreadId) : undefined),
-    [activeThreadId],
+  const [activeContainerId, setActiveContainerId] = useState<string | null>(
+    null,
   );
-  const activeContainerId = thread?.openaiCodeExecContainerId ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadActiveContainer() {
+      if (!activeThreadId) {
+        setActiveContainerId(null);
+        return;
+      }
+      const thread = await getStoredChatThread(activeThreadId).catch(
+        () => undefined,
+      );
+      if (!cancelled) {
+        setActiveContainerId(thread?.openaiCodeExecContainerId ?? null);
+      }
+    }
+    void loadActiveContainer();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, loadActiveContainer);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(
+        CHAT_HISTORY_UPDATED_EVENT,
+        loadActiveContainer,
+      );
+    };
+  }, [activeThreadId]);
 
   // Hide just-deleted containers even if OpenAI's list still returns them.
   // This is the single chokepoint — every downstream view (sorted picker,
@@ -256,7 +283,7 @@ export function OpenAICodeExecSection({
   // what feels "most recent" from the user's perspective.
   //
   // We eagerly materialize the thread row via `ensureThreadRecord` so
-  // the bind actually lands in Dexie before the user has sent a first
+  // the bind lands before the user has sent a first
   // message. This does NOT create anything at OpenAI — only a local
   // ThreadRecord — so it does not bypass the user's expectation that
   // a fresh OpenAI container is not created until first send.
@@ -284,7 +311,7 @@ export function OpenAICodeExecSection({
           threadId: activeThreadId,
           modelType: "base",
         });
-        await db.threads.update(activeThreadId, {
+        await updateStoredChatThread(activeThreadId, {
           openaiCodeExecContainerId: candidate.id,
         });
       } catch {
@@ -314,10 +341,10 @@ export function OpenAICodeExecSection({
     // actually lands when the user hasn't sent a message yet.
     try {
       await ensureThreadRecord({ threadId: activeThreadId, modelType: "base" });
-      const affected = await db.threads.update(activeThreadId, {
+      const updated = await updateStoredChatThread(activeThreadId, {
         openaiCodeExecContainerId: value,
       });
-      if (affected === 0) {
+      if (!updated) {
         toast.error("Could not update thread.");
       }
     } catch (err) {
@@ -373,18 +400,14 @@ export function OpenAICodeExecSection({
       }, 5000);
       // Auto-bind the just-created container to the active thread.
       // ensureThreadRecord first so the bind lands even when the user
-      // creates a container before sending the first message — without
-      // it, db.threads.update silently affects 0 rows and the chat
-      // adapter falls back to cross-thread inheritance / lazy-create,
-      // which can pick a stale container that fails with "container
-      // does not exist" on the first turn.
+      // creates a container before sending the first message.
       if (activeThreadId) {
         try {
           await ensureThreadRecord({
             threadId: activeThreadId,
             modelType: "base",
           });
-          await db.threads.update(activeThreadId, {
+          await updateStoredChatThread(activeThreadId, {
             openaiCodeExecContainerId: created.id,
           });
         } catch {
@@ -422,12 +445,12 @@ export function OpenAICodeExecSection({
         return next;
       });
       // Clear any thread bindings pointing at the now-deleted id.
-      const affected = await db.threads
-        .filter((t) => t.openaiCodeExecContainerId === id)
-        .toArray();
+      const affected = (
+        await listStoredChatThreads({ includeArchived: true })
+      ).filter((t) => t.openaiCodeExecContainerId === id);
       await Promise.all(
         affected.map((t) =>
-          db.threads.update(t.id, { openaiCodeExecContainerId: null }),
+          updateStoredChatThread(t.id, { openaiCodeExecContainerId: null }),
         ),
       );
       toast.success(`Deleted container ${name || id}`);

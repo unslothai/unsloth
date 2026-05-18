@@ -649,13 +649,12 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         // (old messages without parentId + new messages with), infer
         // sequential parents for old messages to preserve the chain.
         // Fall back to fromArray for fully legacy threads.
-        const hasParentIds = msgs.some((m) => "parentId" in m);
+        const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
           return {
             messages: msgs.map((m) => {
-              const parentId =
-                "parentId" in m ? (m.parentId ?? null) : previousId;
+              const parentId = m.parentId != null ? m.parentId : previousId;
               previousId = m.id;
               return {
                 parentId,

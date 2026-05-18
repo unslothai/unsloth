@@ -6,7 +6,6 @@ import { apiUrl } from "@/lib/api-base";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
-import { db } from "../db";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -32,7 +31,11 @@ import type {
   OpenAIMessageContent,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { getStoredChatThread } from "../utils/chat-history-storage";
+import {
+  getStoredChatThread,
+  listStoredChatThreads,
+  updateStoredChatThread,
+} from "../utils/chat-history-storage";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -111,6 +114,23 @@ export function isContextLimitError(message: string): boolean {
     // n_ctx mentions that carry an "exceed"/"full" signal.
     (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
   );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function updateStoredChatThreadEventually(
+  threadId: string,
+  patch: Parameters<typeof updateStoredChatThread>[1],
+): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const updated = await updateStoredChatThread(threadId, patch).catch(
+      () => undefined,
+    );
+    if (updated) return;
+    await wait(50);
+  }
 }
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
@@ -1051,7 +1071,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               );
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
               try {
-                const thread = await db.threads.get(resolvedThreadId);
+                const thread = await getStoredChatThread(resolvedThreadId);
                 openaiCodeExecContainerId =
                   thread?.openaiCodeExecContainerId ?? null;
                 anthropicCodeExecContainerId =
@@ -1074,18 +1094,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 externalProvider.providerType === "openai"
               ) {
                 try {
-                  const others = await db.threads
-                    .orderBy("createdAt")
-                    .reverse()
-                    .toArray();
+                  const others = await listStoredChatThreads({
+                    includeArchived: true,
+                  });
                   for (const t of others) {
                     if (t.id === resolvedThreadId) continue;
                     if (t.openaiCodeExecContainerId) {
                       openaiCodeExecContainerId = t.openaiCodeExecContainerId;
-                      void db.threads
-                        .update(resolvedThreadId, {
-                          openaiCodeExecContainerId,
-                        })
+                      void updateStoredChatThreadEventually(resolvedThreadId, {
+                        openaiCodeExecContainerId,
+                      })
                         .catch(() => {});
                       break;
                     }
@@ -1123,10 +1141,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     },
                   );
                   openaiCodeExecContainerId = created.id;
-                  void db.threads
-                    .update(resolvedThreadId, {
-                      openaiCodeExecContainerId: created.id,
-                    })
+                  void updateStoredChatThreadEventually(resolvedThreadId, {
+                    openaiCodeExecContainerId: created.id,
+                  })
                     .catch(() => {});
                 } catch {
                   // Fall back to backend's container_auto path on
@@ -1336,27 +1353,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider?.providerType === "anthropic"
                         ? "anthropicCodeExecContainerId"
                         : "openaiCodeExecContainerId";
-                    // On the first turn of a brand-new thread the row
-                    // may not be in Dexie yet when this SSE event
-                    // fires — db.threads.update silently affects 0
-                    // rows, the next turn re-reads null, and Anthropic
-                    // auto-creates a fresh container. Retry briefly so
-                    // assistant-ui's own DexieAdapter.initialize lands
-                    // the row first (with the correct modelType for
-                    // base / lora / compare contexts) and our update
-                    // sticks on a subsequent attempt.
-                    try {
-                      for (let attempt = 0; attempt < 10; attempt++) {
-                        const affected = await db.threads.update(
-                          resolvedThreadId,
-                          { [field]: newContainerId },
-                        );
-                        if (affected > 0) break;
-                        await new Promise((resolve) => setTimeout(resolve, 50));
-                      }
-                    } catch {
-                      /* best-effort: container reuse is an optimization */
-                    }
+                    void updateStoredChatThreadEventually(resolvedThreadId, {
+                      [field]: newContainerId,
+                    }).catch(() => {});
                   }
                   continue;
                 }
@@ -1366,10 +1365,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider?.providerType === "anthropic"
                         ? "anthropicCodeExecContainerId"
                         : "openaiCodeExecContainerId";
-                    void db.threads
-                      .update(resolvedThreadId, {
-                        [field]: null,
-                      })
+                    void updateStoredChatThreadEventually(resolvedThreadId, {
+                      [field]: null,
+                    })
                       .catch(() => {});
                   }
                   continue;
