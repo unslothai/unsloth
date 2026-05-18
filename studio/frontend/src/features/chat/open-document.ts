@@ -5,7 +5,8 @@ import { strFromU8, unzipSync } from "fflate";
 
 export const OPEN_DOCUMENT_SPREADSHEET_MIME =
   "application/vnd.oasis.opendocument.spreadsheet";
-export const OPEN_DOCUMENT_TEXT_MIME = "application/vnd.oasis.opendocument.text";
+export const OPEN_DOCUMENT_TEXT_MIME =
+  "application/vnd.oasis.opendocument.text";
 const OFFICE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 const STYLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const TABLE_NAMESPACE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
@@ -18,6 +19,8 @@ const OPEN_DOCUMENT_CELL_VALUE_ATTRIBUTES = [
   "time-value",
 ] as const;
 const OPEN_DOCUMENT_TEXT_BLOCK_NAMES = ["h", "p"] as const;
+const MAX_OPEN_DOCUMENT_ARCHIVE_BYTES = 50 * 1024 * 1024;
+const MAX_OPEN_DOCUMENT_XML_BYTES = 10 * 1024 * 1024;
 const MAX_REPEATED_OPEN_DOCUMENT_ROWS = 100;
 const MAX_REPEATED_OPEN_DOCUMENT_COLUMNS = 100;
 const MAX_OPEN_DOCUMENT_COLUMN_INDEX = Number.MAX_SAFE_INTEGER;
@@ -87,13 +90,27 @@ export async function readActiveOpenDocumentAttachmentContent(
   }
 }
 
-async function readOpenDocumentXmlFiles(file: File): Promise<OpenDocumentXmlFiles> {
+async function readOpenDocumentXmlFiles(
+  file: File,
+): Promise<OpenDocumentXmlFiles> {
+  assertOpenDocumentArchiveSize(file);
+
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(new Uint8Array(await file.arrayBuffer()), {
-      filter: (entry) => entry.name === "content.xml" || entry.name === "styles.xml",
+      filter: (entry) => {
+        const shouldRead =
+          entry.name === "content.xml" || entry.name === "styles.xml";
+        if (shouldRead) {
+          assertOpenDocumentXmlSize(file.name, entry.name, entry.originalSize);
+        }
+        return shouldRead;
+      },
     });
   } catch (error) {
+    if (isOpenDocumentSizeError(error)) {
+      throw error;
+    }
     throw new Error(`Failed to read OpenDocument archive: ${file.name}`, {
       cause: error,
     });
@@ -105,10 +122,40 @@ async function readOpenDocumentXmlFiles(file: File): Promise<OpenDocumentXmlFile
   }
 
   const styles = files["styles.xml"];
+  assertOpenDocumentXmlSize(file.name, "content.xml", content.length);
+  if (styles) {
+    assertOpenDocumentXmlSize(file.name, "styles.xml", styles.length);
+  }
   return {
     contentXml: strFromU8(content),
     stylesXml: styles ? strFromU8(styles) : undefined,
   };
+}
+
+function assertOpenDocumentArchiveSize(file: File): void {
+  if (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES) {
+    throw new Error(`OpenDocument archive is too large: ${file.name}`);
+  }
+}
+
+function assertOpenDocumentXmlSize(
+  filename: string,
+  entryName: string,
+  bytes: number,
+): void {
+  if (bytes > MAX_OPEN_DOCUMENT_XML_BYTES) {
+    throw new Error(
+      `OpenDocument XML file is too large: ${filename}:${entryName}`,
+    );
+  }
+}
+
+function isOpenDocumentSizeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.startsWith("OpenDocument archive is too large:") ||
+      error.message.startsWith("OpenDocument XML file is too large:"))
+  );
 }
 
 function parseOpenDocumentXml(xml: string, filename: string): XMLDocument {
@@ -126,7 +173,9 @@ function extractOpenDocumentText(doc: XMLDocument): string {
   const blocks = collectVisibleOpenDocumentTextBlocks(body);
 
   return blocks
-    .map((block) => normalizeOpenDocumentText(extractOpenDocumentInlineText(block)))
+    .map((block) =>
+      normalizeOpenDocumentText(extractOpenDocumentInlineText(block)),
+    )
     .filter(Boolean)
     .join("\n\n");
 }
@@ -135,10 +184,24 @@ function extractOpenDocumentSpreadsheetText(
   doc: XMLDocument,
   stylesDoc?: XMLDocument,
 ): string {
-  const hiddenTableStyles = collectHiddenOpenDocumentTableStyles(doc, stylesDoc);
-  const tables = collectOpenDocumentElements(doc.documentElement, TABLE_NAMESPACE, [
-    "table",
-  ]).filter((table) => !hasHiddenOpenDocumentTableStyle(table, hiddenTableStyles));
+  const hiddenTableStyles = collectHiddenOpenDocumentTableStyles(
+    doc,
+    stylesDoc,
+  );
+  const body =
+    doc.getElementsByTagNameNS(OFFICE_NAMESPACE, "body")[0] ??
+    doc.documentElement;
+  const tables = getOpenDocumentChildElements(body, OFFICE_NAMESPACE, [
+    "spreadsheet",
+  ])
+    .flatMap((spreadsheet) =>
+      getOpenDocumentChildElements(spreadsheet, TABLE_NAMESPACE, ["table"]),
+    )
+    .filter(
+      (table) =>
+        !isHiddenOpenDocumentElement(table) &&
+        !hasHiddenOpenDocumentTableStyle(table, hiddenTableStyles),
+    );
 
   return tables.map(extractOpenDocumentTableText).filter(Boolean).join("\n\n");
 }
@@ -169,12 +232,18 @@ function extractOpenDocumentRowText(
   let columnIndex = 0;
 
   for (const cell of cells) {
-    const text = extractOpenDocumentCellText(cell);
+    const isCoveredCell = cell.localName === "covered-table-cell";
     const repeat = getOpenDocumentRepeatCount(
       cell,
       "number-columns-repeated",
       MAX_OPEN_DOCUMENT_COLUMN_INDEX,
     );
+    if (isCoveredCell) {
+      columnIndex = advanceOpenDocumentColumnIndex(columnIndex, repeat);
+      continue;
+    }
+
+    const text = extractOpenDocumentCellText(cell);
     let emitted = 0;
     for (
       let i = 0;
@@ -218,7 +287,9 @@ function repeatOpenDocumentValue<T>(value: T, count: number): T[] {
 function extractOpenDocumentCellText(cell: Element): string {
   const blocks = collectVisibleOpenDocumentTextBlocks(cell);
   const text = blocks
-    .map((block) => normalizeOpenDocumentText(extractOpenDocumentInlineText(block)))
+    .map((block) =>
+      normalizeOpenDocumentText(extractOpenDocumentInlineText(block)),
+    )
     .filter(Boolean)
     .join("\n");
 
@@ -259,7 +330,12 @@ function extractOpenDocumentInlineText(node: Node): string {
 
   if (element.namespaceURI === TEXT_NAMESPACE) {
     if (element.localName === "hidden-text") {
-      return getOpenDocumentAttribute(element, TEXT_NAMESPACE, "string-value") ?? "";
+      return (
+        getOpenDocumentAttribute(element, TEXT_NAMESPACE, "string-value") ??
+        Array.from(element.childNodes)
+          .map(extractOpenDocumentInlineText)
+          .join("")
+      );
     }
     if (element.localName === "tab") {
       return "\t";
@@ -279,7 +355,9 @@ function extractOpenDocumentInlineText(node: Node): string {
     }
   }
 
-  return Array.from(element.childNodes).map(extractOpenDocumentInlineText).join("");
+  return Array.from(element.childNodes)
+    .map(extractOpenDocumentInlineText)
+    .join("");
 }
 
 function normalizeOpenDocumentText(text: string): string {
@@ -312,29 +390,36 @@ function collectVisibleOpenDocumentTextBlocks(root: Element): Element[] {
 
 function isHiddenOpenDocumentElement(element: Element): boolean {
   if (element.namespaceURI === TABLE_NAMESPACE) {
-    const visibility = getOpenDocumentAttribute(element, TABLE_NAMESPACE, "visibility");
+    const visibility = getOpenDocumentAttribute(
+      element,
+      TABLE_NAMESPACE,
+      "visibility",
+    );
     return (
       visibility === "collapse" ||
       visibility === "filter" ||
       ((element.localName === "table" ||
         element.localName === "table-row-group" ||
         element.localName === "table-column-group") &&
-        getOpenDocumentAttribute(element, TABLE_NAMESPACE, "display") === "false")
+        getOpenDocumentAttribute(element, TABLE_NAMESPACE, "display") ===
+          "false")
     );
   }
 
   if (element.namespaceURI === OFFICE_NAMESPACE) {
-    return element.localName === "annotation" || element.localName === "change-info";
+    return (
+      element.localName === "annotation" || element.localName === "change-info"
+    );
   }
 
   if (element.namespaceURI === TEXT_NAMESPACE) {
     return (
-	      (element.localName === "section" &&
-	        getOpenDocumentAttribute(element, TEXT_NAMESPACE, "display") === "none") ||
-	      (element.localName === "hidden-text" &&
-	        getOpenDocumentHiddenState(element) === "hidden") ||
-	      (element.localName === "hidden-paragraph" &&
-	        getOpenDocumentHiddenState(element) === "hidden") ||
+      (element.localName === "section" &&
+        isHiddenOpenDocumentSection(element)) ||
+      (element.localName === "hidden-text" &&
+        getOpenDocumentHiddenState(element) === "hidden") ||
+      (element.localName === "hidden-paragraph" &&
+        getOpenDocumentHiddenState(element) === "hidden") ||
       element.localName === "tracked-changes" ||
       element.localName === "changed-region" ||
       element.localName === "deletion" ||
@@ -344,6 +429,15 @@ function isHiddenOpenDocumentElement(element: Element): boolean {
   }
 
   return false;
+}
+
+function isHiddenOpenDocumentSection(element: Element): boolean {
+  const display = getOpenDocumentAttribute(element, TEXT_NAMESPACE, "display");
+  return (
+    display === "none" ||
+    (display === "condition" &&
+      getOpenDocumentAttribute(element, TEXT_NAMESPACE, "condition") !== null)
+  );
 }
 
 function isOpenDocumentParagraphHidden(element: Element): boolean {
@@ -360,7 +454,8 @@ function getOpenDocumentParagraphVisibility(element: Element): {
 
   for (const child of getOpenDocumentChildElementNodes(element)) {
     const isHiddenParagraph =
-      child.namespaceURI === TEXT_NAMESPACE && child.localName === "hidden-paragraph";
+      child.namespaceURI === TEXT_NAMESPACE &&
+      child.localName === "hidden-paragraph";
     if (isHiddenParagraph) {
       const hiddenState = getOpenDocumentHiddenState(child);
       hidden ||= hiddenState === "hidden";
@@ -379,7 +474,11 @@ function getOpenDocumentParagraphVisibility(element: Element): {
 }
 
 function getOpenDocumentHiddenState(element: Element): OpenDocumentHiddenState {
-  const isHidden = getOpenDocumentAttribute(element, TEXT_NAMESPACE, "is-hidden");
+  const isHidden = getOpenDocumentAttribute(
+    element,
+    TEXT_NAMESPACE,
+    "is-hidden",
+  );
   if (isHidden === "true") {
     return "hidden";
   }
@@ -398,7 +497,10 @@ function collectOpenDocumentTableRows(root: Element): Element[] {
     if (isHiddenOpenDocumentElement(child)) {
       continue;
     }
-    if (child.namespaceURI === TABLE_NAMESPACE && child.localName === "table-row") {
+    if (
+      child.namespaceURI === TABLE_NAMESPACE &&
+      child.localName === "table-row"
+    ) {
       rows.push(child);
     } else if (
       child.namespaceURI !== TABLE_NAMESPACE ||
@@ -439,11 +541,9 @@ function collectHiddenOpenDocumentColumns(
       }
       column = nextColumn;
     } else if (
-      [
-        "table-column-group",
-        "table-columns",
-        "table-header-columns",
-      ].includes(child.localName)
+      ["table-column-group", "table-columns", "table-header-columns"].includes(
+        child.localName,
+      )
     ) {
       const childRanges = collectHiddenOpenDocumentColumns(
         child,
@@ -474,7 +574,10 @@ function getHiddenOpenDocumentColumnEnd(
   return null;
 }
 
-function advanceOpenDocumentColumnIndex(column: number, repeat: number): number {
+function advanceOpenDocumentColumnIndex(
+  column: number,
+  repeat: number,
+): number {
   return Math.min(column + repeat, MAX_OPEN_DOCUMENT_COLUMN_INDEX);
 }
 
@@ -511,23 +614,35 @@ function collectHiddenOpenDocumentTableStyles(
 ): Set<string> {
   const hidden = new Set<string>();
   const styles = [
-    ...collectOpenDocumentElements(doc.documentElement, STYLE_NAMESPACE, ["style"]),
+    ...collectOpenDocumentElements(doc.documentElement, STYLE_NAMESPACE, [
+      "style",
+    ]),
     ...(stylesDoc
-      ? collectOpenDocumentElements(stylesDoc.documentElement, STYLE_NAMESPACE, ["style"])
+      ? collectOpenDocumentElements(
+          stylesDoc.documentElement,
+          STYLE_NAMESPACE,
+          ["style"],
+        )
       : []),
   ];
 
   for (const style of styles) {
     const name = getOpenDocumentAttribute(style, STYLE_NAMESPACE, "name");
-    if (!name || getOpenDocumentAttribute(style, STYLE_NAMESPACE, "family") !== "table") {
+    if (
+      !name ||
+      getOpenDocumentAttribute(style, STYLE_NAMESPACE, "family") !== "table"
+    ) {
       continue;
     }
 
     const hidesTable =
       getOpenDocumentAttribute(style, TABLE_NAMESPACE, "display") === "false" ||
-      getOpenDocumentChildElements(style, STYLE_NAMESPACE, ["table-properties"]).some(
+      getOpenDocumentChildElements(style, STYLE_NAMESPACE, [
+        "table-properties",
+      ]).some(
         (properties) =>
-          getOpenDocumentAttribute(properties, TABLE_NAMESPACE, "display") === "false",
+          getOpenDocumentAttribute(properties, TABLE_NAMESPACE, "display") ===
+          "false",
       );
     if (hidesTable) {
       hidden.add(name);
@@ -541,7 +656,11 @@ function hasHiddenOpenDocumentTableStyle(
   table: Element,
   hiddenTableStyles: Set<string>,
 ): boolean {
-  const styleName = getOpenDocumentAttribute(table, TABLE_NAMESPACE, "style-name");
+  const styleName = getOpenDocumentAttribute(
+    table,
+    TABLE_NAMESPACE,
+    "style-name",
+  );
   return styleName !== null && hiddenTableStyles.has(styleName);
 }
 
@@ -552,7 +671,8 @@ function getOpenDocumentChildElements(
 ): Element[] {
   return getOpenDocumentChildElementNodes(root).filter(
     (child) =>
-      child.namespaceURI === namespaceUri && localNames.includes(child.localName),
+      child.namespaceURI === namespaceUri &&
+      localNames.includes(child.localName),
   );
 }
 
@@ -585,5 +705,8 @@ function getOpenDocumentAttribute(
   namespaceUri: string,
   name: string,
 ): string | null {
-  return element.getAttributeNS(namespaceUri, name);
+  const value = element.getAttributeNS(namespaceUri, name);
+  return value === "" && !element.hasAttributeNS(namespaceUri, name)
+    ? null
+    : value;
 }

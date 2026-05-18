@@ -269,7 +269,11 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
 
 class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
-  private readonly content = new Map<string, OpenDocumentAttachmentContent>();
+  private readonly sending = new Set<string>();
+  private readonly content = new Map<
+    string,
+    Promise<OpenDocumentAttachmentContent | null>
+  >();
 
   accept = [
     ".ods",
@@ -287,52 +291,66 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
       name: file.name,
       contentType: file.type,
       file,
-      status: { type: "requires-action", reason: "composer-send" },
+      status: { type: "running", reason: "uploading", progress: 0 },
     } satisfies PendingAttachment;
 
     yield attachment;
-    let content: OpenDocumentAttachmentContent | null;
+    const content = readActiveOpenDocumentAttachmentContent(
+      file,
+      file.name,
+      file.type,
+      () => this.active.has(id),
+    );
+    this.content.set(id, content);
+
     try {
-      content = await readActiveOpenDocumentAttachmentContent(
-        file,
-        file.name,
-        file.type,
-        () => this.active.has(id),
-      );
-    } catch (error) {
+      if ((await content) && this.active.has(id) && !this.sending.has(id)) {
+        yield {
+          ...attachment,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      }
+    } catch {
       this.active.delete(id);
-      throw error;
-    }
-    if (content) {
-      this.content.set(id, content);
+      this.content.delete(id);
+      if (!this.sending.has(id)) {
+        yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      }
     }
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    this.active.delete(attachment.id);
-    const { label, text } =
-      this.content.get(attachment.id) ??
-      (await readOpenDocumentAttachmentContent(
-        attachment.file,
-        attachment.name,
-        attachment.contentType ?? "",
-      ));
-    this.content.delete(attachment.id);
+    this.sending.add(attachment.id);
+    try {
+      const content =
+        (await this.content.get(attachment.id)) ??
+        (await readOpenDocumentAttachmentContent(
+          attachment.file,
+          attachment.name,
+          attachment.contentType ?? "",
+        ));
+      const { label, text } = content;
 
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        { type: "text", text: `[${label}: ${attachment.name}]\n${text}` },
-      ],
-      status: { type: "complete" },
-    };
+      return {
+        id: attachment.id,
+        type: "document",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [
+          { type: "text", text: `[${label}: ${attachment.name}]\n${text}` },
+        ],
+        status: { type: "complete" },
+      };
+    } finally {
+      this.active.delete(attachment.id);
+      this.content.delete(attachment.id);
+      this.sending.delete(attachment.id);
+    }
   }
 
   remove(attachment: { id: string }): Promise<void> {
     this.active.delete(attachment.id);
+    this.sending.delete(attachment.id);
     this.content.delete(attachment.id);
     return Promise.resolve();
   }
