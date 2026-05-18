@@ -80,6 +80,7 @@ import {
   type CompositionEvent,
   type FC,
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
@@ -353,15 +354,57 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// Fallback timeout for stuck IME composition. When Chrome on Windows talks
+// to a WSL-hosted Studio (issue #5546), `compositionend` never fires after
+// the candidate is committed, so `composingRef` stays true and Send stays
+// disabled. Every compositionupdate / non-composing input resets the timer;
+// only a true gap-after-commit lets it fire. 2500ms is well above a normal
+// candidate-window pause but short enough to recover before the user
+// notices the Send button is stuck.
+const IME_STUCK_TIMEOUT_MS = 2500;
+
 function useImeComposerInputHandlers() {
   const aui = useAui();
   const composingRef = useRef(false);
   const [isComposing, setIsComposing] = useState(false);
+  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const setCompositionState = useCallback((next: boolean) => {
-    composingRef.current = next;
-    setIsComposing(next);
+  const clearStuckTimer = useCallback(() => {
+    if (stuckTimerRef.current) {
+      clearTimeout(stuckTimerRef.current);
+      stuckTimerRef.current = null;
+    }
   }, []);
+
+  const setCompositionState = useCallback(
+    (next: boolean) => {
+      composingRef.current = next;
+      setIsComposing(next);
+      clearStuckTimer();
+      if (next) {
+        stuckTimerRef.current = setTimeout(() => {
+          stuckTimerRef.current = null;
+          composingRef.current = false;
+          setIsComposing(false);
+        }, IME_STUCK_TIMEOUT_MS);
+      }
+    },
+    [clearStuckTimer],
+  );
+
+  const refreshStuckTimer = useCallback(() => {
+    if (!composingRef.current) {
+      return;
+    }
+    clearStuckTimer();
+    stuckTimerRef.current = setTimeout(() => {
+      stuckTimerRef.current = null;
+      composingRef.current = false;
+      setIsComposing(false);
+    }, IME_STUCK_TIMEOUT_MS);
+  }, [clearStuckTimer]);
+
+  useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
   const setComposerText = useCallback(
     (value: string) => {
@@ -380,6 +423,10 @@ function useImeComposerInputHandlers() {
     setCompositionState(true);
   }, [setCompositionState]);
 
+  const onCompositionUpdate = useCallback(() => {
+    refreshStuckTimer();
+  }, [refreshStuckTimer]);
+
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       setCompositionState(false);
@@ -396,11 +443,31 @@ function useImeComposerInputHandlers() {
     [setComposerText, setCompositionState],
   );
 
+  // If the watchdog cleared the composing flags during a long candidate-window
+  // pause, a subsequent IME keypress (browser-side isComposing=true / IME
+  // keyCode 229) would otherwise reach handleSubmit with composingRef=false
+  // and submit the preedit text. Re-arm composingRef synchronously from the
+  // native event so the form-submit gate keeps blocking until compositionend.
+  // Re-arm the watchdog at the same time — otherwise the WSL+Chrome path
+  // this PR targets (no compositionend, no follow-up input event) would
+  // leave composingRef pinned true indefinitely and Send blocked again.
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        composingRef.current = true;
+        refreshStuckTimer();
+      }
+    },
+    [refreshStuckTimer],
+  );
+
   return {
     inputProps: {
       onCompositionStart,
+      onCompositionUpdate,
       onCompositionEnd,
       onChange,
+      onKeyDown,
     },
     isComposing,
     isComposingRef: composingRef,
