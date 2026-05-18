@@ -274,10 +274,13 @@ def _find_blocked_commands(command: str) -> set[str]:
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
-    Strips HF_TOKEN, WANDB_API_KEY, AWS_*, GH_TOKEN, LD_PRELOAD, DYLD_*, etc.
-    Preserves the active Python interpreter and virtualenv directories in PATH
-    so that pip, uv, and packages installed in the Studio runtime remain
-    accessible.
+    Whitelist-built from scratch -- the parent process env is NOT inherited.
+    Only PATH / HOME / TMPDIR / LANG / TERM / PYTHONIOENCODING (+ VIRTUAL_ENV
+    or Windows SystemRoot when applicable) reach the child. HF_TOKEN,
+    WANDB_API_KEY, AWS_*, GH_TOKEN, OPENAI_API_KEY, LD_PRELOAD, DYLD_*, and
+    every other parent var are absent by construction. HOME points at the
+    sandbox workdir so HF / wandb / aws SDKs cannot read cached credentials
+    from the operator's real ~/.
     """
     # Start with the directory containing the running Python interpreter
     # so that subprocess calls to 'python', 'pip', etc. resolve to the
@@ -1457,21 +1460,158 @@ def _check_signal_escape_patterns(code: str):
 
     _hf_in_scope = _module_has_hf_import(tree)
 
-    def _method_call_is_hf_upload(node: ast.Call) -> bool:
-        """True for HfApi upload method names when huggingface_hub is imported.
+    def _method_call_hf_upload_name(node: ast.Call) -> str | None:
+        """Return the HF upload method name (`upload_file`, ...) or None.
 
-        Catches both `HfApi().upload_file(...)` (Attribute) and
+        Catches `HfApi().upload_file(...)` (Attribute) and
         `from huggingface_hub import upload_file; upload_file(...)` (Name).
         The bare-name branch fires only when an HF import is in scope, mirroring
         the Attribute branch's gating so paramiko/boto3 do not false-positive.
         """
         if not _hf_in_scope:
+            return None
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr in _UPLOAD_HF_METHODS:
+            return f.attr
+        if isinstance(f, ast.Name) and f.id in _UPLOAD_HF_METHODS:
+            return f.id
+        return None
+
+    # Kwargs that ship a credential over the wire. Sandbox env strips HF_TOKEN
+    # / WANDB_API_KEY / AWS_* up front, so any value here is hard-coded or
+    # lifted from the parent process.
+    _HF_SENSITIVE_KWARGS = frozenset(
+        {
+            "token",
+            "hf_token",
+            "api_token",
+            "api_key",
+            "auth_token",
+            "access_token",
+            "password",
+            "secret",
+        }
+    )
+
+    def _is_os_environ(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "environ"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+        )
+
+    def _reads_env_or_secret(node: ast.AST | None) -> bool:
+        """True if any node in the subtree resolves to an env / process read.
+
+        Walking the subtree (not just the root) means wrapper calls like
+        `str(os.environ)`, `json.dumps(os.environ)`, or
+        `'-'.join(os.environ.values())` are caught too.
+
+        Covers: `os.environ`, `os.environ[K]`, `os.environ.get(K)`, `os.getenv(K)`,
+        bare `getenv(K)` (after `from os import getenv`), and
+        `subprocess.{run,check_output,Popen,getoutput,getstatusoutput}` which
+        the LLM could use to lift parent env via `printenv` / `env` / `set`.
+        """
+        if node is None:
             return False
-        if isinstance(node.func, ast.Attribute):
-            return node.func.attr in _UPLOAD_HF_METHODS
-        if isinstance(node.func, ast.Name):
-            return node.func.id in _UPLOAD_HF_METHODS
+        for sub in ast.walk(node):
+            if _is_os_environ(sub):
+                return True
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                if isinstance(f, ast.Attribute):
+                    if (
+                        f.attr in {"getenv", "getenvb"}
+                        and isinstance(f.value, ast.Name)
+                        and f.value.id == "os"
+                    ):
+                        return True
+                    if (
+                        f.attr in {"check_output", "run", "Popen", "getoutput", "getstatusoutput"}
+                        and isinstance(f.value, ast.Name)
+                        and f.value.id in {"subprocess", "commands"}
+                    ):
+                        return True
+                if isinstance(f, ast.Name) and f.id in {"getenv", "getenvb"}:
+                    return True
         return False
+
+    def _is_safe_relative_path(path: str) -> bool:
+        """Relative path with no leading `/`, `~`, drive letter, or `..` segments."""
+        if not isinstance(path, str) or not path:
+            return False
+        if path[0] in ("/", "\\", "~"):
+            return False
+        if len(path) >= 2 and path[1] == ":":
+            return False
+        return ".." not in path.replace("\\", "/").split("/")
+
+    def _path_arg_is_sandbox_local(node: ast.AST | None) -> bool:
+        """Whether the path argument resolves to a sandbox-local literal."""
+        if node is None:
+            return False
+        if isinstance(node, ast.Constant) and isinstance(node.value, (bytes, bytearray)):
+            return True  # inline bytes, no file access
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return _is_safe_relative_path(node.value)
+        if isinstance(node, ast.Call):
+            f = node.func
+            is_open = (isinstance(f, ast.Name) and f.id == "open") or (
+                isinstance(f, ast.Attribute) and f.attr == "open"
+            )
+            if is_open and node.args:
+                a0 = node.args[0]
+                return (
+                    isinstance(a0, ast.Constant)
+                    and isinstance(a0.value, str)
+                    and _is_safe_relative_path(a0.value)
+                )
+        return False
+
+    def _hf_upload_violation(node: ast.Call, method_name: str) -> str | None:
+        """Inspect an HF upload call; return a violation reason or None.
+
+        Policy: HF uploads are allowed only when (a) no sensitive kwarg is set,
+        (b) no positional / keyword value reads `os.environ` or related env
+        readers, and (c) the path argument is a sandbox-local literal -- a
+        relative string with no `..`, an `open(<literal>)`, or inline bytes.
+        Dynamic / variable paths are rejected; the policy cannot prove safety
+        statically and the cost of a wrong-allow is a credential exfiltration.
+        """
+        for kw in node.keywords or []:
+            if kw.arg in _HF_SENSITIVE_KWARGS:
+                return (
+                    f"HF upload {kw.arg}= cannot be set from sandboxed code; "
+                    "uploads run with the sandbox identity only"
+                )
+        all_values = list(node.args or []) + [kw.value for kw in (node.keywords or [])]
+        for v in all_values:
+            if _reads_env_or_secret(v):
+                return (
+                    "HF upload cannot include os.environ / os.getenv / subprocess "
+                    "env reads; secrets and tokens must not be exfiltrated"
+                )
+        if method_name == "create_commit":
+            for kw in node.keywords or []:
+                if kw.arg == "operations" and isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        if isinstance(elt, ast.Call):
+                            inner = _hf_upload_violation(elt, "upload_file")
+                            if inner:
+                                return inner
+            return None
+        path_node: ast.AST | None = node.args[0] if node.args else None
+        for kw in node.keywords or []:
+            if kw.arg in ("path_or_fileobj", "folder_path"):
+                path_node = kw.value
+                break
+        if not _path_arg_is_sandbox_local(path_node):
+            return (
+                "HF upload path must be a sandbox-local relative-path literal "
+                "(no absolute paths, no '..' segments, no dynamic expressions)"
+            )
+        return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -1484,14 +1624,17 @@ def _check_signal_escape_patterns(code: str):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
 
-            if _method_call_is_hf_upload(node):
-                network_calls.append(
-                    {
-                        "type": "upload_blocked",
-                        "line": getattr(node, "lineno", -1),
-                        "description": ("Blocked: file upload disallowed in sandbox"),
-                    }
-                )
+            hf_upload_name = _method_call_hf_upload_name(node)
+            if hf_upload_name is not None:
+                violation = _hf_upload_violation(node, hf_upload_name)
+                if violation is not None:
+                    network_calls.append(
+                        {
+                            "type": "upload_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"Blocked: {violation}",
+                        }
+                    )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
             if (

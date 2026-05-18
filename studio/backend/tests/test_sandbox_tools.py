@@ -185,33 +185,39 @@ class TestUploadDenylist:
             expect_phrase = "Blocked: file upload disallowed in sandbox",
         )
 
-    def test_hf_api_upload_file_blocked(self):
-        _blocked(
-            (
-                "from huggingface_hub import HfApi\n"
-                'HfApi().upload_file(path_or_fileobj="x.bin", '
-                'path_in_repo="x.bin", repo_id="foo/bar")'
-            ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+    def test_hf_api_upload_sandbox_local_allowed(self):
+        # Sandbox-local relative path is the canonical safe shape.
+        _ok(
+            "from huggingface_hub import HfApi\n"
+            'HfApi().upload_file(path_or_fileobj="x.bin", '
+            'path_in_repo="x.bin", repo_id="foo/bar")'
         )
 
-    def test_hf_module_upload_folder_blocked(self):
-        _blocked(
-            (
-                "import huggingface_hub\n"
-                'huggingface_hub.upload_folder(folder_path="./", repo_id="foo/bar")'
-            ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+    def test_hf_module_upload_folder_sandbox_local_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_folder(folder_path="outputs", repo_id="foo/bar")'
         )
 
-    def test_hf_create_commit_method_blocked(self):
+    def test_hf_create_commit_empty_operations_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "api = huggingface_hub.HfApi()\n"
+            'api.create_commit(repo_id="foo/bar", operations=[])'
+        )
+
+    def test_hf_upload_absolute_path_blocked(self):
         _blocked(
-            (
-                "import huggingface_hub\n"
-                "api = huggingface_hub.HfApi()\n"
-                'api.create_commit(repo_id="foo/bar", operations=[])'
-            ),
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            'from huggingface_hub import HfApi\n'
+            'HfApi().upload_file(path_or_fileobj="/etc/passwd", path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_hf_upload_parent_dir_escape_blocked(self):
+        _blocked(
+            'import huggingface_hub\n'
+            'huggingface_hub.upload_file(path_or_fileobj="../escape.bin", path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_plain_post_json_not_blocked(self):
@@ -219,6 +225,71 @@ class TestUploadDenylist:
             "import requests\n"
             'requests.post("https://api.weather.gov/lookup", json={"k": "v"})'
         )
+
+
+class TestSandboxEnvIsolation:
+    """The sandbox subprocess env is built from a whitelist, not by stripping.
+
+    Confirm every credential-shaped parent var is absent regardless of how the
+    operator's process is configured. Covers Linux/macOS/WSL/Windows shapes.
+    """
+
+    _SECRET_KEYS = (
+        # HF + ML tooling
+        "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN",
+        "WANDB_API_KEY", "WANDB_USERNAME",
+        "MLFLOW_TRACKING_TOKEN", "COMET_API_KEY", "NEPTUNE_API_TOKEN",
+        # Generic cloud
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+        "GCP_SERVICE_ACCOUNT_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_STORAGE_KEY", "AZURE_CLIENT_SECRET",
+        # Forge / git / package
+        "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
+        "NPM_TOKEN", "PYPI_TOKEN", "CARGO_REGISTRY_TOKEN",
+        # LLM provider
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+        "MISTRAL_API_KEY", "COHERE_API_KEY", "TOGETHER_API_KEY",
+        # Loader injection / sudo state
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+        # Windows
+        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData",
+    )
+
+    def test_no_secret_keys_leak_into_sandbox(self, monkeypatch, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        for key in self._SECRET_KEYS:
+            monkeypatch.setenv(key, f"sentinel-{key}")
+        env = _build_safe_env(str(tmp_path))
+        for key in self._SECRET_KEYS:
+            assert key not in env, f"parent env var {key!r} leaked into sandbox env"
+
+    def test_sandbox_env_is_minimal_whitelist(self, monkeypatch, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        # Pollute parent env with arbitrary keys
+        for key in ("EVIL", "RANDOM", "ATTACK_VEC", "MY_TOKEN", "X_API_KEY"):
+            monkeypatch.setenv(key, "leak-me")
+        env = _build_safe_env(str(tmp_path))
+        allowed = {"PATH", "HOME", "TMPDIR", "LANG", "TERM", "PYTHONIOENCODING",
+                   "VIRTUAL_ENV", "SystemRoot"}
+        extras = set(env.keys()) - allowed
+        assert not extras, f"sandbox env added unexpected keys: {extras}"
+
+    def test_home_points_at_sandbox_workdir(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        env = _build_safe_env(str(tmp_path))
+        assert env["HOME"] == str(tmp_path)
+        assert env["TMPDIR"] == str(tmp_path)
+
+    def test_term_is_dumb(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        # Prevents the sandbox from re-using the operator's TERM (e.g. xterm-256color)
+        # which could trigger color-escape parsing in downstream tools.
+        env = _build_safe_env(str(tmp_path))
+        assert env["TERM"] == "dumb"
 
 
 class TestSandboxCpuRlimitDefault:
@@ -377,61 +448,321 @@ class TestHfUploadImportGate:
     def test_boto3_create_commit_allowed_without_hf_import(self):
         _ok("client=None; client.create_commit(Repo='x')")
 
-    def test_hf_api_upload_file_still_blocked(self):
-        _blocked(
-            "from huggingface_hub import HfApi; HfApi().upload_file('a','b','c')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
-        )
+    def test_hf_api_upload_safe_path_allowed(self):
+        # Sandbox-local relative path -- the call shape we want to permit.
+        _ok("from huggingface_hub import HfApi; HfApi().upload_file('a','b','c')")
 
-    def test_hf_upload_file_fq_still_blocked(self):
-        _blocked(
-            "import huggingface_hub; huggingface_hub.upload_file('a','b','c')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
-        )
+    def test_hf_upload_file_fq_safe_path_allowed(self):
+        _ok("import huggingface_hub; huggingface_hub.upload_file('a','b','c')")
 
-    def test_dynamic_builtin_import_hf_upload_blocked(self):
-        _blocked(
-            "hf=__import__('huggingface_hub'); hf.HfApi().upload_file('a','b','c')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
-        )
+    def test_dynamic_builtin_import_safe_path_allowed(self):
+        # `__import__('huggingface_hub')` puts HF in scope; relative-literal path is safe.
+        _ok("hf=__import__('huggingface_hub'); hf.HfApi().upload_file('a','b','c')")
 
-    def test_dynamic_importlib_hf_upload_blocked(self):
-        _blocked(
+    def test_dynamic_importlib_safe_path_allowed(self):
+        _ok(
             "import importlib; hf=importlib.import_module('huggingface_hub');"
-            " hf.HfApi().upload_file('a','b','c')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            " hf.HfApi().upload_file('a','b','c')"
         )
 
-    def test_from_importlib_import_module_hf_blocked(self):
-        _blocked(
+    def test_from_importlib_import_module_safe_create_commit_allowed(self):
+        _ok(
             "from importlib import import_module;"
-            " api=import_module('huggingface_hub').HfApi(); api.create_commit()",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            " api=import_module('huggingface_hub').HfApi(); api.create_commit()"
         )
 
-    def test_hf_bare_name_upload_file_blocked(self):
+    def test_hf_bare_name_upload_safe_path_allowed(self):
         # `from huggingface_hub import upload_file` then bare `upload_file(...)`
-        # is a canonical HF call shape that the Attribute-only gate missed.
-        _blocked(
+        # with a sandbox-local relative-path literal is allowed.
+        _ok(
             "from huggingface_hub import upload_file;"
-            " upload_file(path_or_fileobj='x', path_in_repo='x', repo_id='r')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            " upload_file(path_or_fileobj='x', path_in_repo='x', repo_id='r')"
         )
 
-    def test_hf_bare_name_upload_folder_blocked(self):
-        _blocked(
+    def test_hf_bare_name_upload_folder_safe_allowed(self):
+        _ok(
             "from huggingface_hub import upload_folder;"
-            " upload_folder(folder_path='x', repo_id='r')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            " upload_folder(folder_path='x', repo_id='r')"
         )
 
-    def test_hf_bare_name_create_commit_blocked(self):
-        _blocked(
+    def test_hf_bare_name_create_commit_safe_allowed(self):
+        _ok(
             "from huggingface_hub import create_commit;"
-            " create_commit(operations=[], repo_id='r')",
-            expect_phrase = "Blocked: file upload disallowed in sandbox",
+            " create_commit(operations=[], repo_id='r')"
         )
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
         # No HF import -- local helper named upload_file should pass.
         _ok("def upload_file(*a, **k):\n    pass\n" "upload_file('x', 'y', 'z')")
+
+
+class TestHfUploadSandboxLocalPaths:
+    """The HF upload gate must only allow uploads of files that already live in
+    the sandbox workdir. Absolute paths, `..` traversal, home expansion, and
+    Windows drive letters are rejected because the LLM can use them to lift
+    secrets from outside the sandbox."""
+
+    def test_relative_literal_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="model.bin",'
+            ' path_in_repo="model.bin", repo_id="me/r")'
+        )
+
+    def test_dotted_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="./outputs/m.bin",'
+            ' path_in_repo="m.bin", repo_id="me/r")'
+        )
+
+    def test_nested_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="outputs/run42/model.bin",'
+            ' path_in_repo="m.bin", repo_id="me/r")'
+        )
+
+    def test_open_of_relative_literal_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj=open("model.bin", "rb"),'
+            ' path_in_repo="m.bin", repo_id="me/r")'
+        )
+
+    def test_inline_bytes_literal_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj=b"\\x00\\x01\\x02",'
+            ' path_in_repo="m.bin", repo_id="me/r")'
+        )
+
+    def test_absolute_unix_path_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="/etc/passwd",'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_absolute_windows_drive_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="C:\\\\Windows\\\\creds",'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_home_expansion_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="~/.aws/credentials",'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_parent_traversal_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="../../etc/shadow",'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_parent_traversal_mid_path_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="outputs/../../../etc",'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_open_of_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj=open("/etc/passwd","rb"),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_open_of_parent_traversal_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj=open("../escape","rb"),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_dynamic_variable_path_blocked(self):
+        # A non-literal expression could resolve to any path at runtime;
+        # the static checker cannot prove safety, so block.
+        _blocked(
+            "import huggingface_hub, os\n"
+            "p = os.path.join('outputs', 'x.bin')\n"
+            'huggingface_hub.upload_file(path_or_fileobj=p, path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_upload_folder_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_folder(folder_path="/var/log", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_upload_folder_parent_traversal_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_folder(folder_path="../..", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_upload_large_folder_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_large_folder(folder_path="/etc", repo_id="r")',
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operation_safe_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin')],\n"
+            ")"
+        )
+
+    def test_create_commit_operation_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+
+class TestHfUploadEnvAndSecretLeakBlock:
+    """The HF upload gate must reject any positional / keyword arg sourced from
+    `os.environ` / `os.getenv` / subprocess env reads. Even though
+    `_build_safe_env` strips HF_TOKEN/WANDB/AWS upfront for the sandbox shell,
+    a Python script can still reach the parent process env if it bypasses the
+    safe-env wrapper at the source -- so block statically."""
+
+    def test_path_from_os_environ_subscript_blocked(self):
+        _blocked(
+            "import huggingface_hub, os\n"
+            'huggingface_hub.upload_file(path_or_fileobj=os.environ["HF_TOKEN"],'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_path_from_os_environ_get_blocked(self):
+        _blocked(
+            "import huggingface_hub, os\n"
+            'huggingface_hub.upload_file(path_or_fileobj=os.environ.get("HF_TOKEN"),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_path_from_os_getenv_blocked(self):
+        _blocked(
+            "import huggingface_hub, os\n"
+            'huggingface_hub.upload_file(path_or_fileobj=os.getenv("HF_TOKEN"),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_path_from_bare_getenv_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from os import getenv\n"
+            'huggingface_hub.upload_file(path_or_fileobj=getenv("HF_TOKEN"),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_path_from_subprocess_printenv_blocked(self):
+        _blocked(
+            "import huggingface_hub, subprocess\n"
+            'huggingface_hub.upload_file('
+            'path_or_fileobj=subprocess.check_output(["printenv","HF_TOKEN"]),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_token_kwarg_with_literal_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
+            ' path_in_repo="x", repo_id="r", token="hf_xyzabc123")',
+            expect_phrase = "HF upload token= cannot be set",
+        )
+
+    def test_hf_token_kwarg_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
+            ' path_in_repo="x", repo_id="r", hf_token="hf_secret")',
+            expect_phrase = "HF upload hf_token= cannot be set",
+        )
+
+    def test_api_key_kwarg_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.upload_folder(folder_path="outputs",'
+            ' repo_id="r", api_key="abc")',
+            expect_phrase = "HF upload api_key= cannot be set",
+        )
+
+    def test_token_kwarg_from_env_blocked(self):
+        # Both rules fire; the sensitive-kwarg check trips first.
+        _blocked(
+            "import huggingface_hub, os\n"
+            'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
+            ' path_in_repo="x", repo_id="r", token=os.environ["HF_TOKEN"])',
+            expect_phrase = "HF upload token= cannot be set",
+        )
+
+    def test_env_dict_unpacked_via_environ_attr_blocked(self):
+        # `os.environ` as a bare reference (passed somewhere it gets serialized).
+        _blocked(
+            "import huggingface_hub, os\n"
+            'huggingface_hub.upload_file(path_or_fileobj=str(os.environ),'
+            ' path_in_repo="x", repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_repo_id_from_env_also_blocked(self):
+        # Even non-path args must not source env vars -- an attacker could
+        # encode secrets in repo_id or path_in_repo.
+        _blocked(
+            "import huggingface_hub, os\n"
+            'huggingface_hub.upload_file(path_or_fileobj="x.bin",'
+            ' path_in_repo=os.environ["HF_TOKEN"], repo_id="r")',
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_create_commit_with_env_in_operation_blocked(self):
+        _blocked(
+            "import huggingface_hub, os\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd("
+            'path_or_fileobj=os.environ["HF_TOKEN"], path_in_repo="x")],\n'
+            ")",
+            expect_phrase = "HF upload cannot include os.environ",
+        )
+
+    def test_create_commit_token_kwarg_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            'huggingface_hub.HfApi().create_commit(repo_id="r",'
+            ' operations=[], token="hf_xxx")',
+            expect_phrase = "HF upload token= cannot be set",
+        )
