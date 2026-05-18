@@ -921,7 +921,9 @@ class LlamaCppBackend:
     _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
 
     @classmethod
-    def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
+    def probe_server_capabilities(
+        cls, binary: Optional[str] = None
+    ) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
         {found, mtp_token, supports_mtp}. mtp_token is "draft-mtp"
         (older) or "mtp" (renamed upstream), or None."""
@@ -2637,19 +2639,31 @@ class LlamaCppBackend:
                             self._speculative_type = None
                         else:
                             if gpus:
-                                cmd.extend([
-                                    "--spec-type", mtp_token,
-                                    "--spec-draft-n-max", "6",
-                                ])
+                                cmd.extend(
+                                    [
+                                        "--spec-type",
+                                        mtp_token,
+                                        "--spec-draft-n-max",
+                                        "6",
+                                    ]
+                                )
                             else:
-                                cmd.extend([
-                                    "--spec-type", mtp_token,
-                                    "--spec-draft-n-max", "3",
-                                    "--spec-type", "ngram-mod",
-                                    "--spec-ngram-mod-n-match", "24",
-                                    "--spec-ngram-mod-n-min", "48",
-                                    "--spec-ngram-mod-n-max", "6",
-                                ])
+                                cmd.extend(
+                                    [
+                                        "--spec-type",
+                                        mtp_token,
+                                        "--spec-draft-n-max",
+                                        "3",
+                                        "--spec-type",
+                                        "ngram-mod",
+                                        "--spec-ngram-mod-n-match",
+                                        "24",
+                                        "--spec-ngram-mod-n-min",
+                                        "48",
+                                        "--spec-ngram-mod-n-max",
+                                        "6",
+                                    ]
+                                )
                             self._speculative_type = "draft-mtp"
                             logger.info(
                                 f"Spec decoding: {mtp_token} ({'GPU' if gpus else 'CPU/Mac'})"

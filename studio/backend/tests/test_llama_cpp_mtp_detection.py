@@ -416,10 +416,7 @@ def test_unload_resets_nextn_predict_layers():
 
 def _make_fake_llama_server(path: Path, help_text: str) -> Path:
     """Bash stub that prints `help_text` on --help."""
-    path.write_text(
-        "#!/usr/bin/env bash\n"
-        f"cat <<'EOF'\n{help_text}\nEOF\n"
-    )
+    path.write_text("#!/usr/bin/env bash\n" f"cat <<'EOF'\n{help_text}\nEOF\n")
     path.chmod(0o755)
     return path
 
@@ -487,6 +484,7 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
 
     import os
     import time
+
     _make_fake_llama_server(
         fake,
         "--spec-type none,draft-mtp,ngram-mod",
