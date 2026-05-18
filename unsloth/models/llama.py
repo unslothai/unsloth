@@ -1498,9 +1498,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
-        # HF accepts logits_to_keep as a 1-D LongTensor of positions
-        # (selective decode); skip the int max() in that case to avoid
-        # `max(int, Tensor)` raising on the implicit bool cast.
+        # Skip int max() if either is a tensor (HF selective-decode form).
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
             logits_to_keep, torch.Tensor
         ):
@@ -2117,12 +2115,8 @@ def unsloth_fast_generate(
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep
-    # (with @deprecate_kwarg through 4.51.x, removed in 4.52+). Pop both
-    # spellings, then re-emit under whichever the runtime forward
-    # actually accepts so _validate_model_kwargs does not reject either
-    # legacy callers on new transformers OR new callers on old
-    # transformers.
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep.
+    # Pop both, re-emit under the spelling forward() accepts.
     _provided_num = kwargs.pop("num_logits_to_keep", None)
     _provided_logits = kwargs.pop("logits_to_keep", None)
     _provided = _provided_logits if _provided_logits is not None else _provided_num
@@ -2131,9 +2125,7 @@ def unsloth_fast_generate(
         _has_new = "logits_to_keep" in _fwd_params
         _has_old = "num_logits_to_keep" in _fwd_params
     except (TypeError, ValueError):
-        # Signature opaque (e.g. C-extension or some compiled wrappers):
-        # preserve the caller's spelling rather than silently dropping
-        # it. Default to the new spelling when neither was supplied.
+        # Opaque forward: keep the caller's spelling, default to new.
         _has_old = _provided_num is not None and _provided_logits is None
         _has_new = not _has_old
     if _has_new:

@@ -297,15 +297,9 @@ def MistralForCausalLM_fast_forward(
     if labels is not None:
         labels = labels.to(lm_head_device)
 
-    # Merge the legacy and new spellings before any branching so the
-    # decode-time last-token slice fires on the normal generation path
-    # too, not just the hidden-states path. transformers 4.50 renamed
-    # num_logits_to_keep -> logits_to_keep; callers may supply either.
-    # HF also accepts logits_to_keep as a 1-D LongTensor of positions
-    # (selective decode); skip the int max() in that case to avoid
-    # `max(int, Tensor)` raising on the implicit bool cast. Downstream
-    # int slicing is unchanged, so tensor callers fall through with
-    # num_logits_to_keep == 0, matching pre-merge behavior.
+    # Merge legacy / new spellings before branching so the decode-time
+    # last-token slice fires on the normal path too. Skip int max() if
+    # either is a tensor (HF selective-decode form).
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
         logits_to_keep, torch.Tensor
     ):
