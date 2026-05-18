@@ -1113,8 +1113,10 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                     argv = list(ps_argv)
                     argv.extend(
                         [
-                            "-ExecutionPolicy", "Bypass",
-                            "-Command", f"& '{quoted}' {' '.join(args)} *>&1",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-Command",
+                            f"& '{quoted}' {' '.join(args)} *>&1",
                         ]
                     )
                     subprocess.run(
