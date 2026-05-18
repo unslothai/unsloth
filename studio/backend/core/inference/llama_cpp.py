@@ -2683,15 +2683,12 @@ class LlamaCppBackend:
                             self._speculative_type = None
                         else:
                             if gpus:
-                                # n=3 matches llama.cpp #22673 author's
-                                # bench (~0.72 acceptance). n=6 collapses
-                                # acceptance to ~0.45 on Qwen3.6.
                                 cmd.extend(
                                     [
                                         "--spec-type",
                                         mtp_token,
                                         "--spec-draft-n-max",
-                                        "3",
+                                        "6",
                                     ]
                                 )
                             else:
