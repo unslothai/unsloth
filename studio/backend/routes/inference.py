@@ -826,7 +826,7 @@ async def load_model(
                 display_name = model_log_label
                 if native_grant_backed
                 else config.display_name,
-                is_vision = config.is_vision,
+                is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
@@ -3573,6 +3573,17 @@ async def _responses_stream(
                 "llama-server. Use non-streaming /v1/responses, "
                 "/v1/chat/completions, or load a GGUF model."
             ),
+        )
+
+    # Direct pass-through bypasses the openai_chat_completions image gate.
+    if not llama_backend.is_vision and any(
+        isinstance(m.content, list)
+        and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image provided but current GGUF model does not support vision.",
         )
 
     body = _build_openai_passthrough_body(

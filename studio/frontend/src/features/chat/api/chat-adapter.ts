@@ -11,6 +11,7 @@ import {
   isCustomProviderType,
   loadExternalProviders,
   parseExternalModelId,
+  providerTypeSupportsVision,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
@@ -31,6 +32,7 @@ import type {
   OpenAIMessageContent,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   getStoredChatThread,
   listStoredChatThreads,
@@ -842,6 +844,37 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
+
+      // Block when ANY image is in the outbound payload (current or
+      // prior turns) and the loaded model can't process images. Keeps
+      // the gate simple: once a chat contains an image, a non-vision
+      // model can't respond — user starts a new chat to switch models.
+      if (imageBase64) {
+        const activeModel = runtime.models.find(
+          (m) => m.id === params.checkpoint,
+        );
+        const imageGateReason = getImageInputUnavailableReason({
+          activeModel,
+          isExternalModel: isExternalRequest,
+          externalSupportsVision: providerTypeSupportsVision(
+            externalProvider?.providerType,
+          ),
+          externalModelLabel: externalSelection?.modelId ?? null,
+          loadedIsMultimodal: runtime.loadedIsMultimodal,
+          modelLoaded: !!params.checkpoint && !runtime.modelLoading,
+        });
+        if (imageGateReason) {
+          toast.error(imageGateReason);
+          // Flip the per-thread running flag on→off so the compare-mode
+          // waitForRunEnd resolves instead of hanging. This gate fires
+          // before the streaming path's setThreadRunning(true), so the
+          // wait promise would otherwise never settle.
+          const gatedThreadKey = resolvedThreadId || "__default";
+          runtime.setThreadRunning(gatedThreadKey, true);
+          runtime.setThreadRunning(gatedThreadKey, false);
+          throw new Error(imageGateReason);
+        }
+      }
       // Clear pending audio from store after extracting (consumed on send)
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
