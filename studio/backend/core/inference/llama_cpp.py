@@ -2760,9 +2760,7 @@ class LlamaCppBackend:
                         encoding = "utf-8",
                         buffering = 1,
                     )
-                    logger.info(
-                        f"llama-server stdout/stderr -> {self._llama_log_path}"
-                    )
+                    logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                 except OSError as e:
                     # Best-effort; never block the load on logging.
                     logger.debug(f"Could not open llama-server log file: {e}")
