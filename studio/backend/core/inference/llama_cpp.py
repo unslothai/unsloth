@@ -2541,7 +2541,11 @@ class LlamaCppBackend:
                 normalized_spec = (
                     speculative_type.lower().strip() if speculative_type else None
                 )
-                if normalized_spec and normalized_spec != "off" and not effective_is_vision:
+                if (
+                    normalized_spec
+                    and normalized_spec != "off"
+                    and not effective_is_vision
+                ):
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
                         self._speculative_type = "default"
