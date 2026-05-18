@@ -1992,6 +1992,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                                 _torch_whl=$_curr_torch
                                 _tv_whl=$_curr_tv
                                 _ta_whl=$_curr_ta
+                                _tri_whl=""
                                 _radeon_versions_match=true
                                 break
                             fi
