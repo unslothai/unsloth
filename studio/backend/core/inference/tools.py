@@ -1528,7 +1528,14 @@ def _check_signal_escape_patterns(code: str):
                     ):
                         return True
                     if (
-                        f.attr in {"check_output", "run", "Popen", "getoutput", "getstatusoutput"}
+                        f.attr
+                        in {
+                            "check_output",
+                            "run",
+                            "Popen",
+                            "getoutput",
+                            "getstatusoutput",
+                        }
                         and isinstance(f.value, ast.Name)
                         and f.value.id in {"subprocess", "commands"}
                     ):
@@ -1551,7 +1558,9 @@ def _check_signal_escape_patterns(code: str):
         """Whether the path argument resolves to a sandbox-local literal."""
         if node is None:
             return False
-        if isinstance(node, ast.Constant) and isinstance(node.value, (bytes, bytearray)):
+        if isinstance(node, ast.Constant) and isinstance(
+            node.value, (bytes, bytearray)
+        ):
             return True  # inline bytes, no file access
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return _is_safe_relative_path(node.value)

@@ -208,14 +208,14 @@ class TestUploadDenylist:
 
     def test_hf_upload_absolute_path_blocked(self):
         _blocked(
-            'from huggingface_hub import HfApi\n'
+            "from huggingface_hub import HfApi\n"
             'HfApi().upload_file(path_or_fileobj="/etc/passwd", path_in_repo="x", repo_id="r")',
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_hf_upload_parent_dir_escape_blocked(self):
         _blocked(
-            'import huggingface_hub\n'
+            "import huggingface_hub\n"
             'huggingface_hub.upload_file(path_or_fileobj="../escape.bin", path_in_repo="x", repo_id="r")',
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
@@ -236,23 +236,47 @@ class TestSandboxEnvIsolation:
 
     _SECRET_KEYS = (
         # HF + ML tooling
-        "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN",
-        "WANDB_API_KEY", "WANDB_USERNAME",
-        "MLFLOW_TRACKING_TOKEN", "COMET_API_KEY", "NEPTUNE_API_TOKEN",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "WANDB_API_KEY",
+        "WANDB_USERNAME",
+        "MLFLOW_TRACKING_TOKEN",
+        "COMET_API_KEY",
+        "NEPTUNE_API_TOKEN",
         # Generic cloud
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-        "GCP_SERVICE_ACCOUNT_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
-        "AZURE_STORAGE_KEY", "AZURE_CLIENT_SECRET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GCP_SERVICE_ACCOUNT_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_STORAGE_KEY",
+        "AZURE_CLIENT_SECRET",
         # Forge / git / package
-        "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
-        "NPM_TOKEN", "PYPI_TOKEN", "CARGO_REGISTRY_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GITLAB_TOKEN",
+        "BITBUCKET_TOKEN",
+        "NPM_TOKEN",
+        "PYPI_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
         # LLM provider
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
-        "MISTRAL_API_KEY", "COHERE_API_KEY", "TOGETHER_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "MISTRAL_API_KEY",
+        "COHERE_API_KEY",
+        "TOGETHER_API_KEY",
         # Loader injection / sudo state
-        "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
         # Windows
-        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramData",
     )
 
     def test_no_secret_keys_leak_into_sandbox(self, monkeypatch, tmp_path):
@@ -271,8 +295,16 @@ class TestSandboxEnvIsolation:
         for key in ("EVIL", "RANDOM", "ATTACK_VEC", "MY_TOKEN", "X_API_KEY"):
             monkeypatch.setenv(key, "leak-me")
         env = _build_safe_env(str(tmp_path))
-        allowed = {"PATH", "HOME", "TMPDIR", "LANG", "TERM", "PYTHONIOENCODING",
-                   "VIRTUAL_ENV", "SystemRoot"}
+        allowed = {
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LANG",
+            "TERM",
+            "PYTHONIOENCODING",
+            "VIRTUAL_ENV",
+            "SystemRoot",
+        }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
 
@@ -689,7 +721,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
     def test_path_from_subprocess_printenv_blocked(self):
         _blocked(
             "import huggingface_hub, subprocess\n"
-            'huggingface_hub.upload_file('
+            "huggingface_hub.upload_file("
             'path_or_fileobj=subprocess.check_output(["printenv","HF_TOKEN"]),'
             ' path_in_repo="x", repo_id="r")',
             expect_phrase = "HF upload cannot include os.environ",
@@ -732,7 +764,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
         # `os.environ` as a bare reference (passed somewhere it gets serialized).
         _blocked(
             "import huggingface_hub, os\n"
-            'huggingface_hub.upload_file(path_or_fileobj=str(os.environ),'
+            "huggingface_hub.upload_file(path_or_fileobj=str(os.environ),"
             ' path_in_repo="x", repo_id="r")',
             expect_phrase = "HF upload cannot include os.environ",
         )
