@@ -15,8 +15,18 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, type ReactNode } from "react";
 import { AppProvider } from "../provider";
+
+// Shown while a lazy-loaded route bundle (Train / Recipes / Export) is
+// still being fetched. /chat imports its page synchronously so this
+// fallback never fires there. The plain text matches the rest of the
+// muted-foreground style used elsewhere in the app.
+const RouteFallback: ReactNode = (
+  <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
+    Loading...
+  </div>
+);
 
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
@@ -72,7 +82,7 @@ function RootLayout() {
       <SettingsDialog />
       {hideNavbar ? (
         <main className="flex-1">
-          <Suspense fallback={null}>
+          <Suspense fallback={RouteFallback}>
             <Outlet />
           </Suspense>
         </main>
