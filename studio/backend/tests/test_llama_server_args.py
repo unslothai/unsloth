@@ -47,11 +47,9 @@ from core.inference.llama_server_args import (
         ["--spec-type", "draft-mtp", "--spec-draft-n-max", "6"],
         [
             "--spec-type",
-            "draft-mtp",
+            "ngram-mod,draft-mtp",
             "--spec-draft-n-max",
             "3",
-            "--spec-type",
-            "ngram-mod",
             "--spec-ngram-mod-n-match",
             "24",
             "--spec-ngram-mod-n-min",

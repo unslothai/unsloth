@@ -471,8 +471,9 @@ def _is_mtp_model_name(
 
 
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
-    """User passed --spec-type / --spec-default? llama-server accumulates
-    repeated --spec-type, so we suppress auto-emit when this is true."""
+    """User passed --spec-type / --spec-default? llama-server takes a
+    single --spec-type (comma-separated to chain), so suppress
+    auto-emit when this is true."""
     if not extra_args:
         return False
     for raw in extra_args:
@@ -2692,14 +2693,14 @@ class LlamaCppBackend:
                                     ]
                                 )
                             else:
+                                # CPU/Mac: chain ngram-mod + MTP in one
+                                # comma-separated --spec-type (not repeated).
                                 cmd.extend(
                                     [
                                         "--spec-type",
-                                        mtp_token,
+                                        f"ngram-mod,{mtp_token}",
                                         "--spec-draft-n-max",
                                         "3",
-                                        "--spec-type",
-                                        "ngram-mod",
                                         "--spec-ngram-mod-n-match",
                                         "24",
                                         "--spec-ngram-mod-n-min",
