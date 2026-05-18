@@ -60,7 +60,6 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 
-const AUTO_OPTION_VALUE = "__auto__";
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
 const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes

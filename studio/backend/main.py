@@ -330,6 +330,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
+    "/api/chat",
     "/api/train",
     "/api/export",
 )

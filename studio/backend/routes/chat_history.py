@@ -192,9 +192,13 @@ async def patch_thread(
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
 ):
+    patch = payload.model_dump(exclude_unset = True)
+    for field in ("title", "modelType", "modelId", "archived", "createdAt"):
+        if field in patch and patch[field] is None:
+            raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     thread = update_chat_thread(
         thread_id,
-        payload.model_dump(exclude_unset = True),
+        patch,
     )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")

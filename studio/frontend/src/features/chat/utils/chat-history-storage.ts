@@ -150,8 +150,10 @@ function mergeLegacyMessageFields(
 function mergeMessages(
   backendMessages: MessageRecord[],
   legacyMessages: MessageRecord[],
+  options: { includeLegacyOnly?: boolean } = {},
 ): { messages: MessageRecord[]; shouldSync: boolean } {
   const byId = new Map<string, MessageRecord>();
+  const includeLegacyOnly = options.includeLegacyOnly ?? true;
   const backendIds = new Set(
     backendMessages
       .filter((message) => !isChatThreadDeleted(message.threadId))
@@ -160,8 +162,10 @@ function mergeMessages(
   let shouldSync = false;
   for (const message of normalizeLegacyMessages(legacyMessages)) {
     if (!isChatThreadDeleted(message.threadId)) {
-      byId.set(message.id, message);
-      if (!backendIds.has(message.id)) shouldSync = true;
+      if (includeLegacyOnly || backendIds.has(message.id)) {
+        byId.set(message.id, message);
+      }
+      if (includeLegacyOnly && !backendIds.has(message.id)) shouldSync = true;
     }
   }
   for (const message of backendMessages) {
@@ -336,7 +340,9 @@ export async function listStoredChatMessages(
     }),
   ]);
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
-    const merged = mergeMessages(backendMessages, legacyMessages);
+    const merged = mergeMessages(backendMessages, legacyMessages, {
+      includeLegacyOnly: !isLegacyChatImportDone(),
+    });
     if (legacyMessages.length > 0 && merged.shouldSync) {
       return syncChatMessages(threadId, merged.messages, {
         pruneMissing: false,
@@ -485,8 +491,12 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     }
     threadsById.set(thread.id, thread);
   }
+  const includeLegacyOnlyMessages = backend === null || !isLegacyChatImportDone();
   for (const message of legacyMessages as MessageRecord[]) {
     if (isChatThreadDeleted(message.threadId)) {
+      continue;
+    }
+    if (!includeLegacyOnlyMessages && backendThreadIds.has(message.threadId)) {
       continue;
     }
     if (!messagesById.has(message.id)) {
