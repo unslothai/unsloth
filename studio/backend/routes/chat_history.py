@@ -126,8 +126,8 @@ class ChatSettingsPayload(BaseModel):
     ] = None
     preserveThinking: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = None
-    toolCallTimeout: Optional[int] = None
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
 
 class ChatSettingsResponse(BaseModel):

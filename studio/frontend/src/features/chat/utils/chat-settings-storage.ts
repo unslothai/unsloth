@@ -330,20 +330,19 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
     return loadLegacyChatSettings();
   }
 
-  if (!isEmptyChatSettings(dbSettings)) {
+  const legacySettings = loadLegacyChatSettings();
+  if (isEmptyChatSettings(legacySettings)) {
     return dbSettings;
   }
 
-  const legacySettings = loadLegacyChatSettings();
-  if (isEmptyChatSettings(legacySettings)) {
-    return legacySettings;
-  }
-
-  try {
-    return sanitizeChatSettings(await saveChatSettingsPatch(legacySettings));
-  } catch {
-    return legacySettings;
-  }
+  return {
+    ...legacySettings,
+    ...dbSettings,
+    inferenceParams: {
+      ...legacySettings.inferenceParams,
+      ...dbSettings.inferenceParams,
+    },
+  };
 }
 
 export async function savePersistedChatSettingsPatch(
