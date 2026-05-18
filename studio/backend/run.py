@@ -24,7 +24,7 @@ if str(backend_dir) not in sys.path:
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
-from startup_banner import print_studio_access_banner
+from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
@@ -72,6 +72,255 @@ def _resolve_external_ip() -> str:
         return ip
     except Exception:
         return "0.0.0.0"
+
+
+def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
+    externally-reachable address, replace the CTRL+C suffix with our Mac-aware
+    stop hint, and rename the prefix to "Unsloth Studio running on"."""
+    import logging
+    import re
+
+    rewrite_host = (
+        bind_host in ("0.0.0.0", "::")
+        and bool(display_host)
+        and display_host != bind_host
+    )
+    new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
+    old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
+    old_prefix = "Uvicorn running on "
+    new_prefix = "Unsloth Studio running on "
+
+    def _rewrite(text: str) -> str:
+        if text.startswith(old_prefix):
+            text = new_prefix + text[len(old_prefix) :]
+        return old_suffix_re.sub(new_suffix, text)
+
+    class _UvicornStartupRewrite(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            try:
+                msg = record.msg if isinstance(record.msg, str) else ""
+                if (
+                    msg.startswith(old_prefix)
+                    and isinstance(record.args, tuple)
+                    and len(record.args) >= 3
+                ):
+                    if rewrite_host and record.args[1] == bind_host:
+                        record.args = (
+                            record.args[0],
+                            display_host,
+                            record.args[2],
+                            *record.args[3:],
+                        )
+                    record.msg = _rewrite(msg)
+                    cmsg = getattr(record, "color_message", None)
+                    if isinstance(cmsg, str):
+                        record.color_message = _rewrite(cmsg)
+            except Exception:
+                pass
+            return True
+
+    f = _UvicornStartupRewrite()
+    for name in ("uvicorn", "uvicorn.error"):
+        logging.getLogger(name).addFilter(f)
+
+
+def _local_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Return True iff a TCP connection to (host, port) succeeds within timeout."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout = timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _working_local_url(port: int) -> "str | None":
+    """Return a working loopback URL on this machine, or None if neither
+    127.0.0.1 nor ::1 responds. Used as a fallback when external reachability fails."""
+    if _local_port_open("127.0.0.1", port):
+        return f"http://127.0.0.1:{port}"
+    if _local_port_open("::1", port):
+        return f"http://[::1]:{port}"
+    return None
+
+
+def _stdout_color_ok() -> bool:
+    """Whether to emit ANSI color codes on stdout. Mirrors startup_banner."""
+    if os.environ.get("NO_COLOR", "").strip():
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip():
+        return True
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _verify_global_reachability(display_host: str, port: int) -> None:
+    """Probe check-host.net to confirm display_host:port is reachable from the
+    public internet. Synchronous so the caller can render output between the
+    banner URL section and the trailing stop hint. Bounded at ~15s; failures
+    are swallowed (the verifier failing is not Studio failing). Only meaningful
+    when bound to a wildcard host."""
+    import ipaddress
+    import json
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    if not display_host or display_host in ("0.0.0.0", "::"):
+        return
+
+    use_color = _stdout_color_ok()
+    dim = "\033[38;5;245m" if use_color else ""
+    ok_c = "\033[38;5;120;1m" if use_color else ""
+    err_c = "\033[38;5;203;1m" if use_color else ""
+    warn_c = "\033[38;5;215;1m" if use_color else ""
+    local_url_c = "\033[38;5;108;1m" if use_color else ""  # matches banner's URL color
+    reset = "\033[0m" if use_color else ""
+
+    url = f"http://{display_host}:{port}"
+
+    # Private / loopback / link-local addresses are not globally routable.
+    try:
+        addr = ipaddress.ip_address(display_host)
+        if addr.is_loopback or addr.is_private or addr.is_link_local:
+            print(
+                f"{dim}  Note: {display_host} is a private/LAN address -- "
+                f"reachable on this network only, not from the public internet."
+                f"{reset}",
+                flush = True,
+            )
+            return
+    except ValueError:
+        # Not an IP literal; probe by hostname.
+        pass
+
+    try:
+        qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
+        req = urllib.request.Request(
+            f"https://check-host.net/check-tcp?{qs}",
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "unsloth-studio-reachability/1",
+            },
+        )
+        with urllib.request.urlopen(req, timeout = 5) as resp:
+            init = json.loads(resp.read().decode("utf-8", errors = "replace"))
+        req_id = init.get("request_id")
+        if not req_id:
+            return
+
+        results = {}
+        deadline = time.monotonic() + 15.0
+        poll_req = urllib.request.Request(
+            f"https://check-host.net/check-result/{req_id}",
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "unsloth-studio-reachability/1",
+            },
+        )
+        while time.monotonic() < deadline:
+            time.sleep(1.5)
+            try:
+                with urllib.request.urlopen(poll_req, timeout = 5) as resp:
+                    results = json.loads(resp.read().decode("utf-8", errors = "replace"))
+            except Exception:
+                continue
+            if results and all(v is not None for v in results.values()):
+                break
+            # Two decisive nodes is enough; stop polling early.
+            decisive = [
+                v
+                for v in results.values()
+                if isinstance(v, list)
+                and v
+                and isinstance(v[0], dict)
+                and ("time" in v[0] or "error" in v[0])
+            ]
+            if len(decisive) >= 2:
+                break
+
+        ok_nodes = err_nodes = 0
+        for v in results.values():
+            if not isinstance(v, list) or not v or not isinstance(v[0], dict):
+                continue
+            if "time" in v[0]:
+                ok_nodes += 1
+            elif "error" in v[0]:
+                err_nodes += 1
+        total = ok_nodes + err_nodes
+
+        print("", flush = True)
+        if ok_nodes:
+            print(
+                f"{ok_c}  Reachability check: {url}/ is reachable from the "
+                f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
+                flush = True,
+            )
+        elif err_nodes:
+            print(
+                f"{err_c}  Reachability check: {url}/ is NOT reachable from "
+                f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
+                flush = True,
+            )
+            print(f"{dim}    Common causes:{reset}", flush = True)
+            print(
+                f"{dim}      * AWS  -- the instance's Security Group doesn't "
+                f"allow inbound TCP {port}.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
+                f"for the instance's network tag.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * Azure / other clouds -- equivalent NSG / "
+                f"firewall rule missing.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * Home -- your router isn't port-forwarding "
+                f"{port} to this machine.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    Workaround that needs no firewall changes -- "
+                f"SSH local-forward from your laptop:{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}        ssh -L {port}:localhost:{port} "
+                f"<user>@{display_host}{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
+                flush = True,
+            )
+            # Only offer the local URL if loopback actually answers.
+            local_url = _working_local_url(port)
+            if local_url:
+                print(
+                    f"{local_url_c}  You can access Unsloth Studio locally "
+                    f"in the meantime: {local_url}{reset}",
+                    flush = True,
+                )
+        else:
+            print(
+                f"{warn_c}  Reachability check: probe nodes did not respond "
+                f"in time -- could not verify {url}/.{reset}",
+                flush = True,
+            )
+    except urllib.error.URLError:
+        # Outbound HTTPS blocked; skip silently.
+        pass
+    except Exception:
+        pass
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -344,6 +593,10 @@ def run_server(
             if not silent:
                 print(f"[WARNING] Frontend not found at {frontend_path}")
 
+    # Resolve once; shared by the log rewrite and the banner.
+    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    _install_uvicorn_startup_log_rewrite(host, display_host)
+
     ready_event = Event()
     startup_failed = Event()
     startup_errors = []
@@ -426,12 +679,18 @@ def run_server(
         print(f"TAURI_PORT={port}", flush = True)
 
     if not silent:
-        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        wildcard_bind = host in ("0.0.0.0", "::")
+        # For wildcard binds, run the reachability check between the URL
+        # section and the stop hint so the stop hint stays last on screen.
         print_studio_access_banner(
             port = port,
             bind_host = host,
             display_host = display_host,
+            include_stop_hint = not wildcard_bind,
         )
+        if wildcard_bind:
+            _verify_global_reachability(display_host, port)
+            print_studio_stop_hint()
 
     return app
 
