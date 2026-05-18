@@ -1,22 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the parent-process offline path (follow-up to #5505).
+"""Parent-process offline regression tests (follow-up to #5505).
 
-PR #5505 fixed the GGUF/llama-server load path. This test pins the
-follow-up plumbing in:
-
-* ``utils/models/model_config.py`` -- the remote LoRA auto-detect
-  ``hf_model_info`` call in ``ModelConfig.from_identifier`` now skips
-  when ``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE`` is set.
-* ``utils/transformers_version.py`` -- the urllib fallback fetches for
-  ``tokenizer_config.json`` and ``config.json`` now short-circuit when
-  the same env vars are set.
-
-Together with the DNS probe wrapper added around
-``ModelConfig.from_identifier`` in ``routes/inference.py``, this means a
-dead DNS no longer burns 30-60s of soft-failed network timeouts before
-the worker subprocess is even spawned.
+Pins the LoRA-detect, transformers_version urllib short-circuit, and
+training-worker DNS probe so a dead DNS no longer burns 30-60s of
+soft-failed timeouts before the worker subprocess spawns.
 
 No GPU, no network, no subprocess. Cross-platform.
 """
@@ -119,9 +108,8 @@ class TestTransformersVersionOfflineShortCircuits:
         clean_offline_env,
         tmp_path,
     ):
-        # No local config, env is offline -> must NOT call urlopen.
+        # No local config + offline env -> must NOT call urlopen.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        # Force a cache miss for this unique model name.
         unique = f"unsloth/never-cached-{tmp_path.name}"
 
         def boom(*a, **k):
@@ -147,11 +135,8 @@ class TestTransformersVersionOfflineShortCircuits:
 
 
 class TestLoraDetectOffline:
-    """When ``HF_HUB_OFFLINE`` is set the LoRA-detect ``hf_model_info`` call
-    in ``ModelConfig.from_identifier`` short-circuits via
-    ``OfflineModeIsEnabled`` instead of hanging on a network timeout. A
-    cached adapter_config.json must still be recognised so the user can
-    load the LoRA offline."""
+    """Offline LoRA detect: hf_model_info short-circuits via
+    OfflineModeIsEnabled; cached adapter_config.json wins."""
 
     def test_hf_model_info_short_circuits_with_OfflineModeIsEnabled(
         self,
@@ -164,11 +149,8 @@ class TestLoraDetectOffline:
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-        # huggingface_hub raises OfflineModeIsEnabled when HF_HUB_OFFLINE is
-        # set. The studio code catches Exception broadly, so the slow path
-        # is the bug we are pinning against -- assert the call returns fast
-        # (mock returns immediately) and was called exactly the expected
-        # number of times.
+        # Studio catches Exception broadly; pin that the call still happens
+        # (so cached LoRAs aren't missed) and returns fast via mock.
         class _OfflineModeIsEnabled(Exception):
             pass
 
@@ -181,15 +163,11 @@ class TestLoraDetectOffline:
                     gguf_variant = None,
                 )
             except Exception:
-                pass  # registry miss is fine; we're pinning the LoRA-detect call
+                pass  # registry miss OK; pinning the LoRA-detect call
 
-        # The LoRA-detect path is expected to call hf_model_info at most
-        # once. Other call sites in from_identifier may also hit it; the
-        # essential check is that it's bounded, not zero (which would
-        # indicate we silently skip the check and miss cached LoRA repos).
         assert mock.call_count >= 1, (
-            "LoRA-detect path must consult hf_model_info even offline; the "
-            "OfflineModeIsEnabled short-circuit is what makes it cheap"
+            "LoRA-detect must still consult hf_model_info offline; "
+            "OfflineModeIsEnabled makes it cheap"
         )
 
     def test_cached_lora_detected_when_api_unreachable(
@@ -198,13 +176,12 @@ class TestLoraDetectOffline:
         clean_offline_env,
         tmp_path,
     ):
-        """Even when the HF API is unreachable, a cached adapter_config.json
-        in the snapshot must mark the repo as a LoRA."""
+        """A cached adapter_config.json must still mark the repo as a
+        LoRA when the HF API is unreachable."""
         from huggingface_hub import constants as hf_constants
 
         from utils.models.model_config import ModelConfig
 
-        # Stage a fake HF cache containing adapter_config.json
         repo = tmp_path / "models--org--my-lora"
         snap = repo / "snapshots" / ("a" * 40)
         snap.mkdir(parents = True)
@@ -227,28 +204,21 @@ class TestLoraDetectOffline:
             except Exception:
                 cfg = None
 
-        # The detection may surface anywhere downstream; the assertion we
-        # can make cheaply is that the cache-side detection block at
-        # least ran (cfg may be None if base model isn't resolvable
-        # without the registry, but is_lora=True path was taken).
-        # Concretely: re-run the snapshot iterator and confirm the file
-        # is present where we expected it -- pins the fixture shape.
+        # cfg may be None (base not resolvable offline); pin the fixture
+        # so the cache-side detect block had a file to find.
         assert (snap / "adapter_config.json").is_file()
 
 
 class TestTrainingWorkerProbeNoGlobalTimeout:
-    """The training worker's startup DNS probe must run on a daemon
-    thread so it cannot mutate ``socket.setdefaulttimeout`` process-wide.
-    Mirrors the fixup in ``core/inference/llama_cpp.py``."""
+    """Training-worker DNS probe must run on a daemon thread, not mutate
+    process-wide socket.setdefaulttimeout (mirrors llama_cpp.py)."""
 
     def test_training_worker_source_uses_thread_probe(self):
-        """Static-pin: training/worker.py keeps the thread-based probe
-        and does NOT call setdefaulttimeout on the module-global socket."""
+        """Static-pin against regression to setdefaulttimeout."""
         import re
         from pathlib import Path
 
         src = Path(_BACKEND_DIR, "core", "training", "worker.py").read_text()
-        # Locate the offline auto-detect block.
         m = re.search(
             r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ\s*:.*?'
             r"print\([^)]*HF_HUB_OFFLINE=1[^)]*\)",

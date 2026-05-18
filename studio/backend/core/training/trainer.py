@@ -619,9 +619,7 @@ class UnslothTrainer:
 
             # Proactive gated-model check: verify access BEFORE from_pretrained.
             # Catches ALL gated/private models (text, vision, audio) globally.
-            # Skip when offline (env or DNS dead): can't reach the API, and a
-            # gated cached model is exactly the scenario the user wants to
-            # train against. from_pretrained will surface the real error.
+            # Skip when offline -- from_pretrained will use the cache.
             if "/" in model_name and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info

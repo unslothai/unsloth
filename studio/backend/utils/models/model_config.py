@@ -2389,11 +2389,8 @@ class ModelConfig:
                     f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
                 )
 
-        # Auto-detect LoRA for remote HF models (check repo file listing).
-        # When HF_HUB_OFFLINE is set, huggingface_hub short-circuits the
-        # call to OfflineModeIsEnabled in ~0ms, so we don't bypass the
-        # check; checking still finds cached LoRA adapters via the
-        # snapshot's adapter_config.json before the offline raise.
+        # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
+        # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
         if not is_lora and not is_local:
             try:
                 from huggingface_hub import model_info as hf_model_info
@@ -2408,8 +2405,7 @@ class ModelConfig:
                     f"Could not check remote LoRA status for '{identifier}': {e}"
                 )
 
-            # Offline cache fallback: HF API may have failed (DNS, env, etc.)
-            # but the LoRA's adapter_config.json could still be in the snapshot.
+            # API may have failed; adapter_config.json may still be cached.
             if not is_lora:
                 for snap in _iter_hf_cache_snapshots(identifier):
                     if (snap / "adapter_config.json").is_file():

@@ -1025,17 +1025,13 @@ def run_training_process(
         "ignore"  # Suppress warnings at C-level before imports
     )
 
-    # Offline auto-detect: same shape as core/inference/worker.py. If DNS
-    # to huggingface.co fails, set HF_HUB_OFFLINE so downstream
-    # from_pretrained / snapshot_download / load_dataset calls resolve
-    # from cache instead of burning ~25s per call on retries. Scoped to
-    # this subprocess only (orchestrator spawns a fresh worker per run).
+    # Offline auto-detect: skip ~25s of HF retries per call when DNS is
+    # dead. Scoped to this subprocess (orchestrator spawns a fresh one).
     if "HF_HUB_OFFLINE" not in os.environ:
         import socket as _socket
         import threading as _threading
 
-        # Probe on a daemon thread so concurrent sockets in the parent
-        # interpreter never inherit a process-wide setdefaulttimeout.
+        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
         _result: list = [None]
 
         def _probe() -> None:
@@ -1052,8 +1048,7 @@ def run_training_process(
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
-            # logger isn't configured yet; print so the message lands in
-            # stderr before LogConfig.setup_logging() takes over.
+            # logger isn't configured yet; print to stderr instead.
             print(
                 "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
                 file = sys.stderr,
