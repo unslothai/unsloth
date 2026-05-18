@@ -566,7 +566,9 @@ class TestGuardrails:
         exec_fn = FakeExecuteTool([])
         loop = run_safetensors_tool_loop(
             single_turn = _fake_stream(
-                ['<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>']
+                [
+                    '<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>'
+                ]
             ),
             messages = [{"role": "user", "content": "hi"}],
             tools = [{"type": "function", "function": {"name": "web_search"}}],
@@ -582,7 +584,9 @@ class TestGuardrails:
         exec_fn = FakeExecuteTool(["OK"])
         loop = run_safetensors_tool_loop(
             single_turn = _fake_stream(
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ]
             ),
             messages = [{"role": "user", "content": "hi"}],
             tools = [],
@@ -595,7 +599,9 @@ class TestGuardrails:
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>']
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ]
             ],
             exec_results = ["OK"],
             max_tool_iterations = 0,
@@ -627,7 +633,9 @@ class TestGuardrails:
     def test_auto_heal_disabled_still_parses_valid_tool_call(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["done"],
             ],
             exec_results = ["OK"],
@@ -640,9 +648,15 @@ class TestGuardrails:
     def test_non_consecutive_duplicate_is_short_circuited(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
                 ["final"],
             ],
             exec_results = ["res-A", "res-B"],
@@ -669,8 +683,12 @@ class TestGuardrails:
     def test_tool_call_ids_unique_across_loop_iterations(self):
         loop, _exec = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
+                ],
                 ["done"],
             ],
             exec_results = ["A", "B"],
