@@ -534,9 +534,15 @@ export function useChatModelRuntime() {
               customContextLength,
               ggufContextLength,
               speculativeType,
+              speculativeDecodingEnabled,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
+            // Top-level toggle: forces "off" so neither draft-mtp nor
+            // ngram is emitted on /load.
+            const effectiveSpeculativeType = speculativeDecodingEnabled
+              ? speculativeType
+              : "off";
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
@@ -560,7 +566,7 @@ export function useChatModelRuntime() {
               trust_remote_code: trustRemoteCode,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
-              speculative_type: speculativeType,
+              speculative_type: effectiveSpeculativeType,
             });
 
             // If cancelled while loading, don't update UI to show

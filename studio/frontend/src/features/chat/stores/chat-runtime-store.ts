@@ -16,6 +16,7 @@ import {
 
 const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
+const SPEC_DECODING_ENABLED_KEY = "unsloth_speculative_decoding";
 const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
@@ -254,6 +255,12 @@ type ChatRuntimeStore = {
   autoHealToolCalls: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
+  /**
+   * Top-level kill switch for speculative decoding. When false the
+   * /load request overrides speculative_type to "off" so neither
+   * draft-mtp nor ngram-mod is emitted to llama-server.
+   */
+  speculativeDecodingEnabled: boolean;
   kvCacheDtype: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
@@ -303,6 +310,7 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
+  setSpeculativeDecodingEnabled: (enabled: boolean) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setCustomContextLength: (v: number | null) => void;
@@ -347,6 +355,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
   maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 25),
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
+  speculativeDecodingEnabled: loadBool(SPEC_DECODING_ENABLED_KEY, true),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
   speculativeType: "default",
@@ -503,6 +512,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     set(() => {
       saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout);
       return { toolCallTimeout };
+    }),
+  setSpeculativeDecodingEnabled: (speculativeDecodingEnabled) =>
+    set(() => {
+      saveBool(SPEC_DECODING_ENABLED_KEY, speculativeDecodingEnabled);
+      return { speculativeDecodingEnabled };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
