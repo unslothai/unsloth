@@ -86,6 +86,7 @@ def start(port: int = 8888):
         start()
     """
     import sys
+    import time
 
     logger.info("🦥 Starting Unsloth Studio...")
 
@@ -101,13 +102,27 @@ def start(port: int = 8888):
         return
 
     logger.info("   Starting server...")
-    # Start server silently
     run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
 
     logger.info("   Server started!")
 
+    # Brief pause to let Colab's proxy infrastructure register the port
+    time.sleep(2)
+
     # Show the clickable link with real URL
     show_link(port)
+
+    # Serve as inline iframe in notebook output
+    try:
+        from google.colab import output as colab_output
+        colab_output.serve_kernel_port_as_iframe(port, height = 1200, width = "100%")
+    except ImportError:
+        pass
+
+    # Keep kernel alive so the daemon server thread stays running
+    for _ in range(10000):
+        time.sleep(300)
+        print("=", end = "", flush = True)
 
 
 if __name__ == "__main__":

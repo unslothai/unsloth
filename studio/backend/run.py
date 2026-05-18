@@ -608,6 +608,7 @@ def run_server(
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
+    # proxy_headers=True + forwarded_allow_ips="*" trusts X-Forwarded-* from Colab's reverse proxy.
     config = uvicorn.Config(
         app,
         host = host,
@@ -615,6 +616,8 @@ def run_server(
         log_level = "info",
         access_log = False,
         server_header = False,
+        proxy_headers = True,
+        forwarded_allow_ips = "*",
     )
     _server = _ReadyServer(config)
     _shutdown_event = Event()
