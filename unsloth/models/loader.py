@@ -1378,7 +1378,11 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing, max_seq_length, dtype
         )
         with redirector:
-            patch_loss_functions(torch_compile = False)
+            # UnslothForCausalLMLoss is tiny (label shift + Triton CE call);
+            # compiling it folds the elementwise prep into one launch and
+            # eliminates per-step Python overhead. Torch < 2.4 still routes
+            # through torch._disable_dynamo inside patch_loss_functions.
+            patch_loss_functions(torch_compile = True)
             model_types, supports_sdpa = unsloth_compile_transformers(
                 dtype = dtype,
                 model_name = model_name,
