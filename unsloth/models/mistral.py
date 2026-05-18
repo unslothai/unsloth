@@ -306,7 +306,9 @@ def MistralForCausalLM_fast_forward(
     # `max(int, Tensor)` raising on the implicit bool cast. Downstream
     # int slicing is unchanged, so tensor callers fall through with
     # num_logits_to_keep == 0, matching pre-merge behavior.
-    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
+        logits_to_keep, torch.Tensor
+    ):
         num_logits_to_keep = 0
     else:
         num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)

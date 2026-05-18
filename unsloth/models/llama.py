@@ -1501,7 +1501,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         # HF accepts logits_to_keep as a 1-D LongTensor of positions
         # (selective decode); skip the int max() in that case to avoid
         # `max(int, Tensor)` raising on the implicit bool cast.
-        if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+        if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
+            logits_to_keep, torch.Tensor
+        ):
             num_logits_to_keep = 0
         else:
             num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
