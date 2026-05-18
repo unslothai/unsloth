@@ -482,10 +482,17 @@ def _make_fake_llama_server(path: Path, help_text: str) -> Path:
     return path
 
 
+_NEEDS_BASH = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "fake llama-server is a bash stub; Windows has no direct executor",
+)
+
+
 def _clear_caps_cache():
     LlamaCppBackend._capability_cache.clear()
 
 
+@_NEEDS_BASH
 def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
     # Original naming from llama.cpp #22673.
     fake = _make_fake_llama_server(
@@ -500,6 +507,7 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
     assert caps["supports_mtp"] is True
 
 
+@_NEEDS_BASH
 def test_probe_server_capabilities_detects_renamed_mtp(tmp_path):
     # Renamed upstream: draft-mtp -> mtp.
     fake = _make_fake_llama_server(
@@ -513,6 +521,7 @@ def test_probe_server_capabilities_detects_renamed_mtp(tmp_path):
     assert caps["supports_mtp"] is True
 
 
+@_NEEDS_BASH
 def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
     # Pre-MTP llama.cpp: only ngram variants.
     fake = _make_fake_llama_server(
@@ -533,6 +542,7 @@ def test_probe_server_capabilities_handles_missing_binary():
     assert caps["supports_mtp"] is False
 
 
+@_NEEDS_BASH
 def test_probe_server_capabilities_caches_by_mtime(tmp_path):
     # Same (path, mtime) -> cache hit. Bumped mtime -> re-probe.
     fake = _make_fake_llama_server(
