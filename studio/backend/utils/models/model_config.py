@@ -44,6 +44,16 @@ from utils.subprocess_compat import (
 
 logger = get_logger(__name__)
 
+
+def _env_offline() -> bool:
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+
+
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
@@ -1357,12 +1367,7 @@ def list_gguf_variants(
     from huggingface_hub import model_info as hf_model_info
 
     # Offline: skip the API and serve from cache.
-    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
-    if offline:
+    if _env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
             return cached
@@ -1570,12 +1575,7 @@ def detect_gguf_model_remote(
     import time
     from huggingface_hub import model_info as hf_model_info
 
-    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
-    if offline:
+    if _env_offline():
         cached = _detect_gguf_from_hf_cache(repo_id)
         if cached is not None:
             return cached
@@ -2389,7 +2389,8 @@ class ModelConfig:
                     f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
                 )
 
-        # Auto-detect LoRA for remote HF models (check repo file listing)
+        # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
+        # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
         if not is_lora and not is_local:
             try:
                 from huggingface_hub import model_info as hf_model_info
@@ -2403,6 +2404,16 @@ class ModelConfig:
                 logger.debug(
                     f"Could not check remote LoRA status for '{identifier}': {e}"
                 )
+
+            # API may have failed; adapter_config.json may still be cached.
+            if not is_lora:
+                for snap in _iter_hf_cache_snapshots(identifier):
+                    if (snap / "adapter_config.json").is_file():
+                        is_lora = True
+                        logger.info(
+                            f"Auto-detected cached LoRA adapter: '{identifier}'"
+                        )
+                        break
 
         # Handle LoRA adapters
         base_model = None
