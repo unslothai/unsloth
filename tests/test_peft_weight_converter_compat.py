@@ -38,6 +38,7 @@ def _install_fake_peft(twc_namespace):
 
 @pytest.fixture(autouse = True)
 def _restore_peft_modules():
+    attr_missing = object()
     saved = {
         k: sys.modules.get(k)
         for k in (
@@ -46,12 +47,31 @@ def _restore_peft_modules():
             "peft.utils.transformers_weight_conversion",
         )
     }
+    saved_twc = saved["peft.utils.transformers_weight_conversion"]
+    saved_twc_attrs = {}
+    if saved_twc is not None:
+        for attr in (
+            "build_peft_weight_mapping",
+            "convert_peft_config_for_transformers",
+            "_unsloth_weight_converter_compat_patch",
+            "_unsloth_mixtral_unfused_target_patch",
+        ):
+            saved_twc_attrs[attr] = getattr(saved_twc, attr, attr_missing)
+
     yield
+
     for k, v in saved.items():
         if v is None:
             sys.modules.pop(k, None)
         else:
             sys.modules[k] = v
+    if saved_twc is not None:
+        for attr, value in saved_twc_attrs.items():
+            if value is attr_missing:
+                if hasattr(saved_twc, attr):
+                    delattr(saved_twc, attr)
+            else:
+                setattr(saved_twc, attr, value)
 
 
 class _LegacyConverter:
@@ -100,6 +120,64 @@ def _build_that_calls_init(weight_conversions, adapter_name, peft_config = None)
             )
         )
     return out
+
+
+class _FakePeftConfig:
+    def __init__(self, target_modules):
+        self.target_modules = target_modules
+        self.target_parameters = None
+        self.convert_calls = []
+
+
+class _FakeModelConfig:
+    model_type = "mixtral"
+
+
+class _FakeNonMixtralConfig:
+    model_type = "qwen3_moe"
+
+
+class _FakeUnfusedMixtralModel:
+    config = _FakeModelConfig()
+
+    def named_parameters(self):
+        for name in (
+            "model.layers.0.mlp.experts.0.w1.weight",
+            "model.layers.0.mlp.experts.0.w2.weight",
+            "model.layers.0.mlp.experts.0.w3.weight",
+        ):
+            yield name, object()
+
+
+class _FakeFusedMixtralModel:
+    config = _FakeModelConfig()
+
+    def named_parameters(self):
+        for name in (
+            "model.layers.0.mlp.experts.gate_up_proj",
+            "model.layers.0.mlp.experts.down_proj",
+        ):
+            yield name, object()
+
+
+class _FakeNonMixtralModel(_FakeUnfusedMixtralModel):
+    config = _FakeNonMixtralConfig()
+
+
+def _convert_that_fuses_mixtral(peft_config, model, conversions):
+    peft_config.convert_calls.append(
+        (
+            getattr(model.config, "model_type", None),
+            set(peft_config.target_modules or ()),
+            conversions,
+        )
+    )
+    if getattr(model.config, "model_type", None) == "mixtral":
+        target_modules = set(peft_config.target_modules or ())
+        if {"w1", "w3"}.intersection(target_modules):
+            target_modules.difference_update({"w1", "w2", "w3"})
+            peft_config.target_modules = target_modules
+            peft_config.target_parameters = {"gate_up_proj", "down_proj"}
 
 
 def test_two_arg_call_preserves_upstream_signature():
@@ -257,3 +335,150 @@ def test_empty_conversions_short_circuits_without_patching():
     out = twc.build_peft_weight_mapping([], "default", None)
     assert out == []
     assert _LegacyConverter.__init__ is pre_init
+
+
+def test_mixtral_unfused_targets_skip_peft_moe_conversion():
+    twc = _install_fake_peft(
+        {
+            "build_peft_weight_mapping": _build_that_calls_init,
+            "convert_peft_config_for_transformers": _convert_that_fuses_mixtral,
+        }
+    )
+    patch = _load_patch_function()
+    patch()
+
+    config = _FakePeftConfig(
+        target_modules = {"q_proj", "k_proj", "v_proj", "o_proj", "w1", "w2", "w3"}
+    )
+    twc.convert_peft_config_for_transformers(
+        config, _FakeUnfusedMixtralModel(), conversions = ["conversion"]
+    )
+
+    assert config.convert_calls == []
+    assert config.target_modules == {
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "w1",
+        "w2",
+        "w3",
+    }
+    assert config.target_parameters is None
+
+
+def test_mixtral_fused_layout_still_delegates_to_peft_conversion():
+    twc = _install_fake_peft(
+        {
+            "build_peft_weight_mapping": _build_that_calls_init,
+            "convert_peft_config_for_transformers": _convert_that_fuses_mixtral,
+        }
+    )
+    patch = _load_patch_function()
+    patch()
+
+    config = _FakePeftConfig(target_modules = {"w1", "w2", "w3"})
+    twc.convert_peft_config_for_transformers(
+        config, _FakeFusedMixtralModel(), conversions = ["conversion"]
+    )
+
+    assert config.convert_calls == [("mixtral", {"w1", "w2", "w3"}, ["conversion"])]
+    assert config.target_modules == set()
+    assert config.target_parameters == {"gate_up_proj", "down_proj"}
+
+
+def test_non_mixtral_layout_still_delegates_to_peft_conversion():
+    twc = _install_fake_peft(
+        {
+            "build_peft_weight_mapping": _build_that_calls_init,
+            "convert_peft_config_for_transformers": _convert_that_fuses_mixtral,
+        }
+    )
+    patch = _load_patch_function()
+    patch()
+
+    config = _FakePeftConfig(target_modules = {"w1", "w2", "w3"})
+    twc.convert_peft_config_for_transformers(
+        config, _FakeNonMixtralModel(), conversions = ["conversion"]
+    )
+
+    assert config.convert_calls == [("qwen3_moe", {"w1", "w2", "w3"}, ["conversion"])]
+    assert config.target_modules == {"w1", "w2", "w3"}
+    assert config.target_parameters is None
+
+
+def test_real_peft_keeps_lora_on_unfused_mixtral_w_modules():
+    torch = pytest.importorskip("torch")
+    peft = pytest.importorskip("peft")
+    from peft import LoraConfig, get_peft_model
+
+    patch = _load_patch_function()
+    patch()
+
+    class Config:
+        model_type = "mixtral"
+        num_local_experts = 2
+        tie_word_embeddings = False
+
+        def get(self, key, default = None):
+            return getattr(self, key, default)
+
+        def to_dict(self):
+            return {
+                "model_type": self.model_type,
+                "num_local_experts": self.num_local_experts,
+                "tie_word_embeddings": self.tie_word_embeddings,
+            }
+
+    class Expert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w1 = torch.nn.Linear(8, 4, bias = False)
+            self.w2 = torch.nn.Linear(4, 8, bias = False)
+            self.w3 = torch.nn.Linear(8, 4, bias = False)
+
+    class Mlp(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = torch.nn.ModuleList([Expert(), Expert()])
+
+    class Attention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+            self.k_proj = torch.nn.Linear(8, 8, bias = False)
+            self.v_proj = torch.nn.Linear(8, 8, bias = False)
+            self.o_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = Attention()
+            self.mlp = Mlp()
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList([Layer()])
+
+        def forward(self, input_ids = None, **kwargs):
+            return None
+
+    config = LoraConfig(
+        r = 2,
+        lora_alpha = 2,
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "w1", "w2", "w3"],
+    )
+    model = get_peft_model(Model(), config)
+    peft_config = model.peft_config["default"]
+    lora_names = [name for name, _ in model.named_parameters() if "lora_" in name]
+
+    assert peft.__version__
+    assert {"w1", "w2", "w3"}.issubset(peft_config.target_modules)
+    assert peft_config.target_parameters is None
+    assert any(".w1.lora_A." in name for name in lora_names)
+    assert any(".w2.lora_A." in name for name in lora_names)
+    assert any(".w3.lora_A." in name for name in lora_names)
+    assert not any("gate_up_proj" in name for name in lora_names)

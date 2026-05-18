@@ -1641,6 +1641,8 @@ def patch_peft_weight_converter_compatibility():
     except (ImportError, AttributeError):
         return
 
+    _patch_peft_mixtral_unfused_target_conversion(twc)
+
     if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
         return
 
@@ -1714,6 +1716,75 @@ def patch_peft_weight_converter_compatibility():
 
     twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
     twc._unsloth_weight_converter_compat_patch = True
+
+
+_MIXTRAL_UNFUSED_EXPERT_TARGETS = frozenset(("w1", "w2", "w3"))
+
+
+def _peft_target_module_leaves(peft_config):
+    target_modules = getattr(peft_config, "target_modules", None)
+    if isinstance(target_modules, str):
+        target_modules = (target_modules,)
+    return {
+        target.rsplit(".", 1)[-1]
+        for target in (target_modules or ())
+        if isinstance(target, str)
+    }
+
+
+def _has_mixtral_unfused_expert_layout(model):
+    named_parameters = getattr(model, "named_parameters", None)
+    if named_parameters is None:
+        return False
+
+    found = set()
+    try:
+        for name, _ in named_parameters():
+            found.update(
+                _MIXTRAL_UNFUSED_EXPERT_TARGETS.intersection(
+                    str(name).split(".")
+                )
+            )
+            if found == _MIXTRAL_UNFUSED_EXPERT_TARGETS:
+                return True
+    except Exception:
+        return False
+
+    return False
+
+
+def _should_skip_peft_mixtral_moe_conversion(peft_config, model):
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) != "mixtral":
+        return False
+
+    target_modules = _peft_target_module_leaves(peft_config)
+    if not _MIXTRAL_UNFUSED_EXPERT_TARGETS.intersection(target_modules):
+        return False
+
+    return _has_mixtral_unfused_expert_layout(model)
+
+
+def _patch_peft_mixtral_unfused_target_conversion(twc):
+    if getattr(twc, "_unsloth_mixtral_unfused_target_patch", False):
+        return
+
+    original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
+    if original_convert is None:
+        return
+
+    @functools.wraps(original_convert)
+    def _convert_peft_config_for_transformers_unsloth(
+        peft_config, model, conversions
+    ):
+        if _should_skip_peft_mixtral_moe_conversion(peft_config, model):
+            return None
+        return original_convert(peft_config, model, conversions)
+
+    twc.convert_peft_config_for_transformers = (
+        _convert_peft_config_for_transformers_unsloth
+    )
+    twc._unsloth_mixtral_unfused_target_patch = True
 
 
 CAUSAL_CONV1D_BROKEN = False
