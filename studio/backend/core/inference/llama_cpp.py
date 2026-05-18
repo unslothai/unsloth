@@ -1104,6 +1104,26 @@ class LlamaCppBackend:
         return out
 
     @staticmethod
+    def _build_windows_path_dirs(
+        binary_dir: str, prefix: str, cuda_path: str
+    ) -> list[str]:
+        """Ordered PATH entries the win32 branch of start_llama_server
+        prepends so llama-server.exe resolves cudart / cublas DLLs:
+        binary_dir, pip nvidia wheels, CUDA_PATH/bin, CUDA_PATH/bin/x64.
+        Extracted so test_windows_gpu_detection_mock asserts against
+        production logic, not a hand-copy. #5106."""
+        path_dirs = [binary_dir]
+        path_dirs.extend(LlamaCppBackend._windows_pip_nvidia_dll_dirs(prefix))
+        if cuda_path:
+            cuda_bin = os.path.join(cuda_path, "bin")
+            if os.path.isdir(cuda_bin):
+                path_dirs.append(cuda_bin)
+            cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+            if os.path.isdir(cuda_bin_x64):
+                path_dirs.append(cuda_bin_x64)
+        return path_dirs
+
+    @staticmethod
     def _select_gpus(
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
@@ -2631,23 +2651,12 @@ class LlamaCppBackend:
                 binary_dir = str(Path(binary).parent)
 
                 if sys.platform == "win32":
-                    # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
-                    # be on PATH. Order: binary_dir, torch's pip-installed
-                    # nvidia wheels, then a system CUDA toolkit. Pip wheels
-                    # are the canonical source per Studio's install design
-                    # (mirrors the Linux LD_LIBRARY_PATH block below) and
-                    # CUDA_PATH covers users with a system toolkit. #5106.
-                    path_dirs = [binary_dir]
-                    path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
-                    cuda_path = os.environ.get("CUDA_PATH", "")
-                    if cuda_path:
-                        cuda_bin = os.path.join(cuda_path, "bin")
-                        if os.path.isdir(cuda_bin):
-                            path_dirs.append(cuda_bin)
-                        # Some CUDA installs put DLLs in bin\x64
-                        cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
-                        if os.path.isdir(cuda_bin_x64):
-                            path_dirs.append(cuda_bin_x64)
+                    # See _build_windows_path_dirs for ordering. #5106.
+                    path_dirs = self._build_windows_path_dirs(
+                        binary_dir,
+                        sys.prefix,
+                        os.environ.get("CUDA_PATH", ""),
+                    )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
                 else:
