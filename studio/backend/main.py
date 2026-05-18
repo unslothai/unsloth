@@ -313,13 +313,22 @@ from starlette.requests import Request as _StarletteRequest  # noqa: E402
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 
 
+# /content is Colab's working directory — more reliable than env vars which
+# aren't always set depending on Colab runtime version.
+_IS_COLAB = os.path.isdir("/content") and (
+    bool(os.environ.get("COLAB_BACKEND_URL"))
+    or bool(os.environ.get("COLAB_JUPYTER_IP"))
+    or os.path.exists("/usr/local/lib/python3.10/dist-packages/google/colab")
+    or os.path.exists("/usr/local/lib/python3.11/dist-packages/google/colab")
+)
+
+
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
     # Colab's serve_kernel_port_as_iframe embeds the app from *.prod.colab.dev
-    _is_colab = bool(os.environ.get("COLAB_BACKEND_URL") or os.environ.get("COLAB_GPU"))
-    frame_ancestors = "*.prod.colab.dev" if _is_colab else "'none'"
+    frame_ancestors = "*.prod.colab.dev" if _IS_COLAB else "'none'"
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
@@ -347,8 +356,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
         # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
         # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-        _is_colab = bool(os.environ.get("COLAB_BACKEND_URL") or os.environ.get("COLAB_GPU"))
-        if not _is_colab:
+        if not _IS_COLAB:
             response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
