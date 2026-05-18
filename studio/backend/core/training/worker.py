@@ -130,7 +130,7 @@ def _install_package_wheel_first(
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
     elif url_exists(wheel_url):
-        _send_status(event_queue, f"Installing prebuilt {display_name} wheel...")
+        _send_status(event_queue, f"Installing {display_name} for faster training...")
         for installer, result in install_wheel(
             wheel_url,
             python_executable = sys.executable,
@@ -172,7 +172,7 @@ def _install_package_wheel_first(
                 "(this may take several minutes)..."
             )
         else:
-            pypi_status_message = f"Installing {display_name} from PyPI..."
+            pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
     _send_status(event_queue, pypi_status_message)
 
@@ -375,10 +375,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
 
     _send_status(
         event_queue,
-        (
-            f"Installing flash-linear-attention=={_FLA_PACKAGE_VERSION} "
-            f"(with fla-core=={_FLA_CORE_PACKAGE_VERSION}) for the fast path..."
-        ),
+        f"Installing flash-linear-attention=={_FLA_PACKAGE_VERSION} for faster training...",
     )
 
     # `--no-deps` blocks the silent torch upgrade; we bring the non-torch runtime deps in by hand.
@@ -434,7 +431,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         )
         _send_status(
             event_queue,
-            "flash-linear-attention install failed; continuing on torch fallback",
+            "flash-linear-attention install failed; continuing without it",
         )
         return False
 
@@ -442,7 +439,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     if not _flash_linear_attention_importable():
         _send_status(
             event_queue,
-            "flash-linear-attention installed but is not importable; continuing on torch fallback",
+            "flash-linear-attention installed but is not importable; continuing without it",
         )
         return False
 
@@ -666,11 +663,7 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
     # Step 2: regular install pulls in transitive deps (z3-solver, ml-dtypes) without touching torch.
     _send_status(
         event_queue,
-        (
-            f"Installing TileLang backend ("
-            f"apache-tvm-ffi=={_APACHE_TVM_FFI_PACKAGE_VERSION}, "
-            f"tilelang=={_TILELANG_PACKAGE_VERSION}) for FLA fast path..."
-        ),
+        f"Installing TileLang=={_TILELANG_PACKAGE_VERSION} for faster training...",
     )
     install_cmd = _pip_install_cmd(
         "--only-binary=:all:",
@@ -778,9 +771,6 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
             if not ok:
                 ran_install = True
                 logger.info("Hook fired for %s; triggering install", gate_name)
-                _send_status(
-                    event_queue, f"Hook fired for {gate_name}; installing kernel..."
-                )
                 try:
                     ok = bool(install_fn(event_queue))
                 except Exception as exc:

@@ -58,7 +58,7 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
-    assert statuses == ["Installing prebuilt flash-attn wheel..."]
+    assert statuses == ["Installing flash-attn for faster training..."]
 
 
 def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
@@ -460,7 +460,7 @@ def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     assert f"apache-tvm-ffi=={worker._APACHE_TVM_FFI_PACKAGE_VERSION}" in args
     assert f"tilelang=={worker._TILELANG_PACKAGE_VERSION}" in args
     assert run_mock.call_args.kwargs["timeout"] == worker._TILELANG_INSTALL_TIMEOUT_S
-    assert any("TileLang backend" in s for s in statuses)
+    assert any("Installing TileLang" in s for s in statuses)
 
 
 def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
