@@ -38,13 +38,9 @@ from auth.authentication import (
 router = APIRouter()
 
 
-# In-memory login rate limiter. Per-account (ip, username) bucket so one
-# misbehaving client cannot lock out the rest of the user base, plus a
-# per-IP aggregate bucket so an attacker cannot rotate usernames to evade
-# the spray protection PR #5375 removed. Unknown usernames record into a
-# single sentinel slot so the bucket dict cannot be grown unbounded by an
-# attacker emitting arbitrary usernames. Multi-process deployment still
-# needs a shared store.
+# Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
+# typos from blocking others; the aggregate stops username-rotation spray.
+# Single-process only -- multi-worker deployments need a shared store.
 _LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
 _LOGIN_IP_BUCKETS: dict[str, deque] = {}
 _LOGIN_BUCKETS_LOCK = threading.Lock()
@@ -52,24 +48,18 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Hard cap on distinct (ip, username) buckets. Attacker spray with random
-# usernames would otherwise grow this dict without limit. Stale entries
-# are pruned on overflow; if still full, the failure is folded into the
-# per-IP aggregate bucket only.
+# Bucket-dict cap. On overflow we prune stale entries; if still full the
+# failure folds into the per-IP aggregate only.
 _LOGIN_MAX_BUCKETS = 4096
-# Sentinel "username" used for failed logins whose username does not exist;
-# keeps the bucket key bounded regardless of attacker username cardinality.
-# The leading NUL byte makes the key unrepresentable as a real username so
-# it cannot collide with a legitimate account.
+# Unrepresentable as a real username (leading NUL); folds unknown-user attempts
+# into one slot so attacker cardinality cannot blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
 
 
 def _trust_forwarded_for() -> bool:
-    """Honour X-Forwarded-For only when explicitly opted in via env.
+    """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set.
 
-    Setting UNSLOTH_STUDIO_TRUST_FORWARDED=1 means a reverse proxy is in
-    front of Studio (nginx, Tailscale, Cloudflare, ...). Without it the
-    header could be spoofed by any direct caller.
+    Off by default so a direct caller cannot spoof the header.
     """
     return os.environ.get("UNSLOTH_STUDIO_TRUST_FORWARDED", "").lower() in (
         "1",
@@ -79,24 +69,18 @@ def _trust_forwarded_for() -> bool:
 
 
 def _normalize_forwarded_addr(value: str) -> str:
-    """Parse an X-Forwarded-For / Forwarded `for=` value into a bare IP.
-
-    Strips quotes, optional `[..]:port` (IPv6) and `host:port` (IPv4) so
-    one client emitting varying source ports does not split its bucket.
-    Returns "" when the value cannot be parsed as an IP.
-    """
+    """Parse an XFF / Forwarded `for=` value into a bare IP (port-stripped)."""
     value = (value or "").strip().strip('"')
     if not value or value.lower() == "unknown":
         return ""
-    # Bracketed IPv6, optionally with port: [::1] or [::1]:8080
     if value.startswith("["):
+        # Bracketed IPv6, optionally with port.
         end = value.find("]")
         if end <= 0:
             return ""
         host = value[1:end]
     elif value.count(":") == 1:
-        # IPv4:port — split off the port. Bare IPv6 has multiple colons
-        # and is handled by the else branch.
+        # IPv4:port. Bare IPv6 has multiple colons and takes the else branch.
         head, _, tail = value.rpartition(":")
         host = head if tail.isdigit() and head else value
     else:
@@ -120,20 +104,16 @@ def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
     if _trust_forwarded_for():
-        # First entry in X-Forwarded-For is the originating client; trim,
-        # strip ports / bracketed IPv6, validate as an IP literal.
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            first = xff.split(",", 1)[0]
-            normalized = _normalize_forwarded_addr(first)
+            # First entry is the originating client.
+            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
             if normalized:
                 return normalized
         fwd = request.headers.get("forwarded", "")
         if fwd:
-            # Isolate the first forwarded-element so a multi-element header
-            # cannot produce attacker-controlled bucket string variations.
-            first_element = fwd.split(",", 1)[0]
-            normalized = _forwarded_for_from_element(first_element)
+            # First element only -- multi-element headers cannot fork buckets.
+            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
             if normalized:
                 return normalized
     return (request.client.host if request.client else None) or "_unknown"
