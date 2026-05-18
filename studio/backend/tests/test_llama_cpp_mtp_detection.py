@@ -409,3 +409,88 @@ def test_unload_resets_nextn_predict_layers():
     backend._nextn_predict_layers = 1
     backend.unload_model()
     assert backend._nextn_predict_layers is None
+
+
+# llama-server capability probe.
+
+
+def _make_fake_llama_server(path: Path, help_text: str) -> Path:
+    """Bash stub that prints `help_text` on --help."""
+    path.write_text("#!/usr/bin/env bash\n" f"cat <<'EOF'\n{help_text}\nEOF\n")
+    path.chmod(0o755)
+    return path
+
+
+def _clear_caps_cache():
+    LlamaCppBackend._capability_cache.clear()
+
+
+def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
+    # Original naming from llama.cpp #22673.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-simple,draft-eagle3,draft-mtp,"
+        "ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] == "draft-mtp"
+    assert caps["supports_mtp"] is True
+
+
+def test_probe_server_capabilities_detects_renamed_mtp(tmp_path):
+    # Renamed upstream: draft-mtp -> mtp.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type [none|mtp|ngram-cache|ngram-simple|ngram-map-k|"
+        "ngram-map-k4v|ngram-mod]",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["mtp_token"] == "mtp"
+    assert caps["supports_mtp"] is True
+
+
+def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
+    # Pre-MTP llama.cpp: only ngram variants.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,ngram-simple,ngram-mod",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+
+
+def test_probe_server_capabilities_handles_missing_binary():
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
+    assert caps["found"] is False
+    assert caps["supports_mtp"] is False
+
+
+def test_probe_server_capabilities_caches_by_mtime(tmp_path):
+    # Same (path, mtime) -> cache hit. Bumped mtime -> re-probe.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,ngram-mod",
+    )
+    _clear_caps_cache()
+    caps1 = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps1["supports_mtp"] is False
+
+    import os
+    import time
+
+    _make_fake_llama_server(
+        fake,
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    new_mtime = int(time.time()) + 2
+    os.utime(fake, (new_mtime, new_mtime))
+    caps2 = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps2["mtp_token"] == "draft-mtp"
+    assert caps2["supports_mtp"] is True

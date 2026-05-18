@@ -1282,6 +1282,13 @@ async def get_status(
     try:
         llama_backend = get_llama_cpp_backend()
 
+        # MTP capability probe (cached). Drives the UI update banner.
+        try:
+            _caps = type(llama_backend).probe_server_capabilities()
+            _supports_mtp = bool(_caps.get("supports_mtp", False))
+        except Exception:
+            _supports_mtp = True  # fail open
+
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
@@ -1324,6 +1331,7 @@ async def get_status(
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
+                llama_cpp_supports_mtp = _supports_mtp,
             )
 
         # Otherwise, report Unsloth backend status
@@ -1384,6 +1392,7 @@ async def get_status(
             supports_preserve_thinking = False,
             supports_tools = False,
             chat_template = chat_template,
+            llama_cpp_supports_mtp = _supports_mtp,
         )
 
     except Exception as e:
