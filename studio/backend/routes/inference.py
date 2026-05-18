@@ -4370,6 +4370,13 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
             )
         elif etype == "tool_end":
             prev_text = ""
+        elif etype == "status" and not event.get("text"):
+            # Auto-continue boundary marker: the next content event
+            # restarts the cumulative diff baseline, so reset prev_text
+            # the same way tool_end does. Without this a shorter
+            # continuation gets dropped entirely and a longer one
+            # loses its prefix.
+            prev_text = ""
         elif etype == "metadata":
             usage = event.get("usage", {})
 
