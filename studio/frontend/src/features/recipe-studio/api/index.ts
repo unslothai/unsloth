@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { formatFastApiDetail, readFastApiError } from "@/lib/format-fastapi-error";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -202,12 +203,18 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
   try {
     const parsed = JSON.parse(text) as {
-      detail?: string;
+      detail?: unknown;
       message?: string;
       // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
-    return parsed.detail ?? parsed.message ?? parsed.raw_detail ?? text;
+    // Use ||, not ??: an array detail is truthy but not nullish, and
+    // formatFastApiDetail returns null when it cannot flatten the value.
+    const formatted = formatFastApiDetail(parsed.detail);
+    if (formatted) return formatted;
+    if (typeof parsed.message === "string" && parsed.message) return parsed.message;
+    if (typeof parsed.raw_detail === "string" && parsed.raw_detail) return parsed.raw_detail;
+    return text;
   } catch {
     return text;
   }
@@ -449,22 +456,17 @@ export async function uploadUnstructuredFile(
   );
 
   if (res.status === 413) {
-    const detail = await res.json().catch(() => ({ detail: "File too large" }));
     return {
       file_id: "",
       filename: file.name,
       size_bytes: file.size,
       status: "error",
-      error:
-        typeof detail.detail === "string" ? detail.detail : "File too large",
+      error: await readFastApiError(res, "File too large"),
     };
   }
 
   if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: "Upload failed" }));
-    throw new Error(
-      typeof detail.detail === "string" ? detail.detail : "Upload failed",
-    );
+    throw new Error(await readFastApiError(res, "Upload failed"));
   }
 
   return res.json();

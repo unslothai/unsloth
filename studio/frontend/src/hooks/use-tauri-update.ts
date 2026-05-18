@@ -7,7 +7,7 @@ import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 export type UpdateStatus =
   | "idle"
