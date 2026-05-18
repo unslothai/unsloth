@@ -228,17 +228,35 @@ def health_app(tmp_path, monkeypatch):
 
 
 class TestHealthAuthGate:
-    def test_no_auth_returns_minimal_payload(self, health_app):
+    # Launcher / frontend bootstrap fields are available unauth so the Tauri
+    # watchdog can re-adopt a sibling backend and the SPA can detect chat-only
+    # mode before any token exists. Version / device_type still require a bearer.
+    LAUNCHER_BITS = (
+        "service",
+        "studio_root_id",
+        "chat_only",
+        "desktop_protocol_version",
+        "desktop_manageability_version",
+        "supports_desktop_auth",
+        "supports_desktop_backend_ownership",
+        "native_path_leases_supported",
+    )
+    FINGERPRINT_FIELDS = ("version", "studio_version", "device_type")
+
+    def test_no_auth_exposes_launcher_bits(self, health_app):
         c = TestClient(health_app)
         r = c.get("/api/health")
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "healthy"
         assert "timestamp" in body
-        for forbidden in ("version", "device_type", "studio_root_id"):
+        for field in self.LAUNCHER_BITS:
+            assert field in body, f"missing launcher bit: {field}"
+        assert body["service"] == "Unsloth UI Backend"
+        for forbidden in self.FINGERPRINT_FIELDS:
             assert forbidden not in body
 
-    def test_invalid_bearer_returns_minimal_payload(self, health_app):
+    def test_invalid_bearer_returns_launcher_bits_only(self, health_app):
         # Regression: calling the async dep without await made any Bearer header pass.
         c = TestClient(health_app)
         r = c.get(
@@ -248,7 +266,9 @@ class TestHealthAuthGate:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "healthy"
-        for forbidden in ("version", "device_type", "studio_root_id"):
+        for field in self.LAUNCHER_BITS:
+            assert field in body
+        for forbidden in self.FINGERPRINT_FIELDS:
             assert forbidden not in body
 
     def test_valid_bearer_returns_full_payload(self, health_app):
@@ -264,6 +284,5 @@ class TestHealthAuthGate:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "healthy"
-        assert "version" in body
-        assert "device_type" in body
-        assert "studio_root_id" in body
+        for field in self.LAUNCHER_BITS + self.FINGERPRINT_FIELDS:
+            assert field in body, f"missing: {field}"

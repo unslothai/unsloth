@@ -101,6 +101,51 @@ _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
 
+def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
+    """Quick DNS check. Runs on a daemon thread so concurrent sockets
+    in the same process are not affected by socket.setdefaulttimeout."""
+    result: list[Optional[bool]] = [None]
+
+    def _probe() -> None:
+        try:
+            socket.gethostbyname(host)
+            result[0] = False
+        except Exception:
+            result[0] = True
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout)
+    # Thread still running -> resolver wedged -> treat as dead.
+    return True if result[0] is None else result[0]
+
+
+@contextlib.contextmanager
+def _hf_offline_if_dns_dead():
+    """Set HF_HUB_OFFLINE for the body of this block only when DNS to
+    huggingface.co fails. Restores the env on exit so a transient
+    resolver hiccup at the start of one load can't quarantine the whole
+    process. Respects an explicit user setting (no-op if already set)."""
+    if "HF_HUB_OFFLINE" in os.environ:
+        yield False
+        return
+    if not _probe_dns_dead():
+        yield False
+        return
+
+    transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    if not transformers_was_set:
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+    try:
+        yield True
+    finally:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        if not transformers_was_set:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+
+
 def _swa_cache_path() -> Path:
     home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     base = Path(home) if home else Path.home() / ".unsloth" / "studio"
@@ -483,6 +528,9 @@ class LlamaCppBackend:
         self._requested_n_ctx: int = 0
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        # llama-server tee log (see _drain_stdout / _kill_process).
+        self._llama_log_fh = None
+        self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
 
@@ -1462,6 +1510,11 @@ class LlamaCppBackend:
         This prevents a pipe-buffer deadlock on Windows where the default
         pipe buffer is only ~4 KB.  Without draining, llama-server blocks
         on writes and never becomes healthy.
+
+        Each line is also teed to ``self._llama_log_fh`` when set so a
+        post-mortem (especially in CI) has the full subprocess output
+        even if the crash predates the drain-thread join in
+        ``_wait_for_health``.
         """
         try:
             for line in self._process.stdout:
@@ -1469,6 +1522,14 @@ class LlamaCppBackend:
                 if line:
                     self._stdout_lines.append(line)
                     logger.debug(f"[llama-server] {line}")
+                    fh = getattr(self, "_llama_log_fh", None)
+                    if fh is not None:
+                        try:
+                            fh.write(line + "\n")
+                            fh.flush()
+                        except (ValueError, OSError):
+                            # Log file closed under us; tee silently.
+                            pass
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
@@ -1804,6 +1865,55 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
+            # Offline: resolve variant -> filename from the local HF cache.
+            # The heuristic below assumes filenames echo the repo name,
+            # which breaks for e.g. Qwen3.6-27B-MTP-GGUF (no "MTP" in file).
+            # Match against the rel path (not just basename) so subdir
+            # layouts like ``BF16/foo.gguf`` are findable.
+            if not gguf_filename:
+                try:
+                    from utils.models.model_config import _iter_hf_cache_snapshots
+
+                    boundary = re.compile(
+                        r"(?<![a-zA-Z0-9])"
+                        + re.escape(hf_variant.lower())
+                        + r"(?![a-zA-Z0-9])"
+                    )
+                    for snap in _iter_hf_cache_snapshots(hf_repo):
+                        matches = sorted(
+                            p.relative_to(snap).as_posix()
+                            for p in snap.rglob("*.gguf")
+                            if "mmproj" not in p.name.lower()
+                            and boundary.search(p.relative_to(snap).as_posix().lower())
+                        )
+                        if not matches:
+                            continue
+                        gguf_filename = matches[0]
+                        m = _SHARD_FULL_RE.match(Path(gguf_filename).name)
+                        if m:
+                            prefix = m.group(1)
+                            total = m.group(3)
+                            sibling_pat = re.compile(
+                                r"^"
+                                + re.escape(prefix)
+                                + r"-\d{5}-of-"
+                                + re.escape(total)
+                                + r"\.gguf$"
+                            )
+                            gguf_extra_shards = [
+                                f
+                                for f in matches[1:]
+                                if sibling_pat.match(Path(f).name)
+                            ]
+                        logger.info(
+                            "Resolved variant %s -> %s from local HF cache",
+                            hf_variant,
+                            gguf_filename,
+                        )
+                        break
+                except Exception as e:
+                    logger.debug(f"Offline cache lookup for variant failed: {e}")
+
             if not gguf_filename:
                 repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                 gguf_filename = f"{repo_name}-{hf_variant}.gguf"
@@ -1811,8 +1921,6 @@ class LlamaCppBackend:
         # Check disk space and fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
         try:
-            import os
-
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
@@ -1946,24 +2054,50 @@ class LlamaCppBackend:
         Prefers mmproj-F16.gguf, falls back to any mmproj*.gguf file.
         Returns the local path, or None if no mmproj file exists.
         """
-        try:
-            from huggingface_hub import hf_hub_download, list_repo_files
 
-            files = list_repo_files(hf_repo, token = hf_token)
+        def _pick_mmproj(candidates: list[str]) -> Optional[str]:
             mmproj_files = sorted(
-                f for f in files if f.endswith(".gguf") and "mmproj" in f.lower()
+                f
+                for f in candidates
+                if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
             )
             if not mmproj_files:
                 return None
-
-            # Prefer F16 variant
-            target = None
             for f in mmproj_files:
                 if f.lower().endswith("-f16.gguf"):
-                    target = f
-                    break
-            if target is None:
-                target = mmproj_files[0]
+                    return f
+            return mmproj_files[0]
+
+        target: Optional[str] = None
+        try:
+            from huggingface_hub import list_repo_files
+
+            target = _pick_mmproj(list_repo_files(hf_repo, token = hf_token))
+        except Exception as e:
+            logger.debug(f"Could not list repo files for mmproj: {e}")
+
+        # Offline: resolve mmproj from the local HF cache snapshot, same
+        # shape as _download_gguf's offline fallback above.
+        if target is None:
+            try:
+                from utils.models.model_config import _iter_hf_cache_snapshots
+
+                for snap in _iter_hf_cache_snapshots(hf_repo):
+                    rel_files = [
+                        p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")
+                    ]
+                    target = _pick_mmproj(rel_files)
+                    if target is not None:
+                        logger.info("Resolved mmproj %s from local HF cache", target)
+                        break
+            except Exception as e:
+                logger.debug(f"Offline cache lookup for mmproj failed: {e}")
+
+        if target is None:
+            return None
+
+        try:
+            from huggingface_hub import hf_hub_download
 
             logger.info(f"Downloading mmproj: {hf_repo}/{target}")
             local_path = hf_hub_download(
@@ -2052,18 +2186,22 @@ class LlamaCppBackend:
                 )
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+            # Scope HF_HUB_OFFLINE to the download block only when DNS is
+            # dead; cleanup runs even on exception so a transient hiccup
+            # at the start of one load cannot quarantine future loads.
             if hf_repo:
-                model_path = self._download_gguf(
-                    hf_repo = hf_repo,
-                    hf_variant = hf_variant,
-                    hf_token = hf_token,
-                )
-                # Auto-download mmproj for vision models
-                if is_vision and not mmproj_path:
-                    mmproj_path = self._download_mmproj(
+                with _hf_offline_if_dns_dead():
+                    model_path = self._download_gguf(
                         hf_repo = hf_repo,
+                        hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
+                    # Auto-download mmproj for vision models
+                    if is_vision and not mmproj_path:
+                        mmproj_path = self._download_mmproj(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
+                        )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -2603,6 +2741,30 @@ class LlamaCppBackend:
                 self._kill_process()
 
                 self._stdout_lines = []
+                # Tee llama-server output to a dedicated log file so a
+                # post-mortem in CI (or after a remote-debug session)
+                # has the full subprocess trail even when the parent
+                # only stored the last 50 lines. Path lives under the
+                # studio home so it ships in the same place all other
+                # Studio logs live.
+                self._llama_log_fh = None
+                try:
+                    log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                    log_dir.mkdir(parents = True, exist_ok = True)
+                    self._llama_log_path = (
+                        log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
+                    )
+                    self._llama_log_fh = open(
+                        self._llama_log_path,
+                        "w",
+                        encoding = "utf-8",
+                        buffering = 1,
+                    )
+                    logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
+                except OSError as e:
+                    # Best-effort; never block the load on logging.
+                    logger.debug(f"Could not open llama-server log file: {e}")
+                    self._llama_log_path = None
                 self._process = subprocess.Popen(
                     cmd,
                     stdout = subprocess.PIPE,
@@ -2899,6 +3061,13 @@ class LlamaCppBackend:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
+            fh = getattr(self, "_llama_log_fh", None)
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+                self._llama_log_fh = None
 
     @staticmethod
     def _kill_orphaned_servers():
@@ -3110,7 +3279,17 @@ class LlamaCppBackend:
                 resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except (
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                # ReadError covers TCP RST mid-read while llama-server is
+                # still binding the port (Windows: WinError 10054). The
+                # crash-detection branch above catches a real exit; this
+                # one keeps a transient socket close from masking it.
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+            ):
                 pass
 
             time.sleep(interval)
