@@ -806,7 +806,7 @@
 	}
 
 	.composer-input {
-		@apply mt-2 mb-1 mr-3 min-h-12 w-[calc(100%-0.75rem)] resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.composer-action-wrapper {
