@@ -1085,7 +1085,7 @@ def _print_windows_exe_lock_hint_if_relevant() -> None:
     typer.echo("Windows holds unsloth.exe open while it is running, so pip")
     typer.echo("cannot replace it. Re-run the update via the venv python:")
     typer.echo(
-        f"    {sys.executable} -c \"from unsloth_cli import app; "
+        f'    {sys.executable} -c "from unsloth_cli import app; '
         "app(['studio', 'update', '--local'])\""
     )
 
