@@ -33,6 +33,10 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE as _BUDGET_EXHAUSTED_NUDGE,
+    DUPLICATE_CALL_NUDGE as _DUPLICATE_CALL_NUDGE,
+    TOOL_ERROR_NUDGE as _TOOL_ERROR_NUDGE,
+    TOOL_ERROR_PREFIXES as _TOOL_ERROR_PREFIXES,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
 
@@ -4113,14 +4117,7 @@ class LlamaCppBackend:
                     _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
                     if _prev and _prev[0] == _tc_key and not _prev[1]:
-                        result = (
-                            "You already made this exact call. "
-                            "Do not repeat the same tool call. "
-                            "Try a different approach: fetch a URL "
-                            "from previous results, use Python to "
-                            "process data you already have, or "
-                            "provide your final answer now."
-                        )
+                        result = _DUPLICATE_CALL_NUDGE
                     else:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
@@ -4141,18 +4138,8 @@ class LlamaCppBackend:
                     }
 
                     # Nudge model to try a different approach on errors
-                    _error_prefixes = (
-                        "Error",
-                        "Search failed",
-                        "Execution error",
-                        "Blocked:",
-                        "Exit code",
-                        "Failed to fetch",
-                        "Failed to resolve",
-                        "No query provided",
-                    )
                     _is_error = isinstance(result, str) and result.lstrip().startswith(
-                        _error_prefixes
+                        _TOOL_ERROR_PREFIXES
                     )
                     _tool_call_history.append((_tc_key, _is_error))
                     # Strip image sentinel before feeding result to the LLM
@@ -4162,10 +4149,7 @@ class LlamaCppBackend:
                     if "\n__IMAGES__:" in _result_content:
                         _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
                     if _is_error:
-                        _result_content = (
-                            _result_content + "\n\nThe tool call encountered an issue. "
-                            "Please try a different approach or rephrase your request."
-                        )
+                        _result_content = _result_content + _TOOL_ERROR_NUDGE
 
                     tool_msg = {
                         "role": "tool",
@@ -4197,11 +4181,7 @@ class LlamaCppBackend:
             conversation.append(
                 {
                     "role": "user",
-                    "content": (
-                        "You have used all available tool calls. Based on "
-                        "everything you have found so far, provide your final "
-                        "answer now. Do not call any more tools."
-                    ),
+                    "content": _BUDGET_EXHAUSTED_NUDGE,
                 }
             )
 

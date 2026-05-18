@@ -2785,14 +2785,21 @@ async def openai_chat_completions(
     except Exception:
         _sf_is_gptoss = False
 
+    _sf_tool_budget = (
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else 25
+    )
+
     _sf_use_tools = (
         _effective_enable_tools(payload)
         and _sf_features.get("supports_tools", False)
         and image is None
         and not _sf_is_gptoss
+        and _sf_tool_budget > 0
     )
 
-    if _sf_use_tools and payload.stream:
+    if _sf_use_tools:
         from core.inference.tools import ALL_TOOLS
 
         if payload.enabled_tools is not None:
@@ -2889,13 +2896,12 @@ async def openai_chat_completions(
                 auto_heal_tool_calls = payload.auto_heal_tool_calls
                 if payload.auto_heal_tool_calls is not None
                 else True,
-                max_tool_iterations = payload.max_tool_calls_per_message
-                if payload.max_tool_calls_per_message is not None
-                else 25,
+                max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
                 else 300,
                 session_id = payload.session_id,
+                use_adapter = payload.use_adapter,
             )
 
         _sf_tool_sentinel = object()
@@ -2922,9 +2928,11 @@ async def openai_chat_completions(
                 prev_text = ""
                 while True:
                     if cancel_event.is_set():
+                        backend.reset_generation_state()
                         break
                     if await request.is_disconnected():
                         cancel_event.set()
+                        backend.reset_generation_state()
                         return
 
                     event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
@@ -2987,8 +2995,10 @@ async def openai_chat_completions(
 
             except asyncio.CancelledError:
                 cancel_event.set()
+                backend.reset_generation_state()
                 raise
             except Exception as e:
+                backend.reset_generation_state()
                 import traceback
 
                 tb = traceback.format_exc()
@@ -3003,15 +3013,54 @@ async def openai_chat_completions(
             finally:
                 _sf_tracker.__exit__(None, None, None)
 
-        return StreamingResponse(
-            sf_tool_stream(),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        if payload.stream:
+            return StreamingResponse(
+                sf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        # Non-streaming JSON: drain the agentic loop in a worker thread
+        # and assemble a single ChatCompletion, matching how the GGUF
+        # server-tool path returns synchronous JSON to OpenAI clients
+        # that did not request streaming.
+        try:
+            def _drain_to_text():
+                full_text = ""
+                gen = sf_generate_with_tools()
+                for event in gen:
+                    if cancel_event.is_set():
+                        break
+                    if event.get("type") == "content":
+                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                return full_text
+
+            content_text = await asyncio.to_thread(_drain_to_text)
+            response = ChatCompletion(
+                id = completion_id,
+                created = created,
+                model = model_name,
+                choices = [
+                    CompletionChoice(
+                        message = CompletionMessage(content = content_text),
+                        finish_reason = "stop",
+                    )
+                ],
+            )
+            return JSONResponse(content = response.model_dump())
+        except Exception as e:
+            backend.reset_generation_state()
+            logger.error(
+                f"Error during safetensors tool completion: {e}",
+                exc_info = True,
+            )
+            raise HTTPException(status_code = 500, detail = _friendly_error(e))
+        finally:
+            _sf_tracker.__exit__(None, None, None)
 
     # Shared generation kwargs
     gen_kwargs = dict(

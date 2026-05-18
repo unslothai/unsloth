@@ -38,6 +38,39 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 TOOL_XML_SIGNALS = ("<tool_call>", "<function=")
 
 
+# Shared nudge strings + error-result prefixes used by both the GGUF
+# (llama_cpp) and safetensors agentic tool loops. Centralised here so
+# the two backends stay in lockstep when the wording changes.
+TOOL_ERROR_PREFIXES = (
+    "Error",
+    "Search failed",
+    "Execution error",
+    "Blocked:",
+    "Exit code",
+    "Failed to fetch",
+    "Failed to resolve",
+    "No query provided",
+)
+
+DUPLICATE_CALL_NUDGE = (
+    "You already made this exact call. Do not repeat the same tool "
+    "call. Try a different approach: fetch a URL from previous "
+    "results, use Python to process data you already have, or "
+    "provide your final answer now."
+)
+
+TOOL_ERROR_NUDGE = (
+    "\n\nThe tool call encountered an issue. Please try a different "
+    "approach or rephrase your request."
+)
+
+BUDGET_EXHAUSTED_NUDGE = (
+    "You have used all available tool calls. Based on everything you "
+    "have found so far, provide your final answer now. Do not call "
+    "any more tools."
+)
+
+
 # Pre-compiled patterns reused by ``parse_tool_calls_from_text``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=(\w+)>\s*")
@@ -60,7 +93,7 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
     return text.strip() if final else text
 
 
-def parse_tool_calls_from_text(content: str) -> list[dict]:
+def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict]:
     """Parse OpenAI-format ``tool_calls`` from model text.
 
     Returns a list of ``{"id", "type", "function": {"name", "arguments"}}``
@@ -108,7 +141,7 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
             try:
                 obj = json.loads(json_str)
                 tc = {
-                    "id": f"call_{len(tool_calls)}",
+                    "id": f"call_{id_offset + len(tool_calls)}",
                     "type": "function",
                     "function": {
                         "name": obj.get("name", ""),
@@ -169,7 +202,7 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                     arguments[param_name] = val.strip()
 
             tc = {
-                "id": f"call_{len(tool_calls)}",
+                "id": f"call_{id_offset + len(tool_calls)}",
                 "type": "function",
                 "function": {
                     "name": func_name,

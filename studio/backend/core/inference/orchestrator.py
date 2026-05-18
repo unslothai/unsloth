@@ -831,6 +831,7 @@ class InferenceOrchestrator:
         auto_heal_tool_calls: bool = True,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        use_adapter: Optional[Union[bool, str]] = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in this (parent)
@@ -849,7 +850,7 @@ class InferenceOrchestrator:
         def _single_turn(conv: list):
             # ``conv`` already carries any system message because the
             # loop appends to a list seeded with system+user above.
-            yield from self.generate_chat_response(
+            common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
                 image = None,
@@ -865,6 +866,13 @@ class InferenceOrchestrator:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
+            if use_adapter is not None:
+                yield from self.generate_with_adapter_control(
+                    use_adapter = use_adapter,
+                    **common_kwargs,
+                )
+            else:
+                yield from self.generate_chat_response(**common_kwargs)
 
         initial = list(messages)
         if system_prompt:
@@ -1317,6 +1325,13 @@ class InferenceOrchestrator:
         if self.active_model_name and self.active_model_name in self.models:
             return self.models[self.active_model_name].get("is_vision", False)
         return False
+
+    def _is_gpt_oss_model(self, model_name: str = None) -> bool:
+        """Parent-side gpt-oss detection so the safetensors route can run
+        the same guard without an IPC round-trip to the subprocess."""
+        from utils.datasets import is_gpt_oss_model_name
+
+        return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
 
 # ========== GLOBAL INSTANCE ==========

@@ -25,6 +25,10 @@ from urllib.parse import urlparse
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE,
+    DUPLICATE_CALL_NUDGE,
+    TOOL_ERROR_NUDGE,
+    TOOL_ERROR_PREFIXES,
     TOOL_XML_SIGNALS,
     has_tool_signal,
     parse_tool_calls_from_text,
@@ -39,20 +43,6 @@ logger = get_logger(__name__)
 # the model is about to emit ``<tool_call>`` or ``<function=``. Set just
 # above the longest signal prefix to give a small safety margin.
 _MAX_BUFFER_CHARS = 32
-
-# Tool messages always reach the user via SSE events; the assistant
-# turn that emitted them is replaced with a stripped version so the
-# chat history does not show raw XML.
-_ERROR_PREFIXES = (
-    "Error",
-    "Search failed",
-    "Execution error",
-    "Blocked:",
-    "Exit code",
-    "Failed to fetch",
-    "Failed to resolve",
-    "No query provided",
-)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -78,12 +68,17 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return f"Calling: {tool_name}"
 
 
-def _coerce_arguments(raw_args, *, heal: bool) -> dict:
+_CANONICAL_HEAL_ARG = {"python": "code", "terminal": "command"}
+
+
+def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
     """Normalise tool ``arguments`` to a dict.
 
     Some templates emit a JSON string, others a bare query string. With
-    ``heal=True`` we accept a bare string as ``{"query": ...}`` so a
-    Hermes-style call without proper JSON still runs the tool.
+    ``heal=True`` we accept a bare string as ``{<canonical_key>: ...}``
+    so a Hermes-style call without proper JSON still runs the tool. The
+    canonical key is picked per tool: ``code`` for python, ``command``
+    for terminal, ``query`` for everything else (e.g. web_search).
     """
     if isinstance(raw_args, dict):
         return raw_args
@@ -94,7 +89,10 @@ def _coerce_arguments(raw_args, *, heal: bool) -> dict:
                 return parsed
         except (json.JSONDecodeError, ValueError):
             pass
-        return {"query": raw_args} if heal else {"raw": raw_args}
+        if heal:
+            key = _CANONICAL_HEAL_ARG.get(tool_name, "query")
+            return {key: raw_args}
+        return {"raw": raw_args}
     return {}
 
 
@@ -140,14 +138,26 @@ def run_safetensors_tool_loop(
     conversation = list(messages)
     tool_call_history: list[tuple[str, bool]] = []
     final_attempt_done = False
+    allowed_tool_names = {
+        (tool.get("function") or {}).get("name")
+        for tool in (tools or [])
+        if (tool.get("function") or {}).get("name")
+    }
+    next_call_id = 0
+
+    if max_tool_iterations <= 0:
+        # why safe: documented 0 = disabled; mirror the GGUF loop which
+        # produces no iterations under the same setting.
+        yield {"type": "status", "text": ""}
+        return
+
+    _state_buffering = 0
+    _state_streaming = 1
+    _state_draining = 2
 
     for iteration in range(max_tool_iterations + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
-
-        _state_buffering = 0
-        _state_streaming = 1
-        _state_draining = 2
 
         detect_state = _state_buffering
         content_buffer = ""
@@ -177,7 +187,22 @@ def run_safetensors_tool_loop(
                 continue
 
             if detect_state == _state_streaming:
-                cumulative_display += delta
+                candidate = cumulative_display + delta
+                signal_pos = -1
+                for sig in TOOL_XML_SIGNALS:
+                    p = candidate.find(sig)
+                    if p >= 0 and (signal_pos < 0 or p < signal_pos):
+                        signal_pos = p
+                if signal_pos >= 0:
+                    before_tool = candidate[:signal_pos]
+                    cleaned_before = strip_tool_markup(before_tool)
+                    if len(cleaned_before) > len(last_emitted):
+                        last_emitted = cleaned_before
+                        yield {"type": "content", "text": cleaned_before}
+                    cumulative_display = candidate
+                    detect_state = _state_draining
+                    continue
+                cumulative_display = candidate
                 cleaned = strip_tool_markup(cumulative_display)
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -193,7 +218,7 @@ def run_safetensors_tool_loop(
 
             is_match = False
             is_prefix = False
-            for sig in TOOL_XML_SIGNALS if auto_heal_tool_calls else ():
+            for sig in TOOL_XML_SIGNALS:
                 if stripped.startswith(sig):
                     is_match = True
                     break
@@ -221,7 +246,7 @@ def run_safetensors_tool_loop(
             # Buffer never resolved. Treat any leaked tool XML as a
             # tool call, otherwise emit the buffer as plain content.
             stripped = content_buffer.lstrip()
-            if stripped and auto_heal_tool_calls and has_tool_signal(stripped):
+            if stripped and has_tool_signal(stripped):
                 detect_state = _state_draining
             else:
                 if content_buffer:
@@ -237,8 +262,10 @@ def run_safetensors_tool_loop(
             # No tool detected this iteration. Either we are done or
             # we caught a tool-call XML late in the stream.
             safety_tc = None
-            if auto_heal_tool_calls and has_tool_signal(content_accum):
-                safety_tc = parse_tool_calls_from_text(content_accum)
+            if has_tool_signal(content_accum):
+                safety_tc = parse_tool_calls_from_text(
+                    content_accum, id_offset = next_call_id,
+                )
             if not safety_tc:
                 # Final answer arrived. Streaming already emitted the
                 # cleaned cumulative content via partial strips, so we
@@ -256,7 +283,9 @@ def run_safetensors_tool_loop(
             )
         else:
             # DRAINING: parse the tool calls out of the full content.
-            tool_calls = parse_tool_calls_from_text(content_accum)
+            tool_calls = parse_tool_calls_from_text(
+                content_accum, id_offset = next_call_id,
+            )
             if not tool_calls and auto_heal_tool_calls:
                 # Drained but parser found nothing. Surface the raw
                 # content (no ``final=True`` strip) so any literal
@@ -278,6 +307,7 @@ def run_safetensors_tool_loop(
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
+            next_call_id += len(tool_calls)
         conversation.append(assistant_msg)
 
         for tc in tool_calls or []:
@@ -286,6 +316,7 @@ def run_safetensors_tool_loop(
             arguments = _coerce_arguments(
                 func.get("arguments", {}),
                 heal = auto_heal_tool_calls,
+                tool_name = tool_name,
             )
 
             yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
@@ -297,27 +328,31 @@ def run_safetensors_tool_loop(
             }
 
             tc_key = tool_name + str(arguments)
-            prev = tool_call_history[-1] if tool_call_history else None
-            if prev and prev[0] == tc_key and not prev[1]:
+            if allowed_tool_names and tool_name not in allowed_tool_names:
                 result = (
-                    "You already made this exact call. Do not repeat the "
-                    "same tool call. Try a different approach: fetch a URL "
-                    "from previous results, use Python to process data you "
-                    "already have, or provide your final answer now."
+                    f"Error: tool '{tool_name}' is not enabled for this "
+                    "request. Use one of the enabled tools or provide a "
+                    "final answer."
                 )
             else:
-                eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                try:
-                    result = execute_tool(
-                        tool_name,
-                        arguments,
-                        cancel_event = cancel_event,
-                        timeout = eff_timeout,
-                        session_id = session_id,
-                    )
-                except Exception as exc:
-                    logger.exception("Tool %s raised: %s", tool_name, exc)
-                    result = f"Error: tool raised an exception: {exc}"
+                already_ran_ok = any(
+                    k == tc_key and not err for k, err in tool_call_history
+                )
+                if already_ran_ok:
+                    result = DUPLICATE_CALL_NUDGE
+                else:
+                    eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+                    try:
+                        result = execute_tool(
+                            tool_name,
+                            arguments,
+                            cancel_event = cancel_event,
+                            timeout = eff_timeout,
+                            session_id = session_id,
+                        )
+                    except Exception as exc:
+                        logger.exception("Tool %s raised: %s", tool_name, exc)
+                        result = f"Error: tool raised an exception: {exc}"
 
             yield {
                 "type": "tool_end",
@@ -327,7 +362,7 @@ def run_safetensors_tool_loop(
             }
 
             is_error = isinstance(result, str) and result.lstrip().startswith(
-                _ERROR_PREFIXES
+                TOOL_ERROR_PREFIXES
             )
             tool_call_history.append((tc_key, is_error))
 
@@ -340,10 +375,7 @@ def run_safetensors_tool_loop(
             ):
                 result_for_model = result_for_model.rsplit("\n__IMAGES__:", 1)[0]
             if is_error:
-                result_for_model = (
-                    result_for_model + "\n\nThe tool call encountered an issue. "
-                    "Please try a different approach or rephrase your request."
-                )
+                result_for_model = result_for_model + TOOL_ERROR_NUDGE
 
             tool_msg: dict = {
                 "role": "tool",
@@ -365,11 +397,7 @@ def run_safetensors_tool_loop(
             conversation.append(
                 {
                     "role": "user",
-                    "content": (
-                        "You have used all available tool calls. Based on "
-                        "everything you have found so far, provide your "
-                        "final answer now. Do not call any more tools."
-                    ),
+                    "content": BUDGET_EXHAUSTED_NUDGE,
                 }
             )
 

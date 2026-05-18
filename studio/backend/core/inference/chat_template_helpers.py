@@ -62,6 +62,4 @@ def apply_chat_template_for_generation(
             break
     if last_exc is not None:
         raise last_exc
-    return tokenizer.apply_chat_template(
-        messages, tokenize = False, add_generation_prompt = True
-    )
+    raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
