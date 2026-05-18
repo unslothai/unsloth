@@ -125,21 +125,23 @@ class TestChatMessageToolRoles:
         )
         assert msg.content is None
 
-    def test_tool_role_missing_tool_call_id_synthesised(self):
-        # Frontend drops the id on second-round POST; validator synthesises one.
+    def test_tool_role_missing_tool_call_id_left_for_request_validator(self):
+        # Per-message: missing tool_call_id is now allowed at this layer.
+        # ChatCompletionRequest's walkback fills it in from the prior
+        # assistant tool_calls; see test_inference_model_validation.py for
+        # the resolution coverage.
         msg = ChatMessage(role = "tool", content = '{"temperature": 72}')
-        assert msg.tool_call_id is not None
-        assert msg.tool_call_id.startswith("call_")
-        assert len(msg.tool_call_id) >= len("call_") + 8
+        assert msg.tool_call_id is None
+        assert msg.content == '{"temperature": 72}'
 
-    def test_tool_role_empty_tool_call_id_synthesised(self):
+    def test_tool_role_empty_tool_call_id_left_for_request_validator(self):
         msg = ChatMessage(
             role = "tool",
             tool_call_id = "",
             content = '{"temperature": 72}',
         )
-        assert msg.tool_call_id is not None
-        assert msg.tool_call_id.startswith("call_")
+        # Empty-string is treated the same as missing by the walkback.
+        assert msg.tool_call_id in (None, "")
 
     # ── Role-aware content requirements ────────────────────────────
 

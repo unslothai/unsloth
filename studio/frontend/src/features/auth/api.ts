@@ -7,6 +7,7 @@ import {
   getAuthToken,
   getRefreshToken,
   mustChangePassword,
+  setMustChangePassword,
   storeAuthTokens,
 } from "./session";
 
@@ -17,8 +18,9 @@ type RefreshResponse = {
 };
 
 let isRedirecting = false;
-let refreshSessionPromise: Promise<boolean> | null = null;
-let refreshSessionToken: string | null = null;
+let refreshInflight: Promise<boolean> | null = null;
+let refreshInflightToken: string | null = null;
+let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
 
@@ -99,50 +101,48 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-async function refreshSessionWithToken(refreshToken: string): Promise<boolean> {
-  try {
-    const response = await fetchWithTauriNetworkRetry(
-      apiUrl("/api/auth/refresh"),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      },
-    );
-
-    if (!response.ok) {
-      clearAuthTokensIfCurrent(refreshToken);
-      return false;
-    }
-
-    const payload = (await response.json()) as RefreshResponse;
-    storeAuthTokens(
-      payload.access_token,
-      payload.refresh_token,
-      payload.must_change_password,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function refreshSession(): Promise<boolean> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;
-  if (refreshSessionPromise && refreshSessionToken === refreshToken) {
-    return refreshSessionPromise;
+  if (refreshInflight && refreshInflightToken === refreshToken) {
+    return refreshInflight;
   }
 
-  const promise = refreshSessionWithToken(refreshToken).finally(() => {
-    if (refreshSessionPromise === promise) {
-      refreshSessionPromise = null;
-      refreshSessionToken = null;
+  const startGeneration = logoutGeneration;
+  const promise = (async () => {
+    try {
+      const response = await fetchWithTauriNetworkRetry(
+        apiUrl("/api/auth/refresh"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        },
+      );
+      if (!response.ok) {
+        clearAuthTokensIfCurrent(refreshToken);
+        return false;
+      }
+      const payload = (await response.json()) as RefreshResponse;
+      if (startGeneration !== logoutGeneration) return false;
+      if (getRefreshToken() !== refreshToken) return false;
+      storeAuthTokens(payload.access_token, payload.refresh_token);
+      setMustChangePassword(payload.must_change_password ?? false);
+      return true;
+    } catch {
+      return false;
     }
-  });
-  refreshSessionPromise = promise;
-  refreshSessionToken = refreshToken;
-  return promise;
+  })();
+  refreshInflight = promise;
+  refreshInflightToken = refreshToken;
+  try {
+    return await promise;
+  } finally {
+    if (refreshInflight === promise) {
+      refreshInflight = null;
+      refreshInflightToken = null;
+    }
+  }
 }
 
 export async function authFetch(
@@ -201,6 +201,32 @@ export async function authFetch(
   return retryWithCurrentToken(resolvedInput, init);
 }
 
-export function logout(): void {
-  clearAuthTokens();
+async function postLogout(accessToken: string | null): Promise<Response | null> {
+  try {
+    return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
+      method: "POST",
+      headers: accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : undefined,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function logout(): Promise<void> {
+  // Server-side revoke. If the access token is expired the 401 fires
+  // BEFORE revoke runs; rotate via the refresh token and retry so the
+  // refresh family is actually revoked. Generation bump in finally
+  // invalidates any in-flight refresh from before this call.
+  try {
+    let response = await postLogout(getAuthToken());
+    if (response && response.status === 401 && getRefreshToken()) {
+      const refreshed = await refreshSession();
+      if (refreshed) response = await postLogout(getAuthToken());
+    }
+  } finally {
+    logoutGeneration += 1;
+    clearAuthTokens();
+  }
 }

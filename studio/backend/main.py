@@ -268,7 +268,8 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
-# Web-search favicons load from *.gstatic.com; everything else is same-origin.
+# Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
+# kept for legacy web-search faviconV2 paths. Everything else is same-origin.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
@@ -284,7 +285,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
         "https://t1.gstatic.com https://t2.gstatic.com "
-        "https://t3.gstatic.com; "
+        "https://t3.gstatic.com https://www.google.com; "
         "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
