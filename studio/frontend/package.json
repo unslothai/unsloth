@@ -12,6 +12,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "biome:check": "biome check .",
     "biome:fix": "biome check . --write"
   },
@@ -95,8 +97,10 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "happy-dom": "^18.0.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.55.0",
-    "vite": "^8.0.1"
+    "vite": "^8.0.1",
+    "vitest": "^4.0.0"
   }
 }
