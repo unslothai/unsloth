@@ -389,3 +389,149 @@ def test_stale_container_emits_invalidated(monkeypatch):
     events = _tool_events(lines)
     invalidated = [e for e in events if e["type"] == "container_invalidated"]
     assert len(invalidated) == 1
+
+
+def test_expired_container_triggers_transparent_retry(monkeypatch):
+    """When OpenAI 400s with 'Container is expired' on a request that
+    carried container_reference, the streamer retries once with the
+    container field stripped. The user never sees an error line — only
+    container_invalidated, then the normal stream from the retry.
+    """
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        calls.append(body)
+        # Find the shell tool entry to inspect environment.type.
+        shell_env_type = None
+        for tool in body.get("tools", []) or []:
+            if tool.get("type") == "shell":
+                shell_env_type = tool.get("environment", {}).get("type")
+                break
+        # First call carries container_reference -> 400 expired.
+        # Retry omits container -> normal SSE stream.
+        if shell_env_type == "container_reference":
+            return httpx.Response(
+                400,
+                content = json.dumps(
+                    {
+                        "error": {
+                            "message": "Container is expired.",
+                            "type": "invalid_request_error",
+                        }
+                    }
+                ).encode("utf-8"),
+                headers = {"content-type": "application/json"},
+            )
+        # Successful retry: minimal SSE — a completed response with a
+        # fresh container_id so container_ready latches.
+        sse = _openai_sse(
+            [
+                {
+                    "type": "response.completed",
+                    "response": {"container_id": "cntr_fresh_111"},
+                },
+            ]
+        )
+        return httpx.Response(
+            200,
+            content = sse,
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                enable_thinking = None,
+                reasoning_effort = None,
+                enabled_tools = ["code_execution"],
+                openai_code_exec_container_id = "cntr_stale_999",
+            )
+        )
+
+    lines = _drive(run())
+    events = _tool_events(lines)
+
+    # Two outbound HTTP calls were made: the expired-container attempt
+    # then the retry without the container field.
+    assert len(calls) == 2
+    shell_types = []
+    for body in calls:
+        for tool in body.get("tools", []) or []:
+            if tool.get("type") == "shell":
+                shell_types.append(tool.get("environment", {}).get("type"))
+    assert shell_types == ["container_reference", "container_auto"]
+
+    # container_invalidated emitted (frontend will null its stored id).
+    assert any(e.get("type") == "container_invalidated" for e in events)
+    # container_ready emitted from the retry stream with the fresh id.
+    assert any(
+        e.get("type") == "container_ready" and e.get("container_id") == "cntr_fresh_111"
+        for e in events
+    )
+    # CRUCIALLY: no SSE error line surfaced to the chat — only completion.
+    error_lines = [
+        line
+        for line in lines
+        if line.startswith("data:") and '"error"' in line and '"_toolEvent"' not in line
+    ]
+    assert error_lines == [], f"unexpected error line(s): {error_lines}"
+
+
+def test_expired_container_retries_only_once(monkeypatch):
+    """If the retry ALSO fails (any 4xx, expired or otherwise), the
+    error is surfaced normally — no infinite retry loop.
+    """
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(
+            400,
+            content = json.dumps(
+                {
+                    "error": {
+                        "message": "Container is expired.",
+                        "type": "invalid_request_error",
+                    }
+                }
+            ).encode("utf-8"),
+            headers = {"content-type": "application/json"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                enable_thinking = None,
+                reasoning_effort = None,
+                enabled_tools = ["code_execution"],
+                openai_code_exec_container_id = "cntr_stale_999",
+            )
+        )
+
+    lines = _drive(run())
+
+    # Exactly two calls (first + one retry). Third would mean an
+    # infinite loop.
+    assert call_count["n"] == 2
+    # The second failure surfaces normally as an error SSE line.
+    error_lines = [
+        line for line in lines if '"error"' in line and "_toolEvent" not in line
+    ]
+    assert len(error_lines) >= 1
