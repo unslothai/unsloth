@@ -1741,9 +1741,7 @@ def _has_mixtral_unfused_expert_layout(model):
     try:
         for name, _ in named_parameters():
             found.update(
-                _MIXTRAL_UNFUSED_EXPERT_TARGETS.intersection(
-                    str(name).split(".")
-                )
+                _MIXTRAL_UNFUSED_EXPERT_TARGETS.intersection(str(name).split("."))
             )
             if found == _MIXTRAL_UNFUSED_EXPERT_TARGETS:
                 return True
@@ -1774,9 +1772,7 @@ def _patch_peft_mixtral_unfused_target_conversion(twc):
         return
 
     @functools.wraps(original_convert)
-    def _convert_peft_config_for_transformers_unsloth(
-        peft_config, model, conversions
-    ):
+    def _convert_peft_config_for_transformers_unsloth(peft_config, model, conversions):
         if _should_skip_peft_mixtral_moe_conversion(peft_config, model):
             return None
         return original_convert(peft_config, model, conversions)
