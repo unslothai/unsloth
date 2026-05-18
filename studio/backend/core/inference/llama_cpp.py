@@ -4070,11 +4070,7 @@ class LlamaCppBackend:
         # Reserve extra iterations for re-prompts and continues so they
         # don't consume the caller's tool-call budget. Only add the
         # extra slots when tool iterations are actually allowed.
-        _extra = (
-            _MAX_REPROMPTS + _MAX_CONTINUES
-            if max_tool_iterations > 0
-            else 0
-        )
+        _extra = _MAX_REPROMPTS + _MAX_CONTINUES if max_tool_iterations > 0 else 0
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
