@@ -2109,9 +2109,10 @@ def unsloth_fast_generate(
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.51 renamed num_logits_to_keep -> logits_to_keep. Pick the
-    # spelling the actual runtime forward accepts so generation _validate_model_kwargs
-    # does not reject the legacy name.
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep
+    # (with @deprecate_kwarg through 4.51.x, removed in 4.52+). Pick the
+    # spelling the actual runtime forward accepts so generation
+    # _validate_model_kwargs does not reject the legacy name.
     num_logits_to_keep = kwargs.pop("num_logits_to_keep", None)
     logits_to_keep = kwargs.get("logits_to_keep", None)
     if num_logits_to_keep is not None and logits_to_keep is None:
