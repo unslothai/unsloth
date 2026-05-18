@@ -224,3 +224,33 @@ class TestLoraDetectOffline:
         # Concretely: re-run the snapshot iterator and confirm the file
         # is present where we expected it -- pins the fixture shape.
         assert (snap / "adapter_config.json").is_file()
+
+
+class TestTrainingWorkerProbeNoGlobalTimeout:
+    """The training worker's startup DNS probe must run on a daemon
+    thread so it cannot mutate ``socket.setdefaulttimeout`` process-wide.
+    Mirrors the fixup in ``core/inference/llama_cpp.py``."""
+
+    def test_training_worker_source_uses_thread_probe(self):
+        """Static-pin: training/worker.py keeps the thread-based probe
+        and does NOT call setdefaulttimeout on the module-global socket."""
+        import re
+        from pathlib import Path
+
+        src = Path(_BACKEND_DIR, "core", "training", "worker.py").read_text()
+        # Locate the offline auto-detect block.
+        m = re.search(
+            r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ\s*:.*?'
+            r'print\([^)]*HF_HUB_OFFLINE=1[^)]*\)',
+            src,
+            flags = re.DOTALL,
+        )
+        assert m is not None, "could not locate offline auto-detect block"
+        block = m.group(0)
+        assert ".setdefaulttimeout(" not in block, (
+            "training worker still calls socket.setdefaulttimeout; "
+            "concurrent sockets would inherit the probe timeout"
+        )
+        assert "threading" in block and "Thread" in block, (
+            "training worker probe must run on a daemon thread"
+        )

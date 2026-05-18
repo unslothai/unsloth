@@ -1032,12 +1032,23 @@ def run_training_process(
     # this subprocess only (orchestrator spawns a fresh worker per run).
     if "HF_HUB_OFFLINE" not in os.environ:
         import socket as _socket
+        import threading as _threading
 
-        prev_timeout = _socket.getdefaulttimeout()
-        _socket.setdefaulttimeout(2.0)
-        try:
-            _socket.gethostbyname("huggingface.co")
-        except Exception:
+        # Probe on a daemon thread so concurrent sockets in the parent
+        # interpreter never inherit a process-wide setdefaulttimeout.
+        _result: list = [None]
+
+        def _probe() -> None:
+            try:
+                _socket.gethostbyname("huggingface.co")
+                _result[0] = False
+            except Exception:
+                _result[0] = True
+
+        _t = _threading.Thread(target = _probe, daemon = True)
+        _t.start()
+        _t.join(2.0)
+        if _result[0] is None or _result[0] is True:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
@@ -1048,8 +1059,6 @@ def run_training_process(
                 file = sys.stderr,
                 flush = True,
             )
-        finally:
-            _socket.setdefaulttimeout(prev_timeout)
 
     import warnings
     from loggers.config import LogConfig
