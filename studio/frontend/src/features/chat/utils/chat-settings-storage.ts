@@ -326,8 +326,12 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
   let dbSettings: PersistedChatSettings;
   try {
     dbSettings = sanitizeChatSettings(await getChatSettings());
-  } catch {
-    return loadLegacyChatSettings();
+  } catch (error) {
+    const legacySettings = loadLegacyChatSettings();
+    if (isEmptyChatSettings(legacySettings)) {
+      throw error;
+    }
+    return legacySettings;
   }
 
   const legacySettings = loadLegacyChatSettings();
