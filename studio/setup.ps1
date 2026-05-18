@@ -763,7 +763,9 @@ if (-not $HasNvidiaSmi) {
     # Match every NVIDIA DCH INF folder (consumer + OEM/notebook variants),
     # newest first, so stale packages don't shadow a working driver.
     try {
-        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+        # OS arch, not process arch: x64 PS on ARM64 Windows reports AMD64.
+        $osArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+        $arch = if ($osArch -eq 'ARM64') { 'arm64' } else { 'amd64' }
         $driverStoreSmis = @(
             Get-ChildItem -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv*.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending |
