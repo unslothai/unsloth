@@ -86,6 +86,10 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
 
 [project.optional-dependencies]
+triton = [
+    "triton>=3.0.0 ; ('linux' in sys_platform)",
+    "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
 huggingface = [
     "unsloth_zoo>=2026.5.2",
     "wheel>=0.42.0",
@@ -105,10 +109,16 @@ huggingface = [
     "diffusers",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "sentence-transformers",
     "typer",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+]
+windows = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
+    "xformers>=0.0.22.post7 ; (sys_platform == 'win32')",
 ]
 base = [
     "unsloth[huggingface]",
@@ -148,6 +158,9 @@ cu118onlytorch240 = [
 ]
 cu121onlytorch240 = [
     "xformers==0.0.27.post2 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu124onlytorch240 = [
+    "xformers==0.0.28.post1 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu118onlytorch250 = [
     "xformers==0.0.28.post2 ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
@@ -490,6 +503,7 @@ colab-new = [
     "hf_transfer",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[triton]",
+    "sentence-transformers",
     "typer",
     "pydantic",
     "pyyaml",
@@ -499,7 +513,7 @@ colab-no-deps = [
     "accelerate>=0.34.1",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "peft>=0.18.0",
-    "xformers<0.0.27",
+    "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "protobuf",
 ]
@@ -739,3 +753,38 @@ cu130-ampere-torch2100 = [
 homepage = "https://unsloth.ai"
 documentation = "https://unsloth.ai/docs"
 repository = "https://github.com/unslothai/unsloth"
+
+[tool.ruff]
+target-version = "py311"
+force-exclude = true
+extend-exclude = [
+    "*chat_templates.py",
+    "*ollama_template_mappers.py",
+    "*_auto_install.py",
+    "*mapper.py",
+]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+ignore = [
+    "E402",
+    "E722",
+    "F403",
+    "F405",
+    "F811",
+    "F821",
+    "F841",
+    "F401",
+    "E731",
+    "E741",
+    "F601",
+    "E712",
+]
+
+[tool.ruff.format]
+
+[tool.pytest.ini_options]
+# Narrow the default test discovery so `pytest` from the repo root
+# does NOT pick up the GPU-heavy tests under tests/python, tests/qlora,
+# etc. The CI security job runs `pytest tests/security` explicitly.
+testpaths = ["tests/security"]
