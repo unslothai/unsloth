@@ -496,14 +496,32 @@ app.include_router(
 
 @app.get("/api/health")
 async def health_check(request: Request):
-    """Liveness only; full diagnostic dict gated on a valid bearer."""
-    minimal = {
+    """Liveness plus launcher capability bits; install fingerprint gated on a valid bearer.
+
+    Unauthenticated callers (Tauri watchdog, frontend bootstrap polls) need
+    ``service`` / ``studio_root_id`` / ``chat_only`` / ``desktop_*`` / ``native_path_leases_supported``
+    to (a) re-adopt a sibling backend across restarts and (b) gate UI surfaces
+    before any token is available. None of those leak install path or version.
+    ``version`` / ``studio_version`` / ``device_type`` still require a bearer
+    because they fingerprint the host.
+    """
+    base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+        "service": "Unsloth UI Backend",
+        "chat_only": _hw_module.CHAT_ONLY,
+        "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
+        "supports_desktop_auth": True,
+        "supports_desktop_backend_ownership": True,
+        # Opaque per-install id; launchers reject sibling Studios on the same port.
+        "studio_root_id": _studio_root_id(),
+        "native_path_leases_supported": native_path_leases_supported(),
+        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
-        return minimal
+        return base
     try:
         from auth.authentication import get_current_subject as _gcs
         from fastapi.security import HTTPAuthorizationCredentials
@@ -514,29 +532,19 @@ async def health_check(request: Request):
         # Must await: a bare coroutine is truthy and would skip the auth check.
         subject = await _gcs(creds)
     except HTTPException:
-        return minimal
+        return base
     except Exception:
-        return minimal
+        return base
     if not subject:
-        return minimal
+        return base
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
     return {
-        **minimal,
-        "service": "Unsloth UI Backend",
+        **base,
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
-        "chat_only": _hw_module.CHAT_ONLY,
-        "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
-        "supports_desktop_auth": True,
-        "supports_desktop_backend_ownership": True,
-        # Hex digest of the install path; launchers reject sibling Studios on the same port.
-        "studio_root_id": _studio_root_id(),
-        "native_path_leases_supported": native_path_leases_supported(),
-        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
 
 
