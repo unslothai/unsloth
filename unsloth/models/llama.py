@@ -2120,11 +2120,17 @@ def unsloth_fast_generate(
     _provided = _provided_logits if _provided_logits is not None else _provided_num
     try:
         _fwd_params = inspect.signature(self.forward).parameters
+        _has_new = "logits_to_keep" in _fwd_params
+        _has_old = "num_logits_to_keep" in _fwd_params
     except (TypeError, ValueError):
-        _fwd_params = {}
-    if "logits_to_keep" in _fwd_params:
+        # Signature opaque (e.g. C-extension or some compiled wrappers):
+        # preserve the caller's spelling rather than silently dropping
+        # it. Default to the new spelling when neither was supplied.
+        _has_old = _provided_num is not None and _provided_logits is None
+        _has_new = not _has_old
+    if _has_new:
         kwargs["logits_to_keep"] = _provided if _provided is not None else 1
-    elif "num_logits_to_keep" in _fwd_params:
+    elif _has_old:
         kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
 
     # Remove token_type_ids
