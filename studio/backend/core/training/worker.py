@@ -77,6 +77,38 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
     )
 
 
+def _hipcc_gcc_install_dir() -> str | None:
+    """Return the highest-numbered ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` that has
+    BOTH the gcc runtime dir AND the corresponding ``/usr/include/c++/<N>`` C++
+    headers, or ``None`` if no match (or non-Linux / non-x86_64).
+
+    Ubuntu 24.04 ships ``/usr/lib/gcc/x86_64-linux-gnu/14/`` (gcc-14 runtime
+    objects) but does NOT ship ``/usr/include/c++/14`` in its default apt set;
+    libstdc++ headers come from ``libstdc++-13-dev``. ROCm clang-20 picks the
+    highest-numbered runtime dir by default, finds no ``<cstdlib>``, and the
+    HIP source build fails with::
+
+        /opt/rocm-X.Y/lib/llvm/lib/clang/20/include/__clang_hip_runtime_wrapper.h:112:10:
+          fatal error: 'cstdlib' file not found
+
+    Returning a path lets the caller pass ``--gcc-install-dir=<path>`` to clang
+    via ``HIPCC_COMPILE_FLAGS_APPEND``. Mirrors the same loop ``bbf004c`` added
+    to ``studio/setup.sh`` for the llama.cpp HIP build branch (PR #5301).
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    import platform as _platform
+
+    if _platform.machine().lower() != "x86_64":
+        return None
+    for _ver in (14, 13, 12, 11):
+        _runtime = f"/usr/lib/gcc/x86_64-linux-gnu/{_ver}/include"
+        _headers = f"/usr/include/c++/{_ver}"
+        if os.path.isdir(_runtime) and os.path.isdir(_headers):
+            return f"/usr/lib/gcc/x86_64-linux-gnu/{_ver}"
+    return None
+
+
 def _install_package_wheel_first(
     *,
     event_queue: Any,
@@ -212,6 +244,30 @@ def _install_package_wheel_first(
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
+        # On Ubuntu 24.04 + ROCm clang-20, the HIP source build (causal-conv1d,
+        # mamba-ssm source fallback, flash-attn source fallback) defaults to
+        # /usr/lib/gcc/x86_64-linux-gnu/14/ which has the runtime dir but no
+        # /usr/include/c++/14 headers, and dies at:
+        #   __clang_hip_runtime_wrapper.h:112:10:
+        #     fatal error: 'cstdlib' file not found
+        # Inject --gcc-install-dir for a gcc whose C++ headers actually exist.
+        # Respect any pre-existing --gcc-install-dir in HIPCC_COMPILE_FLAGS_APPEND
+        # (user knows best); otherwise append. Mirrors the same fix bbf004c
+        # added to studio/setup.sh for the llama.cpp HIP build (PR #5301).
+        _existing_flags = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
+        if "--gcc-install-dir" not in _existing_flags:
+            _gcc_dir = _hipcc_gcc_install_dir()
+            if _gcc_dir is not None:
+                _appended = (f"{_existing_flags} --gcc-install-dir={_gcc_dir}").strip()
+                _env = _run_kwargs.get("env", os.environ).copy()
+                _env["HIPCC_COMPILE_FLAGS_APPEND"] = _appended
+                _run_kwargs["env"] = _env
+                logger.info(
+                    "HIP source build for %s: appended "
+                    "--gcc-install-dir=%s to HIPCC_COMPILE_FLAGS_APPEND",
+                    display_name,
+                    _gcc_dir,
+                )
 
     try:
         result = _sp.run(pypi_cmd, **_run_kwargs)
@@ -1024,6 +1080,36 @@ def run_training_process(
     os.environ["PYTHONWARNINGS"] = (
         "ignore"  # Suppress warnings at C-level before imports
     )
+
+    # Offline auto-detect: skip ~25s of HF retries per call when DNS is
+    # dead. Scoped to this subprocess (orchestrator spawns a fresh one).
+    if "HF_HUB_OFFLINE" not in os.environ:
+        import socket as _socket
+        import threading as _threading
+
+        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
+        _result: list = [None]
+
+        def _probe() -> None:
+            try:
+                _socket.gethostbyname("huggingface.co")
+                _result[0] = False
+            except Exception:
+                _result[0] = True
+
+        _t = _threading.Thread(target = _probe, daemon = True)
+        _t.start()
+        _t.join(2.0)
+        if _result[0] is None or _result[0] is True:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # logger isn't configured yet; print to stderr instead.
+            print(
+                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
+                file = sys.stderr,
+                flush = True,
+            )
 
     import warnings
     from loggers.config import LogConfig

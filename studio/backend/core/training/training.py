@@ -19,6 +19,7 @@ import math
 import multiprocessing as mp
 import os
 import queue
+import re
 import shutil
 import threading
 import time
@@ -40,11 +41,18 @@ from utils.paths import outputs_root
 logger = get_logger(__name__)
 
 
+_HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
+
+
 def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
-    """Remove ``checkpoint-<int>`` subdirs after a cancelled run.
-    Only paths whose realpath is under outputs_root are touched."""
+    """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
+
+    Completed ``checkpoint-<int>/`` dirs and any non-numeric-suffix tmp dir
+    are user-owned and survive. Symlinked output_dir / children are skipped
+    so containment cannot be bypassed.
+    """
     out = Path(output_dir)
-    if not out.exists():
+    if not out.exists() or not out.is_dir() or out.is_symlink():
         return
     try:
         out_real = out.resolve()
@@ -54,7 +62,6 @@ def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
     try:
         out_real.relative_to(out_root_real)
     except ValueError:
-        # Refuse to delete anything outside the configured outputs root.
         logger.warning(
             "Skipping checkpoint cleanup - %s is not under outputs_root %s",
             out_real,
@@ -62,14 +69,10 @@ def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
         )
         return
     removed = 0
-    for entry in out.iterdir() if out.is_dir() else []:
-        if not entry.is_dir():
+    for entry in out.iterdir():
+        if not entry.is_dir() or entry.is_symlink():
             continue
-        name = entry.name
-        if not name.startswith("checkpoint-"):
-            continue
-        tail = name[len("checkpoint-") :]
-        if not tail.isdigit():
+        if not _HF_TMP_CHECKPOINT_RE.match(entry.name):
             continue
         try:
             shutil.rmtree(entry, ignore_errors = False)
@@ -77,7 +80,7 @@ def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
         except OSError as exc:
             logger.warning("Could not remove %s: %s", entry, exc)
     logger.info(
-        "Cancelled-run cleanup removed %d checkpoint dir(s) under %s",
+        "Cancelled-run cleanup removed %d in-flight tmp-checkpoint dir(s) under %s",
         removed,
         out,
     )
@@ -378,8 +381,6 @@ class TrainingBackend:
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
 
-        # Drop checkpoint-* dirs on explicit cancel only; stop-and-save
-        # keeps its artifacts.
         if cancelled and output_dir:
             try:
                 _cleanup_cancelled_checkpoints(output_dir)

@@ -44,6 +44,16 @@ from utils.subprocess_compat import (
 
 logger = get_logger(__name__)
 
+
+def _env_offline() -> bool:
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+
+
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
@@ -1259,12 +1269,10 @@ def _extract_quant_label(filename: str) -> str:
     """
     import re
 
-    # Use only the basename (rfilename may include directory)
     basename = filename.rsplit("/", 1)[-1]
     # Strip .gguf and any shard suffix (-00001-of-00010)
     stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
-    # Match known quantization patterns
-    match = re.search(
+    quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
         r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
@@ -1272,15 +1280,75 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
         r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
-        r"|BF16|F16|F32)",  # Full precision
-        stem,
-        re.IGNORECASE,
+        r"|BF16|F16|F32)"  # Full precision
     )
+    match = re.search(quant_re, stem, re.IGNORECASE)
+    # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
+    # not the basename. Look at the parent dirs too so the variant label
+    # matches the snapshot-relative path produced elsewhere.
+    if not match and "/" in filename:
+        parents = filename.rsplit("/", 1)[0]
+        for segment in reversed(parents.split("/")):
+            m = re.search(quant_re, segment, re.IGNORECASE)
+            if m:
+                match = m
+                break
     if match:
         prefix = match.group(1) or ""
         return f"{prefix}{match.group(2)}"
     # Fallback: last segment after hyphen
     return stem.split("-")[-1]
+
+
+def _iter_hf_cache_snapshots(repo_id: str):
+    """Yield HF cache snapshot dirs for *repo_id*, newest first.
+
+    Empty generator if HF_HUB_CACHE is missing, the repo isn't cached,
+    or has no snapshots. Repo name match is case-insensitive to handle
+    casing drift between download time and lookup.
+    """
+    try:
+        from huggingface_hub import constants as hf_constants
+    except Exception:
+        return
+
+    cache_dir = Path(hf_constants.HF_HUB_CACHE)
+    if not cache_dir.is_dir():
+        return
+
+    target = f"models--{repo_id.replace('/', '--')}".lower()
+    repo_dir: Optional[Path] = None
+    try:
+        for entry in cache_dir.iterdir():
+            if entry.is_dir() and entry.name.lower() == target:
+                repo_dir = entry
+                break
+    except OSError:
+        return
+    if repo_dir is None:
+        return
+
+    snapshots = repo_dir / "snapshots"
+    if not snapshots.is_dir():
+        return
+
+    try:
+        snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
+    except OSError:
+        return
+    snap_dirs.sort(key = lambda s: s.stat().st_mtime, reverse = True)
+    yield from snap_dirs
+
+
+def _list_gguf_variants_from_hf_cache(
+    repo_id: str,
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    """Variants from the local HF cache snapshot, or None if not cached."""
+    for snap in _iter_hf_cache_snapshots(repo_id):
+        variants, has_vision = list_local_gguf_variants(str(snap))
+        if variants or has_vision:
+            return variants, has_vision
+    return None
 
 
 def list_gguf_variants(
@@ -1298,7 +1366,35 @@ def list_gguf_variants(
     """
     from huggingface_hub import model_info as hf_model_info
 
-    info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    # Offline: skip the API and serve from cache.
+    if _env_offline():
+        cached = _list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            return cached
+
+    try:
+        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    except Exception as e:
+        # Permanent errors (deleted/gated/bad revision) must surface to
+        # the caller; serving stale cache here would mask the real cause.
+        # Matches the early-return in ``detect_gguf_model_remote``.
+        if type(e).__name__ in (
+            "RepositoryNotFoundError",
+            "GatedRepoError",
+            "RevisionNotFoundError",
+            "EntryNotFoundError",
+        ):
+            raise
+        # API failed transiently; fall back to local snapshot if fully downloaded.
+        cached = _list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            logger.warning(
+                "HF API unreachable for %s (%s); using local cache snapshot.",
+                repo_id,
+                e.__class__.__name__,
+            )
+            return cached
+        raise
     variants: list[GgufVariantInfo] = []
     has_vision = False
 
@@ -1392,16 +1488,13 @@ def list_local_gguf_variants(
             size = f.stat().st_size
         except OSError:
             size = 0
-        quant = _extract_quant_label(f.name)
+        # Pass the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
+        # produce distinct quant labels instead of collapsing on basename.
+        rel = f.relative_to(p).as_posix()
+        quant = _extract_quant_label(rel)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
-        # Only compute the (potentially expensive) relative path when this
-        # is the first file we've seen for this quant -- after that we'd
-        # discard the result anyway. Use posix-style separators so the
-        # filename matches what ``list_gguf_variants`` (the remote HF
-        # API path) returns on every platform; otherwise Windows would
-        # emit ``BF16\foo.gguf`` here.
         if quant not in quant_first_file:
-            quant_first_file[quant] = f.relative_to(p).as_posix()
+            quant_first_file[quant] = rel
 
     variants = [
         GgufVariantInfo(
@@ -1429,13 +1522,33 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     # Recurse into subdirectories so variants stored under a quant-named
     # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
+    # Match against the relative path so the quant label can come from
+    # the directory name when the basename omits it.
     matches = sorted(
         f
         for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
+        if not _is_mmproj(f.name)
+        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
     )
     if matches:
         return str(matches[0].resolve())
+    return None
+
+
+def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
+    """Best GGUF filename for *repo_id* from the local HF cache, or None.
+
+    Excludes mmproj (vision projector) files so a partial cache that
+    only has the projector cannot route the projector as the main model.
+    """
+    for snap in _iter_hf_cache_snapshots(repo_id):
+        rel_files = [
+            f.relative_to(snap).as_posix()
+            for f in _iter_gguf_files(snap, recursive = True)
+            if not _is_mmproj(f.name)
+        ]
+        if rel_files:
+            return _pick_best_gguf(rel_files)
     return None
 
 
@@ -1455,9 +1568,17 @@ def detect_gguf_model_remote(
     through to the MLX backend, which then fails opening a non-existent
     config.json on the GGUF-only repo. Three attempts with 1s/2s/4s
     backoff covers the typical free-runner HF Hub flakiness.
+
+    When offline, falls back to the local HF cache so a downloaded
+    repo is still routed to llama-server (not MLX/Unsloth).
     """
     import time
     from huggingface_hub import model_info as hf_model_info
+
+    if _env_offline():
+        cached = _detect_gguf_from_hf_cache(repo_id)
+        if cached is not None:
+            return cached
 
     last_err: Optional[Exception] = None
     for attempt in range(3):
@@ -1479,6 +1600,17 @@ def detect_gguf_model_remote(
                 return None
             if attempt < 2:
                 time.sleep(2**attempt)
+
+    # All attempts failed; fall back to local cache for offline users.
+    cached = _detect_gguf_from_hf_cache(repo_id)
+    if cached is not None:
+        logger.warning(
+            "HF API unreachable for '%s' (%s); using local cache to detect GGUF.",
+            repo_id,
+            type(last_err).__name__ if last_err else "unknown",
+        )
+        return cached
+
     logger.warning(
         f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
     )
@@ -2257,7 +2389,8 @@ class ModelConfig:
                     f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
                 )
 
-        # Auto-detect LoRA for remote HF models (check repo file listing)
+        # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
+        # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
         if not is_lora and not is_local:
             try:
                 from huggingface_hub import model_info as hf_model_info
@@ -2271,6 +2404,16 @@ class ModelConfig:
                 logger.debug(
                     f"Could not check remote LoRA status for '{identifier}': {e}"
                 )
+
+            # API may have failed; adapter_config.json may still be cached.
+            if not is_lora:
+                for snap in _iter_hf_cache_snapshots(identifier):
+                    if (snap / "adapter_config.json").is_file():
+                        is_lora = True
+                        logger.info(
+                            f"Auto-detected cached LoRA adapter: '{identifier}'"
+                        )
+                        break
 
         # Handle LoRA adapters
         base_model = None
