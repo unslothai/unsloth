@@ -138,7 +138,7 @@ def _extract_block(src: str, anchor: str, opener: str = "(", closer: str = ")") 
         elif c == closer:
             depth -= 1
             if depth == 0:
-                return src[start:i + 1]
+                return src[start : i + 1]
     raise AssertionError(f"unbalanced {opener!r}/{closer!r} after {anchor!r}")
 
 
@@ -154,9 +154,9 @@ def test_main_composer_keydown_rearms_watchdog():
         "re-pinning composingRef so the watchdog runs again on the "
         "stuck-compositionend path"
     )
-    assert "clearStuckTimer();" not in block.replace(
-        "clearStuckTimer\n", ""
-    ).replace("clearStuckTimer,", ""), (
+    assert "clearStuckTimer();" not in block.replace("clearStuckTimer\n", "").replace(
+        "clearStuckTimer,", ""
+    ), (
         "main composer keydown gate must not leave the watchdog only "
         "cleared — that's the Codex P1 regression"
     )

@@ -602,9 +602,7 @@ with sync_playwright() as p:
         }""",
         'textarea[aria-label="Message input"]',
     )
-    if rearm_probe.get("ok") and rearm_probe.get("after") == rearm_probe.get(
-        "before"
-    ):
+    if rearm_probe.get("ok") and rearm_probe.get("after") == rearm_probe.get("before"):
         shoot("06d-keydown-rearm-FAIL")
         fail(
             "After the keydown re-pin the watchdog never re-armed; Send "
