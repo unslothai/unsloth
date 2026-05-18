@@ -729,7 +729,6 @@ export function useChatModelRuntime() {
               cancelLoading,
             ),
             duration: Infinity,
-            closeButton: false,
             classNames: MODEL_LOAD_TOAST_CLASSNAMES,
             onDismiss: (dismissedToast) => {
               if (loadToastIdRef.current !== dismissedToast.id) {
@@ -852,7 +851,6 @@ export function useChatModelRuntime() {
                   cancelLoading,
                 ),
                 duration: Infinity,
-                closeButton: false,
                 classNames: MODEL_LOAD_TOAST_CLASSNAMES,
                 onDismiss: (dismissedToast) => {
                   if (loadToastIdRef.current !== dismissedToast.id) return;
@@ -892,7 +890,6 @@ export function useChatModelRuntime() {
                     cancelLoading,
                   ),
                   duration: Infinity,
-                  closeButton: false,
                   classNames: MODEL_LOAD_TOAST_CLASSNAMES,
                   onDismiss: (dismissedToast) => {
                     if (loadToastIdRef.current !== dismissedToast.id) return;
@@ -955,7 +952,6 @@ export function useChatModelRuntime() {
                 cancelLoading,
               ),
               duration: Infinity,
-              closeButton: false,
               classNames: MODEL_LOAD_TOAST_CLASSNAMES,
               onDismiss: (dismissedToast) => {
                 if (loadToastIdRef.current !== dismissedToast.id) return;
@@ -987,8 +983,7 @@ export function useChatModelRuntime() {
             toast.success(`${displayName} loaded`, {
               id: toastId,
               description: undefined,
-              closeButton: false,
-              duration: 2000,
+              duration: 8000,
             });
           }
           notifyNative({
@@ -1007,8 +1002,7 @@ export function useChatModelRuntime() {
               toast.error(message, {
                 id: toastId,
                 description: undefined,
-                closeButton: false,
-                duration: 5000,
+                duration: 8000,
               });
             }
             notifyNative({

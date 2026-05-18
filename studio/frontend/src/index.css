@@ -1160,3 +1160,12 @@
 	animation: none;
 	mix-blend-mode: normal;
 }
+
+/* Override sonner's hardcoded top: 0 on the toast close button. */
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+	top: 8px !important;
+}
+/* Bump the X stroke so it stays visible against dark backgrounds. */
+[data-sonner-toast][data-styled="true"] [data-close-button] svg {
+	stroke-width: 2.25;
+}
