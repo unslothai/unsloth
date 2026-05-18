@@ -38,9 +38,23 @@ export const MessageTiming: FC<{
   )?.custom as { serverTimings?: Record<string, number> } | undefined;
   const st = serverTimings?.serverTimings;
 
+  // Guard against unphysical readouts: llama.cpp can emit predicted_ms=0
+  // when a turn produced no real generation (e.g. a race-lost compare pane
+  // where the user message arrived after EOS), which makes
+  // predicted_per_second arithmetic explode into Infinity / 1000000+ tok/s.
+  // Require at least one predicted token AND a measurable ms before trusting
+  // the rate, and keep the value finite.
+  const predictedRate =
+    st?.predicted_per_second != null &&
+    Number.isFinite(st.predicted_per_second) &&
+    (st.predicted_n ?? 0) >= 1 &&
+    (st.predicted_ms ?? 0) >= 1
+      ? st.predicted_per_second
+      : undefined;
+
   // Badge text: show tok/s if available, otherwise total time
-  const badgeText = st?.predicted_per_second != null
-    ? `${st.predicted_per_second.toFixed(1)} tok/s`
+  const badgeText = predictedRate != null
+    ? `${predictedRate.toFixed(1)} tok/s`
     : formatTimingMs(timing.totalStreamTime);
 
   return (
@@ -93,11 +107,11 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {st?.predicted_per_second != null && (
+              {predictedRate != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Speed</span>
                   <span className="font-mono tabular-nums">
-                    {st.predicted_per_second.toFixed(1)} tok/s
+                    {predictedRate.toFixed(1)} tok/s
                   </span>
                 </div>
               )}
