@@ -56,6 +56,54 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 
+# Mid-plan EOS detectors. Auto-continue runs alongside the _INTENT_SIGNAL
+# re-prompt path but stays neutral ("Continue.") instead of tool-coercive,
+# so it also handles tool-less turns. Three observed shapes:
+#   1. Trailing intent at end of buffer: "Let me clone the repo."
+#   2. Numbered or bulleted list under a "Let me ...:" header.
+#   3. Bare trailing colon: "Let me check the repo:"
+_TRAILING_PLAN_INTENT = re.compile(
+    r"(?i)("
+    r"let me|now let me|i['’]ll now|next,?\s*i['’]ll|"
+    r"i['’]m going to|i will now|let['’]s now"
+    r")[^.!?\n]*[.!?]?\s*$"
+)
+_TRAILING_PLAN_LIST = re.compile(
+    r"(?ims)"
+    r"(?:let me|i['’]ll|i will|i['’]m going to|i am going to|"
+    r"here['’]?s (?:my |the |a )?(?:plan|approach|steps?)|"
+    r"as follows|the (?:plan|steps?) (?:is|are))"
+    r"[^:\n]{0,160}:\s*\n"
+    r"(?:\s*(?:[-*•]|\d+\.)\s+[^\n]+\n?)+"
+    r"\s*$"
+)
+_TRAILING_PLAN_COLON = re.compile(
+    r"(?i)(?:let me|i['’]ll|i will|i['’]m going to|i am going to|"
+    r"now i['’]ll|now i will)"
+    r"[^\n:]{0,200}:\s*$"
+)
+_TRAILING_PLAN_WINDOW = 600
+_MAX_CONTINUES = 3
+
+
+def _trailing_plan_hit(stripped: str) -> bool:
+    """True if the last `_TRAILING_PLAN_WINDOW` chars look mid-plan.
+
+    The window covers both single-line trailing intent and list endings
+    where the intent cue is several lines above the last item.
+    """
+    if not stripped:
+        return False
+    tail = stripped[-_TRAILING_PLAN_WINDOW:]
+    if _TRAILING_PLAN_INTENT.search(tail) is not None:
+        return True
+    if _TRAILING_PLAN_LIST.search(tail) is not None:
+        return True
+    if _TRAILING_PLAN_COLON.search(tail) is not None:
+        return True
+    return False
+
+
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
 # fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
@@ -4015,11 +4063,18 @@ class LlamaCppBackend:
         # direct answer like "4" or "Hello!" will not match.
         # Pattern is compiled once at module level (_INTENT_SIGNAL).
         _reprompt_count = 0
+        # Auto-continue (mid-plan EOS) uses its own counter so it does
+        # not steal the tool-coercive re-prompt budget.
+        _continue_count = 0
 
-        # Reserve extra iterations for re-prompts so they don't
-        # consume the caller's tool-call budget.  Only add the
-        # extra slot when tool iterations are actually allowed.
-        _extra = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+        # Reserve extra iterations for re-prompts and continues so they
+        # don't consume the caller's tool-call budget. Only add the
+        # extra slots when tool iterations are actually allowed.
+        _extra = (
+            _MAX_REPROMPTS + _MAX_CONTINUES
+            if max_tool_iterations > 0
+            else 0
+        )
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -4353,18 +4408,46 @@ class LlamaCppBackend:
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
-                        if (
+
+                        # Tool-coercive re-prompt fires when there are
+                        # tools and the model wrote intent text without
+                        # invoking one.
+                        _tool_intent_hit = (
                             tools
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
-                            and _INTENT_SIGNAL.search(_stripped)
-                        ):
-                            _reprompt_count += 1
-                            logger.info(
-                                f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "
-                                f"model responded without calling tools "
-                                f"({len(_stripped)} chars)"
-                            )
+                            and _INTENT_SIGNAL.search(_stripped) is not None
+                        )
+                        # Neutral auto-continue fires when the model
+                        # stops mid-plan with a trailing intent cue,
+                        # numbered/bulleted list, or bare colon. Works
+                        # with or without tools, on any response length.
+                        _trailing_hit = (
+                            _continue_count < _MAX_CONTINUES
+                            and _trailing_plan_hit(_stripped)
+                        )
+
+                        if _tool_intent_hit or _trailing_hit:
+                            if _tool_intent_hit:
+                                _reprompt_count += 1
+                                logger.info(
+                                    f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "
+                                    f"model responded without calling tools "
+                                    f"({len(_stripped)} chars)"
+                                )
+                                _nudge = (
+                                    "STOP. Do NOT write code or explain. "
+                                    "You MUST call a tool NOW. "
+                                    "Call web_search or python immediately."
+                                )
+                            else:
+                                _continue_count += 1
+                                logger.info(
+                                    f"Auto-continue {_continue_count}/{_MAX_CONTINUES}: "
+                                    f"model ended turn mid-plan "
+                                    f"({len(_stripped)} chars)"
+                                )
+                                _nudge = "Continue."
                             conversation.append(
                                 {
                                     "role": "assistant",
@@ -4374,11 +4457,7 @@ class LlamaCppBackend:
                             conversation.append(
                                 {
                                     "role": "user",
-                                    "content": (
-                                        "STOP. Do NOT write code or explain. "
-                                        "You MUST call a tool NOW. "
-                                        "Call web_search or python immediately."
-                                    ),
+                                    "content": _nudge,
                                 }
                             )
                             # Accumulate tokens and timing from this iteration
