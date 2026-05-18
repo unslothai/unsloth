@@ -553,6 +553,29 @@ def orpo_trainer_text_tokenizer(function_name, function):
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
 
 
+# Resolve `processing_class.pad_token_id` through the underlying tokenizer when
+# a multimodal processor is supplied (processors lack `pad_token_id`). Without
+# this, ORPOTrainer.__init__ raises AttributeError on
+# `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
+# and on `self.padding_value = ... else processing_class.pad_token_id`.
+_PAD_FALLBACK = (
+    "(getattr(processing_class, 'pad_token_id', None) "
+    "if getattr(processing_class, 'pad_token_id', None) is not None "
+    "else getattr(getattr(processing_class, 'tokenizer', None), 'pad_token_id', None))"
+)
+
+
+def orpo_trainer_processor_pad_token(function_name, function):
+    if function_name != "__init__":
+        return function
+    if "processing_class.pad_token_id" not in function:
+        return function
+    return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_processor_pad_token)
+
+
 # Fix bare pop("push_to_hub_token") in compiled SFT/IterativeSFT trainer __init__
 # On transformers 5.0+, to_dict() no longer includes push_to_hub_token, so bare pop KeyErrors
 def sft_trainer_push_to_hub_token(function_name, function):

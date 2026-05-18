@@ -9,18 +9,22 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 RL_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
-def _load_orpo_rewriter():
+def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
     src = open(RL_PATH).read()
     tree = ast.parse(src)
     ns = {"re": re}
+    # Materialise sibling module-level assignments (e.g. _PAD_FALLBACK) so
+    # any rewriter that references them at exec-time can resolve them.
     for node in tree.body:
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "orpo_trainer_text_tokenizer"
-        ):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id.startswith("_"):
+                    exec(ast.get_source_segment(src, node), ns)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
             exec(ast.get_source_segment(src, node), ns)
-            return ns[node.name]
-    raise AssertionError("orpo_trainer_text_tokenizer not found")
+            return ns[name]
+    raise AssertionError(f"{name} not found")
 
 
 class _Tokenizer:
@@ -158,3 +162,77 @@ def tokenize_row(self, feature, model=None):
         "p",
         "r",
     ]
+
+
+def test_orpo_init_pad_token_id_falls_back_to_tokenizer():
+    rewriter = _load_orpo_rewriter("orpo_trainer_processor_pad_token")
+    source = """
+def __init__(self, processing_class):
+    data_collator = DPODataCollatorWithPadding(
+        pad_token_id=processing_class.pad_token_id,
+    )
+    self.padding_value = processing_class.pad_token_id
+"""
+
+    rewritten = rewriter("__init__", source)
+
+    assert "processing_class.pad_token_id" not in rewritten
+    assert "getattr(processing_class, 'pad_token_id'" in rewritten
+
+    class _Processor:
+        # No pad_token_id at the processor level; only on the inner tokenizer.
+        class tokenizer:
+            pad_token_id = 17
+
+    captured = {}
+
+    def DPODataCollatorWithPadding(**kwargs):
+        captured["pad_token_id"] = kwargs["pad_token_id"]
+        return object()
+
+    ns = {"DPODataCollatorWithPadding": DPODataCollatorWithPadding}
+    exec(rewritten, ns)
+
+    class _Trainer:
+        pass
+
+    trainer = _Trainer()
+    ns["__init__"](trainer, _Processor())
+
+    assert captured["pad_token_id"] == 17
+    assert trainer.padding_value == 17
+
+
+def test_orpo_init_pad_token_id_uses_processor_when_present():
+    rewriter = _load_orpo_rewriter("orpo_trainer_processor_pad_token")
+    source = """
+def __init__(self, processing_class):
+    self.padding_value = processing_class.pad_token_id
+"""
+
+    rewritten = rewriter("__init__", source)
+
+    class _Tokenizer:
+        # Inner tokenizer must NOT be consulted when the processor exposes
+        # pad_token_id itself.
+        pad_token_id = 999
+
+    class _Processor:
+        pad_token_id = 42
+        tokenizer = _Tokenizer()
+
+    ns = {}
+    exec(rewritten, ns)
+
+    class _Trainer:
+        pass
+
+    trainer = _Trainer()
+    ns["__init__"](trainer, _Processor())
+    assert trainer.padding_value == 42
+
+
+def test_orpo_init_pad_token_id_noop_on_non_init():
+    rewriter = _load_orpo_rewriter("orpo_trainer_processor_pad_token")
+    source = "def tokenize_row(self):\n    return processing_class.pad_token_id\n"
+    assert rewriter("tokenize_row", source) == source
