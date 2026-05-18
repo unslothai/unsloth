@@ -94,14 +94,11 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-// Module-level singleflight: the backend now consumes the refresh token
-// atomically on /api/auth/refresh, so two concurrent calls would race and
-// the loser would 401 and be force-logged-out. All callers share one
-// in-flight promise.
+// Singleflight: the backend consumes the refresh token atomically, so
+// concurrent callers must share one in-flight promise (loser would 401).
 let refreshInflight: Promise<boolean> | null = null;
-// Logout sets a generation marker so an in-flight refresh that resolves
-// after logout() returns does NOT repopulate localStorage with a fresh
-// access/refresh token pair (would silently re-auth the SPA).
+// Bumped by logout(); a refresh that resolves after logout drops its
+// new tokens instead of silently re-auth-ing the SPA.
 let logoutGeneration = 0;
 
 export async function refreshSession(): Promise<boolean> {
@@ -124,8 +121,6 @@ export async function refreshSession(): Promise<boolean> {
         return false;
       }
       const payload = (await response.json()) as RefreshResponse;
-      // A concurrent logout() bumped the generation before we resolved.
-      // Drop the new tokens on the floor so the user stays logged out.
       if (startGeneration !== logoutGeneration) return false;
       storeAuthTokens(payload.access_token, payload.refresh_token);
       setMustChangePassword(payload.must_change_password ?? false);
@@ -210,16 +205,10 @@ async function postLogout(accessToken: string | null): Promise<Response | null> 
 }
 
 export async function logout(): Promise<void> {
-  // Server-side revoke. If the access token has expired the backend
-  // returns 401 BEFORE storage.revoke_user_refresh_tokens fires, so the
-  // refresh token would stay valid for its full 7-day lifetime. Rotate
-  // once via the refresh token and retry the revoke with the fresh
-  // access token. Both branches still clear local state on the way out.
-  //
-  // The logoutGeneration bump in finally invalidates any refreshSession
-  // that started before this call: when it resolves it sees the bumped
-  // counter and drops its new token pair on the floor instead of
-  // repopulating localStorage after we clear it.
+  // Server-side revoke. If the access token is expired the 401 fires
+  // BEFORE revoke runs; rotate via the refresh token and retry so the
+  // refresh family is actually revoked. Generation bump in finally
+  // invalidates any in-flight refresh from before this call.
   try {
     let response = await postLogout(getAuthToken());
     if (response && response.status === 401 && getRefreshToken()) {

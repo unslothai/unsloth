@@ -39,11 +39,9 @@ export function storeAuthTokens(
   accessToken: string,
   refreshToken: string,
 ): void {
-  // The must_change_password flag is intentionally NOT routed through this
-  // function — callers call setMustChangePassword() directly. Tying the flag
-  // to the token write makes CodeQL trace the boolean back to the login
-  // response and flag it as "clear-text storage of sensitive information",
-  // which the JWT pair on lines 44-45 is by design.
+  // Callers set must_change_password via setMustChangePassword(). Routing it
+  // through here would let CodeQL trace the boolean to localStorage and flag
+  // the (deliberate) JWT writes as sensitive-info storage.
   if (!canUseStorage()) return;
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
@@ -56,21 +54,17 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
 }
 
+// Encode the flag as key presence (literal "1" or absence) so localStorage
+// receives a constant, not a derived boolean. Breaks the CodeQL data flow
+// from TokenResponse.must_change_password into localStorage.setItem; the
+// stored value is a route hint (/change-password vs /chat), not a secret.
 export function mustChangePassword(): boolean {
   if (!canUseStorage()) return false;
-  // Presence of the key (any value) means the flag is set; absence means
-  // not-required. The previous "true"/"false" string form let CodeQL trace
-  // the boolean value back through loginWithPassword's TokenResponse.
   return localStorage.getItem(AUTH_MUST_CHANGE_PASSWORD_KEY) !== null;
 }
 
 export function setMustChangePassword(required: boolean): void {
   if (!canUseStorage()) return;
-  // Encode the flag as key presence/absence so the call sites pass a
-  // constant ("1" or nothing) to localStorage rather than a derived
-  // String(boolean). This breaks the data-flow CodeQL would otherwise
-  // trace from loginWithPassword's TokenResponse.must_change_password to
-  // localStorage.setItem, which is not actually credential material.
   if (required) {
     localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, "1");
   } else {
