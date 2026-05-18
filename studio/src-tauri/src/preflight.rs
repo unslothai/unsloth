@@ -1,69 +1,55 @@
-use serde::{Deserialize, Serialize};
+mod backend;
+mod managed;
+mod types;
+mod version;
+
+use crate::desktop_backend_owner::{
+    OwnedBackendProbe, OwnedBackendReadiness, VerifiedOwnedBackend,
+};
+use backend::probe_existing_backends;
+use log::warn;
+pub use managed::managed_install_ready;
+use managed::probe_managed_install;
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use types::{BackendProbe, ManagedProbe};
+pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
+pub(crate) use version::{
+    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DesktopPreflightDisposition {
-    NotInstalled,
-    ManagedReady,
-    ManagedStale,
-    AttachedReady,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DesktopPreflightResult {
-    pub disposition: DesktopPreflightDisposition,
-    pub reason: Option<String>,
-    pub port: Option<u16>,
-    pub can_auto_repair: bool,
-    pub managed_bin: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ManagedProbe {
-    Missing,
-    Ready { bin: PathBuf },
-    Stale { bin: PathBuf, reason: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum BackendProbe {
-    Missing,
-    Ready { port: u16 },
-    Old { port: u16, reason: String },
-}
-
-#[derive(Debug, Deserialize)]
-struct DesktopCapability {
-    desktop_protocol_version: Option<u16>,
-    supports_api_only: Option<bool>,
-    supports_provision_desktop_auth: Option<bool>,
-    desktop_auth_stale_reason: Option<String>,
-}
-
-#[derive(Debug)]
-struct BackendHealth {
-    desktop_protocol_version: Option<u16>,
-    supports_desktop_auth: Option<bool>,
-    stale_reason: Option<String>,
-}
+#[cfg(test)]
+use backend::{backend_desktop_auth_status, backend_health};
+#[cfg(test)]
+use managed::probe_managed_bin;
+#[cfg(test)]
+use version::{backend_version_compatible, MIN_DESKTOP_BACKEND_VERSION};
 
 fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
+fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
+    match managed {
+        ManagedProbe::Ready { bin } | ManagedProbe::Stale { bin, .. } => Some(bin.clone()),
+        ManagedProbe::Missing => None,
+    }
+}
+
 fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPreflightResult {
     match (backend, managed) {
-        (BackendProbe::Ready { port }, ManagedProbe::Ready { bin }) => DesktopPreflightResult {
+        (BackendProbe::ExternalConflict { port, reason }, managed) => DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::ExternalConflict,
+            reason: Some(reason),
+            port: Some(port),
+            can_auto_repair: false,
+            managed_bin: managed_bin_for_result(&managed),
+        },
+        (BackendProbe::Ready { port }, managed) => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::AttachedReady,
             reason: None,
             port: Some(port),
             can_auto_repair: false,
-            managed_bin: Some(bin),
+            managed_bin: managed_bin_for_result(&managed),
         },
         (_, managed) => match managed {
             ManagedProbe::Ready { bin } => DesktopPreflightResult {
@@ -91,288 +77,213 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
     }
 }
 
-async fn run_cli_probe(bin: &std::path::Path, args: &[&str]) -> bool {
-    let mut cmd = Command::new(bin);
-    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
+fn owned_unmanageable_reason(reason: &str) -> String {
+    format!("desktop_owned_backend_unmanageable:{reason}")
+}
 
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
-    }
-
-    let Ok(mut child) = cmd.spawn() else {
-        return false;
-    };
-
-    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
-        Ok(Ok(status)) => status.success(),
-        _ => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            false
-        }
+fn choose_owned_preflight(
+    managed: &ManagedProbe,
+    owned: &VerifiedOwnedBackend,
+) -> DesktopPreflightResult {
+    match &owned.readiness {
+        OwnedBackendReadiness::Ready => DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::OwnedReady,
+            reason: None,
+            port: Some(owned.port),
+            can_auto_repair: false,
+            managed_bin: managed_bin_for_result(managed),
+        },
+        OwnedBackendReadiness::Stale { reason } => DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::OwnedStale,
+            reason: Some(reason.clone()),
+            port: Some(owned.port),
+            can_auto_repair: release_auto_repair(),
+            managed_bin: managed_bin_for_result(managed),
+        },
     }
 }
 
-async fn probe_cli_capability(bin: &std::path::Path) -> Option<DesktopCapability> {
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "desktop-capabilities", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
-    }
-
-    let Ok(mut child) = cmd.spawn() else {
-        return None;
-    };
-    let Some(mut stdout) = child.stdout.take() else {
-        return None;
-    };
-
-    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
-        Ok(Ok(status)) if status.success() => {}
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return None;
-        }
-        _ => return None,
-    }
-
-    let mut output = Vec::new();
-    if stdout.read_to_end(&mut output).await.is_err() {
-        return None;
-    }
-
-    serde_json::from_slice::<DesktopCapability>(&output).ok()
-}
-
-fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
-    capability.desktop_protocol_version == Some(1)
-        && capability.supports_api_only == Some(true)
-        && capability.supports_provision_desktop_auth == Some(true)
-}
-
-fn desktop_capability_stale_reason(capability: &DesktopCapability) -> String {
-    capability
-        .desktop_auth_stale_reason
-        .clone()
-        .unwrap_or_else(|| "desktop_capability_incompatible".to_string())
-}
-
-async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
-    if !run_cli_probe(&bin, &["-h"]).await {
-        return ManagedProbe::Stale {
-            bin,
-            reason: "cli_unusable".to_string(),
-        };
-    }
-
-    let capability = probe_cli_capability(&bin).await;
-    if let Some(capability) = capability {
-        if desktop_capability_ready(&capability) {
-            return ManagedProbe::Ready { bin };
-        }
-        return ManagedProbe::Stale {
-            bin,
-            reason: desktop_capability_stale_reason(&capability),
-        };
-    }
-
-    ManagedProbe::Stale {
-        bin,
-        reason: "desktop_capability_probe_failed".to_string(),
-    }
-}
-
-async fn probe_managed_install() -> ManagedProbe {
-    match crate::process::find_unsloth_binary() {
-        Some(bin) => probe_managed_bin(bin).await,
-        None => ManagedProbe::Missing,
-    }
-}
-
-pub async fn managed_install_ready() -> bool {
-    matches!(probe_managed_install().await, ManagedProbe::Ready { .. })
-}
-
-async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHealth> {
-    let url = format!("http://127.0.0.1:{port}/api/health");
-    let response = client.get(url).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let json = response.json::<serde_json::Value>().await.ok()?;
-    let healthy = json
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "healthy")
-        .unwrap_or(false);
-    let service = json
-        .get("service")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "Unsloth UI Backend")
-        .unwrap_or(false);
-    if !healthy || !service {
-        return None;
-    }
-
-    let desktop_protocol_version = json
-        .get("desktop_protocol_version")
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u16::try_from(v).ok());
-    let supports_desktop_auth = json.get("supports_desktop_auth").and_then(|v| v.as_bool());
-    if desktop_protocol_version.is_none() && supports_desktop_auth.is_none() {
-        return None;
-    }
-    let stale_reason = match supports_desktop_auth {
-        Some(false) => json
-            .get("desktop_auth_stale_reason")
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned),
-        _ => None,
-    };
-    Some(BackendHealth {
-        desktop_protocol_version,
-        supports_desktop_auth,
-        stale_reason,
-    })
-}
-
-fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
-    if health.desktop_protocol_version != Some(1) {
-        return health
-            .stale_reason
-            .clone()
-            .or_else(|| Some("desktop_protocol_incompatible".to_string()));
-    }
-    if health.supports_desktop_auth != Some(true) {
-        return health
-            .stale_reason
-            .clone()
-            .or_else(|| Some("desktop_auth_unsupported".to_string()));
-    }
-    None
-}
-
-#[derive(Serialize)]
-struct DesktopLoginProbe<'a> {
-    secret: &'a str,
-}
-
-async fn backend_desktop_auth_status(
-    client: &reqwest::Client,
+fn choose_unmanageable_owned_preflight(
+    managed: &ManagedProbe,
     port: u16,
-    health: &BackendHealth,
-) -> BackendProbe {
-    if let Some(reason) = backend_capability_stale_reason(health) {
-        return BackendProbe::Old { port, reason };
-    }
-
-    let url = format!("http://127.0.0.1:{port}/api/auth/desktop-login");
-    let response = client
-        .post(url)
-        .json(&DesktopLoginProbe {
-            secret: "desktop-preflight-invalid-secret",
-        })
-        .send()
-        .await;
-
-    let Ok(response) = response else {
-        return BackendProbe::Old {
-            port,
-            reason: backend_capability_stale_reason(health)
-                .unwrap_or_else(|| "desktop_login_probe_failed".to_string()),
-        };
-    };
-
-    match response.status() {
-        reqwest::StatusCode::UNAUTHORIZED => BackendProbe::Ready { port },
-        reqwest::StatusCode::NOT_FOUND => BackendProbe::Old {
-            port,
-            reason: "desktop_login_not_found".to_string(),
-        },
-        _ => BackendProbe::Old {
-            port,
-            reason: backend_capability_stale_reason(health)
-                .unwrap_or_else(|| "desktop_login_probe_failed".to_string()),
-        },
+    reason: String,
+) -> DesktopPreflightResult {
+    DesktopPreflightResult {
+        disposition: DesktopPreflightDisposition::ExternalConflict,
+        reason: Some(owned_unmanageable_reason(&reason)),
+        port: Some(port),
+        can_auto_repair: false,
+        managed_bin: managed_bin_for_result(managed),
     }
 }
 
-async fn probe_existing_backends() -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return BackendProbe::Missing,
-    };
-
-    // Fan out health probes concurrently. The desktop-auth probe is still
-    // sequential per candidate because it has auth-log side effects.
-    let ports: Vec<u16> = (8888u16..=8908).collect();
-    let mut health_futs = Vec::with_capacity(ports.len());
-    for port in ports {
-        // why: reqwest::Client is internally Arc-wrapped; clone is a refcount bump
-        // (documented cheap). tokio::spawn needs 'static, so each task owns its own clone.
-        let c = client.clone();
-        health_futs.push(tokio::spawn(async move {
-            backend_health(&c, port).await.map(|h| (port, h))
-        }));
+fn choose_owned_transitional_preflight(
+    managed: &ManagedProbe,
+    port: Option<u16>,
+) -> DesktopPreflightResult {
+    DesktopPreflightResult {
+        disposition: DesktopPreflightDisposition::ExternalConflict,
+        reason: Some("desktop_owned_backend_starting".to_string()),
+        port,
+        can_auto_repair: false,
+        managed_bin: managed_bin_for_result(managed),
     }
+}
 
-    let mut candidates: Vec<(u16, BackendHealth)> = Vec::new();
-    for fut in health_futs {
-        if let Ok(Some(pair)) = fut.await {
-            candidates.push(pair);
+fn choose_ownerless_spawned_preflight(
+    managed: &ManagedProbe,
+    backend: &BackendProbe,
+    port: Option<u16>,
+) -> DesktopPreflightResult {
+    match (port, backend) {
+        (Some(owned_port), BackendProbe::Ready { port }) if owned_port == *port => {
+            DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::OwnedReady,
+                reason: None,
+                port: Some(*port),
+                can_auto_repair: false,
+                managed_bin: managed_bin_for_result(managed),
+            }
         }
-    }
-
-    let mut first_old = None;
-    for (port, health) in candidates {
-        match backend_desktop_auth_status(&client, port, &health).await {
-            ready @ BackendProbe::Ready { .. } => return ready,
-            old @ BackendProbe::Old { .. } if first_old.is_none() => first_old = Some(old),
-            _ => {}
+        (Some(owned_port), BackendProbe::Old { port, reason }) if owned_port == *port => {
+            DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::OwnedStale,
+                reason: Some(reason.clone()),
+                port: Some(*port),
+                can_auto_repair: release_auto_repair(),
+                managed_bin: managed_bin_for_result(managed),
+            }
         }
+        _ => choose_owned_transitional_preflight(managed, port),
     }
+}
 
-    first_old.unwrap_or(BackendProbe::Missing)
+fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
+    match probe {
+        BackendProbe::ExternalConflict { port, reason } => {
+            Some(ExternalBackendConflict { port, reason })
+        }
+        BackendProbe::Ready { port } => Some(ExternalBackendConflict {
+            port,
+            reason: "same_root_external_backend_active".to_string(),
+        }),
+        _ => None,
+    }
+}
+
+pub async fn mutation_blocking_backend_ignoring(
+    ignored_ports: &[u16],
+) -> Option<ExternalBackendConflict> {
+    mutation_blocker_from_probe(probe_existing_backends(ignored_ports).await)
 }
 
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
-    let (managed, backend) = tokio::join!(probe_managed_install(), probe_existing_backends());
+    let (managed, backend) = tokio::join!(probe_managed_install(), probe_existing_backends(&[]));
     choose_preflight(managed, backend)
+}
+
+pub async fn desktop_preflight_result_with_state(
+    state: &crate::process::BackendState,
+) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
+    let (managed, backend, owned) = tokio::join!(
+        probe_managed_install(),
+        probe_existing_backends(&[]),
+        crate::desktop_backend_owner::probe_verified_owned_backend()
+    );
+
+    if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
+        let Some(owner) = snapshot.owner.clone() else {
+            let probe = match snapshot.port {
+                Some(port) => backend::probe_ownerless_spawned_backend(port).await,
+                None => backend,
+            };
+            return Ok((
+                choose_ownerless_spawned_preflight(&managed, &probe, snapshot.port),
+                None,
+            ));
+        };
+        match crate::desktop_backend_owner::probe_owned_backend_state(
+            owner,
+            snapshot.port,
+            snapshot.is_adopted,
+        )
+        .await
+        {
+            OwnedBackendProbe::Verified(verified) => {
+                if snapshot.port.is_none() {
+                    crate::process::record_owned_backend_port_if_current(
+                        state,
+                        snapshot.generation,
+                        verified.port,
+                    );
+                }
+                let result = choose_owned_preflight(&managed, &verified);
+                let watchdog_generation = if snapshot.is_adopted
+                    && result.disposition == DesktopPreflightDisposition::OwnedReady
+                {
+                    Some((snapshot.generation, false))
+                } else {
+                    None
+                };
+                return Ok((result, watchdog_generation));
+            }
+            OwnedBackendProbe::Unmanageable { port, reason } => {
+                return Ok((
+                    choose_unmanageable_owned_preflight(&managed, port, reason),
+                    None,
+                ));
+            }
+            OwnedBackendProbe::NoMetadata
+            | OwnedBackendProbe::RemovedMalformed
+            | OwnedBackendProbe::NotVerified { .. } => {
+                if snapshot.is_adopted {
+                    crate::process::clear_adopted_backend_if_current(
+                        state,
+                        snapshot.generation,
+                        snapshot.port,
+                        "state owner probe no longer verifies",
+                    );
+                    return Ok((choose_preflight(managed, backend), None));
+                }
+                return Ok((
+                    choose_owned_transitional_preflight(&managed, snapshot.port),
+                    None,
+                ));
+            }
+        }
+    }
+
+    let owned = match owned {
+        Ok(owned) => owned,
+        Err(error) => {
+            warn!(
+                "Desktop-owned backend probe failed; continuing without adoption: {}",
+                error
+            );
+            return Ok((choose_preflight(managed, backend), None));
+        }
+    };
+
+    match owned {
+        OwnedBackendProbe::Verified(verified) => {
+            let result = choose_owned_preflight(&managed, &verified);
+            let adopted = crate::process::adopt_verified_backend(state, verified)?;
+            let watchdog_generation =
+                if result.disposition == DesktopPreflightDisposition::OwnedReady {
+                    Some((adopted.generation, adopted.newly_adopted))
+                } else {
+                    None
+                };
+            Ok((result, watchdog_generation))
+        }
+        OwnedBackendProbe::Unmanageable { port, reason } => Ok((
+            choose_unmanageable_owned_preflight(&managed, port, reason),
+            None,
+        )),
+        OwnedBackendProbe::NoMetadata
+        | OwnedBackendProbe::RemovedMalformed
+        | OwnedBackendProbe::NotVerified { .. } => Ok((choose_preflight(managed, backend), None)),
+    }
 }
 
 #[cfg(test)]
@@ -382,165 +293,169 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn compatible_backend_does_not_win_over_stale_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Stale {
-                bin: PathBuf::from("/managed/unsloth"),
-                reason: "old cli".to_string(),
-            },
-            BackendProbe::Ready { port: 8000 },
-        );
+    fn choose_preflight_classifies_core_cases() {
+        let bin = || PathBuf::from("/managed/unsloth");
+        let ready = || ManagedProbe::Ready { bin: bin() };
+        let stale = || ManagedProbe::Stale {
+            bin: bin(),
+            reason: "old cli".to_string(),
+        };
+        let old_backend = || BackendProbe::Old {
+            port: 8001,
+            reason: "missing endpoint".to_string(),
+        };
+        let cases = [
+            (
+                stale(),
+                BackendProbe::Ready { port: 8000 },
+                DesktopPreflightDisposition::AttachedReady,
+                Some(8000),
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                ready(),
+                BackendProbe::Ready { port: 8000 },
+                DesktopPreflightDisposition::AttachedReady,
+                Some(8000),
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                ManagedProbe::Missing,
+                BackendProbe::Ready { port: 8000 },
+                DesktopPreflightDisposition::AttachedReady,
+                Some(8000),
+                None,
+                false,
+                None,
+            ),
+            (
+                ready(),
+                old_backend(),
+                DesktopPreflightDisposition::ManagedReady,
+                None,
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                stale(),
+                old_backend(),
+                DesktopPreflightDisposition::ManagedStale,
+                None,
+                Some("old cli"),
+                release_auto_repair(),
+                Some(bin()),
+            ),
+            (
+                ready(),
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::ManagedReady,
+                None,
+                None,
+                false,
+                Some(bin()),
+            ),
+            (
+                stale(),
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::ManagedStale,
+                None,
+                Some("old cli"),
+                release_auto_repair(),
+                Some(bin()),
+            ),
+            (
+                ManagedProbe::Missing,
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::NotInstalled,
+                None,
+                None,
+                false,
+                None,
+            ),
+        ];
 
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedStale
-        );
-        assert_eq!(result.port, None);
-        assert_eq!(result.reason, Some("old cli".to_string()));
-        assert_eq!(result.can_auto_repair, release_auto_repair());
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
+        for (managed, backend, disposition, port, reason, can_auto_repair, managed_bin) in cases {
+            let result = choose_preflight(managed, backend);
+            assert_eq!(result.disposition, disposition);
+            assert_eq!(result.port, port);
+            assert_eq!(result.reason.as_deref(), reason);
+            assert_eq!(result.can_auto_repair, can_auto_repair);
+            assert_eq!(result.managed_bin, managed_bin);
+        }
     }
 
     #[test]
-    fn compatible_backend_wins_over_ready_managed_install() {
+    fn external_conflict_blocks_managed_flow() {
         let result = choose_preflight(
             ManagedProbe::Ready {
                 bin: PathBuf::from("/managed/unsloth"),
             },
-            BackendProbe::Ready { port: 8000 },
+            BackendProbe::ExternalConflict {
+                port: 8888,
+                reason: "same_root_external_backend_active".to_string(),
+            },
         );
 
         assert_eq!(
             result.disposition,
-            DesktopPreflightDisposition::AttachedReady
+            DesktopPreflightDisposition::ExternalConflict
         );
-        assert_eq!(result.port, Some(8000));
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
+        assert_eq!(result.port, Some(8888));
+        assert_eq!(
+            result.reason,
+            Some("same_root_external_backend_active".to_string())
+        );
         assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn compatible_backend_does_not_win_over_missing_managed_install() {
-        let result = choose_preflight(ManagedProbe::Missing, BackendProbe::Ready { port: 8000 });
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::NotInstalled
-        );
-        assert_eq!(result.port, None);
-        assert_eq!(result.managed_bin, None);
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn old_backend_falls_back_to_ready_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Ready {
-                bin: PathBuf::from("/managed/unsloth"),
-            },
-            BackendProbe::Old {
-                port: 8001,
-                reason: "missing endpoint".to_string(),
-            },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedReady
-        );
-        assert_eq!(result.reason, None);
-        assert_eq!(result.port, None);
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn old_backend_falls_back_to_stale_managed_install() {
-        let result = choose_preflight(
-            ManagedProbe::Stale {
-                bin: PathBuf::from("/managed/unsloth"),
-                reason: "old cli".to_string(),
-            },
-            BackendProbe::Old {
-                port: 8001,
-                reason: "missing endpoint".to_string(),
-            },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedStale
-        );
-        assert_eq!(result.reason, Some("old cli".to_string()));
-        assert_eq!(result.port, None);
-        assert_eq!(result.can_auto_repair, release_auto_repair());
         assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
     }
 
     #[test]
-    fn managed_ready_when_no_backend() {
-        let result = choose_preflight(
-            ManagedProbe::Ready {
-                bin: PathBuf::from("/managed/unsloth"),
-            },
-            BackendProbe::Missing,
-        );
-
+    fn mutation_blocker_blocks_ready_external_backends() {
         assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedReady
+            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }),
+            Some(ExternalBackendConflict {
+                port: 8890,
+                reason: "same_root_external_backend_active".to_string(),
+            })
         );
-        assert_eq!(result.managed_bin, Some(PathBuf::from("/managed/unsloth")));
-        assert!(!result.can_auto_repair);
     }
 
     #[test]
-    fn managed_stale_when_no_backend() {
-        let result = choose_preflight(
-            ManagedProbe::Stale {
-                bin: PathBuf::from("/managed/unsloth"),
-                reason: "old cli".to_string(),
-            },
-            BackendProbe::Missing,
-        );
-
+    fn backend_version_gate_classifies_core_cases() {
+        for version in [
+            MIN_DESKTOP_BACKEND_VERSION,
+            "2026.5.4",
+            "2027.1.0",
+            "2026.5.3.post1",
+            "2026.5.3+local",
+            "2026.5.3.post1",
+        ] {
+            assert!(backend_version_compatible(Some(version)), "{version}");
+        }
+        for (version, reason) in [
+            (None, "desktop_backend_version_missing"),
+            (Some("not-a-version"), "desktop_backend_version_invalid"),
+            (Some("2026.5.3.1"), "desktop_backend_version_invalid"),
+            (Some("2026.5.3foo"), "desktop_backend_version_invalid"),
+            (Some("2026.5.3.devx"), "desktop_backend_version_invalid"),
+            (Some("2026.5.2"), "desktop_backend_version_too_old"),
+            (Some("2026.5.3rc1"), "desktop_backend_version_too_old"),
+            (Some("2026.5.3.dev1"), "desktop_backend_version_too_old"),
+        ] {
+            assert_eq!(
+                backend_version_stale_reason(version).as_deref(),
+                Some(reason)
+            );
+        }
         assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::ManagedStale
+            backend_version_compatible(Some("dev")),
+            cfg!(debug_assertions)
         );
-        assert_eq!(result.reason, Some("old cli".to_string()));
-        assert_eq!(result.can_auto_repair, release_auto_repair());
-    }
-
-    #[test]
-    fn not_installed_when_no_backend_no_managed_binary() {
-        let result = choose_preflight(ManagedProbe::Missing, BackendProbe::Missing);
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::NotInstalled
-        );
-        assert_eq!(result.managed_bin, None);
-        assert!(!result.can_auto_repair);
-    }
-
-    #[test]
-    fn old_backend_with_no_managed_install_uses_install_flow() {
-        let result = choose_preflight(
-            ManagedProbe::Missing,
-            BackendProbe::Old {
-                port: 8002,
-                reason: "old version".to_string(),
-            },
-        );
-
-        assert_eq!(
-            result.disposition,
-            DesktopPreflightDisposition::NotInstalled
-        );
-        assert_eq!(result.reason, None);
-        assert_eq!(result.port, None);
-        assert!(!result.can_auto_repair);
     }
 
     #[cfg(unix)]
@@ -581,137 +496,96 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn managed_cli_stale_when_desktop_capabilities_missing() {
-        let fake = fake_cli(
-            "cap-missing",
-            r#"#!/bin/sh
+    async fn managed_cli_capability_probe_classifies_core_cases() {
+        for (name, script, stale_reason) in [
+            (
+                "cap-missing",
+                r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
 exit 1
 "#,
-        );
-        let bin = fake.bin.clone();
-
-        assert!(matches!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale { bin: actual_bin, .. } if actual_bin == bin
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_stale_when_desktop_capabilities_command_missing() {
-        let fake = fake_cli(
-            "missing-helper",
-            r#"#!/bin/sh
-if [ "$1" = "-h" ]; then exit 0; fi
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        assert!(matches!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale { bin: actual_bin, .. } if actual_bin == bin
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_stale_when_help_broken() {
-        let fake = fake_cli(
-            "broken-help",
-            r#"#!/bin/sh
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale {
-                bin,
-                reason: "cli_unusable".to_string()
-            }
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_ready_when_desktop_capabilities_compatible() {
-        let fake = fake_cli(
-            "cap-true-helper-missing",
-            r#"#!/bin/sh
+                Some("desktop_capability_probe_failed"),
+            ),
+            (
+                "cap-true-helper-missing",
+                r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
   exit 0
 fi
 exit 1
 "#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Ready { bin }
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn capability_false_reason_used_when_legacy_helper_missing() {
-        let fake = fake_cli(
-            "cap-false-helper-missing",
-            r#"#!/bin/sh
+                None,
+            ),
+            (
+                "cap-false-helper-ready",
+                r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"supports_api_only":true,"supports_provision_desktop_auth":false,"desktop_auth_stale_reason":"cap_false"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale {
-                bin,
-                reason: "cap_false".to_string()
-            }
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn capability_false_overrides_working_legacy_helper() {
-        let fake = fake_cli(
-            "cap-false-helper-ready",
-            r#"#!/bin/sh
-if [ "$1" = "-h" ]; then exit 0; fi
-if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"supports_api_only":true,"supports_provision_desktop_auth":false,"desktop_auth_stale_reason":"cap_false"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","version":"2026.5.3"}'
   exit 0
 fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
 exit 1
 "#,
-        );
-        let bin = fake.bin.clone();
-
-        assert_eq!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Stale {
-                bin,
-                reason: "cap_false".to_string()
+                Some("cap_false"),
+            ),
+        ] {
+            let fake = fake_cli(name, script);
+            let bin = fake.bin.clone();
+            match (probe_managed_bin(bin.clone()).await, stale_reason) {
+                (ManagedProbe::Ready { bin: actual }, None) => assert_eq!(actual, bin),
+                (
+                    ManagedProbe::Stale {
+                        bin: actual,
+                        reason,
+                    },
+                    Some(expected),
+                ) => {
+                    assert_eq!((actual, reason.as_str()), (bin, expected));
+                }
+                (probe, expected) => panic!("unexpected probe {probe:?}, expected {expected:?}"),
             }
-        );
+        }
     }
 
-    async fn backend_server(health_body: &'static str, route_status: &'static str) -> u16 {
+    const EXPECTED_ROOT_ID: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER_ROOT_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const OWNER_TOKEN: &str = "desktop-owner-token";
+
+    fn install_test_owner() {
+        crate::desktop_backend_owner::install_test_owner(EXPECTED_ROOT_ID, OWNER_TOKEN);
+    }
+
+    fn desktop_ready_health(root_id: &str) -> String {
+        desktop_ready_health_with_owner(root_id, true)
+    }
+
+    fn desktop_owner_json(include_owner: bool) -> String {
+        if include_owner {
+            format!(
+                r#", "desktop_owner":{{"kind":"tauri","token_sha256":"{}"}}"#,
+                crate::desktop_backend_owner::token_sha256(OWNER_TOKEN)
+            )
+        } else {
+            String::new()
+        }
+    }
+
+    fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
+        let owner = desktop_owner_json(include_owner);
+        format!(
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
+        )
+    }
+
+    async fn backend_server(health_body: impl Into<String>, route_status: &'static str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let health_body = health_body.into();
 
         tokio::spawn(async move {
             for _ in 0..2 {
@@ -720,7 +594,7 @@ exit 1
                 let n = stream.read(&mut buffer).await.unwrap();
                 let request = String::from_utf8_lossy(&buffer[..n]);
                 let (status, body) = if request.starts_with("GET /api/health ") {
-                    ("200 OK", health_body)
+                    ("200 OK", health_body.as_str())
                 } else if request.starts_with("POST /api/auth/desktop-login ") {
                     (route_status, "")
                 } else {
@@ -738,17 +612,18 @@ exit 1
     }
 
     async fn probe_test_backend(
-        health_body: &'static str,
+        health_body: impl Into<String>,
         route_status: &'static str,
     ) -> BackendProbe {
+        install_test_owner();
         let port = backend_server(health_body, route_status).await;
         let client = reqwest::Client::new();
         let health = backend_health(&client, port).await.unwrap();
-        backend_desktop_auth_status(&client, port, &health).await
+        backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await
     }
 
     #[tokio::test]
-    async fn backend_health_without_desktop_capability_fields_is_not_compatible() {
+    async fn backend_health_without_desktop_capability_fields_is_still_candidate() {
         let port = backend_server(
             r#"{"status":"healthy","service":"Unsloth UI Backend"}"#,
             "401 Unauthorized",
@@ -756,24 +631,16 @@ exit 1
         .await;
         let client = reqwest::Client::new();
 
-        assert!(backend_health(&client, port).await.is_none());
+        assert!(backend_health(&client, port).await.is_some());
     }
 
     #[tokio::test]
     async fn backend_with_auth_support_but_missing_protocol_is_old() {
         let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","supports_desktop_auth":true}"#,
-            "401 Unauthorized",
-        )
-        .await;
-
-        assert!(matches!(probe, BackendProbe::Old { .. }));
-    }
-
-    #[tokio::test]
-    async fn backend_with_auth_support_but_unsupported_protocol_is_old() {
-        let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":2,"supports_desktop_auth":true}"#,
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
             "401 Unauthorized",
         )
         .await;
@@ -783,8 +650,16 @@ exit 1
 
     #[tokio::test]
     async fn backend_health_with_desktop_capability_fields_and_401_is_ready() {
+        let probe =
+            probe_test_backend(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn compatible_same_root_without_desktop_owner_is_ready() {
         let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
+            desktop_ready_health_with_owner(EXPECTED_ROOT_ID, false),
             "401 Unauthorized",
         )
         .await;
@@ -793,12 +668,75 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_route_404_is_old() {
+    async fn stale_same_root_without_desktop_owner_is_external_conflict() {
         let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
-            "404 Not Found",
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
         )
         .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict {
+                reason,
+                ..
+            } if reason == "desktop_backend_version_too_old"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_root_id_mismatch_is_old_before_auth_probe() {
+        let probe =
+            probe_test_backend(desktop_ready_health(OTHER_ROOT_ID), "401 Unauthorized").await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old {
+                reason,
+                ..
+            } if reason == "studio_root_id_mismatch"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_missing_root_id_is_external_conflict_before_auth_probe() {
+        let probe = probe_test_backend(
+            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict {
+                reason,
+                ..
+            } if reason == "ambiguous_root_external_backend_active"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
+        install_test_owner();
+        let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
+        let client = reqwest::Client::new();
+        let health = backend_health(&client, port).await.unwrap();
+
+        assert!(matches!(
+            backend_desktop_auth_status(&client, port, &health, None).await,
+            BackendProbe::ExternalConflict {
+                reason,
+                ..
+            } if reason == "ambiguous_root_external_backend_active"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_route_404_is_old() {
+        let probe =
+            probe_test_backend(desktop_ready_health(EXPECTED_ROOT_ID), "404 Not Found").await;
 
         assert!(matches!(
             probe,
@@ -810,28 +748,18 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_route_500_is_old() {
-        let probe = probe_test_backend(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
-            "500 Internal Server Error",
-        )
-        .await;
-
-        assert!(matches!(probe, BackendProbe::Old { .. }));
-    }
-
-    #[tokio::test]
     async fn backend_capability_false_is_old_even_when_route_401() {
-        let port = backend_server(
-            r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":false,"desktop_auth_stale_reason":"cap_false"}"#,
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
             "401 Unauthorized",
         )
         .await;
-        let client = reqwest::Client::new();
-        let health = backend_health(&client, port).await.unwrap();
 
         assert!(matches!(
-            backend_desktop_auth_status(&client, port, &health).await,
+            probe,
             BackendProbe::Old {
                 reason,
                 ..

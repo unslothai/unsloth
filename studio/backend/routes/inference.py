@@ -119,7 +119,10 @@ try:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -141,7 +144,10 @@ except ImportError:
         _DEFAULT_T_MAX_PREDICT_MS,
         detect_reasoning_flags,
     )
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -194,6 +200,11 @@ from models.inference import (
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
     AnthropicUsage,
+    CreateOpenAIContainerBody,
+    DeleteOpenAIContainerBody,
+    ListOpenAIContainersResponse,
+    OpenAIContainerRequest,
+    OpenAIContainerSummary,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -203,6 +214,11 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+
+from core.inference.key_exchange import decrypt_api_key
+from core.inference.providers import get_provider_info, get_base_url
+from core.inference.external_provider import ExternalProviderClient
+from storage import providers_db
 
 import io
 import wave
@@ -396,6 +412,57 @@ def _validate_native_mmproj_companion(
         ) from exc
 
 
+def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
+    """Lowercase + strip a settings string, mapping blank/None to None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        return stripped or None
+    return value
+
+
+def _request_matches_loaded_settings(
+    request: LoadRequest, llama_backend: LlamaCppBackend
+) -> bool:
+    """True iff every runtime setting on the request matches the loaded
+    server. Caller has already checked model+variant+is_loaded. See #5401."""
+    # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask
+    # an Auto-vs-explicit slider flip.
+    if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
+        llama_backend.cache_type_kv
+    ):
+        return False
+    # Vision loads silently drop speculative decoding (llama_cpp.py gates
+    # spec on ``not is_vision``), so treat the request as ``off`` against
+    # the backend's ``None`` to avoid forcing a redundant reload.
+    if llama_backend.is_vision:
+        req_spec = "off"
+    else:
+        req_spec = _normalise_settings_str(request.speculative_type) or "off"
+    backend_spec = _normalise_settings_str(llama_backend.speculative_type) or "off"
+    if req_spec != backend_spec:
+        return False
+    if (request.chat_template_override or None) != (
+        llama_backend.chat_template_override or None
+    ):
+        return False
+    # llama_extra_args=None means "inherit"; only an explicit list that
+    # differs forces a reload. On the inherit path, refuse to match if
+    # stored extras contain any shadow flag, so the reload path can
+    # strip them instead of leaving a stale override in effect.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    if request.llama_extra_args is None:
+        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+            return False
+    else:
+        if list(request.llama_extra_args) != backend_extra:
+            return False
+    return True
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -451,6 +518,11 @@ async def load_model(
             extra_llama_args = validate_extra_args(request.llama_extra_args)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
+        # Re-narrow []-from-None back to None so the inheritance path
+        # below can tell "caller omitted" from "caller explicit []".
+        extra_llama_args: Optional[list[str]] = (
+            None if request.llama_extra_args is None else extra_llama_args
+        )
 
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
@@ -469,6 +541,9 @@ async def load_model(
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
+                # Also require runtime settings to match so Apply changes
+                # aren't silently dropped (#5401).
+                and _request_matches_loaded_settings(request, llama_backend)
             ):
                 logger.info(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
@@ -603,6 +678,70 @@ async def load_model(
                 )
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
+            # Inherit llama_extra_args from the previous load when the
+            # request omits the field (the chat-settings Apply path
+            # does not round-trip them; explicit [] still clears).
+            # Inheritance is gated on (model_identifier, hf_variant)
+            # to refuse cross-model pickup, and shadowing flags are
+            # stripped so an inherited override can't win the last-wins
+            # CLI parse against a freshly-supplied first-class field.
+            if request.llama_extra_args is None and llama_backend.extra_args:
+                source = llama_backend.extra_args_source
+                # Compare against the resolved variant, not the request
+                # field: callers commonly omit gguf_variant for local
+                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
+                # variant`` is the variant load_model was actually
+                # invoked with (see the HF / local branches below), so
+                # both sides of the comparison key off the same string.
+                resolved_variant = config.gguf_variant
+                same_source = bool(
+                    source
+                    and source[0]
+                    and source[0].lower() == model_identifier.lower()
+                    and (source[1] or "").lower() == (resolved_variant or "").lower()
+                )
+                if not same_source:
+                    logger.info(
+                        "Not inheriting llama_extra_args: stored args came "
+                        "from %s, loading %s",
+                        source,
+                        (model_identifier, resolved_variant),
+                    )
+                    # Cross-model: clear explicitly so the backend
+                    # doesn't inherit via "no opinion" semantics.
+                    extra_llama_args = []
+                else:
+                    # Strip only the groups whose first-class field
+                    # was actually set by the caller, so an inherited
+                    # --chat-template-file survives an Apply that omits
+                    # chat_template_override.
+                    fields_set = getattr(request, "model_fields_set", set())
+                    stripped = strip_shadowing_flags(
+                        llama_backend.extra_args,
+                        strip_context = "max_seq_length" in fields_set,
+                        strip_cache = "cache_type_kv" in fields_set,
+                        strip_spec = "speculative_type" in fields_set,
+                        strip_template = "chat_template_override" in fields_set,
+                    )
+                    try:
+                        extra_llama_args = validate_extra_args(stripped)
+                    except ValueError:
+                        # Should not happen on already-validated args; degrade
+                        # to no-extras rather than 400 if managed flags changed.
+                        logger.warning(
+                            "Stored llama_extra_args failed revalidation; "
+                            "loading without them: %s",
+                            stripped,
+                        )
+                        extra_llama_args = []
+                    else:
+                        if extra_llama_args:
+                            logger.info(
+                                "Inheriting llama_extra_args from previous "
+                                "load (same model, shadow-stripped): %s",
+                                extra_llama_args,
+                            )
+
             # Route to HF mode or local mode based on config
             # Run in a thread so the event loop stays free for progress
             # polling and other requests during the (potentially long)
@@ -635,6 +774,10 @@ async def load_model(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    # Pass the resolved variant so _extra_args_source
+                    # is keyed off the same string the inheritance
+                    # check at the top of /load uses (#5401 followup).
+                    hf_variant = config.gguf_variant,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
@@ -1464,6 +1607,346 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+# ── External provider proxy ──────────────────────────────────────
+
+
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """
+    Convert ChatMessage list to OpenAI-compatible dicts for external providers.
+
+    - Vision providers: preserve multimodal content arrays (image_url parts intact).
+    - Non-vision providers: flatten to text-only (images silently dropped).
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            # Skip assistant messages with empty content (some providers reject them)
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
+            result.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            if supports_vision:
+                parts = []
+                for part in msg.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part.image_url.url},
+                            }
+                        )
+                result.append({"role": msg.role, "content": parts})
+            else:
+                # Non-vision provider — strip images, keep text only
+                text = "\n".join(p.text for p in msg.content if p.type == "text")
+                result.append({"role": msg.role, "content": text})
+    return result
+
+
+async def _proxy_to_external_provider(
+    payload: ChatCompletionRequest,
+    request: Request,
+) -> StreamingResponse:
+    """
+    Proxy a chat completion request to an external LLM provider.
+
+    Resolves provider config (from DB or registry), decrypts the API key,
+    and streams the response back in OpenAI SSE format.
+    """
+    # Resolve provider type and base URL
+    provider_type = payload.provider_type
+    base_url = payload.provider_base_url
+
+    if payload.provider_id:
+        config = providers_db.get_provider(payload.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {payload.provider_id}",
+            )
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        provider_type = provider_type or config["provider_type"]
+        base_url = base_url or config["base_url"]
+
+    if not provider_type:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Either provider_id or provider_type is required for external provider routing.",
+        )
+
+    # Fall back to registry default base URL
+    if not base_url:
+        base_url = get_base_url(provider_type)
+    if not base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {provider_type}",
+        )
+
+    api_key = ""
+    if payload.encrypted_api_key:
+        try:
+            api_key = decrypt_api_key(payload.encrypted_api_key)
+        except Exception as exc:
+            logger.warning("external_provider.decrypt_failed", error = str(exc))
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+            )
+
+    model = payload.external_model or payload.model
+    if model == "default":
+        raise HTTPException(
+            status_code = 400,
+            detail = "external_model is required when using an external provider.",
+        )
+
+    # Build messages preserving multimodal content for vision-capable providers
+    from core.inference.providers import get_provider_info as _get_provider_info
+
+    _pinfo = _get_provider_info(provider_type) or {}
+    _supports_vision = _pinfo.get("supports_vision", False)
+    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+    async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            top_k = payload.top_k,
+            enable_thinking = payload.enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
+            enabled_tools = payload.enabled_tools,
+            enable_prompt_caching = payload.enable_prompt_caching,
+            openai_code_exec_container_id = payload.openai_code_exec_container_id,
+            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
+            stream = payload.stream,
+        )
+        try:
+            sent_done = False
+            async for line in gen:
+                yield f"{line}\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("external_provider.stream_error", error = str(exc))
+        finally:
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+            await client.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── OpenAI shell-tool container management ───────────────────────
+
+
+def _resolve_openai_cloud_client(
+    body: OpenAIContainerRequest,
+) -> ExternalProviderClient:
+    """
+    Decrypt the API key + validate the base URL points at OpenAI cloud,
+    then build an ExternalProviderClient for the three container CRUD
+    endpoints below. The shell tool only exists on api.openai.com, so
+    rejecting non-cloud bases up front prevents confusing 404s on
+    ollama / llama.cpp / vLLM / custom presets.
+    """
+    base_url = body.provider_base_url or get_base_url("openai")
+    if not base_url or "api.openai.com" not in base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "OpenAI container management is only available on the "
+                "managed cloud (api.openai.com). The provider's base URL "
+                f"points at {base_url!r}."
+            ),
+        )
+    try:
+        api_key = decrypt_api_key(body.encrypted_api_key)
+    except Exception as exc:
+        logger.warning("external_provider.decrypt_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 400,
+            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+        )
+    return ExternalProviderClient(
+        provider_type = "openai",
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+
+def _summarize_container(raw: dict) -> OpenAIContainerSummary:
+    expires = raw.get("expires_after")
+    expires_minutes: Optional[int] = None
+    if isinstance(expires, dict):
+        minutes = expires.get("minutes")
+        if isinstance(minutes, int):
+            expires_minutes = minutes
+    return OpenAIContainerSummary(
+        id = str(raw.get("id") or ""),
+        name = raw.get("name"),
+        created_at = raw.get("created_at")
+        if isinstance(raw.get("created_at"), int)
+        else None,
+        last_active_at = raw.get("last_active_at")
+        if isinstance(raw.get("last_active_at"), int)
+        else None,
+        expires_after_minutes = expires_minutes,
+        status = raw.get("status") if isinstance(raw.get("status"), str) else None,
+    )
+
+
+@router.post(
+    "/external/openai/containers/list",
+    response_model = ListOpenAIContainersResponse,
+)
+async def list_openai_containers(
+    body: OpenAIContainerRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> ListOpenAIContainersResponse:
+    """List the user's OpenAI shell-tool containers."""
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            raw = await client.list_openai_containers()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers list: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+        # OpenAI keeps expired containers in /v1/containers indefinitely
+        # with status="expired" — they're effectively dead but still
+        # listed. Hide them so the picker only shows usable containers.
+        return ListOpenAIContainersResponse(
+            containers = [
+                _summarize_container(c)
+                for c in raw
+                if isinstance(c, dict) and c.get("status") != "expired"
+            ],
+        )
+    finally:
+        await client.close()
+
+
+@router.post(
+    "/external/openai/containers/create",
+    response_model = OpenAIContainerSummary,
+)
+async def create_openai_container(
+    body: CreateOpenAIContainerBody,
+    current_subject: str = Depends(get_current_subject),
+) -> OpenAIContainerSummary:
+    """Create a named container with the user-chosen idle TTL."""
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            raw = await client.create_openai_container(
+                name = body.name,
+                ttl_minutes = body.ttl_minutes,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers create: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code = 502,
+                detail = "OpenAI returned an unexpected container payload.",
+            )
+        return _summarize_container(raw)
+    finally:
+        await client.close()
+
+
+@router.post("/external/openai/containers/delete", status_code = 204)
+async def delete_openai_container(
+    body: DeleteOpenAIContainerBody,
+    current_subject: str = Depends(get_current_subject),
+) -> None:
+    """Delete a named container by id."""
+    logger.info(
+        "openai_container_delete.request subject=%s container_id=%s base_url=%s",
+        current_subject,
+        body.container_id,
+        body.provider_base_url,
+    )
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            await client.delete_openai_container(body.container_id)
+            logger.info(
+                "openai_container_delete.success container_id=%s",
+                body.container_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            logger.warning(
+                "openai_container_delete.openai_rejected container_id=%s status=%s body=%s",
+                body.container_id,
+                exc.response.status_code if exc.response else None,
+                detail,
+            )
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers delete: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "openai_container_delete.transport_error container_id=%s error=%s",
+                body.container_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+    finally:
+        await client.close()
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1476,13 +1959,21 @@ async def openai_chat_completions(
     Supports multimodal messages: ``content`` may be a plain string or a
     list of content parts (``text`` / ``image_url``).
 
-    Streaming (default):  returns SSE chunks matching OpenAI's format.
-    Non-streaming:        returns a single ChatCompletion JSON object.
+    Non-streaming (default): returns a single ChatCompletion JSON object.
+    Streaming:               returns SSE chunks matching OpenAI's format.
+
+    ``stream`` defaults to ``false`` to match OpenAI's spec; clients opt
+    into SSE by sending ``stream: true``.
 
     Automatically routes to the correct backend:
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # ── External provider routing ────────────────────────────────
+    # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
+    if payload.provider_id or payload.provider_type:
+        return await _proxy_to_external_provider(payload, request)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
@@ -1696,6 +2187,9 @@ async def openai_chat_completions(
 
         cancel_event = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
+        # parity). Naive curl / .NET / System.Text.Json clients omitting
+        # the field used to get SSE here and choke on deserialization (#5047).
         if payload.stream:
             return await _openai_passthrough_stream(
                 request,
@@ -1743,7 +2237,7 @@ async def openai_chat_completions(
             try:
                 import base64 as _b64
                 from io import BytesIO as _BytesIO
-                from PIL import Image as _Image
+                from PIL import Image as _Image, UnidentifiedImageError as _UIE
 
                 raw = _b64.b64decode(image_b64)
                 # Normalize to RGB so PNG encoding succeeds regardless of
@@ -1754,9 +2248,15 @@ async def openai_chat_completions(
                 buf = _BytesIO()
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except _UIE:
                 raise HTTPException(
-                    status_code = 400, detail = f"Failed to process image: {e}"
+                    status_code = 400,
+                    detail = "Unsupported or corrupt image format.",
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Failed to process image.",
                 )
 
         # Build message list with system prompt prepended
@@ -3426,10 +3926,10 @@ def _normalize_anthropic_openai_images(
                 buf = io.BytesIO()
                 img.save(buf, format = "PNG")
                 png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except Exception:
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Failed to process image: {e}",
+                    detail = "Failed to process image.",
                 )
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
@@ -3465,6 +3965,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
+    openai_messages = _drop_empty_assistant_sentinels(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
@@ -4190,6 +4691,19 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
+    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            has_content = bool(m.get("content"))
+            has_tool_calls = bool(m.get("tool_calls"))
+            if not has_content and not has_tool_calls:
+                continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -4206,7 +4720,9 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     ``image_url`` content part so vision + function-calling requests work
     transparently.
     """
-    messages = [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
 
     if not payload.image_base64:
         return messages
@@ -4221,10 +4737,10 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         buf = _BytesIO()
         img.save(buf, format = "PNG")
         png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code = 400,
-            detail = f"Failed to process image: {e}",
+            detail = "Failed to process image.",
         )
 
     data_url = f"data:image/png;base64,{png_b64}"

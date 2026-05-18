@@ -1,8 +1,14 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # ============================================================
 # Gemma 4 MLX — One-command setup + inference
+#
+# Supply-chain hardening: the uv installer payload is pinned by
+# SHA-256. Rotate by running:
+#   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
+# and updating _UV_INSTALLER_SHA256 below.
+# ============================================================
 #
 # Usage:
 #   bash install_gemma4_mlx.sh [--venv-dir DIR]
@@ -104,10 +110,17 @@ else
 fi
 
 # ── Install uv ───────────────────────────────────────────────
+_UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
+
 if ! command -v uv >/dev/null 2>&1; then
     step "uv" "installing uv package manager..."
     _uv_tmp=$(mktemp)
     curl -LsSf "https://astral.sh/uv/install.sh" -o "$_uv_tmp"
+    _uv_actual=$(shasum -a 256 "$_uv_tmp" | awk '{print $1}')
+    if [ "$_uv_actual" != "$_UV_INSTALLER_SHA256" ]; then
+        rm -f "$_uv_tmp"
+        fail "uv installer SHA-256 mismatch: got $_uv_actual expected $_UV_INSTALLER_SHA256 (refusing to execute)"
+    fi
     sh "$_uv_tmp" </dev/null >/dev/null 2>&1
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
