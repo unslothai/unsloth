@@ -108,7 +108,8 @@ class ActivationNoveltyCallback(TrainerCallback):
         self.layer_getter = layer_getter
 
         self._handle = None
-        self._activations: List[torch.Tensor] = []
+        self._running_mean_abs: Optional[torch.Tensor] = None
+        self._running_count: int = 0
         self._history: deque = deque(maxlen = window)
         self._last_novelty: float = 1.0
 
@@ -135,9 +136,24 @@ class ActivationNoveltyCallback(TrainerCallback):
 
         def _hook(_module, _input, output):
             out = output[0] if isinstance(output, tuple) else output
-            if out.dim() > 2:
-                out = out.reshape(out.size(0), -1)
-            self._activations.append(out.detach().float())
+            out = out.detach().float()
+            # For transformer MLP outputs (batch, seq, hidden): average over
+            # the sequence axis so the per-batch summary is always (hidden,).
+            # This keeps shapes consistent across variable-length batches and
+            # avoids unbounded memory growth from buffering full tensors.
+            if out.dim() == 3:
+                out = out.mean(dim = 1)          # (batch, hidden)
+            elif out.dim() > 3:
+                out = out.flatten(2).mean(dim = 1)
+            batch_mean_abs = out.abs().mean(dim = 0)   # (hidden,)
+            # Welford-style incremental mean — O(hidden) memory at all times.
+            self._running_count += 1
+            if self._running_mean_abs is None:
+                self._running_mean_abs = batch_mean_abs
+            else:
+                self._running_mean_abs = self._running_mean_abs + (
+                    batch_mean_abs - self._running_mean_abs
+                ) / self._running_count
 
         self._handle = layer.register_forward_hook(_hook)
 
@@ -146,11 +162,14 @@ class ActivationNoveltyCallback(TrainerCallback):
             self._handle.remove()
             self._handle = None
 
+    def _reset_running_stats(self) -> None:
+        self._running_mean_abs = None
+        self._running_count = 0
+
     def _compute_novelty(self) -> float:
-        if not self._activations:
+        if self._running_mean_abs is None:
             return self._last_novelty
-        acts = torch.cat(self._activations, dim = 0)  # (N, D)
-        mean_abs = acts.abs().mean(dim = 0)  # (D,)
+        mean_abs = self._running_mean_abs
         total = mean_abs.sum()
         if total < 1e-10:
             return self._last_novelty
@@ -171,7 +190,7 @@ class ActivationNoveltyCallback(TrainerCallback):
         model: Optional[nn.Module] = None,
         **kwargs,
     ) -> None:
-        self._activations.clear()
+        self._reset_running_stats()
         self._history.clear()
         self._last_novelty = 1.0
         if model is not None:
@@ -186,7 +205,7 @@ class ActivationNoveltyCallback(TrainerCallback):
         **kwargs,
     ) -> TrainerControl:
         novelty = self._compute_novelty()
-        self._activations.clear()
+        self._reset_running_stats()
         self._last_novelty = novelty
         self._history.append(novelty)
 
@@ -228,4 +247,4 @@ class ActivationNoveltyCallback(TrainerCallback):
         **kwargs,
     ) -> None:
         self._remove_hook()
-        self._activations.clear()
+        self._reset_running_stats()

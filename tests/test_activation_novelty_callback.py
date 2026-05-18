@@ -91,24 +91,26 @@ def test_custom_params():
 # ---------------------------------------------------------------------------
 
 
+def _inject_mean_abs(cb, tensor_2d: torch.Tensor) -> None:
+    """Simulate what the hook would compute for a 2-D (batch, hidden) tensor."""
+    cb._running_mean_abs = tensor_2d.abs().mean(dim = 0)
+    cb._running_count = 1
+
+
 def test_compute_novelty_uniform():
     """Uniform activations -> max novelty (near 1.0)."""
     cb = _import_callback()()
-    d = 64
-    cb._activations = [torch.ones(8, d)]
-    novelty = cb._compute_novelty()
-    assert novelty > 0.99
+    _inject_mean_abs(cb, torch.ones(8, 64))
+    assert cb._compute_novelty() > 0.99
 
 
 def test_compute_novelty_spike():
     """Single active neuron -> near-zero novelty."""
     cb = _import_callback()()
-    d = 64
-    x = torch.zeros(8, d)
+    x = torch.zeros(8, 64)
     x[:, 0] = 1.0
-    cb._activations = [x]
-    novelty = cb._compute_novelty()
-    assert novelty < 0.05
+    _inject_mean_abs(cb, x)
+    assert cb._compute_novelty() < 0.05
 
 
 def test_compute_novelty_empty_returns_last():
@@ -119,9 +121,8 @@ def test_compute_novelty_empty_returns_last():
 
 def test_compute_novelty_clipped_to_unit_interval():
     cb = _import_callback()()
-    cb._activations = [torch.ones(4, 4)]
-    novelty = cb._compute_novelty()
-    assert 0.0 <= novelty <= 1.0
+    _inject_mean_abs(cb, torch.ones(4, 4))
+    assert 0.0 <= cb._compute_novelty() <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +139,10 @@ def test_hook_captures_activations():
     assert cb._handle is not None
 
     _ = model(torch.randn(4, 16))
-    assert len(cb._activations) == 1
-    assert cb._activations[0].shape[1] == 16
+    # Running stats should be populated; shape is (hidden,) = (16,)
+    assert cb._running_mean_abs is not None
+    assert cb._running_mean_abs.shape == (16,)
+    assert cb._running_count == 1
 
     cb.on_train_end(args, state, control)
     assert cb._handle is None
@@ -153,9 +156,9 @@ def test_hook_removed_after_train_end():
     cb.on_train_begin(args, state, control, model = model)
     cb.on_train_end(args, state, control)
 
-    # After removal, forward pass must not populate _activations.
+    # After removal, forward pass must not update running stats.
     _ = model(torch.randn(4, 16))
-    assert len(cb._activations) == 0
+    assert cb._running_mean_abs is None
 
 
 def test_no_hook_without_model():
@@ -181,17 +184,19 @@ def test_auto_layer_detection():
 # ---------------------------------------------------------------------------
 
 
-def test_on_evaluate_clears_activations():
+def test_on_evaluate_resets_running_stats():
     cb = _import_callback()(layer_getter = lambda m: m.mlp)
     model = _TinyModel()
     args, state, control = _make_state_control()
 
     cb.on_train_begin(args, state, control, model = model)
     _ = model(torch.randn(4, 16))
-    assert len(cb._activations) == 1
+    assert cb._running_mean_abs is not None
 
     cb.on_evaluate(args, state, control, model = model)
-    assert len(cb._activations) == 0
+    # Stats cleared after each eval so the next window starts fresh.
+    assert cb._running_mean_abs is None
+    assert cb._running_count == 0
 
 
 def test_on_evaluate_updates_history():
@@ -223,11 +228,11 @@ def test_early_stop_triggers_after_window():
     args, state, control = _make_state_control()
     cb.on_train_begin(args, state, control, model = model)
 
-    # Inject spike activations -> novelty << threshold
+    # Inject spike running stats -> novelty << threshold
     for _ in range(2):
         x = torch.zeros(4, 16)
         x[:, 0] = 1.0
-        cb._activations = [x]
+        _inject_mean_abs(cb, x)
         control = cb.on_evaluate(args, state, control, model = model)
 
     assert control.should_training_stop is True
@@ -248,7 +253,7 @@ def test_early_stop_not_triggered_before_window():
     for _ in range(2):
         x = torch.zeros(4, 16)
         x[:, 0] = 1.0
-        cb._activations = [x]
+        _inject_mean_abs(cb, x)
         control = cb.on_evaluate(args, state, control, model = model)
 
     assert not control.should_training_stop
@@ -267,7 +272,7 @@ def test_early_stop_false_never_stops():
 
     x = torch.zeros(4, 16)
     x[:, 0] = 1.0
-    cb._activations = [x]
+    _inject_mean_abs(cb, x)
     control = cb.on_evaluate(args, state, control, model = model)
 
     assert not control.should_training_stop
@@ -286,7 +291,7 @@ def test_early_stop_does_not_trigger_on_high_novelty():
 
     # Uniform activations -> high novelty, should not stop
     for _ in range(3):
-        cb._activations = [torch.ones(4, 16)]
+        _inject_mean_abs(cb, torch.ones(4, 16))
         control = cb.on_evaluate(args, state, control, model = model)
 
     assert not control.should_training_stop
