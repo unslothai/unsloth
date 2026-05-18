@@ -79,10 +79,6 @@ async function listLegacyThreads(
   );
 }
 
-function firstRejected(results: PromiseSettledResult<unknown>[]): unknown {
-  return results.find((result) => result.status === "rejected")?.reason;
-}
-
 function sortMessages(messages: MessageRecord[]): MessageRecord[] {
   const roleOrder: Record<string, number> = {
     system: 0,
@@ -102,6 +98,7 @@ export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
   return (
     error instanceof Error &&
     (error.message === "Invalid or expired token" ||
+      error.message === "Not authenticated" ||
       error.message === "Request failed (401)" ||
       error.message === "Studio isn't running -- please relaunch it.")
   );
@@ -343,7 +340,7 @@ export async function listStoredChatMessages(
     if (legacyMessages.length > 0 && merged.shouldSync) {
       return syncChatMessages(threadId, merged.messages, {
         pruneMissing: false,
-      });
+      }).catch(() => merged.messages);
     }
     return merged.messages;
   }
@@ -422,18 +419,14 @@ export async function deleteStoredChatThreads(
   threadIds: string[],
 ): Promise<void> {
   if (threadIds.length === 0) return;
-  const results = await Promise.allSettled([
-    deleteChatThreads(threadIds),
-    db.transaction("rw", db.threads, db.messages, async () => {
+  await deleteChatThreads(threadIds);
+  await db
+    .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(threadIds).delete();
       await db.threads.bulkDelete(threadIds);
-    }),
-  ]);
-  if (results.some((result) => result.status === "fulfilled")) {
-    markChatThreadsDeleted(threadIds);
-    return;
-  }
-  throw firstRejected(results);
+    })
+    .catch(() => undefined);
+  markChatThreadsDeleted(threadIds);
 }
 
 export async function countStoredChats(): Promise<number> {
@@ -448,18 +441,14 @@ export async function clearStoredChats(): Promise<void> {
   const threadIds = [...backendThreads, ...legacyThreads].map(
     (thread) => thread.id,
   );
-  const results = await Promise.allSettled([
-    clearBackendChats(),
-    db.transaction("rw", db.threads, db.messages, async () => {
+  await clearBackendChats();
+  await db
+    .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.clear();
       await db.threads.clear();
-    }),
-  ]);
-  if (results.some((result) => result.status === "fulfilled")) {
-    markChatThreadsDeleted(threadIds);
-    return;
-  }
-  throw firstRejected(results);
+    })
+    .catch(() => undefined);
+  markChatThreadsDeleted(threadIds);
 }
 
 export async function buildStoredChatExport(): Promise<ExportedChat> {

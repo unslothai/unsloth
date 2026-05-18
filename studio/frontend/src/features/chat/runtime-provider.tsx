@@ -912,7 +912,9 @@ function ThreadBackendAutosave({
         .catch(() => {})
         .then(() => saveThread(threadId))
         .catch((error) => {
-          console.error("Failed to autosave chat thread", error);
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            console.error("Failed to autosave chat thread", error);
+          }
         });
     },
     [saveThread],

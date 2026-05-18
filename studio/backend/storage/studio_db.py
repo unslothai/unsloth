@@ -671,9 +671,9 @@ def _chat_message_from_row(row: sqlite3.Row) -> dict:
     }
     attachments = _json_loads(data.get("attachments_json"), None)
     metadata = _json_loads(data.get("metadata_json"), None)
-    if attachments:
+    if attachments is not None:
         message["attachments"] = attachments
-    if metadata:
+    if metadata is not None:
         message["metadata"] = metadata
     return message
 
@@ -841,10 +841,10 @@ def upsert_chat_message(message: dict) -> dict:
                 message["role"],
                 json.dumps(message.get("content", [])),
                 json.dumps(message.get("attachments"))
-                if message.get("attachments")
+                if message.get("attachments") is not None
                 else None,
                 json.dumps(message.get("metadata"))
-                if message.get("metadata")
+                if message.get("metadata") is not None
                 else None,
                 int(message["createdAt"]),
             ),
@@ -896,8 +896,12 @@ def sync_chat_messages(
                     m.get("parentId"),
                     m["role"],
                     json.dumps(m.get("content", [])),
-                    json.dumps(m.get("attachments")) if m.get("attachments") else None,
-                    json.dumps(m.get("metadata")) if m.get("metadata") else None,
+                    json.dumps(m.get("attachments"))
+                    if m.get("attachments") is not None
+                    else None,
+                    json.dumps(m.get("metadata"))
+                    if m.get("metadata") is not None
+                    else None,
                     int(m["createdAt"]),
                 )
                 for m in messages

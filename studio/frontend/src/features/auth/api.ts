@@ -17,11 +17,17 @@ type RefreshResponse = {
 };
 
 let isRedirecting = false;
+let refreshSessionPromise: Promise<boolean> | null = null;
+let refreshSessionToken: string | null = null;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clearAuthTokensIfCurrent(refreshToken: string | null): void {
+  if (!refreshToken || getRefreshToken() === refreshToken) clearAuthTokens();
 }
 
 async function fetchWithTauriNetworkRetry(
@@ -93,10 +99,7 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-export async function refreshSession(): Promise<boolean> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
-
+async function refreshSessionWithToken(refreshToken: string): Promise<boolean> {
   try {
     const response = await fetchWithTauriNetworkRetry(
       apiUrl("/api/auth/refresh"),
@@ -108,7 +111,7 @@ export async function refreshSession(): Promise<boolean> {
     );
 
     if (!response.ok) {
-      clearAuthTokens();
+      clearAuthTokensIfCurrent(refreshToken);
       return false;
     }
 
@@ -122,6 +125,24 @@ export async function refreshSession(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function refreshSession(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+  if (refreshSessionPromise && refreshSessionToken === refreshToken) {
+    return refreshSessionPromise;
+  }
+
+  const promise = refreshSessionWithToken(refreshToken).finally(() => {
+    if (refreshSessionPromise === promise) {
+      refreshSessionPromise = null;
+      refreshSessionToken = null;
+    }
+  });
+  refreshSessionPromise = promise;
+  refreshSessionToken = refreshToken;
+  return promise;
 }
 
 export async function authFetch(
@@ -157,12 +178,13 @@ export async function authFetch(
   }
   if (response.status !== 401) return response;
 
+  const refreshToken = getRefreshToken();
   const refreshed = await refreshSession();
   if (!refreshed) {
     if (isTauri) {
       return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
     }
-    clearAuthTokens();
+    clearAuthTokensIfCurrent(refreshToken);
     void redirectToAuth();
     return response;
   }

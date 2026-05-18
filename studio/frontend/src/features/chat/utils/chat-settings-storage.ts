@@ -158,14 +158,12 @@ function sanitizeCustomPresets(value: unknown): PersistedChatPreset[] | undefine
   if (!Array.isArray(value)) return undefined;
   if (value.length === 0) return [];
 
-  const usedNames = new Set<string>();
   const presets = value
     .map((item): PersistedChatPreset | null => {
       if (!isRecord(item) || typeof item.name !== "string") return null;
       const name = item.name.trim();
-      if (!name || usedNames.has(name)) return null;
+      if (!name) return null;
       const params = sanitizeInferenceParams(item.params);
-      usedNames.add(name);
       return { name, params: params ?? {} };
     })
     .filter((preset): preset is PersistedChatPreset => preset !== null);
