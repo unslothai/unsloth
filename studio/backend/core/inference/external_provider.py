@@ -2169,638 +2169,689 @@ class ExternalProviderClient:
 
         logger.info("Proxying OpenAI Responses API to %s (model=%s)", url, model)
 
-        try:
-            async with _http_client.stream(
-                "POST",
-                url,
-                json = body,
-                headers = self._auth_headers(),
-                timeout = self._stream_timeout,
-            ) as response:
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors = "replace")
-                    logger.error(
-                        "OpenAI Responses returned %d: %s",
-                        response.status_code,
-                        error_text[:500],
+        def _build_body(container_id_for_this_attempt: Optional[str]) -> dict[str, Any]:
+            """Snapshot of the request body. Called once for the initial
+            attempt and again with ``None`` for the post-expiry retry.
+            Returns a fresh dict so the retry doesn't share state with the
+            first attempt.
+            """
+            attempt_body = dict(body)
+            if enabled_tools:
+                tools_array_attempt: list[dict[str, Any]] = []
+                if "web_search" in enabled_tools:
+                    tools_array_attempt.append({"type": "web_search"})
+                if code_execution_enabled_openai:
+                    if container_id_for_this_attempt:
+                        env_attempt: dict[str, Any] = {
+                            "type": "container_reference",
+                            "container_id": container_id_for_this_attempt,
+                        }
+                    else:
+                        env_attempt = {"type": "container_auto"}
+                    tools_array_attempt.append(
+                        {"type": "shell", "environment": env_attempt}
                     )
-                    # Detect stale-container errors so the frontend can
-                    # drop its persisted id. OpenAI doesn't pin an
-                    # error code in the public docs for this case, so
-                    # match a couple of likely substrings. If we sent
-                    # a container_reference and the response is 4xx
-                    # with any hint of "container not found / expired",
-                    # emit container_invalidated; the next turn will
-                    # fall back to container_auto.
-                    if (
-                        openai_code_exec_container_id
-                        and 400 <= response.status_code < 500
-                    ):
-                        lowered = error_text.lower()
-                        if "container" in lowered and (
-                            "expired" in lowered
-                            or "not_found" in lowered
-                            or "not found" in lowered
-                            or "no such container" in lowered
-                        ):
+                if tools_array_attempt:
+                    attempt_body["tools"] = tools_array_attempt
+                else:
+                    attempt_body.pop("tools", None)
+            return attempt_body
+
+        def _is_openai_container_expired_error(error_text: str) -> bool:
+            """Match the substring patterns OpenAI uses for expired / missing
+            code-exec containers. There's no official error code in the public
+            docs, so we substring-match a small set.
+            """
+            lowered = error_text.lower()
+            if "container" not in lowered:
+                return False
+            return (
+                "expired" in lowered
+                or "not_found" in lowered
+                or "not found" in lowered
+                or "no such container" in lowered
+            )
+
+        try:
+            retried = False
+            attempt_container_id = openai_code_exec_container_id
+            while True:
+                attempt_body = _build_body(attempt_container_id)
+                async with _http_client.stream(
+                    "POST",
+                    url,
+                    json = attempt_body,
+                    headers = self._auth_headers(),
+                    timeout = self._stream_timeout,
+                ) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        error_text = error_body.decode("utf-8", errors = "replace")
+                        logger.error(
+                            "OpenAI Responses returned %d: %s",
+                            response.status_code,
+                            error_text[:500],
+                        )
+                        expired_container_4xx = (
+                            attempt_container_id
+                            and 400 <= response.status_code < 500
+                            and _is_openai_container_expired_error(error_text)
+                        )
+                        if expired_container_4xx and not retried:
                             yield (
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
-                    return
-
-                # NOTE: same manual __anext__ loop as stream_chat_completion —
-                # see comment there for the GeneratorExit / aclose ordering.
-                lines_gen = response.aiter_lines().__aiter__()
-                done_emitted = False
-                reasoning_open = False
-                reasoning_emitted = False
-                # Latched from response.completed / response.incomplete so
-                # the final log can surface input_tokens_details.cached_tokens —
-                # the field that proves prompt_cache_retention="24h" is
-                # actually hitting OpenAI's cache instead of recomputing
-                # the prefix every turn.
-                last_usage: Optional[dict[str, Any]] = None
-                # Per-call state for OpenAI's server-side web_search tool. Mapped
-                # back into our local _toolEvent shape so the existing chat-UI
-                # renderer surfaces web_search the same way it does for local
-                # tool calls: a "Searching…" tool-call card, then a `tool_end`
-                # carrying citations formatted as
-                #   Title: …\nURL: …\nSnippet: …\n---\n…
-                # blocks (which the frontend's parseSourcesFromResult lifts
-                # into source content parts at end of stream).
-                # web_search_calls preserves insertion order so we can apply
-                # the aggregated citation list onto the *last* call's
-                # tool_end — that's the one the frontend's source-pill
-                # extraction reads (parseSourcesFromResult flatMaps every
-                # web_search result, so a single non-empty result is enough
-                # to surface all sources at message tail).
-                # OpenAI emits url_citation annotations on text deltas, not
-                # per call — there's no wire field linking a citation back
-                # to a specific search invocation. Hence the shared list.
-                # web_search_calls: { item_id -> {query} }
-                web_search_calls: dict[str, dict[str, Any]] = {}
-                all_url_citations: list[dict[str, str]] = []
-                # Shell-tool (code execution) state. OpenAI emits
-                # `shell_call` items (model requesting a command list)
-                # paired with `shell_call_output` items (execution
-                # results). We mirror the Anthropic code-execution UX
-                # by emitting one `_toolEvent` tool_start per
-                # shell_call and one tool_end per shell_call_output;
-                # they're linked via `shell_call_output.call_id`
-                # matching `shell_call.id`. Items are independent of
-                # web_search (different keyed map).
-                # shell_calls: { call_id -> {commands, output} }
-                shell_calls: dict[str, dict[str, Any]] = {}
-                # Container id captured from the response stream. When
-                # it differs from the inbound id, emit a synthetic
-                # `container_ready` _toolEvent so the frontend can
-                # persist it onto the thread record for the next turn.
-                # Where OpenAI surfaces it is documented loosely; we
-                # probe two known fields (response.container_id on
-                # response.completed, item.environment.container_id on
-                # shell_call output items) and latch the first one we
-                # see.
-                latched_container_id: Optional[str] = None
-                container_id_emitted = False
-
-                def _emit_tool_event(payload: dict[str, Any]) -> str:
-                    chunk = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": None,
-                            }
-                        ],
-                        "_toolEvent": payload,
-                    }
-                    return f"data: {_json.dumps(chunk)}"
-
-                def _format_shell_output(output: Any) -> str:
-                    """Render an OpenAI `shell_call_output.output` list
-                    as the preformatted text payload the frontend's
-                    CodeExecutionToolUI displays inside a <pre>. Each
-                    entry has stdout/stderr/outcome — concatenate them
-                    with a separator block per entry and append
-                    `return_code` / `(timeout)` annotations only when
-                    they convey information beyond "succeeded".
-                    """
-                    if not isinstance(output, list):
-                        return ""
-                    parts: list[str] = []
-                    for entry in output:
-                        if not isinstance(entry, dict):
+                            retried = True
+                            attempt_container_id = None
                             continue
-                        stdout = entry.get("stdout") or ""
-                        stderr = entry.get("stderr") or ""
-                        outcome = entry.get("outcome") or {}
-                        chunk_parts: list[str] = []
-                        if stdout:
-                            chunk_parts.append(stdout)
-                        if stderr:
-                            chunk_parts.append(f"--- stderr ---\n{stderr}")
-                        if isinstance(outcome, dict):
-                            outcome_type = outcome.get("type")
-                            if outcome_type == "exit":
-                                exit_code = outcome.get("exit_code")
-                                if isinstance(exit_code, int) and exit_code != 0:
-                                    chunk_parts.append(f"return_code: {exit_code}")
-                            elif outcome_type == "timeout":
-                                chunk_parts.append("(timeout)")
-                        if chunk_parts:
-                            parts.append("\n".join(chunk_parts))
-                    return (
-                        "\n--- next command ---\n".join(parts)
-                        if parts
-                        else "(no output)"
-                    )
+                        yield _error_sse_line(
+                            response.status_code, error_text, self.provider_type
+                        )
+                        return
 
-                def _record_url_citation(payload: dict[str, Any]) -> None:
-                    """Append a url_citation onto the shared all_url_citations
-                    list. Dedup by URL — the same source can be cited multiple
-                    times across deltas. We do NOT try to attribute citations
-                    to individual web_search_call invocations because OpenAI's
-                    annotation events don't carry that linkage."""
-                    if payload.get("type") != "url_citation":
-                        return
-                    url = payload.get("url", "")
-                    if not url:
-                        return
-                    if any(c["url"] == url for c in all_url_citations):
-                        return
-                    title = payload.get("title") or url
-                    snippet = payload.get("snippet") or payload.get("quote") or ""
-                    all_url_citations.append(
-                        {
-                            "url": url,
-                            "title": title,
-                            "snippet": snippet,
+                    # NOTE: same manual __anext__ loop as stream_chat_completion —
+                    # see comment there for the GeneratorExit / aclose ordering.
+                    lines_gen = response.aiter_lines().__aiter__()
+                    done_emitted = False
+                    reasoning_open = False
+                    reasoning_emitted = False
+                    # Latched from response.completed / response.incomplete so
+                    # the final log can surface input_tokens_details.cached_tokens —
+                    # the field that proves prompt_cache_retention="24h" is
+                    # actually hitting OpenAI's cache instead of recomputing
+                    # the prefix every turn.
+                    last_usage: Optional[dict[str, Any]] = None
+                    # Per-call state for OpenAI's server-side web_search tool. Mapped
+                    # back into our local _toolEvent shape so the existing chat-UI
+                    # renderer surfaces web_search the same way it does for local
+                    # tool calls: a "Searching…" tool-call card, then a `tool_end`
+                    # carrying citations formatted as
+                    #   Title: …\nURL: …\nSnippet: …\n---\n…
+                    # blocks (which the frontend's parseSourcesFromResult lifts
+                    # into source content parts at end of stream).
+                    # web_search_calls preserves insertion order so we can apply
+                    # the aggregated citation list onto the *last* call's
+                    # tool_end — that's the one the frontend's source-pill
+                    # extraction reads (parseSourcesFromResult flatMaps every
+                    # web_search result, so a single non-empty result is enough
+                    # to surface all sources at message tail).
+                    # OpenAI emits url_citation annotations on text deltas, not
+                    # per call — there's no wire field linking a citation back
+                    # to a specific search invocation. Hence the shared list.
+                    # web_search_calls: { item_id -> {query} }
+                    web_search_calls: dict[str, dict[str, Any]] = {}
+                    all_url_citations: list[dict[str, str]] = []
+                    # Shell-tool (code execution) state. OpenAI emits
+                    # `shell_call` items (model requesting a command list)
+                    # paired with `shell_call_output` items (execution
+                    # results). We mirror the Anthropic code-execution UX
+                    # by emitting one `_toolEvent` tool_start per
+                    # shell_call and one tool_end per shell_call_output;
+                    # they're linked via `shell_call_output.call_id`
+                    # matching `shell_call.id`. Items are independent of
+                    # web_search (different keyed map).
+                    # shell_calls: { call_id -> {commands, output} }
+                    shell_calls: dict[str, dict[str, Any]] = {}
+                    # Container id captured from the response stream. When
+                    # it differs from the inbound id, emit a synthetic
+                    # `container_ready` _toolEvent so the frontend can
+                    # persist it onto the thread record for the next turn.
+                    # Where OpenAI surfaces it is documented loosely; we
+                    # probe two known fields (response.container_id on
+                    # response.completed, item.environment.container_id on
+                    # shell_call output items) and latch the first one we
+                    # see.
+                    latched_container_id: Optional[str] = None
+                    container_id_emitted = False
+
+                    def _emit_tool_event(payload: dict[str, Any]) -> str:
+                        chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": None,
+                                }
+                            ],
+                            "_toolEvent": payload,
                         }
-                    )
+                        return f"data: {_json.dumps(chunk)}"
 
-                def _extract_reasoning_text(payload: Any) -> str:
-                    if payload is None:
-                        return ""
-                    if isinstance(payload, str):
-                        return payload
-                    if isinstance(payload, list):
-                        out: list[str] = []
-                        for item in payload:
-                            text = _extract_reasoning_text(item)
-                            if text:
-                                out.append(text)
-                        return "".join(out)
-                    if isinstance(payload, dict):
-                        # OpenAI responses may carry reasoning summaries in
-                        # different envelope fields across event variants.
-                        for key in ("text", "delta", "content", "summary"):
-                            if key in payload:
-                                text = _extract_reasoning_text(payload.get(key))
-                                if text:
-                                    return text
-                        if payload.get("type") == "summary_text":
-                            return _extract_reasoning_text(payload.get("text"))
-                    return ""
+                    def _format_shell_output(output: Any) -> str:
+                        """Render an OpenAI `shell_call_output.output` list
+                        as the preformatted text payload the frontend's
+                        CodeExecutionToolUI displays inside a <pre>. Each
+                        entry has stdout/stderr/outcome — concatenate them
+                        with a separator block per entry and append
+                        `return_code` / `(timeout)` annotations only when
+                        they convey information beyond "succeeded".
+                        """
+                        if not isinstance(output, list):
+                            return ""
+                        parts: list[str] = []
+                        for entry in output:
+                            if not isinstance(entry, dict):
+                                continue
+                            stdout = entry.get("stdout") or ""
+                            stderr = entry.get("stderr") or ""
+                            outcome = entry.get("outcome") or {}
+                            chunk_parts: list[str] = []
+                            if stdout:
+                                chunk_parts.append(stdout)
+                            if stderr:
+                                chunk_parts.append(f"--- stderr ---\n{stderr}")
+                            if isinstance(outcome, dict):
+                                outcome_type = outcome.get("type")
+                                if outcome_type == "exit":
+                                    exit_code = outcome.get("exit_code")
+                                    if isinstance(exit_code, int) and exit_code != 0:
+                                        chunk_parts.append(f"return_code: {exit_code}")
+                                elif outcome_type == "timeout":
+                                    chunk_parts.append("(timeout)")
+                            if chunk_parts:
+                                parts.append("\n".join(chunk_parts))
+                        return (
+                            "\n--- next command ---\n".join(parts)
+                            if parts
+                            else "(no output)"
+                        )
 
-                def _chunk_with_text(text: str) -> str:
-                    chunk = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "choices": [
+                    def _record_url_citation(payload: dict[str, Any]) -> None:
+                        """Append a url_citation onto the shared all_url_citations
+                        list. Dedup by URL — the same source can be cited multiple
+                        times across deltas. We do NOT try to attribute citations
+                        to individual web_search_call invocations because OpenAI's
+                        annotation events don't carry that linkage."""
+                        if payload.get("type") != "url_citation":
+                            return
+                        url = payload.get("url", "")
+                        if not url:
+                            return
+                        if any(c["url"] == url for c in all_url_citations):
+                            return
+                        title = payload.get("title") or url
+                        snippet = payload.get("snippet") or payload.get("quote") or ""
+                        all_url_citations.append(
                             {
-                                "index": 0,
-                                "delta": {"content": text},
-                                "finish_reason": None,
+                                "url": url,
+                                "title": title,
+                                "snippet": snippet,
                             }
-                        ],
-                    }
-                    return f"data: {_json.dumps(chunk)}"
+                        )
 
-                try:
-                    while True:
-                        try:
-                            line = await lines_gen.__anext__()
-                        except StopAsyncIteration:
-                            break
-                        if not line or line.startswith("event:"):
-                            continue
-                        if not line.startswith("data:"):
-                            continue
+                    def _extract_reasoning_text(payload: Any) -> str:
+                        if payload is None:
+                            return ""
+                        if isinstance(payload, str):
+                            return payload
+                        if isinstance(payload, list):
+                            out: list[str] = []
+                            for item in payload:
+                                text = _extract_reasoning_text(item)
+                                if text:
+                                    out.append(text)
+                            return "".join(out)
+                        if isinstance(payload, dict):
+                            # OpenAI responses may carry reasoning summaries in
+                            # different envelope fields across event variants.
+                            for key in ("text", "delta", "content", "summary"):
+                                if key in payload:
+                                    text = _extract_reasoning_text(payload.get(key))
+                                    if text:
+                                        return text
+                            if payload.get("type") == "summary_text":
+                                return _extract_reasoning_text(payload.get("text"))
+                        return ""
 
-                        data_str = line[len("data:") :].strip()
-                        if not data_str:
-                            continue
-                        if data_str == "[DONE]":
-                            if not done_emitted:
-                                yield "data: [DONE]"
-                                done_emitted = True
-                            break
+                    def _chunk_with_text(text: str) -> str:
+                        chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": text},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        return f"data: {_json.dumps(chunk)}"
 
-                        try:
-                            event = _json.loads(data_str)
-                        except _json.JSONDecodeError:
-                            continue
+                    try:
+                        while True:
+                            try:
+                                line = await lines_gen.__anext__()
+                            except StopAsyncIteration:
+                                break
+                            if not line or line.startswith("event:"):
+                                continue
+                            if not line.startswith("data:"):
+                                continue
 
-                        event_type = event.get("type")
+                            data_str = line[len("data:") :].strip()
+                            if not data_str:
+                                continue
+                            if data_str == "[DONE]":
+                                if not done_emitted:
+                                    yield "data: [DONE]"
+                                    done_emitted = True
+                                break
 
-                        if event_type == "response.output_text.delta":
-                            delta_text = event.get("delta", "")
-                            if delta_text:
-                                if reasoning_open:
-                                    yield _chunk_with_text("</think>")
-                                    reasoning_open = False
-                                yield _chunk_with_text(delta_text)
-                            # Some API versions inline url citations on the
-                            # delta event itself rather than as a separate
-                            # response.output_text.annotation.added event.
-                            for ann in event.get("annotations") or []:
+                            try:
+                                event = _json.loads(data_str)
+                            except _json.JSONDecodeError:
+                                continue
+
+                            event_type = event.get("type")
+
+                            if event_type == "response.output_text.delta":
+                                delta_text = event.get("delta", "")
+                                if delta_text:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(delta_text)
+                                # Some API versions inline url citations on the
+                                # delta event itself rather than as a separate
+                                # response.output_text.annotation.added event.
+                                for ann in event.get("annotations") or []:
+                                    if isinstance(ann, dict):
+                                        _record_url_citation(ann)
+
+                            elif event_type == "response.output_text.annotation.added":
+                                ann = event.get("annotation")
                                 if isinstance(ann, dict):
                                     _record_url_citation(ann)
 
-                        elif event_type == "response.output_text.annotation.added":
-                            ann = event.get("annotation")
-                            if isinstance(ann, dict):
-                                _record_url_citation(ann)
+                            elif event_type == "response.output_item.added":
+                                # Track the call early but do NOT emit tool_start
+                                # yet — action.query is not reliably populated on
+                                # added across OpenAI API versions, and the
+                                # frontend's tool_start is a one-shot push (no
+                                # update mechanism). Wait for output_item.done.
+                                item = event.get("item", {})
+                                if (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "web_search_call"
+                                ):
+                                    item_id = item.get("id", "") or (
+                                        f"ws_{len(web_search_calls)}"
+                                    )
+                                    web_search_calls.setdefault(item_id, {"query": ""})
+                                # Shell-tool: register the call eagerly so
+                                # the matching shell_call_output can link
+                                # back even if `done` arrives out of order.
+                                # Also probe for container_id on the
+                                # environment field — when container_auto
+                                # auto-creates one, this is the first place
+                                # the new id might surface (OpenAI doesn't
+                                # promise this in docs, but the field is
+                                # cheap to scan and lets us emit
+                                # container_ready earlier than
+                                # response.completed).
+                                if (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "shell_call"
+                                ):
+                                    item_id = item.get("id", "") or (
+                                        f"sc_{len(shell_calls)}"
+                                    )
+                                    shell_calls.setdefault(
+                                        item_id,
+                                        {"commands": [], "output": None},
+                                    )
+                                    env = item.get("environment")
+                                    if isinstance(env, dict):
+                                        probe = env.get("container_id") or env.get("id")
+                                        if (
+                                            isinstance(probe, str)
+                                            and probe.startswith("cntr_")
+                                            and latched_container_id is None
+                                        ):
+                                            latched_container_id = probe
 
-                        elif event_type == "response.output_item.added":
-                            # Track the call early but do NOT emit tool_start
-                            # yet — action.query is not reliably populated on
-                            # added across OpenAI API versions, and the
-                            # frontend's tool_start is a one-shot push (no
-                            # update mechanism). Wait for output_item.done.
-                            item = event.get("item", {})
-                            if (
-                                isinstance(item, dict)
-                                and item.get("type") == "web_search_call"
+                            elif event_type == "response.output_item.done":
+                                item = event.get("item", {})
+                                if not isinstance(item, dict):
+                                    continue
+                                if item.get("type") == "reasoning":
+                                    summary_text = _extract_reasoning_text(
+                                        item.get("summary")
+                                    )
+                                    if summary_text and not reasoning_emitted:
+                                        if not reasoning_open:
+                                            summary_text = f"<think>{summary_text}"
+                                            reasoning_open = True
+                                        yield _chunk_with_text(summary_text)
+                                        reasoning_emitted = True
+                                elif item.get("type") == "web_search_call":
+                                    # done is the canonical place to read the
+                                    # query, so emit both tool_start and tool_end
+                                    # here. Frontend then renders a card per call
+                                    # with the proper "Searching: <query>" label.
+                                    # Citations are aggregated separately and the
+                                    # *last* call's result is overwritten at
+                                    # response.completed with the citation list
+                                    # (so the source-pill extraction at message
+                                    # tail surfaces them once).
+                                    item_id = item.get("id", "") or (
+                                        f"ws_{len(web_search_calls)}"
+                                    )
+                                    action = item.get("action")
+                                    query = (
+                                        action.get("query", "")
+                                        if isinstance(action, dict)
+                                        else ""
+                                    )
+                                    web_search_calls[item_id] = {"query": query}
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_start",
+                                            "tool_name": "web_search",
+                                            "tool_call_id": item_id,
+                                            "arguments": (
+                                                {"query": query} if query else {}
+                                            ),
+                                        }
+                                    )
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": item_id,
+                                            # Empty result — the last call gets
+                                            # overwritten with citations at
+                                            # response.completed.
+                                            "result": "",
+                                        }
+                                    )
+                                elif item.get("type") == "shell_call":
+                                    # OpenAI ships the commands array on the
+                                    # action field. Join them onto one
+                                    # command string for the tool card —
+                                    # the renderer is shared with Anthropic
+                                    # bash, which only carries a single
+                                    # `command`. Multiple commands in one
+                                    # shell_call get joined with newlines so
+                                    # they still render as one card.
+                                    item_id = item.get("id", "") or (
+                                        f"sc_{len(shell_calls)}"
+                                    )
+                                    action = item.get("action") or {}
+                                    commands = (
+                                        action.get("commands")
+                                        if isinstance(action, dict)
+                                        else None
+                                    ) or []
+                                    joined_command = (
+                                        "\n".join(str(c) for c in commands)
+                                        if isinstance(commands, list)
+                                        else ""
+                                    )
+                                    shell_calls.setdefault(
+                                        item_id,
+                                        {"commands": [], "output": None},
+                                    )
+                                    shell_calls[item_id]["commands"] = (
+                                        list(commands)
+                                        if isinstance(commands, list)
+                                        else []
+                                    )
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_start",
+                                            "tool_name": "code_execution",
+                                            "tool_call_id": item_id,
+                                            "arguments": {
+                                                "kind": "bash",
+                                                "command": joined_command,
+                                            },
+                                        }
+                                    )
+                                elif item.get("type") == "shell_call_output":
+                                    # `call_id` links back to the shell_call's
+                                    # `id`, which is what we used as the
+                                    # tool_call_id on tool_start. Match on
+                                    # call_id when present so the matching
+                                    # card transitions to complete.
+                                    call_id = (
+                                        item.get("call_id") or item.get("id") or ""
+                                    )
+                                    output = item.get("output") or []
+                                    if call_id in shell_calls:
+                                        shell_calls[call_id]["output"] = output
+                                    result_text = _format_shell_output(output)
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": call_id,
+                                            "result": result_text,
+                                        }
+                                    )
+
+                            elif (
+                                isinstance(event_type, str)
+                                and "reasoning" in event_type
                             ):
-                                item_id = item.get("id", "") or (
-                                    f"ws_{len(web_search_calls)}"
+                                reasoning_delta = _extract_reasoning_text(event)
+                                if reasoning_delta:
+                                    if not reasoning_open:
+                                        reasoning_delta = f"<think>{reasoning_delta}"
+                                        reasoning_open = True
+                                    yield _chunk_with_text(reasoning_delta)
+                                    reasoning_emitted = True
+
+                            elif event_type == "response.completed":
+                                completed_usage = (event.get("response") or {}).get(
+                                    "usage"
                                 )
-                                web_search_calls.setdefault(item_id, {"query": ""})
-                            # Shell-tool: register the call eagerly so
-                            # the matching shell_call_output can link
-                            # back even if `done` arrives out of order.
-                            # Also probe for container_id on the
-                            # environment field — when container_auto
-                            # auto-creates one, this is the first place
-                            # the new id might surface (OpenAI doesn't
-                            # promise this in docs, but the field is
-                            # cheap to scan and lets us emit
-                            # container_ready earlier than
-                            # response.completed).
-                            if (
-                                isinstance(item, dict)
-                                and item.get("type") == "shell_call"
-                            ):
-                                item_id = item.get("id", "") or (
-                                    f"sc_{len(shell_calls)}"
-                                )
-                                shell_calls.setdefault(
-                                    item_id,
-                                    {"commands": [], "output": None},
-                                )
-                                env = item.get("environment")
-                                if isinstance(env, dict):
-                                    probe = env.get("container_id") or env.get("id")
+                                if isinstance(completed_usage, dict):
+                                    last_usage = completed_usage
+                                if reasoning_open:
+                                    yield _chunk_with_text("</think>")
+                                    reasoning_open = False
+                                # Probe response.container_id (top-level) and
+                                # response.container.id for the shell-tool
+                                # container id. OpenAI's docs don't pin the
+                                # exact field, so we scan both. Emit
+                                # `container_ready` only when the value
+                                # differs from the inbound one — no churn on
+                                # reuse.
+                                response_obj = event.get("response") or {}
+                                if isinstance(response_obj, dict):
+                                    probe_id = response_obj.get("container_id")
+                                    if not probe_id:
+                                        container_field = response_obj.get("container")
+                                        if isinstance(container_field, dict):
+                                            probe_id = container_field.get("id")
                                     if (
-                                        isinstance(probe, str)
-                                        and probe.startswith("cntr_")
+                                        isinstance(probe_id, str)
+                                        and probe_id.startswith("cntr_")
                                         and latched_container_id is None
                                     ):
-                                        latched_container_id = probe
-
-                        elif event_type == "response.output_item.done":
-                            item = event.get("item", {})
-                            if not isinstance(item, dict):
-                                continue
-                            if item.get("type") == "reasoning":
-                                summary_text = _extract_reasoning_text(
-                                    item.get("summary")
-                                )
-                                if summary_text and not reasoning_emitted:
-                                    if not reasoning_open:
-                                        summary_text = f"<think>{summary_text}"
-                                        reasoning_open = True
-                                    yield _chunk_with_text(summary_text)
-                                    reasoning_emitted = True
-                            elif item.get("type") == "web_search_call":
-                                # done is the canonical place to read the
-                                # query, so emit both tool_start and tool_end
-                                # here. Frontend then renders a card per call
-                                # with the proper "Searching: <query>" label.
-                                # Citations are aggregated separately and the
-                                # *last* call's result is overwritten at
-                                # response.completed with the citation list
-                                # (so the source-pill extraction at message
-                                # tail surfaces them once).
-                                item_id = item.get("id", "") or (
-                                    f"ws_{len(web_search_calls)}"
-                                )
-                                action = item.get("action")
-                                query = (
-                                    action.get("query", "")
-                                    if isinstance(action, dict)
-                                    else ""
-                                )
-                                web_search_calls[item_id] = {"query": query}
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_start",
-                                        "tool_name": "web_search",
-                                        "tool_call_id": item_id,
-                                        "arguments": (
-                                            {"query": query} if query else {}
-                                        ),
-                                    }
-                                )
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_end",
-                                        "tool_call_id": item_id,
-                                        # Empty result — the last call gets
-                                        # overwritten with citations at
-                                        # response.completed.
-                                        "result": "",
-                                    }
-                                )
-                            elif item.get("type") == "shell_call":
-                                # OpenAI ships the commands array on the
-                                # action field. Join them onto one
-                                # command string for the tool card —
-                                # the renderer is shared with Anthropic
-                                # bash, which only carries a single
-                                # `command`. Multiple commands in one
-                                # shell_call get joined with newlines so
-                                # they still render as one card.
-                                item_id = item.get("id", "") or (
-                                    f"sc_{len(shell_calls)}"
-                                )
-                                action = item.get("action") or {}
-                                commands = (
-                                    action.get("commands")
-                                    if isinstance(action, dict)
-                                    else None
-                                ) or []
-                                joined_command = (
-                                    "\n".join(str(c) for c in commands)
-                                    if isinstance(commands, list)
-                                    else ""
-                                )
-                                shell_calls.setdefault(
-                                    item_id,
-                                    {"commands": [], "output": None},
-                                )
-                                shell_calls[item_id]["commands"] = (
-                                    list(commands) if isinstance(commands, list) else []
-                                )
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_start",
-                                        "tool_name": "code_execution",
-                                        "tool_call_id": item_id,
-                                        "arguments": {
-                                            "kind": "bash",
-                                            "command": joined_command,
-                                        },
-                                    }
-                                )
-                            elif item.get("type") == "shell_call_output":
-                                # `call_id` links back to the shell_call's
-                                # `id`, which is what we used as the
-                                # tool_call_id on tool_start. Match on
-                                # call_id when present so the matching
-                                # card transitions to complete.
-                                call_id = item.get("call_id") or item.get("id") or ""
-                                output = item.get("output") or []
-                                if call_id in shell_calls:
-                                    shell_calls[call_id]["output"] = output
-                                result_text = _format_shell_output(output)
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_end",
-                                        "tool_call_id": call_id,
-                                        "result": result_text,
-                                    }
-                                )
-
-                        elif isinstance(event_type, str) and "reasoning" in event_type:
-                            reasoning_delta = _extract_reasoning_text(event)
-                            if reasoning_delta:
-                                if not reasoning_open:
-                                    reasoning_delta = f"<think>{reasoning_delta}"
-                                    reasoning_open = True
-                                yield _chunk_with_text(reasoning_delta)
-                                reasoning_emitted = True
-
-                        elif event_type == "response.completed":
-                            completed_usage = (event.get("response") or {}).get("usage")
-                            if isinstance(completed_usage, dict):
-                                last_usage = completed_usage
-                            if reasoning_open:
-                                yield _chunk_with_text("</think>")
-                                reasoning_open = False
-                            # Probe response.container_id (top-level) and
-                            # response.container.id for the shell-tool
-                            # container id. OpenAI's docs don't pin the
-                            # exact field, so we scan both. Emit
-                            # `container_ready` only when the value
-                            # differs from the inbound one — no churn on
-                            # reuse.
-                            response_obj = event.get("response") or {}
-                            if isinstance(response_obj, dict):
-                                probe_id = response_obj.get("container_id")
-                                if not probe_id:
-                                    container_field = response_obj.get("container")
-                                    if isinstance(container_field, dict):
-                                        probe_id = container_field.get("id")
+                                        latched_container_id = probe_id
                                 if (
-                                    isinstance(probe_id, str)
-                                    and probe_id.startswith("cntr_")
-                                    and latched_container_id is None
+                                    latched_container_id
+                                    and not container_id_emitted
+                                    and latched_container_id
+                                    != openai_code_exec_container_id
                                 ):
-                                    latched_container_id = probe_id
-                            if (
-                                latched_container_id
-                                and not container_id_emitted
-                                and latched_container_id
-                                != openai_code_exec_container_id
-                            ):
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "container_ready",
-                                        "container_id": latched_container_id,
-                                    }
-                                )
-                                container_id_emitted = True
-                            # Apply the aggregated citation list onto the
-                            # *last* web_search call by overwriting its
-                            # tool_end result. The frontend's
-                            # parseSourcesFromResult flatMaps every
-                            # web_search tool-call result, so a single
-                            # non-empty result is enough to surface the
-                            # whole source-pill set at the message tail —
-                            # no need to fan out across every card (which
-                            # would just duplicate the same pills).
-                            if web_search_calls and all_url_citations:
-                                last_id = list(web_search_calls.keys())[-1]
-                                blocks: list[str] = []
-                                for cit in all_url_citations:
-                                    line = (
-                                        f"Title: {cit['title']}\n" f"URL: {cit['url']}"
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "container_ready",
+                                            "container_id": latched_container_id,
+                                        }
                                     )
-                                    if cit.get("snippet"):
-                                        line += f"\nSnippet: {cit['snippet']}"
-                                    blocks.append(line)
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_end",
-                                        "tool_call_id": last_id,
-                                        "result": "\n---\n".join(blocks),
-                                    }
-                                )
-                            chunk = {
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {},
-                                        "finish_reason": "stop",
-                                    }
-                                ],
-                            }
-                            yield f"data: {_json.dumps(chunk)}"
-
-                        elif event_type == "response.incomplete":
-                            incomplete_usage = (event.get("response") or {}).get(
-                                "usage"
-                            )
-                            if isinstance(incomplete_usage, dict):
-                                last_usage = incomplete_usage
-                            if reasoning_open:
-                                yield _chunk_with_text("</think>")
-                                reasoning_open = False
-                            # Same backfill as response.completed — apply
-                            # whatever citations we managed to gather
-                            # before truncation onto the last call. All
-                            # earlier tool cards already have their proper
-                            # query + empty placeholder result from the
-                            # output_item.done emissions above.
-                            if web_search_calls and all_url_citations:
-                                last_id = list(web_search_calls.keys())[-1]
-                                blocks = []
-                                for cit in all_url_citations:
-                                    line = (
-                                        f"Title: {cit['title']}\n" f"URL: {cit['url']}"
+                                    container_id_emitted = True
+                                # Apply the aggregated citation list onto the
+                                # *last* web_search call by overwriting its
+                                # tool_end result. The frontend's
+                                # parseSourcesFromResult flatMaps every
+                                # web_search tool-call result, so a single
+                                # non-empty result is enough to surface the
+                                # whole source-pill set at the message tail —
+                                # no need to fan out across every card (which
+                                # would just duplicate the same pills).
+                                if web_search_calls and all_url_citations:
+                                    last_id = list(web_search_calls.keys())[-1]
+                                    blocks: list[str] = []
+                                    for cit in all_url_citations:
+                                        line = (
+                                            f"Title: {cit['title']}\n"
+                                            f"URL: {cit['url']}"
+                                        )
+                                        if cit.get("snippet"):
+                                            line += f"\nSnippet: {cit['snippet']}"
+                                        blocks.append(line)
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": last_id,
+                                            "result": "\n---\n".join(blocks),
+                                        }
                                     )
-                                    if cit.get("snippet"):
-                                        line += f"\nSnippet: {cit['snippet']}"
-                                    blocks.append(line)
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "tool_end",
-                                        "tool_call_id": last_id,
-                                        "result": "\n---\n".join(blocks),
-                                    }
-                                )
-                            chunk = {
-                                "id": completion_id,
-                                "object": "chat.completion.chunk",
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {},
-                                        "finish_reason": "length",
-                                    }
-                                ],
-                            }
-                            yield f"data: {_json.dumps(chunk)}"
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {},
+                                            "finish_reason": "stop",
+                                        }
+                                    ],
+                                }
+                                yield f"data: {_json.dumps(chunk)}"
 
-                        elif event_type in ("response.failed", "error"):
-                            # Surface the failure to the client; let the
-                            # outer route emit [DONE] as part of its cleanup.
-                            error_payload = event.get("response", {}).get(
-                                "error", {}
-                            ) or {
-                                "message": event.get("message", "Unknown error"),
-                                "code": event.get("code"),
-                            }
-                            yield _error_sse_line(
-                                502,
-                                _json.dumps(error_payload),
-                                self.provider_type,
-                            )
-                            break
-                except GeneratorExit:
-                    await response.aclose()
-                    await lines_gen.aclose()
-                    raise
-                finally:
-                    # Summarise what the model actually did this turn so
-                    # support reports of "I clicked Search and got nothing"
-                    # can be triaged at a glance: was the tool requested,
-                    # did OpenAI invoke it, and how many sources came back?
-                    web_search_requested = bool(
-                        enabled_tools and "web_search" in enabled_tools
-                    )
-                    web_search_invocations = len(web_search_calls)
-                    total_citations = len(all_url_citations)
-                    queries = [
-                        sc["query"]
-                        for sc in web_search_calls.values()
-                        if sc.get("query")
-                    ]
-                    # cached_input_tokens > 0 on turn N proves
-                    # prompt_cache_retention="24h" is letting the previous
-                    # turn's prefix hit the cache instead of being
-                    # recomputed. On /v1/responses the field is nested as
-                    # usage.input_tokens_details.cached_tokens (not
-                    # prompt_tokens_details, which is the /v1/chat/completions
-                    # shape).
-                    cached_input_tokens = None
-                    if isinstance(last_usage, dict):
-                        details = last_usage.get("input_tokens_details")
-                        if isinstance(details, dict):
-                            cached_input_tokens = details.get("cached_tokens")
-                    code_execution_requested = code_execution_enabled_openai
-                    code_execution_invocations = len(shell_calls)
-                    code_execution_results = sum(
-                        1 for sc in shell_calls.values() if sc.get("output") is not None
-                    )
-                    logger.info(
-                        "OpenAI Responses stream complete (model=%s, "
-                        "web_search_requested=%s, web_search_invocations=%s, "
-                        "citations=%s, queries=%s, reasoning_emitted=%s, "
-                        "code_execution_requested=%s, "
-                        "code_execution_invocations=%s, "
-                        "code_execution_results=%s, "
-                        "container_id_in=%s, container_id_out=%s, "
-                        "input_tokens=%s, output_tokens=%s, "
-                        "cached_input_tokens=%s)",
-                        model,
-                        web_search_requested,
-                        web_search_invocations,
-                        total_citations,
-                        queries,
-                        reasoning_emitted,
-                        code_execution_requested,
-                        code_execution_invocations,
-                        code_execution_results,
-                        openai_code_exec_container_id,
-                        latched_container_id,
-                        (last_usage or {}).get("input_tokens"),
-                        (last_usage or {}).get("output_tokens"),
-                        cached_input_tokens,
-                    )
-                    await response.aclose()
-                    await lines_gen.aclose()
+                            elif event_type == "response.incomplete":
+                                incomplete_usage = (event.get("response") or {}).get(
+                                    "usage"
+                                )
+                                if isinstance(incomplete_usage, dict):
+                                    last_usage = incomplete_usage
+                                if reasoning_open:
+                                    yield _chunk_with_text("</think>")
+                                    reasoning_open = False
+                                # Same backfill as response.completed — apply
+                                # whatever citations we managed to gather
+                                # before truncation onto the last call. All
+                                # earlier tool cards already have their proper
+                                # query + empty placeholder result from the
+                                # output_item.done emissions above.
+                                if web_search_calls and all_url_citations:
+                                    last_id = list(web_search_calls.keys())[-1]
+                                    blocks = []
+                                    for cit in all_url_citations:
+                                        line = (
+                                            f"Title: {cit['title']}\n"
+                                            f"URL: {cit['url']}"
+                                        )
+                                        if cit.get("snippet"):
+                                            line += f"\nSnippet: {cit['snippet']}"
+                                        blocks.append(line)
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": last_id,
+                                            "result": "\n---\n".join(blocks),
+                                        }
+                                    )
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {},
+                                            "finish_reason": "length",
+                                        }
+                                    ],
+                                }
+                                yield f"data: {_json.dumps(chunk)}"
+
+                            elif event_type in ("response.failed", "error"):
+                                # Surface the failure to the client; let the
+                                # outer route emit [DONE] as part of its cleanup.
+                                error_payload = event.get("response", {}).get(
+                                    "error", {}
+                                ) or {
+                                    "message": event.get("message", "Unknown error"),
+                                    "code": event.get("code"),
+                                }
+                                yield _error_sse_line(
+                                    502,
+                                    _json.dumps(error_payload),
+                                    self.provider_type,
+                                )
+                                break
+                    except GeneratorExit:
+                        await response.aclose()
+                        await lines_gen.aclose()
+                        raise
+                    finally:
+                        # Summarise what the model actually did this turn so
+                        # support reports of "I clicked Search and got nothing"
+                        # can be triaged at a glance: was the tool requested,
+                        # did OpenAI invoke it, and how many sources came back?
+                        web_search_requested = bool(
+                            enabled_tools and "web_search" in enabled_tools
+                        )
+                        web_search_invocations = len(web_search_calls)
+                        total_citations = len(all_url_citations)
+                        queries = [
+                            sc["query"]
+                            for sc in web_search_calls.values()
+                            if sc.get("query")
+                        ]
+                        # cached_input_tokens > 0 on turn N proves
+                        # prompt_cache_retention="24h" is letting the previous
+                        # turn's prefix hit the cache instead of being
+                        # recomputed. On /v1/responses the field is nested as
+                        # usage.input_tokens_details.cached_tokens (not
+                        # prompt_tokens_details, which is the /v1/chat/completions
+                        # shape).
+                        cached_input_tokens = None
+                        if isinstance(last_usage, dict):
+                            details = last_usage.get("input_tokens_details")
+                            if isinstance(details, dict):
+                                cached_input_tokens = details.get("cached_tokens")
+                        code_execution_requested = code_execution_enabled_openai
+                        code_execution_invocations = len(shell_calls)
+                        code_execution_results = sum(
+                            1
+                            for sc in shell_calls.values()
+                            if sc.get("output") is not None
+                        )
+                        logger.info(
+                            "OpenAI Responses stream complete (model=%s, "
+                            "web_search_requested=%s, web_search_invocations=%s, "
+                            "citations=%s, queries=%s, reasoning_emitted=%s, "
+                            "code_execution_requested=%s, "
+                            "code_execution_invocations=%s, "
+                            "code_execution_results=%s, "
+                            "container_id_in=%s, container_id_out=%s, "
+                            "input_tokens=%s, output_tokens=%s, "
+                            "cached_input_tokens=%s)",
+                            model,
+                            web_search_requested,
+                            web_search_invocations,
+                            total_citations,
+                            queries,
+                            reasoning_emitted,
+                            code_execution_requested,
+                            code_execution_invocations,
+                            code_execution_results,
+                            openai_code_exec_container_id,
+                            latched_container_id,
+                            (last_usage or {}).get("input_tokens"),
+                            (last_usage or {}).get("output_tokens"),
+                            cached_input_tokens,
+                        )
+                        await response.aclose()
+                        await lines_gen.aclose()
+                    return
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
