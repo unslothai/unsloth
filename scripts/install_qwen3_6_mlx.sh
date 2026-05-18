@@ -1,8 +1,17 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # ============================================================
 # Qwen3.6 MLX — One-command setup + inference
+#
+# Supply-chain hardening:
+#   - All third-party downloads (uv installer, mlx_vlm qwen3_5
+#     patches) are pinned to an immutable git commit SHA and verified
+#     against a hardcoded SHA-256. Any mismatch aborts the install
+#     before the bytes are copied into site-packages.
+#   - To rotate any pin, fetch the new file with `curl`, run
+#     `shasum -a 256`, and update the corresponding constant below.
+# ============================================================
 #
 # Usage:
 #   bash install_qwen3_6_mlx.sh [--venv-dir DIR]
@@ -104,10 +113,21 @@ else
 fi
 
 # ── Install uv ───────────────────────────────────────────────
+# Pin the uv installer payload by SHA-256. Rotate by running:
+#   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
+# and updating the constant below. We fetch into a temp file, verify
+# the digest, and only then execute. Mismatch aborts.
+_UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
+
 if ! command -v uv >/dev/null 2>&1; then
     step "uv" "installing uv package manager..."
     _uv_tmp=$(mktemp)
     curl -LsSf "https://astral.sh/uv/install.sh" -o "$_uv_tmp"
+    _uv_actual=$(shasum -a 256 "$_uv_tmp" | awk '{print $1}')
+    if [ "$_uv_actual" != "$_UV_INSTALLER_SHA256" ]; then
+        rm -f "$_uv_tmp"
+        fail "uv installer SHA-256 mismatch: got $_uv_actual expected $_UV_INSTALLER_SHA256 (refusing to execute)"
+    fi
     sh "$_uv_tmp" </dev/null
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
@@ -150,21 +170,55 @@ else
 fi
 
 # ── Apply patches for multi-turn image chat ──────────────────
-_PATCH_BASE="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/fix/ui-fix/unsloth/models/patches/mlx_vlm_qwen3_5"
+#
+# Pin every patch to an immutable commit SHA and verify the body
+# against a hardcoded SHA-256. The mlx_vlm_qwen3_5 patch tree
+# currently only exists on the upstream `fix/ui-fix` branch; we pin
+# to the branch HEAD commit, NOT the floating ref, so a forced push
+# on `fix/ui-fix` cannot swap the bytes under us.
+#
+# Rotate by:
+#   _PATCH_COMMIT=<new SHA>
+#   curl -sSLf "https://raw.githubusercontent.com/unslothai/unsloth/$_PATCH_COMMIT/unsloth/models/patches/mlx_vlm_qwen3_5/qwen3_5.py" | shasum -a 256
+#   curl -sSLf "https://raw.githubusercontent.com/unslothai/unsloth/$_PATCH_COMMIT/unsloth/models/patches/mlx_vlm_qwen3_5/generate.py" | shasum -a 256
+_PATCH_COMMIT="013c99e51bbb8c4b83d88f3b150a1e53251a19d2"
+_PATCH_BASE="https://raw.githubusercontent.com/unslothai/unsloth/${_PATCH_COMMIT}/unsloth/models/patches/mlx_vlm_qwen3_5"
+_PATCH_SHA_QWEN35="4b6fbbcc59b1d6b935e7204351aae1476836d25542a11c7885402b672d2efa64"
+_PATCH_SHA_GENERATE="50c4cbb8c3d94c0c74a4d209db6d2b23b102944c147c6421f2eded427b8edaf7"
+
 _SITE_PKGS=$("$_VENV_PY" -c "import site; print(site.getsitepackages()[0])")
 
 step "patch" "fixing multi-turn image chat..."
 
-if curl -sSLf "${_PATCH_BASE}/qwen3_5.py" -o "${_SITE_PKGS}/mlx_vlm/models/qwen3_5/qwen3_5.py"; then
+# Stage all downloads in an isolated tmpdir; we only copy into
+# site-packages after every checksum has matched.
+_PATCH_TMP=$(mktemp -d)
+trap 'rm -rf "$_PATCH_TMP"' EXIT
+
+apply_pinned_patch() {
+    # apply_pinned_patch <remote_basename> <expected_sha256> <dest_abspath>
+    _name="$1"; _expected="$2"; _dest="$3"
+    _staged="$_PATCH_TMP/$_name"
+    if ! curl -sSLf "${_PATCH_BASE}/${_name}" -o "$_staged"; then
+        step "warning" "failed to download ${_name} patch — multi-turn image chat may not work" "$C_WARN"
+        return 1
+    fi
+    _actual=$(shasum -a 256 "$_staged" | awk '{print $1}')
+    if [ "$_actual" != "$_expected" ]; then
+        step "warning" "${_name} SHA-256 mismatch (got $_actual expected $_expected) — refusing to install patch" "$C_WARN"
+        return 1
+    fi
+    mkdir -p "$(dirname "$_dest")"
+    cp "$_staged" "$_dest"
+    return 0
+}
+
+if apply_pinned_patch "qwen3_5.py" "$_PATCH_SHA_QWEN35" "${_SITE_PKGS}/mlx_vlm/models/qwen3_5/qwen3_5.py"; then
     substep "patched qwen3_5.py (MRoPE position reset)"
-else
-    step "warning" "failed to download qwen3_5.py patch — multi-turn image chat may not work" "$C_WARN"
 fi
 
-if curl -sSLf "${_PATCH_BASE}/generate.py" -o "${_SITE_PKGS}/mlx_vlm/generate.py"; then
+if apply_pinned_patch "generate.py" "$_PATCH_SHA_GENERATE" "${_SITE_PKGS}/mlx_vlm/generate.py"; then
     substep "patched generate.py (mask trim on cache reuse)"
-else
-    step "warning" "failed to download generate.py patch — multi-turn image chat may not work" "$C_WARN"
 fi
 
 # Clear pycache so patches take effect

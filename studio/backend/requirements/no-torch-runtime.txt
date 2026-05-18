@@ -8,7 +8,28 @@
 
 # unsloth direct deps (from pyproject.toml [project].dependencies)
 typer
+# typer's full runtime dep tree. Required explicitly because this
+# file is installed with --no-deps. On Linux/Mac CI runners these
+# are often cached transitively; on a fresh windows-latest venv they
+# are not, and `unsloth studio setup` crashes with
+# `ModuleNotFoundError: No module named 'click'`, then 'annotated_doc',
+# then 'rich', etc. as each is hit. Pin the full chain so the
+# no-torch path works cleanly on every fresh venv.
+click>=8.0
+shellingham>=1.5
+annotated-doc>=0.0.3
+rich>=13.0
+markdown-it-py>=3.0
+mdurl>=0.1
+pygments>=2.0
 pydantic
+# pydantic 2.x deps. With --no-deps, `import pydantic` blows up
+# with `ModuleNotFoundError: 'pydantic_core'` (compiled Rust core,
+# separate wheel), then `'annotated_types'`, then
+# `'typing_inspection'` (used by pydantic 2.10+ for fields).
+pydantic-core
+annotated-types>=0.6
+typing-inspection>=0.4
 pyyaml
 nest-asyncio
 
@@ -42,7 +63,9 @@ anyio
 sniffio
 h11
 
-tokenizers
+# Unpinned resolves to 0.23.1+ which breaks `from transformers import
+# AutoConfig`; transformers 4.56..5.3 declares tokenizers<=0.23.0.
+tokenizers<=0.23.0
 transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.3.0
 trl>=0.18.2,!=0.19.0,<=0.24.0
 sentence-transformers

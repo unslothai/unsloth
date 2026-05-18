@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import platform
@@ -20,6 +21,49 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = (
     "https://github.com/Dao-AILab/flash-attention/releases/download"
 )
+
+
+@functools.lru_cache(maxsize = 1)
+def has_blackwell_gpu() -> bool:
+    """Return True if any visible NVIDIA GPU has compute capability >= 10.0
+    (Blackwell: sm_100, sm_120, sm_121, ...).
+
+    Dao-AILab does not publish prebuilt flash-attention wheels for these
+    architectures, and the older-arch wheels fail to load on Blackwell, so
+    callers use this gate to skip the flash-attn install/upgrade path.
+
+    Result is cached for the process lifetime since GPU hardware does not
+    change. Tests that mock subprocess/nvidia-smi must call
+    ``has_blackwell_gpu.cache_clear()`` before each invocation.
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+            env = child_env_without_native_path_secret(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    for line in result.stdout.splitlines():
+        cap = line.strip()
+        if not cap:
+            continue
+        major_part = cap.split(".", 1)[0]
+        try:
+            major = int(major_part)
+        except ValueError:
+            continue
+        if major >= 10:
+            return True
+    return False
 
 
 def linux_wheel_platform_tag() -> str | None:
