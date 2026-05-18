@@ -1695,6 +1695,7 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         ctx_checkpoints: int = 0,
         kv_on_gpu: bool = True,
+        mtp_engaged: bool = False,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
@@ -1708,6 +1709,12 @@ class LlamaCppBackend:
         the KV cache lives in CPU RAM and doesn't compete with weights
         for VRAM; the requested context is honored verbatim. The other
         keyword args mirror ``_estimate_kv_cache_bytes``.
+
+        ``mtp_engaged`` reserves extra VRAM for the MTP draft model's
+        KV cache + compute graph buffers. llama.cpp's MTP path keeps a
+        secondary cache sized off the target's KV; on tight VRAM tiers
+        (e.g. 32 GB) auto-fit at native context would otherwise spill
+        and force llama-server into a slower partial-offload path.
         """
         if not self._can_estimate_kv():
             logger.debug(
@@ -1728,7 +1735,9 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        budget_bytes = available_mib * 1024 * 1024 * 0.90
+        # MTP needs a tighter budget; drop from 0.90 to 0.85.
+        budget_frac = 0.85 if mtp_engaged else 0.90
+        budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
         # Check if requested context already fits
@@ -2614,6 +2623,22 @@ class LlamaCppBackend:
                     # GPU/VRAM-fit logic below may shrink this if hardware is limited.
                     max_available_ctx = self._context_length or effective_ctx
 
+                    # Will MTP engage on this load? If so, the auto-fit
+                    # budget needs to reserve extra VRAM for the draft
+                    # model's KV cache + compute graph.
+                    _normalized_spec = (
+                        speculative_type.lower().strip()
+                        if speculative_type else None
+                    )
+                    _mtp_will_engage = bool(
+                        (
+                            bool(self._nextn_predict_layers)
+                            or _is_mtp_model_name(model_identifier, model_path)
+                        )
+                        and _normalized_spec not in {"off"}
+                        and not _extra_args_set_spec_type(extra_args)
+                    )
+
                     # Auto-cap context to fit in GPU VRAM and select GPUs.
                     #
                     # Two policies depending on whether the user set n_ctx:
@@ -2649,6 +2674,7 @@ class LlamaCppBackend:
                                     model_size,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
+                                    mtp_engaged = _mtp_will_engage,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
@@ -2700,6 +2726,7 @@ class LlamaCppBackend:
                                     model_size,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
+                                    mtp_engaged = _mtp_will_engage,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
