@@ -485,6 +485,42 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return False
 
 
+def _mtp_should_force_text_only(
+    *,
+    mtp_detected: bool,
+    effective_is_vision: bool,
+    supports_mtp: bool,
+    speculative_type: Optional[str],
+    extra_args: Optional[Iterable[str]],
+) -> bool:
+    """Temporary shim: should an MTP GGUF drop mmproj/vision to engage MTP?
+
+    llama.cpp MTP speculative decoding (``--spec-type draft-mtp``) does not
+    support ``--mmproj`` or ``-np > 1`` (llama.cpp #22673; the Qwen3.6 MTP
+    guide). Unsloth's ``*-MTP`` GGUF repos still ship an mmproj projector,
+    which pins ``effective_is_vision=True`` and therefore suppresses the
+    draft-mtp auto-promotion in ``load_model`` -- so the headline MTP
+    speedup never engages out of the box for those repos.
+
+    Return True only when we positively detect an MTP GGUF that would
+    otherwise be forced into vision mode, the bundled llama-server actually
+    advertises the MTP spec type, and the caller has not taken over
+    speculative decoding. Deliberately narrow so non-MTP GGUFs are never
+    affected, an explicit user ``--spec-type`` (or ``speculative_type``
+    other than auto/default/draft-mtp, including ``"off"``) opts out, and
+    an outdated binary falls back to today's behavior. Remove once
+    upstream llama.cpp supports mmproj + MTP together.
+    """
+    if not (mtp_detected and effective_is_vision and supports_mtp):
+        return False
+    spec = (speculative_type or "").strip().lower()
+    if spec not in ("", "default", "draft-mtp"):
+        return False
+    if _extra_args_set_spec_type(extra_args):
+        return False
+    return True
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -2560,6 +2596,36 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+
+                # Temporary MTP/vision shim: llama.cpp MTP cannot run with
+                # --mmproj or -np > 1, but Unsloth *-MTP repos still ship an
+                # mmproj that would otherwise pin effective_is_vision=True and
+                # suppress draft-mtp auto-promotion below. When we positively
+                # detect an MTP GGUF, the binary supports MTP, and the caller
+                # has not taken over speculative decoding, fall back to
+                # text-only (no mmproj, single slot) so MTP can engage.
+                # Scoped so non-MTP GGUFs are untouched; drop once upstream
+                # supports mmproj + MTP. See llama.cpp #22673.
+                if _mtp_should_force_text_only(
+                    mtp_detected = bool(self._nextn_predict_layers)
+                    or _is_mtp_model_name(model_identifier, model_path),
+                    effective_is_vision = effective_is_vision,
+                    supports_mtp = bool(
+                        self.probe_server_capabilities(binary).get("supports_mtp")
+                    ),
+                    speculative_type = speculative_type,
+                    extra_args = extra_args,
+                ):
+                    logger.warning(
+                        "MTP GGUF detected: disabling mmproj/vision and "
+                        "forcing a single slot so --spec-type draft-mtp can "
+                        "engage (llama.cpp MTP does not support --mmproj or "
+                        "-np > 1). Image input is unavailable for this "
+                        "session; temporary until upstream supports both."
+                    )
+                    launch_mmproj_path = None
+                    effective_is_vision = False
+                    n_parallel = 1
 
                 cmd = [
                     binary,
