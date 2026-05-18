@@ -240,13 +240,13 @@ class TestLoopBasic:
     def test_single_tool_then_answer(self):
         loop, exec_fn = _make_loop(
             turns = [
-                # Iteration 1: tool call only.
+                # : tool call only.
                 [
                     '<tool_call>{"name":"web_search",',
                     '"arguments":{"query":"weather"}}',
                     "</tool_call>",
                 ],
-                # Iteration 2: final answer.
+                # : final answer.
                 ["The ", "weather is ", "sunny."],
             ],
             exec_results = ["Sunny and 22C"],
@@ -414,11 +414,11 @@ class TestLoopControl:
         # model keeps asking for tools, then emit a final-attempt round.
         loop, exec_fn = _make_loop(
             turns = [
-                # iteration 1: tool call (executes once)
+                # : tool call (executes once)
                 [
                     '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
                 ],
-                # iteration 2: model gives a final answer when nudged.
+                # : model gives a final answer when nudged.
                 ["here is the final answer"],
             ],
             exec_results = ["result"],
@@ -462,12 +462,12 @@ class TestProseMentioningToolCall:
         # of silently stripping everything past the literal marker.
         loop, exec_fn = _make_loop(
             turns = [
-                # Iteration 1: a real tool call so the loop moves to
-                # iteration 2.
+                # : a real tool call so the loop moves to
+                # .
                 [
                     '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
                 ],
-                # Iteration 2: prose that mentions the literal text.
+                # : prose that mentions the literal text.
                 ["the docs say <tool_call> means an LLM tool call wrapper"],
             ],
             exec_results = ["result"],
