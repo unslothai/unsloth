@@ -45,6 +45,7 @@ for _exc_name in (
     "TimeoutException",
     "ReadError",
     "RemoteProtocolError",
+    "WriteError",
 ):
     if not hasattr(httpx, _exc_name):
         setattr(httpx, _exc_name, type(_exc_name, (Exception,), {}))
@@ -102,6 +103,20 @@ class TestWaitForHealthResilience:
             raise httpx.RemoteProtocolError("partial response")
 
         monkeypatch.setattr(httpx, "get", raise_rpe)
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert b._process.poll.call_count >= 2
+
+    def test_write_error_also_swallowed(self, monkeypatch):
+        """Send-side socket failure mid-request raises WriteError --
+        same recovery path as ReadError."""
+        b = _make_backend()
+        b._process.poll.side_effect = [None, 1]
+        b._process.returncode = 1
+
+        def raise_we(*a, **kw):
+            raise httpx.WriteError("connection broken on write")
+
+        monkeypatch.setattr(httpx, "get", raise_we)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._process.poll.call_count >= 2
 

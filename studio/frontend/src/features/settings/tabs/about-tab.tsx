@@ -48,7 +48,10 @@ async function fetchStudioVersions(): Promise<{
   studioVersion: string | null;
 }> {
   try {
-    const res = await fetch(apiUrl("/api/health"));
+    const token = getAuthToken();
+    const headers = new Headers();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(apiUrl("/api/health"), { headers });
     if (!res.ok) {
       return { packageVersion: null, studioVersion: null };
     }
