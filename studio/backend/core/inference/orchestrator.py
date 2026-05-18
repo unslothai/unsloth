@@ -707,6 +707,16 @@ class InferenceOrchestrator:
                         "audio_type": model_info.get("audio_type"),
                         "has_audio_input": model_info.get("has_audio_input", False),
                     }
+                    # Mirror chat_template_info from the worker so route
+                    # handlers can run capability detection (tools,
+                    # reasoning, preserve_thinking) against the resolved
+                    # tokenizer.chat_template without re-entering the
+                    # subprocess.
+                    _tpl_info = model_info.get("chat_template_info")
+                    if isinstance(_tpl_info, dict):
+                        self.models[self.active_model_name][
+                            "chat_template_info"
+                        ] = _tpl_info
                     self.loading_models.discard(model_name)
                     logger.info(
                         "Model '%s' loaded successfully in subprocess", model_name

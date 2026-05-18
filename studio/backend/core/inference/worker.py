@@ -346,6 +346,30 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
             }
+            # Ship the chat_template_info dict (which holds the resolved
+            # tokenizer.chat_template string) up to the orchestrator so the
+            # FastAPI routes can run capability detection on it. Without
+            # this hop the routes see an empty dict and advertise
+            # supports_tools=False for every safetensors model.
+            try:
+                _bm = getattr(backend, "models", {}) or {}
+                _entry = _bm.get(mc.identifier) or _bm.get(
+                    getattr(backend, "active_model_name", None)
+                ) or {}
+                _tpl_info = _entry.get("chat_template_info")
+                if isinstance(_tpl_info, dict):
+                    model_info["chat_template_info"] = {
+                        "has_template": bool(_tpl_info.get("has_template", False)),
+                        "template": _tpl_info.get("template"),
+                        "format_type": _tpl_info.get("format_type", "generic"),
+                        "template_name": _tpl_info.get("template_name"),
+                        "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                    }
+            except Exception as _tpl_exc:
+                logger.warning(
+                    "Failed to capture chat_template_info for IPC reply: %s",
+                    _tpl_exc,
+                )
             _send_response(
                 resp_queue,
                 {

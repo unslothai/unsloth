@@ -622,6 +622,7 @@ async def load_model(
                     reasoning_style = llama_backend.reasoning_style,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
+                    supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.speculative_type,
                 )
