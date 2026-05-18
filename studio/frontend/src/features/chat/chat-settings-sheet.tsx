@@ -979,26 +979,25 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
-                {!currentModelIsMultimodal && (
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                        Speculative Decoding
-                      </span>
-                      <InfoHint>
-                        N-gram speculation; faster generation with negligible
-                        VRAM overhead. Text-only models.
-                      </InfoHint>
-                    </div>
-                    <Switch
-                      className="panel-switch shrink-0"
-                      checked={speculativeType != null}
-                      onCheckedChange={(checked) => {
-                        setSpeculativeType(checked ? "default" : null);
-                      }}
-                    />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Speculative Decoding
+                    </span>
+                    <InfoHint>
+                      Faster generation with 0% accuracy hit.
+                    </InfoHint>
                   </div>
-                )}
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={
+                      speculativeType !== "off" && speculativeType != null
+                    }
+                    onCheckedChange={(checked) => {
+                      setSpeculativeType(checked ? "default" : "off");
+                    }}
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
@@ -1344,7 +1343,6 @@ export function ChatSettingsPanel({
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
-            {!isExternalModel ? <SpeculativeDecodingToggle /> : null}
           </div>
         </CollapsibleSection>
 
@@ -1515,33 +1513,6 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
-      />
-    </div>
-  );
-}
-
-function SpeculativeDecodingToggle() {
-  const enabled = useChatRuntimeStore((s) => s.speculativeDecodingEnabled);
-  const setEnabled = useChatRuntimeStore(
-    (s) => s.setSpeculativeDecodingEnabled,
-  );
-
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-          Speculative Decoding
-        </span>
-        <InfoHint>
-          Faster generation via draft-mtp on MTP GGUFs and ngram on
-          everything else. Off forces speculative_type=off on /load so
-          neither path is used. Applies on next model load.
-        </InfoHint>
-      </div>
-      <Switch
-        className="panel-switch"
-        checked={enabled}
-        onCheckedChange={setEnabled}
       />
     </div>
   );
