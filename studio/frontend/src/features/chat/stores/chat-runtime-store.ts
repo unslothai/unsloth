@@ -468,9 +468,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           return nextState;
         });
       } catch {
-        set((state) =>
-          state.settingsHydrated ? state : { settingsHydrated: true },
-        );
         warnSettingsPersistenceFailure();
       } finally {
         settingsHydrationPromise = null;
