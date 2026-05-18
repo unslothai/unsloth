@@ -72,6 +72,17 @@ class LoadRequest(BaseModel):
         None,
         description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
     )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = (
+            "Max draft tokens per step for MTP speculative decoding "
+            "(--spec-draft-n-max). Defaults to 6 on GPU and 3 on CPU/Mac "
+            "when unset. Ignored when speculative_type resolves to off or "
+            "to a non-MTP mode."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -220,6 +231,13 @@ class LoadResponse(BaseModel):
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        description = (
+            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "None when the platform default is in effect."
+        ),
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -341,6 +359,13 @@ class InferenceStatusResponse(BaseModel):
     speculative_type: Optional[str] = Field(
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        description = (
+            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "None when the platform default is in effect."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

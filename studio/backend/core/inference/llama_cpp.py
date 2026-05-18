@@ -520,6 +520,8 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
+        # User-supplied --spec-draft-n-max override (None = platform default).
+        self._spec_draft_n_max: Optional[int] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
@@ -799,6 +801,12 @@ class LlamaCppBackend:
     @property
     def speculative_type(self) -> Optional[str]:
         return self._speculative_type
+
+    @property
+    def spec_draft_n_max(self) -> Optional[int]:
+        """User --spec-draft-n-max override active on the load, or None
+        when the platform default (6 GPU / 3 CPU) is in effect."""
+        return self._spec_draft_n_max
 
     # ── Binary discovery ──────────────────────────────────────────
 
@@ -2265,6 +2273,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
         speculative_type: Optional[str] = None,
+        spec_draft_n_max: Optional[int] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
         n_parallel: int = 1,
@@ -2296,6 +2305,7 @@ class LlamaCppBackend:
                 n_ctx = n_ctx,
                 cache_type_kv = cache_type_kv,
                 speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -2661,9 +2671,12 @@ class LlamaCppBackend:
                 ):
                     normalized_spec = "draft-mtp"
                 if user_owns_spec_type:
-                    # User --spec-type wins (it accumulates if repeated).
+                    # User --spec-type wins; suppress auto-emit so we
+                    # don't emit a duplicate (single-flag, comma-chained).
                     normalized_spec = None
                     self._speculative_type = None
+                # Default reset; MTP branch re-sets when user overrides.
+                self._spec_draft_n_max = None
                 if normalized_spec and normalized_spec != "off":
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
@@ -2683,13 +2696,19 @@ class LlamaCppBackend:
                             )
                             self._speculative_type = None
                         else:
+                            # User override > platform default (6 GPU / 3 CPU).
+                            if spec_draft_n_max is not None:
+                                draft_n_max = int(spec_draft_n_max)
+                                self._spec_draft_n_max = draft_n_max
+                            else:
+                                draft_n_max = 6 if gpus else 3
                             if gpus:
                                 cmd.extend(
                                     [
                                         "--spec-type",
                                         mtp_token,
                                         "--spec-draft-n-max",
-                                        "6",
+                                        str(draft_n_max),
                                     ]
                                 )
                             else:
@@ -2702,7 +2721,7 @@ class LlamaCppBackend:
                                         "--spec-type",
                                         f"ngram-mod,{mtp_token}",
                                         "--spec-draft-n-max",
-                                        "3",
+                                        str(draft_n_max),
                                         "--spec-ngram-mod-n-match",
                                         "24",
                                         "--spec-ngram-mod-n-min",
@@ -3078,6 +3097,7 @@ class LlamaCppBackend:
         extra_args: Optional[List[str]],
         is_vision: bool,
         gguf_path: Optional[str] = None,
+        spec_draft_n_max: Optional[int] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -3127,6 +3147,12 @@ class LlamaCppBackend:
         backend_spec = _norm(self._speculative_type) or "off"
         if req_spec != backend_spec:
             return False
+
+        # spec_draft_n_max only matters when MTP is engaged; None on
+        # either side means "platform default" and matches anything.
+        if req_spec == "draft-mtp" and spec_draft_n_max is not None:
+            if int(spec_draft_n_max) != (self._spec_draft_n_max or 0):
+                return False
 
         if (self._chat_template_override or None) != (chat_template_override or None):
             return False
@@ -3194,6 +3220,7 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._speculative_type = None
+            self._spec_draft_n_max = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_kv_heads_by_layer = None

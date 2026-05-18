@@ -555,3 +555,85 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
     caps2 = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert caps2["mtp_token"] == "draft-mtp"
     assert caps2["supports_mtp"] is True
+
+
+# spec_draft_n_max plumbing (first-class --spec-draft-n-max override).
+
+
+def test_already_in_target_state_matches_when_draft_n_max_unset():
+    # None on the request means "platform default"; matches any backend.
+    backend = _mtp_backend(_spec_draft_n_max = None)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            spec_draft_n_max = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
+    backend = _mtp_backend(_spec_draft_n_max = 4)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            spec_draft_n_max = 4,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_mismatches_when_draft_n_max_differs():
+    backend = _mtp_backend(_spec_draft_n_max = 4)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            spec_draft_n_max = 8,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
+    # ngram-mod backend; spec_draft_n_max is MTP-only and must not force
+    # a reload against a non-MTP active spec.
+    backend = _mtp_backend(_speculative_type = "ngram-mod", _spec_draft_n_max = None)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "ngram-mod",
+            spec_draft_n_max = 8,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )

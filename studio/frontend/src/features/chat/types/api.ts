@@ -43,6 +43,8 @@ export interface LoadModelRequest {
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   speculative_type?: string | null;
+  /** --spec-draft-n-max override for MTP speculative decoding. */
+  spec_draft_n_max?: number | null;
 }
 
 export interface ValidateModelResponse {
@@ -119,6 +121,7 @@ export interface LoadModelResponse {
   cache_type_kv?: string | null;
   chat_template?: string | null;
   speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -156,6 +159,7 @@ export interface InferenceStatusResponse {
   cache_type_kv?: string | null;
   chat_template_override?: string | null;
   speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
 }
 
 export interface AudioGenerationResponse {
