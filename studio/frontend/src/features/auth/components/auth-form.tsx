@@ -183,6 +183,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
+  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
+  // reuse that password; the Current password input is only rendered for the
+  // admin-forced must_change_password path where no bootstrap is available.
+  const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const invalidChangePasswordForm =
     !isLoginMode &&
     (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
@@ -337,39 +341,36 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         {!isLoginMode && (
           <>
-            <div className="space-y-2">
-              <Label htmlFor="current-password">Current password</Label>
-              <div className="relative">
-                <Input
-                  id="current-password"
-                  type={showPassword ? "text" : "password"}
-                  className="pr-10"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  minLength={8}
-                  required
-                  placeholder={
-                    window.__UNSLOTH_BOOTSTRAP__?.password
-                      ? "Pre-filled with first-boot password"
-                      : undefined
-                  }
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                >
-                  {showPassword ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </Button>
+            {!hasBootstrapPassword && (
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current password</Label>
+                <div className="relative">
+                  <Input
+                    id="current-password"
+                    type={showPassword ? "text" : "password"}
+                    className="pr-10"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="new-password">New password</Label>
               <div className="relative">
