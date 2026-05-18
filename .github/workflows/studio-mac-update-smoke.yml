@@ -142,9 +142,16 @@ jobs:
         # Round-trip through uninstall.sh on real macOS. As a side effect
         # this exercises the macOS-only .app bundle + Launch Services
         # removal path (~/Applications/Unsloth Studio.app, lsregister -u)
-        # which is not testable from a Linux runner.
+        # which is not testable from a Linux runner. Skips gracefully if
+        # uninstall.sh has not landed yet (lets this workflow merge
+        # before #5497).
         run: |
           set -o pipefail
+          if [ ! -f uninstall.sh ]; then
+            echo "uninstall.sh not present in this tree; skipping round-trip"
+            : > logs/uninstall.log
+            exit 0
+          fi
           sh uninstall.sh 2>&1 | tee logs/uninstall.log
           leak=0
           for p in \

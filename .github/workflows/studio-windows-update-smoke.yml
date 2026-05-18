@@ -272,10 +272,16 @@ jobs:
         # tree at %USERPROFILE%\.unsloth\studio. Catches regressions
         # where install.ps1 starts writing under a new key (registry,
         # Start Menu, %APPDATA%) and uninstall.ps1 has not been updated
-        # to match.
+        # to match. Skips gracefully if uninstall.ps1 has not landed yet
+        # (lets this workflow merge before #5513).
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
+          if (-not (Test-Path "$PWD\uninstall.ps1")) {
+            Write-Host "uninstall.ps1 not present in this tree; skipping round-trip"
+            "" | Set-Content logs/uninstall.log
+            exit 0
+          }
           pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
           $leak = 0
           foreach ($p in @(
