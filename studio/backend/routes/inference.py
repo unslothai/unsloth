@@ -430,14 +430,15 @@ def _monitor_prompt_from_messages(messages) -> str:
     return "\n\n".join(lines)
 
 
-def _monitor_usage(monitor_id: Optional[str], usage: Optional[dict], context_length = None):
+def _monitor_usage(
+    monitor_id: Optional[str], usage: Optional[dict], context_length = None
+):
     if not usage:
         return
     api_monitor.set_usage(
         monitor_id,
         prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
-        completion_tokens = usage.get("completion_tokens")
-        or usage.get("output_tokens"),
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
         total_tokens = usage.get("total_tokens"),
         context_length = context_length,
     )
