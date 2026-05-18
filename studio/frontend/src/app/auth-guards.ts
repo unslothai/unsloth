@@ -9,6 +9,7 @@ import {
   hasRefreshToken,
   mustChangePassword,
   refreshSession,
+  setMustChangePassword,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -26,7 +27,13 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
-    return (await res.json()) as AuthStatus;
+    const status = (await res.json()) as AuthStatus;
+    // Reconcile stale localStorage flag with server truth so the change-password
+    // gate cannot trap a user whose password was already rotated elsewhere.
+    if (!status.requires_password_change && mustChangePassword()) {
+      setMustChangePassword(false);
+    }
+    return status;
   } catch {
     return { initialized: true, requires_password_change: mustChangePassword() };
   }
@@ -61,6 +68,9 @@ export async function requireGuest(): Promise<void> {
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
+  // Reconcile the localStorage flag before routing so a stale flag cannot
+  // bounce an authenticated user back onto /change-password.
+  await fetchAuthStatus();
   throw redirect({ to: getPostAuthRoute() });
 }
 

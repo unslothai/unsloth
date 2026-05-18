@@ -105,12 +105,18 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
 
+          // Drop stale localStorage flag so a prior install cannot pin the user
+          // on /change-password after the server has cleared the requirement.
+          if (!result.requires_password_change && mustChangePassword()) {
+            setMustChangePassword(false);
+          }
+
           // Redirect between login ↔ change-password based on server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change && !mustChangePassword()) {
+          if (mode === "change-password" && !result.requires_password_change) {
             navigate({ to: "/login" });
             return;
           }
@@ -163,14 +169,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const blockedByState =
     initialized === false ||
     (mode === "login" && requiresPasswordChange) ||
-    (mode === "change-password" && !requiresPasswordChange && !mustChangePassword());
+    (mode === "change-password" && !requiresPasswordChange);
 
   let helperText: string | null = null;
   if (initialized === false) {
     helperText = "Auth is still bootstrapping the default admin account.";
   } else if (isLoginMode && requiresPasswordChange) {
     helperText = "Sign in once with the seeded credentials to change the password.";
-  } else if (!isLoginMode && !requiresPasswordChange && !mustChangePassword()) {
+  } else if (!isLoginMode && !requiresPasswordChange) {
     helperText = "Password already updated. Use the login screen.";
   }
   const title = isLoginMode ? "Welcome back" : "Setup your account";
