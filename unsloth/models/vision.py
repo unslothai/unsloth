@@ -547,6 +547,40 @@ def _construct_vlm_processor_fallback(
     return None
 
 
+def _get_total_transformer_layers(model):
+    """Best-effort total transformer block count across HF model shapes.
+
+    Used to translate `finetune_last_n_layers` (the mlx-lm CLI-style
+    knob) into a `layers_to_transform` list for PEFT. Returns None when
+    the count cannot be determined; the caller must treat None as
+    "skip the conversion and leave layers_to_transform alone".
+    """
+    cfg = getattr(model, "config", None)
+    if cfg is None:
+        return None
+    for name in (
+        "num_hidden_layers",
+        "n_layer",
+        "n_layers",
+        "num_layers",
+    ):
+        v = getattr(cfg, name, None)
+        if isinstance(v, int) and v > 0:
+            return v
+    text_cfg = getattr(cfg, "text_config", None)
+    if text_cfg is not None:
+        for name in (
+            "num_hidden_layers",
+            "n_layer",
+            "n_layers",
+            "num_layers",
+        ):
+            v = getattr(text_cfg, name, None)
+            if isinstance(v, int) and v > 0:
+                return v
+    return None
+
+
 class FastBaseModel:
     @staticmethod
     def from_pretrained(
@@ -1319,6 +1353,7 @@ class FastBaseModel:
         finetune_language_layers = True,
         finetune_attention_modules = True,
         finetune_mlp_modules = True,
+        finetune_last_n_layers = None,
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
@@ -1416,6 +1451,26 @@ class FastBaseModel:
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
+
+        # finetune_last_n_layers: opt-in convenience knob for matching
+        # mlx-lm CLI semantics where LoRA is applied to the LAST N
+        # transformer blocks. mlx-lm/lora.py CONFIG_DEFAULTS sets
+        # num_layers=16. The CUDA path here exposes the same knob so
+        # users can keep the GPU run in sync with their MLX run on
+        # the same fixture. Defaults to None (= all layers, current
+        # behavior). Only fills layers_to_transform when the user
+        # didn't already pass one; ignored on models whose backbone
+        # doesn't expose num_hidden_layers.
+        if (
+            finetune_last_n_layers is not None
+            and layers_to_transform is None
+        ):
+            _total_layers = _get_total_transformer_layers(model)
+            if _total_layers is not None and _total_layers > 0:
+                n = max(1, min(int(finetune_last_n_layers), _total_layers))
+                layers_to_transform = list(
+                    range(_total_layers - n, _total_layers)
+                )
 
         # Get only allowed parameters for LoraConfig
         local_variables = {

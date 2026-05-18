@@ -2831,6 +2831,7 @@ class FastLlamaModel:
         bias = "none",
         layers_to_transform = None,
         layers_pattern = None,
+        finetune_last_n_layers = None,
         use_gradient_checkpointing = "unsloth",
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
@@ -2863,6 +2864,7 @@ class FastLlamaModel:
                 bias = bias,
                 layers_to_transform = layers_to_transform,
                 layers_pattern = layers_pattern,
+                finetune_last_n_layers = finetune_last_n_layers,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 random_state = random_state,
                 max_seq_length = max_seq_length,
@@ -3159,6 +3161,26 @@ class FastLlamaModel:
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
+
+        # finetune_last_n_layers: opt-in convenience knob for matching
+        # mlx-lm CLI semantics where LoRA is applied to the LAST N
+        # transformer blocks (mlx_lm/lora.py CONFIG_DEFAULTS num_layers
+        # defaults to 16). Default None = all layers (current behavior).
+        # When set, fills layers_to_transform if the user didn't already
+        # provide one. Mirrors unsloth_zoo.mlx.loader.FastMLXModel
+        # get_peft_model so a single config value controls both CUDA
+        # and MLX paths consistently.
+        if (
+            finetune_last_n_layers is not None
+            and layers_to_transform is None
+        ):
+            from .vision import _get_total_transformer_layers
+            _total_layers = _get_total_transformer_layers(model)
+            if _total_layers is not None and _total_layers > 0:
+                _n = max(1, min(int(finetune_last_n_layers), _total_layers))
+                layers_to_transform = list(
+                    range(_total_layers - _n, _total_layers)
+                )
 
         arguments = dict(
             r = r,
