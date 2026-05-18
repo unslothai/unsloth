@@ -1184,6 +1184,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += data_collator_check
 
         # Also check if .pad exists -> if not, and is VLM, then change it!
+        # Only swap LM/Seq2Seq collators; leave preference collators
+        # (DPODataCollatorWithPadding etc.) alone so ORPO/DPO/CPO/KTO keep
+        # their own prompt/chosen/rejected handling.
         pad_check = (
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
             "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"
@@ -1192,7 +1195,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "                __tokenizer.tokenizer,\n"
             "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "            )\n"
-            "        else:\n"
+            "        elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
             "            data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "                __tokenizer.tokenizer,\n"
             "                mlm = False,\n"

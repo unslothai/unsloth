@@ -503,6 +503,79 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
+# Use the underlying text tokenizer for ORPO row tokenization when a
+# multimodal processor is supplied as the processing class.
+def orpo_trainer_text_tokenizer(function_name, function):
+    if function_name == "build_tokenized_answer":
+        function = re.sub(
+            r"(?m)^([ \t]*)full_tokenized = self\.processing_class\(prompt \+ answer, add_special_tokens=False\)\n"
+            r'\1prompt_input_ids = self\.processing_class\(prompt, add_special_tokens=False\)\["input_ids"\]\n',
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n"
+            r"\1full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)"
+            "\n"
+            r'\1prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]'
+            "\n",
+            function,
+            count = 1,
+        )
+        return function
+
+    if function_name != "tokenize_row":
+        return function
+
+    if (
+        'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+        not in function
+    ):
+        new_function = re.sub(
+            r"(?m)^([ \t]*)batch = \{\}\n",
+            r"\1batch = {}"
+            "\n"
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n",
+            function,
+            count = 1,
+        )
+        if new_function == function:
+            return function
+        function = new_function
+    function = function.replace("self.processing_class(", "tokenizer(")
+    function = function.replace(
+        "self.processing_class.bos_token_id", "tokenizer.bos_token_id"
+    )
+    function = function.replace(
+        "self.processing_class.eos_token_id", "tokenizer.eos_token_id"
+    )
+    return function
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
+
+
+# Resolve `processing_class.pad_token_id` through the underlying tokenizer when
+# a multimodal processor is supplied (processors lack `pad_token_id`). Without
+# this, ORPOTrainer.__init__ raises AttributeError on
+# `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
+# and on `self.padding_value = ... else processing_class.pad_token_id`.
+_PAD_FALLBACK = (
+    "(getattr(processing_class, 'pad_token_id', None) "
+    "if getattr(processing_class, 'pad_token_id', None) is not None "
+    "else getattr(getattr(processing_class, 'tokenizer', None), 'pad_token_id', None))"
+)
+
+
+def orpo_trainer_processor_pad_token(function_name, function):
+    if function_name != "__init__":
+        return function
+    if "processing_class.pad_token_id" not in function:
+        return function
+    return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_processor_pad_token)
+
+
 # Fix bare pop("push_to_hub_token") in compiled SFT/IterativeSFT trainer __init__
 # On transformers 5.0+, to_dict() no longer includes push_to_hub_token, so bare pop KeyErrors
 def sft_trainer_push_to_hub_token(function_name, function):

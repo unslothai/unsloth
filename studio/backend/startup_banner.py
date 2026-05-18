@@ -33,18 +33,49 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
         print(msg)
 
 
+def print_studio_stop_hint() -> None:
+    """Print the trailing stop hint + closing divider. Separate from the main
+    banner so callers can interleave content (e.g. a reachability check)."""
+    use_color = stdout_supports_color()
+    dim = "\033[38;5;245m"
+    stop_hint_style = "\033[38;5;215;1m"
+    reset = "\033[0m"
+
+    def style(text: str, code: str) -> str:
+        return f"{code}{text}{reset}" if use_color else text
+
+    print(
+        "\n".join(
+            [
+                "",
+                style(
+                    "  To stop Unsloth Studio: press Ctrl+C in this terminal.",
+                    stop_hint_style,
+                ),
+                style("  (On macOS this is Control+C, not Command+C.)", dim),
+                style("─" * 52, dim),
+                "",
+            ]
+        )
+    )
+
+
 def print_studio_access_banner(
     *,
     port: int,
     bind_host: str,
     display_host: str,
+    include_stop_hint: bool = True,
 ) -> None:
-    """Pretty-print URLs after the server is listening (beginner-friendly)."""
+    """Pretty-print URLs after the server is listening. Set
+    ``include_stop_hint=False`` to omit the trailing stop block; pair with
+    :func:`print_studio_stop_hint` after inserting your own content."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
     local_url_style = "\033[38;5;108;1m"
     secondary = "\033[38;5;109m"
+    stop_hint_style = "\033[38;5;215;1m"
     reset = "\033[0m"
 
     def style(text: str, code: str) -> str:
@@ -116,8 +147,48 @@ def print_studio_access_banner(
                 f"  Tip: if you are on this computer, open {tip_url}/ in your browser.",
                 dim,
             ),
-            "",
         ]
     )
+
+    if loopback_bind and not listen_all:
+        lines.extend(
+            [
+                "",
+                style(
+                    "  Studio is only reachable on this machine (bound to 127.0.0.1).",
+                    secondary,
+                ),
+                style(
+                    "  To deploy and access globally:",
+                    secondary,
+                ),
+                style(
+                    "    1. press Ctrl+C to stop Studio",
+                    secondary,
+                ),
+                style(
+                    f"    2. relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
+                    secondary,
+                ),
+                style(
+                    "  Only do this on trusted networks -- it exposes the API on every interface.",
+                    secondary,
+                ),
+            ]
+        )
+
+    if include_stop_hint:
+        lines.extend(
+            [
+                "",
+                style(
+                    "  To stop Unsloth Studio: press Ctrl+C in this terminal.",
+                    stop_hint_style,
+                ),
+                style("  (On macOS this is Control+C, not Command+C.)", dim),
+                style("─" * 52, dim),
+                "",
+            ]
+        )
 
     print("\n".join(lines))

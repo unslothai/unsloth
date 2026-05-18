@@ -127,6 +127,7 @@ jobs:
         run: |
           PYTHONPATH=. python -m pytest \
             tests/version_compat/test_peft_pinned_symbols.py \
+            tests/version_compat/test_unsloth_zoo_save_merged_pinned_symbols.py \
             -v --tb=short
 
   st-pinned-symbols:

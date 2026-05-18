@@ -6,6 +6,7 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
+  setMustChangePassword,
   storeAuthTokens,
 } from "./session";
 import { refreshSession } from "./api";
@@ -72,7 +73,8 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const tokens = await invoke<DesktopAuthResponse>("desktop_auth");
-    storeAuthTokens(tokens.access_token, tokens.refresh_token, false);
+    storeAuthTokens(tokens.access_token, tokens.refresh_token);
+    setMustChangePassword(false);
     clearTauriAuthFailure();
     return true;
   } catch (error) {
