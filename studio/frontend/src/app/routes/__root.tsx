@@ -108,7 +108,7 @@ function RootLayout() {
                   transition={{ duration: 0.15 }}
                   className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
                 >
-                  <Suspense fallback={null}>
+                  <Suspense fallback={RouteFallback}>
                     <Outlet />
                   </Suspense>
                 </motion.div>
