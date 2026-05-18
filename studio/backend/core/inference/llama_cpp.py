@@ -10,6 +10,7 @@ through its OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
+import itertools as _itertools
 import json
 import os
 import re
@@ -72,13 +73,16 @@ _TRAILING_PLAN_INTENT = re.compile(
     r")[^.!?\n]*[.!?]?\s*$"
 )
 _TRAILING_PLAN_LIST = re.compile(
-    r"(?ims)"
+    # No `m` flag: terminal `\s*$` must match end-of-string, not end-of-line.
+    # With `m` an answer like "1. one\n2. two\n\nDone." would still match on
+    # the list block and trigger a spurious auto-continue.
+    r"(?i)"
     r"(?:let me|i['’]ll|i will|i['’]m going to|i am going to|"
     r"here['’]?s (?:my |the |a )?(?:plan|approach|steps?)|"
     r"as follows|the (?:plan|steps?) (?:is|are))"
     r"[^:\n]{0,160}:\s*\n"
     r"(?:\s*(?:[-*•]|\d+\.)\s+[^\n]+\n?)+"
-    r"\s*$"
+    r"\s*\Z"
 )
 _TRAILING_PLAN_COLON = re.compile(
     r"(?i)(?:let me|i['’]ll|i will|i['’]m going to|i am going to|"
@@ -4070,11 +4074,19 @@ class LlamaCppBackend:
         # not steal the tool-coercive re-prompt budget.
         _continue_count = 0
 
-        # Reserve extra iterations for re-prompts and continues so they
-        # don't consume the caller's tool-call budget. Only add the
-        # extra slots when tool iterations are actually allowed.
-        _extra = _MAX_REPROMPTS + _MAX_CONTINUES if max_tool_iterations > 0 else 0
-        for iteration in range(max_tool_iterations + _extra):
+        # Grant headroom for re-prompts and continues only as they're
+        # actually consumed, so the caller's tool-iteration cap is
+        # respected end-to-end. Each consumed re-prompt or continue
+        # raises the effective cap by exactly one slot, so the total
+        # never exceeds max_tool_iterations + reprompts + continues
+        # (bounded above by max_tool_iterations + _MAX_REPROMPTS +
+        # _MAX_CONTINUES). itertools.count keeps `continue` semantics
+        # intact in the loop body below.
+        for iteration in _itertools.count():
+            if iteration >= (
+                max_tool_iterations + _reprompt_count + _continue_count
+            ):
+                break
             if cancel_event is not None and cancel_event.is_set():
                 return
 
