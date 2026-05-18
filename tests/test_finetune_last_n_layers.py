@@ -22,6 +22,7 @@ def test_get_total_transformer_layers_reads_num_hidden_layers():
 
     class FakeConfig:
         num_hidden_layers = 18
+
     class FakeModel:
         config = FakeConfig()
 
@@ -33,8 +34,10 @@ def test_get_total_transformer_layers_reads_text_config():
 
     class TextConfig:
         num_hidden_layers = 24
+
     class FakeConfig:
         text_config = TextConfig()
+
     class FakeModel:
         config = FakeConfig()
 
@@ -54,7 +57,9 @@ def test_get_total_transformer_layers_handles_alternative_attr_names():
 def test_get_total_transformer_layers_returns_none_when_unknown():
     from unsloth.models.vision import _get_total_transformer_layers
 
-    class FakeConfig: pass
+    class FakeConfig:
+        pass
+
     class FakeModel:
         config = FakeConfig()
 
@@ -64,7 +69,8 @@ def test_get_total_transformer_layers_returns_none_when_unknown():
 def test_get_total_transformer_layers_returns_none_for_missing_config():
     from unsloth.models.vision import _get_total_transformer_layers
 
-    class FakeModel: pass
+    class FakeModel:
+        pass
 
     assert _get_total_transformer_layers(FakeModel()) is None
 
@@ -77,9 +83,9 @@ def test_finetune_last_n_layers_signature_present_on_llama_and_vision():
 
     for cls in (FastLlamaModel, FastBaseModel):
         sig = inspect.signature(cls.get_peft_model)
-        assert "finetune_last_n_layers" in sig.parameters, (
-            f"{cls.__name__}.get_peft_model missing finetune_last_n_layers"
-        )
+        assert (
+            "finetune_last_n_layers" in sig.parameters
+        ), f"{cls.__name__}.get_peft_model missing finetune_last_n_layers"
         assert sig.parameters["finetune_last_n_layers"].default is None, (
             f"{cls.__name__}.get_peft_model: finetune_last_n_layers default "
             f"must be None to preserve historical behavior"

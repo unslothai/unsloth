@@ -3170,17 +3170,13 @@ class FastLlamaModel:
         # provide one. Mirrors unsloth_zoo.mlx.loader.FastMLXModel
         # get_peft_model so a single config value controls both CUDA
         # and MLX paths consistently.
-        if (
-            finetune_last_n_layers is not None
-            and layers_to_transform is None
-        ):
+        if finetune_last_n_layers is not None and layers_to_transform is None:
             from .vision import _get_total_transformer_layers
+
             _total_layers = _get_total_transformer_layers(model)
             if _total_layers is not None and _total_layers > 0:
                 _n = max(1, min(int(finetune_last_n_layers), _total_layers))
-                layers_to_transform = list(
-                    range(_total_layers - _n, _total_layers)
-                )
+                layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
         arguments = dict(
             r = r,

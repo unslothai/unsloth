@@ -1461,16 +1461,11 @@ class FastBaseModel:
         # behavior). Only fills layers_to_transform when the user
         # didn't already pass one; ignored on models whose backbone
         # doesn't expose num_hidden_layers.
-        if (
-            finetune_last_n_layers is not None
-            and layers_to_transform is None
-        ):
+        if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
-                layers_to_transform = list(
-                    range(_total_layers - n, _total_layers)
-                )
+                layers_to_transform = list(range(_total_layers - n, _total_layers))
 
         # Get only allowed parameters for LoraConfig
         local_variables = {
