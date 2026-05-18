@@ -1201,13 +1201,16 @@ shell.Run cmd, 0, False
             "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
             "$env:SystemRoot\System32\nvidia-smi.exe"
         )
-        # DCH drivers install nvidia-smi under the DriverStore; expand the wildcard path.
-        # Use the machine's actual architecture so ARM64 Windows is handled correctly.
+        # Match every NVIDIA DCH INF folder (consumer + OEM/notebook variants),
+        # newest first, so stale packages don't shadow a working driver.
         try {
             $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-            $driverStoreSmi = Get-Item -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv_dispi.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName -First 1
-            if ($driverStoreSmi) { $nvSmiPaths.Add($driverStoreSmi) }
+            $driverStoreSmis = @(
+                Get-ChildItem -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv*.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -ExpandProperty FullName
+            )
+            foreach ($p in $driverStoreSmis) { $nvSmiPaths.Add($p) }
         } catch {}
         foreach ($p in $nvSmiPaths) {
             if ((Test-Path $p) -and (Test-NvidiaSmiExe $p)) {

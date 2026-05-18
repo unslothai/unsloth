@@ -395,7 +395,7 @@ function Find-VsBuildTools {
             $key = (@($info)[0]).Trim()
             $entry = $map[$key]
             if ($entry) {
-                return @{ Generator = "Visual Studio $($entry.N) $($entry.Y)"; InstallPath = (@($path)[0]).Trim(); Source = 'vswhere' }
+                return @{ Generator = "Visual Studio $($entry.N) $($entry.Y)"; InstallPath = (@($path)[0]).Trim(); Source = 'vswhere'; MsbuildToolsetVersion = "v$($entry.N)0" }
             }
         }
     }
@@ -421,7 +421,7 @@ function Find-VsBuildTools {
                     if (Test-Path $vcDir) {
                         $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
                         if ($cl) {
-                            return @{ Generator = "Visual Studio $($entry.N) $($entry.Y)"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
+                            return @{ Generator = "Visual Studio $($entry.N) $($entry.Y)"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName; MsbuildToolsetVersion = "v$($entry.N)0" }
                         }
                     }
                 }
@@ -430,6 +430,60 @@ function Find-VsBuildTools {
     }
 
     return $null
+}
+
+# VS 2022 fallback for when VS 2026 was picked but CMake doesn't support v18.
+function Find-VsBuildTools2022 {
+    $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsw) {
+        $path = & $vsw -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        if ($path) {
+            return @{
+                Generator             = 'Visual Studio 17 2022'
+                InstallPath           = (@($path)[0]).Trim()
+                Source                = 'vswhere (2022 fallback)'
+                MsbuildToolsetVersion = 'v170'
+            }
+        }
+    }
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    foreach ($r in $roots) {
+        foreach ($ed in $editions) {
+            $candidate = Join-Path $r "Microsoft Visual Studio\2022\$ed"
+            if (Test-Path $candidate) {
+                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                if (Test-Path $vcDir) {
+                    $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cl) {
+                        return @{
+                            Generator             = 'Visual Studio 17 2022'
+                            InstallPath           = $candidate
+                            Source                = "filesystem (2022 fallback, $ed)"
+                            ClExe                 = $cl.FullName
+                            MsbuildToolsetVersion = 'v170'
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return $null
+}
+
+# Parse `cmake --version`; returns [version] or $null.
+function Get-CMakeVersion {
+    try {
+        $cmd = Get-Command cmake -ErrorAction SilentlyContinue
+        if (-not $cmd) { return $null }
+        $line = (& cmake --version 2>&1 | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -or -not $line) { return $null }
+        if ($line -match 'cmake version\s+([0-9]+)\.([0-9]+)(?:\.([0-9]+))?') {
+            $patch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+            return [version]::new([int]$Matches[1], [int]$Matches[2], $patch)
+        }
+        return $null
+    } catch { return $null }
 }
 
 # Detect any VS installation regardless of C++ workload presence.
@@ -685,13 +739,16 @@ if (-not $HasNvidiaSmi) {
         "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
         "$env:SystemRoot\System32\nvidia-smi.exe"
     )
-    # DCH drivers install nvidia-smi under the DriverStore; expand the wildcard path.
-    # Use the machine's actual architecture so ARM64 Windows is handled correctly.
+    # Match every NVIDIA DCH INF folder (consumer + OEM/notebook variants),
+    # newest first, so stale packages don't shadow a working driver.
     try {
         $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-        $driverStoreSmi = Get-Item -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv_dispi.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName -First 1
-        if ($driverStoreSmi) { $nvSmiDefaults.Add($driverStoreSmi) }
+        $driverStoreSmis = @(
+            Get-ChildItem -Path "$env:SystemRoot\System32\DriverStore\FileRepository\nv*.inf_${arch}_*\nvidia-smi.exe" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -ExpandProperty FullName
+        )
+        foreach ($p in $driverStoreSmis) { $nvSmiDefaults.Add($p) }
     } catch {}
     foreach ($p in $nvSmiDefaults) {
         if ((Test-Path $p) -and (Test-NvidiaSmiExe $p)) {
@@ -860,8 +917,37 @@ if (-not $vsResult) {
     }
 }
 
+if ($vsResult -and $vsResult.MsbuildToolsetVersion -eq 'v180') {
+    # "Visual Studio 18 2026" generator needs CMake 4.2+. Try winget upgrade,
+    # else fall back to VS 2022, else hard exit with guidance.
+    $cmakeVersion = Get-CMakeVersion
+    if ($null -eq $cmakeVersion -or $cmakeVersion -lt [version]'4.2.0') {
+        substep "Visual Studio 2026 needs CMake 4.2+ (current: $cmakeVersion)" "Yellow"
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            substep "Attempting 'winget upgrade Kitware.CMake'..." "Gray"
+            try {
+                winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
+                Refresh-Environment
+            } catch {}
+            $cmakeVersion = Get-CMakeVersion
+        }
+        if ($null -eq $cmakeVersion -or $cmakeVersion -lt [version]'4.2.0') {
+            $fallback = Find-VsBuildTools2022
+            if ($fallback) {
+                substep "Falling back to $($fallback.Generator) (CMake $cmakeVersion)" "Yellow"
+                $vsResult = $fallback
+            } else {
+                Write-Host "[ERROR] VS 2026 detected but CMake < 4.2 and no VS 2022 fallback available." -ForegroundColor Red
+                Write-Host "        Upgrade CMake (>= 4.2) from https://cmake.org/download/ and re-run." -ForegroundColor Red
+                exit 1
+            }
+        }
+    }
+}
+
 if ($vsResult) {
     $CmakeGenerator = $vsResult.Generator
+    $VsMsbuildToolsetVersion = $vsResult.MsbuildToolsetVersion
     $VsInstallPath = $vsResult.InstallPath
     step "vs" "$CmakeGenerator ($($vsResult.Source))"
     if ($vsResult.ClExe) { substep "cl.exe: $($vsResult.ClExe)" }
@@ -1095,7 +1181,9 @@ if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
 # the MSBuild .targets/.props files that let VS compile .cu files are missing.
 # cmake fails with "No CUDA toolset found". Fix: copy from CUDA extras dir.
 if ($VsInstallPath -and $CudaToolkitRoot) {
-    $vsCustomizations = Join-Path $VsInstallPath "MSBuild\Microsoft\VC\v170\BuildCustomizations"
+    # Derive toolset from picked VS: VS 2022 -> v170, VS 2026 -> v180.
+    $toolsetVer = if ($VsMsbuildToolsetVersion) { $VsMsbuildToolsetVersion } else { 'v170' }
+    $vsCustomizations = Join-Path $VsInstallPath "MSBuild\Microsoft\VC\$toolsetVer\BuildCustomizations"
     $cudaExtras = Join-Path $CudaToolkitRoot "extras\visual_studio_integration\MSBuildExtensions"
     if ((Test-Path $cudaExtras) -and (Test-Path $vsCustomizations)) {
         $hasTargets = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
@@ -2626,7 +2714,8 @@ if (-not $NeedLlamaSourceBuild) {
                 Write-Host "   Copy contents of:" -ForegroundColor Yellow
                 Write-Host "     <CUDA_PATH>\extras\visual_studio_integration\MSBuildExtensions" -ForegroundColor Yellow
                 Write-Host "   into:" -ForegroundColor Yellow
-                Write-Host "     <VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" -ForegroundColor Yellow
+                $hintToolset = if ($VsMsbuildToolsetVersion) { $VsMsbuildToolsetVersion } else { 'v170' }
+                Write-Host "     <VS_PATH>\MSBuild\Microsoft\VC\$hintToolset\BuildCustomizations" -ForegroundColor Yellow
             }
         }
     }
