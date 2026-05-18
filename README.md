@@ -218,10 +218,12 @@ unsloth studio -p 8888
 ```
 
 #### Uninstall
-You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
+On Mac/Linux/WSL the recommended way to fully remove Unsloth Studio is the `uninstall.sh` script. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, the macOS `.app` bundle, and the Launch Services entry:
 
-* ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
+* ​ **MacOS, WSL, Linux:** `curl -fsSL https://unsloth.ai/uninstall.sh | sh`
 * ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
+
+If you only want to drop the install dir and keep the launcher/shortcut for a later reinstall, you can instead run `rm -rf ~/.unsloth/studio`. The model cache at `~/.cache/huggingface` is not touched by either command.
 
 For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
 
