@@ -15,6 +15,7 @@ import pytest
 
 from core.inference.llama_server_args import (
     is_managed_flag,
+    strip_shadowing_flags,
     validate_extra_args,
 )
 
@@ -187,3 +188,120 @@ def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False
+
+
+# ── strip_shadowing_flags ─────────────────────────────────────────────
+
+
+def test_strip_shadowing_flags_drops_context_when_requested():
+    out = strip_shadowing_flags(
+        ["-c", "4096", "--top-k", "20"],
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_context_when_not_requested():
+    out = strip_shadowing_flags(
+        ["-c", "4096", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+    )
+    assert out == ["-c", "4096", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_chat_template_when_template_disabled():
+    # Caller did not supply chat_template_override; the inherited
+    # --chat-template-file must survive the strip.
+    out = strip_shadowing_flags(
+        ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"],
+        strip_context = True,
+        strip_cache = True,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_drops_template_when_requested():
+    out = strip_shadowing_flags(
+        ["--chat-template-file", "/tmp/custom.jinja", "--top-k", "20"],
+        strip_template = True,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_cache_when_cache_disabled():
+    out = strip_shadowing_flags(
+        ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--top-k", "20"],
+        strip_cache = False,
+    )
+    assert out == [
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+        "--top-k",
+        "20",
+    ]
+
+
+def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
+    out = strip_shadowing_flags(
+        ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"],
+        strip_spec = False,
+    )
+    assert out == [
+        "--spec-type",
+        "ngram-mod",
+        "--draft-min",
+        "48",
+        "--top-k",
+        "20",
+    ]
+
+
+def test_strip_shadowing_flags_boolean_does_not_consume_next_token():
+    # --spec-default is a boolean shadowing flag; the value-skipping
+    # heuristic must skip just the flag, not the following positional.
+    out = strip_shadowing_flags(["--spec-default", "ngram-mod"], strip_spec = True)
+    assert out == ["ngram-mod"]
+
+
+def test_strip_shadowing_flags_jinja_boolean_preserves_positional():
+    out = strip_shadowing_flags(["--jinja", "trailing-positional"], strip_template = True)
+    assert out == ["trailing-positional"]
+
+
+def test_strip_shadowing_flags_no_jinja_boolean_preserves_positional():
+    out = strip_shadowing_flags(
+        ["--no-jinja", "trailing-positional"], strip_template = True
+    )
+    assert out == ["trailing-positional"]
+
+
+def test_strip_shadowing_flags_equals_form_drops_only_the_flag():
+    out = strip_shadowing_flags(["--ctx-size=4096", "--seed", "-1"], strip_context = True)
+    assert out == ["--seed", "-1"]
+
+
+def test_strip_shadowing_flags_handles_none_input():
+    assert strip_shadowing_flags(None) == []
+
+
+def test_strip_shadowing_flags_handles_empty_input():
+    assert strip_shadowing_flags([]) == []
+
+
+def test_strip_shadowing_flags_defaults_strip_everything():
+    # The route's already-loaded comparator calls strip_shadowing_flags
+    # with no kwargs to detect ANY shadowing flag in stored extras.
+    out = strip_shadowing_flags(
+        ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
+    )
+    assert out == []

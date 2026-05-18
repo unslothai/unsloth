@@ -69,7 +69,15 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Single-model server -- Studio runs one model per llama-server
     # process and serves its own UI. Enabling multi-model loading or
     # llama-server's built-in web UI changes the surface clients see.
+    # ``--webui``/``--no-webui`` are the legacy spelling; current
+    # upstream uses ``--ui``/``--no-ui`` + ``--ui-*`` companions.
+    # Keep both so the denylist matches old and new llama-server
+    # binaries (Studio's prebuilt vs system-llama.cpp).
     frozenset({"--webui", "--no-webui"}),
+    frozenset({"--ui", "--no-ui"}),
+    frozenset({"--ui-config"}),
+    frozenset({"--ui-config-file"}),
+    frozenset({"--ui-mcp-proxy", "--no-ui-mcp-proxy"}),
     frozenset({"--models-dir"}),
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
@@ -118,3 +126,95 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
 def is_managed_flag(flag: str) -> bool:
     """True if ``flag`` is a Studio-managed llama-server flag."""
     return flag in _DENYLIST
+
+
+# Pass-through flags that shadow first-class ``LoadRequest`` fields
+# (max_seq_length, cache_type_kv, speculative_type,
+# chat_template_override). Stripped from inherited extras so they
+# can't last-wins-override an Apply that re-sets the same first-class
+# field.
+_CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
+_CACHE_FLAGS: frozenset[str] = frozenset(
+    {"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"}
+)
+_SPEC_FLAGS: frozenset[str] = frozenset(
+    {
+        "--spec-default",
+        "--spec-type",
+        "--spec-ngram-size-n",
+        "--spec-ngram-size",
+        "--draft-min",
+        "--draft-max",
+    }
+)
+_TEMPLATE_FLAGS: frozenset[str] = frozenset(
+    {
+        "--chat-template",
+        "--chat-template-file",
+        "--chat-template-kwargs",
+        "--jinja",
+        "--no-jinja",
+    }
+)
+
+_SHADOWING_FLAGS: frozenset[str] = (
+    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
+)
+
+# Boolean flags inside _SHADOWING_FLAGS that take no value. The
+# value-consuming heuristic in strip_shadowing_flags must skip just the
+# flag for these, never the following token.
+_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
+    {"--spec-default", "--jinja", "--no-jinja"}
+)
+
+
+def strip_shadowing_flags(
+    args: Iterable[str],
+    *,
+    strip_context: bool = True,
+    strip_cache: bool = True,
+    strip_spec: bool = True,
+    strip_template: bool = True,
+) -> list[str]:
+    """Strip flags that shadow first-class Studio settings.
+
+    Used when the route inherits a previous load's ``llama_extra_args``
+    so that an inherited ``-c 4096`` cannot override the current
+    request's ``max_seq_length`` (and equivalents for cache /
+    speculative / chat template). Each ``strip_*`` flag controls one
+    group; the route only strips groups whose corresponding first-class
+    field was actually supplied by the caller, so an inherited
+    ``--chat-template-file`` survives an Apply that omits both
+    ``llama_extra_args`` and ``chat_template_override``.
+    """
+    shadowing: set[str] = set()
+    if strip_context:
+        shadowing |= _CONTEXT_FLAGS
+    if strip_cache:
+        shadowing |= _CACHE_FLAGS
+    if strip_spec:
+        shadowing |= _SPEC_FLAGS
+    if strip_template:
+        shadowing |= _TEMPLATE_FLAGS
+
+    tokens = [str(a) for a in (args or [])]
+    out: list[str] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in shadowing:
+            out.append(tok)
+            i += 1
+            continue
+        # Drop this token. Boolean shadowing flags never carry a value;
+        # other shadowing flags consume the next token when it isn't a
+        # flag and the value isn't already packed as ``--key=value``.
+        if flag in _BOOLEAN_SHADOWING_FLAGS or "=" in tok:
+            i += 1
+        elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+            i += 2
+        else:
+            i += 1
+    return out

@@ -3,6 +3,7 @@
 
 import forge from "node-forge";
 import { authFetch } from "@/features/auth";
+import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
 export interface ProviderRegistryEntry {
   provider_type: string;
@@ -40,21 +41,12 @@ export interface ProviderTestResult {
 }
 
 function parseErrorText(status: number, body: unknown): string {
-  if (
-    body &&
-    typeof body === "object" &&
-    "detail" in body &&
-    typeof body.detail === "string"
-  ) {
-    return body.detail;
-  }
-  if (
-    body &&
-    typeof body === "object" &&
-    "message" in body &&
-    typeof body.message === "string"
-  ) {
-    return body.message;
+  if (body && typeof body === "object") {
+    const detail = (body as { detail?: unknown }).detail;
+    const formatted = formatFastApiDetail(detail);
+    if (formatted) return formatted;
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
   }
   return `Request failed (${status})`;
 }
