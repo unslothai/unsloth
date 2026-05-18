@@ -240,11 +240,12 @@ def run_safetensors_tool_loop(
             if auto_heal_tool_calls and has_tool_signal(content_accum):
                 safety_tc = parse_tool_calls_from_text(content_accum)
             if not safety_tc:
-                # Final answer arrived. Flush and exit.
-                if cumulative_display:
-                    cleaned = strip_tool_markup(cumulative_display, final = True)
-                    if cleaned and cleaned != last_emitted:
-                        yield {"type": "content", "text": cleaned}
+                # Final answer arrived. Streaming already emitted the
+                # cleaned cumulative content via partial strips, so we
+                # don't re-yield here -- doing so with ``final=True``
+                # would also drop assistant prose that legitimately
+                # mentions ``<tool_call>`` as a literal string when no
+                # real tool call parsed out.
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
@@ -257,10 +258,11 @@ def run_safetensors_tool_loop(
             # DRAINING: parse the tool calls out of the full content.
             tool_calls = parse_tool_calls_from_text(content_accum)
             if not tool_calls and auto_heal_tool_calls:
-                # Drained but parser found nothing. Treat as plain text.
-                cleaned = strip_tool_markup(content_accum, final = True)
-                if cleaned:
-                    yield {"type": "content", "text": cleaned}
+                # Drained but parser found nothing. Surface the raw
+                # content (no ``final=True`` strip) so any literal
+                # ``<tool_call>`` text in the prose is preserved.
+                if content_accum:
+                    yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}
                 return
             content_text = strip_tool_markup(content_accum, final = True)

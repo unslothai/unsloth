@@ -446,5 +446,101 @@ class TestStatusFormatting:
         )
 
 
+class TestProseMentioningToolCall:
+    def test_assistant_prose_with_literal_tool_call_text_survives(self):
+        # Regression: if the assistant text legitimately mentions
+        # ``<tool_call>`` as a literal string and the parser finds no
+        # actual call, the loop must surface the full content instead
+        # of silently stripping everything past the literal marker.
+        loop, exec_fn = _make_loop(
+            turns=[
+                # Iteration 1: a real tool call so the loop moves to
+                # iteration 2.
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                # Iteration 2: prose that mentions the literal text.
+                ["the docs say <tool_call> means an LLM tool call wrapper"],
+            ],
+            exec_results=["result"],
+        )
+        events = _collect_events(loop)
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents, "expected at least one content event"
+        final = contents[-1]["text"]
+        assert "LLM tool" in final, (
+            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        )
+
+    def test_tool_result_with_tool_call_text_does_not_retrigger(self):
+        # Tool result text contains the literal ``<tool_call>`` string.
+        # The loop must only parse the MODEL output, not the tool
+        # result, so we should see exactly one call.
+        loop, exec_fn = _make_loop(
+            turns=[
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ["the docs mention <tool_call> wrappers"],
+            ],
+            exec_results=["Page text: <tool_call> appears here in the docs"],
+        )
+        events = _collect_events(loop)
+        assert len(exec_fn.calls) == 1
+
+
+class TestChatTemplateHelper:
+    """Cover the dependency-light helper used by InferenceBackend."""
+
+    def setup_method(self):
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
+        self.apply = apply_chat_template_for_generation
+
+    class _Tok:
+        def __init__(self, accepted):
+            self.accepted = accepted
+            self.call_count = 0
+            self.last_kwargs = None
+
+        def apply_chat_template(
+            self, messages, *, tokenize=False, add_generation_prompt=True, **kw
+        ):
+            self.call_count += 1
+            unknown = set(kw) - self.accepted
+            if unknown:
+                raise TypeError(f"unexpected kwargs: {sorted(unknown)}")
+            self.last_kwargs = dict(kw)
+            return "PROMPT"
+
+    def test_richest_call_wins_when_template_supports_all(self):
+        tok = self._Tok({"tools", "enable_thinking"})
+        self.apply(tok, [], tools=[{}], enable_thinking=True)
+        assert tok.call_count == 1
+        assert "tools" in tok.last_kwargs
+        assert "enable_thinking" in tok.last_kwargs
+
+    def test_falls_back_when_template_rejects_reasoning_kwarg(self):
+        tok = self._Tok({"tools"})
+        self.apply(tok, [], tools=[{}], enable_thinking=True)
+        assert tok.call_count >= 2
+        assert tok.last_kwargs == {"tools": [{}]}
+
+    def test_falls_back_to_bare_call(self):
+        tok = self._Tok(set())
+        self.apply(tok, [], tools=[{}], enable_thinking=True)
+        assert tok.last_kwargs == {}
+
+    def test_jinja_error_propagates(self):
+        class Boom:
+            def apply_chat_template(self, *a, **kw):
+                raise ValueError("jinja: missing var")
+
+        with pytest.raises(ValueError):
+            self.apply(Boom(), [])
+
+    def test_no_kwargs_single_call(self):
+        tok = self._Tok(set())
+        self.apply(tok, [])
+        assert tok.call_count == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

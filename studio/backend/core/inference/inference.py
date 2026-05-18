@@ -1819,56 +1819,22 @@ class InferenceBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
     ) -> str:
-        """Render the chat prompt, gracefully dropping kwargs the
-        template does not understand.
-
-        Tries the richest call first (tools + reasoning kwargs), then
-        peels them off one group at a time until something works. This
-        keeps tool-aware templates (Qwen3, Llama 3.1+, gpt-oss harmony)
-        on the rich path while older templates still render correctly.
+        """Render the chat prompt, peeling kwargs the template does not
+        understand. Delegates to the dependency-light helper module so
+        the fallback chain can be unit-tested without pulling unsloth /
+        torch into the test sandbox.
         """
-        # Build the set of optional reasoning kwargs.
-        reasoning_kwargs: dict = {}
-        if enable_thinking is not None:
-            reasoning_kwargs["enable_thinking"] = enable_thinking
-        if reasoning_effort is not None:
-            reasoning_kwargs["reasoning_effort"] = reasoning_effort
-        if preserve_thinking is not None:
-            reasoning_kwargs["preserve_thinking"] = preserve_thinking
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
 
-        # Order matters: most-specific first.
-        attempts: list[dict] = []
-        if tools and reasoning_kwargs:
-            attempts.append({"tools": tools, **reasoning_kwargs})
-        if tools:
-            attempts.append({"tools": tools})
-        if reasoning_kwargs:
-            attempts.append(dict(reasoning_kwargs))
-        attempts.append({})
-
-        last_exc: Optional[Exception] = None
-        for kwargs in attempts:
-            try:
-                return tokenizer.apply_chat_template(
-                    messages,
-                    tokenize = False,
-                    add_generation_prompt = True,
-                    **kwargs,
-                )
-            except TypeError as e:
-                # Template did not accept one of these kwargs; try a
-                # less ambitious call.
-                last_exc = e
-                continue
-            except Exception as e:
-                # Real template failure (jinja error etc.). Stop trying.
-                last_exc = e
-                break
-        if last_exc is not None:
-            raise last_exc
-        # attempts always ends with {}, so we should never reach here.
-        return tokenizer.apply_chat_template(
-            messages, tokenize = False, add_generation_prompt = True
+        return apply_chat_template_for_generation(
+            tokenizer,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
 
     def format_chat_prompt(self, messages: list, system_prompt: str = None) -> str:
