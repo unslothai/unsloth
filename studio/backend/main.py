@@ -198,6 +198,29 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
+    # llama.cpp capability probe; warns if the prebuilt lacks MTP support.
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        _caps = LlamaCppBackend.probe_server_capabilities()
+        app.state.llama_cpp_capabilities = _caps
+        if _caps.get("found") and not _caps.get("supports_mtp"):
+            import structlog as _structlog
+
+            _msg = (
+                "llama.cpp prebuilt lacks MTP support "
+                "(--spec-type mtp/draft-mtp). Run `unsloth studio update`. "
+                "MTP GGUFs will load without speculative decoding."
+            )
+            _structlog.get_logger(__name__).warning(_msg)
+            print(f"WARNING: {_msg}", flush = True)
+    except Exception as _probe_exc:
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).debug(
+            "llama.cpp capability probe failed: %s", _probe_exc
+        )
+
     from storage.studio_db import cleanup_orphaned_runs
 
     try:

@@ -342,6 +342,13 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
+    llama_cpp_supports_mtp: bool = Field(
+        True,
+        description = (
+            "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
+            "False -> recommend `unsloth studio update`."
+        ),
+    )
 
 
 # =====================================================================
