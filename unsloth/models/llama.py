@@ -1498,7 +1498,13 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+        # Skip int max() if either is a tensor (HF selective-decode form).
+        if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
+            logits_to_keep, torch.Tensor
+        ):
+            num_logits_to_keep = 0
+        else:
+            num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
         # Move items to same device as lm_head
         hidden_states = hidden_states.to(lm_head_device)
@@ -2109,24 +2115,23 @@ def unsloth_fast_generate(
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep
-    # (with @deprecate_kwarg through 4.51.x, removed in 4.52+). Pick the
-    # spelling the actual runtime forward accepts so generation
-    # _validate_model_kwargs does not reject the legacy name.
-    num_logits_to_keep = kwargs.pop("num_logits_to_keep", None)
-    logits_to_keep = kwargs.get("logits_to_keep", None)
-    if num_logits_to_keep is not None and logits_to_keep is None:
-        kwargs["logits_to_keep"] = num_logits_to_keep
-        logits_to_keep = num_logits_to_keep
-    if num_logits_to_keep is None and logits_to_keep is None:
-        try:
-            _fwd_params = inspect.signature(self.forward).parameters
-        except (TypeError, ValueError):
-            _fwd_params = {}
-        if "logits_to_keep" in _fwd_params:
-            kwargs["logits_to_keep"] = 1
-        elif "num_logits_to_keep" in _fwd_params:
-            kwargs["num_logits_to_keep"] = 1
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep.
+    # Pop both, re-emit under the spelling forward() accepts.
+    _provided_num = kwargs.pop("num_logits_to_keep", None)
+    _provided_logits = kwargs.pop("logits_to_keep", None)
+    _provided = _provided_logits if _provided_logits is not None else _provided_num
+    try:
+        _fwd_params = inspect.signature(self.forward).parameters
+        _has_new = "logits_to_keep" in _fwd_params
+        _has_old = "num_logits_to_keep" in _fwd_params
+    except (TypeError, ValueError):
+        # Opaque forward: keep the caller's spelling, default to new.
+        _has_old = _provided_num is not None and _provided_logits is None
+        _has_new = not _has_old
+    if _has_new:
+        kwargs["logits_to_keep"] = _provided if _provided is not None else 1
+    elif _has_old:
+        kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
