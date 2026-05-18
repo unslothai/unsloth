@@ -22,7 +22,12 @@ from typing import Callable, List, Optional
 
 import torch
 import torch.nn as nn
-from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+from transformers import (
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    TrainingArguments,
+)
 
 __all__ = ["ActivationNoveltyCallback"]
 
@@ -104,7 +109,7 @@ class ActivationNoveltyCallback(TrainerCallback):
 
         self._handle = None
         self._activations: List[torch.Tensor] = []
-        self._history: deque = deque(maxlen=window)
+        self._history: deque = deque(maxlen = window)
         self._last_novelty: float = 1.0
 
     # ------------------------------------------------------------------
@@ -144,8 +149,8 @@ class ActivationNoveltyCallback(TrainerCallback):
     def _compute_novelty(self) -> float:
         if not self._activations:
             return self._last_novelty
-        acts = torch.cat(self._activations, dim=0)   # (N, D)
-        mean_abs = acts.abs().mean(dim=0)             # (D,)
+        acts = torch.cat(self._activations, dim = 0)  # (N, D)
+        mean_abs = acts.abs().mean(dim = 0)  # (D,)
         total = mean_abs.sum()
         if total < 1e-10:
             return self._last_novelty
