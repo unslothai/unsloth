@@ -1236,8 +1236,40 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
+    _release_self_exe_lock_windows()
     _run_setup_script(verbose = verbose)
     _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _release_self_exe_lock_windows() -> None:
+    """Rename the running unsloth.exe out of the way so pip's reinstall can
+    drop a new copy on Windows.
+
+    Windows refuses to delete an .exe whose image is mapped into a running
+    process, but allows renaming it. pip's editable reinstall otherwise fails
+    with WinError 32 on the second `unsloth studio update` run inside the
+    same shim. The leftover *.exe.deleteme is unlinked at the start of the
+    next update once the shim it belonged to has exited.
+    """
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    if not exe.exists():
+        return
+    stale = exe.with_suffix(".exe.deleteme")
+    try:
+        if stale.exists():
+            stale.unlink()
+    except OSError:
+        pass
+    try:
+        exe.rename(stale)
+    except OSError:
+        pass
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
