@@ -484,7 +484,9 @@ with sync_playwright() as p:
     #     handleSubmit / blockSend guards keep refusing. The Send button stays
     #     visually enabled (watchdog has already cleared the React state); the
     #     refusal happens at form.requestSubmit() time, not at the button.
-    step("BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)")
+    step(
+        "BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)"
+    )
     clear()
     composer.click()
     composer.evaluate(
@@ -531,7 +533,9 @@ with sync_playwright() as p:
             "Form submitted after an IME keydown -- preedit text leaked "
             "through the watchdog gap (#5546 follow-up regression)."
         )
-    info(f"Form submit refused after IME keydown; textarea retained {submit_probe.get('after')!r}")
+    info(
+        f"Form submit refused after IME keydown; textarea retained {submit_probe.get('after')!r}"
+    )
     shoot("06c-keydown-repin")
     info("keydown re-pin gate PASS")
     clear()
