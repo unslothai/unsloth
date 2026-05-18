@@ -92,7 +92,26 @@ function Uninstall-UnslothStudio {
         return $null
     }
 
+    # Expand a leading ~ or ~/ ~\ to $env:USERPROFILE so env-mode roots
+    # written with the tilde shape install.ps1 supports (lines 152-154) are
+    # found here too.
+    function _ExpandTilde {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+        $p = $Path.Trim()
+        if ($p -eq '~') { return $env:USERPROFILE }
+        if ($p.StartsWith('~/') -or $p.StartsWith('~\')) {
+            if ($env:USERPROFILE) {
+                return (Join-Path $env:USERPROFILE $p.Substring(2).TrimStart('/','\'))
+            }
+        }
+        return $p
+    }
+
     # Discover non-default Studio roots from env vars + studio.conf files.
+    # Mirrors install.ps1's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME
+    # is ignored when both are set, so uninstalling install A doesn't also
+    # delete install B if the user has a stale STUDIO_HOME pointing at B.
     function _CustomStudioRoots {
         $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $defaultRoot = $null
@@ -103,21 +122,24 @@ function Uninstall-UnslothStudio {
         $emit = {
             param($Path)
             if ([string]::IsNullOrWhiteSpace($Path)) { return }
+            $expanded = _ExpandTilde $Path
             $norm = $null
-            try { $norm = [System.IO.Path]::GetFullPath($Path).TrimEnd('\','/') } catch { return }
+            try { $norm = [System.IO.Path]::GetFullPath($expanded).TrimEnd('\','/') } catch { return }
             if (-not $norm) { return }
             if ($defaultRoot -and ($norm -ieq $defaultRoot.TrimEnd('\','/'))) { return }
             if ($seen.Add($norm)) { Write-Output $norm }
         }
 
+        $envRoot = $null
         if ($env:UNSLOTH_STUDIO_HOME) {
-            & $emit $env:UNSLOTH_STUDIO_HOME
-            $confRoot = _RootFromConf (Join-Path $env:UNSLOTH_STUDIO_HOME "share\studio.conf")
-            if ($confRoot) { & $emit $confRoot }
+            $envRoot = $env:UNSLOTH_STUDIO_HOME
+        } elseif ($env:STUDIO_HOME) {
+            $envRoot = $env:STUDIO_HOME
         }
-        if ($env:STUDIO_HOME) {
-            & $emit $env:STUDIO_HOME
-            $confRoot = _RootFromConf (Join-Path $env:STUDIO_HOME "share\studio.conf")
+        if ($envRoot) {
+            $expandedEnv = _ExpandTilde $envRoot
+            & $emit $expandedEnv
+            $confRoot = _RootFromConf (Join-Path $expandedEnv "share\studio.conf")
             if ($confRoot) { & $emit $confRoot }
         }
         # Default-mode conf at LOCALAPPDATA\Unsloth Studio.
