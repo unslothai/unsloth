@@ -449,6 +449,8 @@ def is_gpt_oss_model_name(name: str) -> bool:
     orchestrator to detect harmony models without an IPC round-trip.
     """
     name = (name or "").lower()
+    if not name:
+        return False
     try:
         if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
             return True
