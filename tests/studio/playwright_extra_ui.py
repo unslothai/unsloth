@@ -214,6 +214,17 @@ with sync_playwright() as p:
                 flush = True,
             )
             if _form_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; immediate retry just re-fails. Back off
+                # 5s then 15s before next attempt.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _form_attempt == 0 else 15
+                    print(
+                        f"[extra-ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
                 page = recover_or_replace_page(
                     page,
                     ctx,

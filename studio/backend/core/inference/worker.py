@@ -648,6 +648,36 @@ def run_inference_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
+    # Offline auto-detect: skip 25s of hf_hub_download retries per file
+    # if DNS is dead; cached files resolve instantly under HF_HUB_OFFLINE=1.
+    # Scope is this subprocess only -- orchestrator spawns a fresh worker
+    # per load (see core/inference/orchestrator.py), so the env cannot
+    # persist across loads.
+    if "HF_HUB_OFFLINE" not in os.environ:
+        import socket as _socket
+        import threading as _threading
+
+        # Probe on a daemon thread so concurrent sockets in the parent
+        # interpreter are not affected by socket.setdefaulttimeout.
+        _result: list = [None]
+
+        def _probe() -> None:
+            try:
+                _socket.gethostbyname("huggingface.co")
+                _result[0] = False
+            except Exception:
+                _result[0] = True
+
+        _t = _threading.Thread(target = _probe, daemon = True)
+        _t.start()
+        _t.join(2.0)
+        if _result[0] is None or _result[0] is True:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            logger.warning(
+                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker."
+            )
+
     import warnings
     from loggers.config import LogConfig
 
