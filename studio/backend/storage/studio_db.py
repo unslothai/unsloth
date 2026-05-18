@@ -54,6 +54,7 @@ def _denied_path_prefixes() -> list[str]:
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_SQLITE_IN_CHUNK_SIZE = 900
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -936,18 +937,26 @@ def list_chat_messages(thread_id: str) -> list[dict]:
 def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
     if not thread_ids:
         return []
-    placeholders = ",".join("?" for _ in thread_ids)
+    unique_thread_ids = list(dict.fromkeys(thread_ids))
+    messages: list[dict] = []
     conn = get_connection()
     try:
-        rows = conn.execute(
-            f"""
-            SELECT * FROM chat_messages
-            WHERE thread_id IN ({placeholders})
-            ORDER BY created_at ASC, id ASC
-            """,
-            thread_ids,
-        ).fetchall()
-        return [_chat_message_from_row(row) for row in rows]
+        for start in range(0, len(unique_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = unique_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT * FROM chat_messages
+                WHERE thread_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC
+                """,
+                chunk,
+            ).fetchall()
+            messages.extend(_chat_message_from_row(row) for row in rows)
+        return sorted(
+            messages,
+            key = lambda message: (message["createdAt"], message["id"]),
+        )
     finally:
         conn.close()
 
