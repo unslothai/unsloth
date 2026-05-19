@@ -2626,6 +2626,29 @@ def run_capture(
     return result
 
 
+def _pick_rocm_gfx_target(out: str) -> str | None:
+    """Choose the gfx target rocminfo / hipinfo report for the active GPU.
+
+    A bare first-match picked the wrong device on mixed APU + dGPU hosts
+    (e.g. Strix Halo gfx1151 + discrete RX 7900 gfx1100). Respect
+    HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the asset matches what HIP
+    actually runs on. Falls back to the first GPU when no env var is set.
+    """
+    _tokens = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
+    if not _tokens:
+        return None
+    _vis = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get("ROCR_VISIBLE_DEVICES") or ""
+    if _vis:
+        _first = _vis.split(",")[0].strip()
+        try:
+            _idx = int(_first)
+            if 0 <= _idx < len(_tokens):
+                return _tokens[_idx]
+        except ValueError:
+            pass
+    return _tokens[0]
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -2746,9 +2769,7 @@ def detect_host() -> HostInfo:
             if _result.returncode == 0 and _result.stdout.strip():
                 if _check(_result.stdout):
                     has_rocm = True
-                    _gfx_m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _result.stdout.lower())
-                    if _gfx_m:
-                        rocm_gfx_target = _gfx_m.group(0)
+                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
     elif is_windows:
         # Windows: prefer active probes that validate GPU presence
@@ -2767,9 +2788,7 @@ def detect_host() -> HostInfo:
                 if _check(_result.stdout):
                     has_rocm = True
                     # hipinfo reports "gcnArchName: gfx1100" -- extract if present
-                    _gfx_m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _result.stdout.lower())
-                    if _gfx_m:
-                        rocm_gfx_target = _gfx_m.group(0)
+                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
