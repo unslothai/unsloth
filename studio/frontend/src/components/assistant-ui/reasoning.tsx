@@ -317,8 +317,6 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       return false;
     }
 
-    // Streaming = group has reasoning AND no answer text after.
-    // Tool calls between reasoning and text keep the panel visible.
     let groupHasReasoning = false;
     for (let i = startIndex; i <= endIndex && i < len; i += 1) {
       if (parts[i]?.type === "reasoning") {
@@ -326,10 +324,16 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         break;
       }
     }
-    if (!groupHasReasoning) return false;
+    if (!groupHasReasoning) {
+      return false;
+    }
+    // After this group ends, any non-tool-call part means a fresh
+    // segment has started (text answer or a later reasoning group),
+    // so this group is no longer the active stream.
     for (let i = endIndex + 1; i < len; i += 1) {
-      const t = parts[i]?.type;
-      if (t === "text") return false;
+      if (parts[i]?.type !== "tool-call") {
+        return false;
+      }
     }
     return true;
   });
