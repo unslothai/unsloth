@@ -231,3 +231,6 @@ server.pid
 *.log
 package-lock.json
 llama.cpp/
+
+# setup.sh has tests based on Docker which stores .npm and .bum cache in this directory.
+studio/tests/permanent_cache/
