@@ -179,6 +179,8 @@ def test_hook_captures_activations():
     cb.on_train_begin(args, state, control, model = model)
     assert cb._handle is not None
 
+    # Hook captures eval-phase activations only.
+    model.eval()
     _ = model(torch.randn(4, 16))
     # Running stats should be populated; shape is (hidden,) = (16,)
     assert cb._running_mean_abs is not None
@@ -197,7 +199,8 @@ def test_hook_removed_after_train_end():
     cb.on_train_begin(args, state, control, model = model)
     cb.on_train_end(args, state, control)
 
-    # After removal, forward pass must not update running stats.
+    # After removal, eval-mode forward pass must not update running stats.
+    model.eval()
     _ = model(torch.randn(4, 16))
     assert cb._running_mean_abs is None
 
@@ -209,19 +212,22 @@ def test_no_hook_without_model():
     assert cb._handle is None
 
 
-def test_hook_ignores_eval_mode_activations():
-    """Hook must not accumulate stats when the module is in eval mode."""
+def test_hook_ignores_training_mode_activations():
+    """Hook must not accumulate stats during training steps; only eval-phase."""
     cb = _import_callback()(layer_getter = lambda m: m.mlp)
     model = _TinyModel()
     args, state, control = _make_state_control()
 
     cb.on_train_begin(args, state, control, model = model)
-    model.eval()
+
+    # Training forward pass — must be ignored.
+    model.train()
     _ = model(torch.randn(4, 16))
     assert cb._running_mean_abs is None
     assert cb._running_count == 0
 
-    model.train()
+    # Eval forward pass — must be captured.
+    model.eval()
     _ = model(torch.randn(4, 16))
     assert cb._running_mean_abs is not None
     cb.on_train_end(args, state, control)
@@ -309,6 +315,7 @@ def test_on_evaluate_resets_running_stats():
     args, state, control = _make_state_control()
 
     cb.on_train_begin(args, state, control, model = model)
+    model.eval()
     _ = model(torch.randn(4, 16))
     assert cb._running_mean_abs is not None
 
@@ -325,7 +332,9 @@ def test_on_evaluate_updates_history():
     cb.on_train_begin(args, state, control, model = model)
 
     for _ in range(2):
+        model.eval()
         _ = model(torch.randn(4, 16))
+        model.train()
         cb.on_evaluate(args, state, control, model = model)
 
     assert len(cb._history) == 2

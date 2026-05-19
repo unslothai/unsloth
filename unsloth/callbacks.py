@@ -112,6 +112,7 @@ class ActivationNoveltyCallback(TrainerCallback):
         self._handle = None
         self._mask_handle = None
         self._cached_mask: Optional[torch.Tensor] = None
+        self._last_training_state: Optional[bool] = None
         self._running_mean_abs: Optional[torch.Tensor] = None
         self._running_count: int = 0
         self._history: deque = deque(maxlen = window)
@@ -145,15 +146,29 @@ class ActivationNoveltyCallback(TrainerCallback):
             )
             return
 
-        def _mask_pre_hook(_module, args, kwargs):
+        def _pre_hook(_module, args, kwargs):
+            # Detect train→eval transition and reset stats so each evaluation
+            # pass starts fresh; novelty then reflects the eval distribution,
+            # not a blend of prior training steps.
+            is_training = _module.training
+            if (
+                self._last_training_state is not None
+                and is_training != self._last_training_state
+                and not is_training
+            ):
+                self._reset_running_stats()
+            self._last_training_state = is_training
             self._cached_mask = kwargs.get("attention_mask", None)
 
         self._mask_handle = model.register_forward_pre_hook(
-            _mask_pre_hook, with_kwargs = True
+            _pre_hook, with_kwargs = True
         )
 
         def _hook(_module, _input, output):
-            if not _module.training:
+            # Capture eval-phase activations only.  Training-step activations
+            # are excluded so the metric is not contaminated by teacher-forcing
+            # noise and reflects the model's behaviour on held-out data.
+            if _module.training:
                 return
             out = output[0] if isinstance(output, tuple) else output
             out = out.detach().float().abs()
@@ -193,6 +208,7 @@ class ActivationNoveltyCallback(TrainerCallback):
             self._mask_handle.remove()
             self._mask_handle = None
         self._cached_mask = None
+        self._last_training_state = None
 
     def _reset_running_stats(self) -> None:
         self._running_mean_abs = None
@@ -223,6 +239,7 @@ class ActivationNoveltyCallback(TrainerCallback):
         **kwargs,
     ) -> None:
         self._reset_running_stats()
+        self._last_training_state = None
         self._history.clear()
         self._last_novelty = 1.0
         if model is not None:
