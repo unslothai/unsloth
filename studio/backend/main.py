@@ -382,8 +382,15 @@ import json as _json_for_413  # noqa: E402
 
 _MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
 _BODY_PROTECTED_PREFIXES = (
+    # /v1 generation routes mirrored from inference_router; every prefix gated
+    # by InferenceConcurrencyMiddleware must also be capped here so an
+    # oversized slow upload cannot hold the concurrency slot during 413.
     "/v1/chat/completions",
     "/v1/completions",
+    "/v1/messages",
+    "/v1/responses",
+    "/v1/generate/stream",
+    "/v1/audio/generate",
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",

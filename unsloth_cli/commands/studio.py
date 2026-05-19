@@ -857,18 +857,42 @@ def run(
     from studio.backend.run import run_server, _resolve_external_ip
     from utils.api_concurrency import parse_api_max_concurrency
 
-    effective_api_max_concurrency = parse_api_max_concurrency(api_max_concurrency)
+    # If user passed --parallel/-np to llama-server, treat that as the
+    # effective concurrency for the API gate so the two never disagree.
+    def _passthrough_parallel(extra: List[str]) -> Optional[int]:
+        for i, a in enumerate(extra):
+            v = None
+            if a in {"--parallel", "-np"} and i + 1 < len(extra):
+                v = extra[i + 1]
+            elif a.startswith("--parallel="):
+                v = a.split("=", 1)[1]
+            elif a.startswith("-np="):
+                v = a.split("=", 1)[1]
+            if v is not None:
+                try:
+                    n = int(v)
+                except ValueError:
+                    return None
+                return n if n >= 1 else None
+        return None
+
     api_concurrency_configured = (
         api_max_concurrency is not None
         or os.environ.get("UNSLOTH_API_MAX_CONCURRENCY") is not None
     )
+    if api_concurrency_configured:
+        effective_api_max_concurrency = parse_api_max_concurrency(api_max_concurrency)
+    else:
+        # Default 4 to preserve pre-PR `unsloth studio run` throughput;
+        # passthrough --parallel N overrides.
+        passthrough = _passthrough_parallel(extra_llama_args)
+        effective_api_max_concurrency = passthrough if passthrough is not None else 4
+
     run_kwargs = dict(
         host = host,
         port = port,
         silent = True,
-        llama_parallel_slots = effective_api_max_concurrency
-        if api_concurrency_configured
-        else 4,
+        llama_parallel_slots = effective_api_max_concurrency,
         api_max_concurrency = effective_api_max_concurrency,
         api_queue_policy = api_queue_policy,
     )

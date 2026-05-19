@@ -577,6 +577,83 @@ async def test_413_does_not_hold_concurrency_slot(main_module):
     ), f"413 path must never acquire a concurrency slot; peak={peak_active['value']}"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/messages",
+        "/v1/responses",
+        "/v1/generate/stream",
+        "/v1/audio/generate",
+    ],
+)
+@pytest.mark.asyncio
+async def test_413_short_circuits_for_every_gated_v1_prefix(main_module, path):
+    """Every /v1 path covered by the concurrency gate must also be covered by
+    MaxBodyMiddleware so a slow oversized upload cannot hold the slot."""
+    inner_calls = {"count": 0}
+
+    async def inner(scope, receive, send):
+        inner_calls["count"] += 1
+        while True:
+            msg = await receive()
+            if msg["type"] != "http.request":
+                break
+            if not msg.get("more_body", False):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    gate = main_module.InferenceConcurrencyMiddleware(
+        inner, max_concurrency = 1, queue_policy = "reject"
+    )
+    app = main_module.MaxBodyMiddleware(
+        gate, max_bytes = 16, protected_prefixes = main_module._BODY_PROTECTED_PREFIXES,
+    )
+
+    body_done = asyncio.Event()
+    peak_active = {"value": 0}
+
+    async def watcher():
+        while not body_done.is_set():
+            peak_active["value"] = max(peak_active["value"], gate._limiter.active)
+            await asyncio.sleep(0.001)
+
+    chunks = [b"x" * 4] * 8
+    idx = {"value": 0}
+
+    async def slow_receive():
+        if idx["value"] < len(chunks):
+            await asyncio.sleep(0.005)
+            body = chunks[idx["value"]]
+            idx["value"] += 1
+            return {
+                "type": "http.request",
+                "body": body,
+                "more_body": idx["value"] < len(chunks),
+            }
+        return {"type": "http.disconnect"}
+
+    sent: List[Dict[str, Any]] = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {"type": "http", "method": "POST", "path": path, "headers": []}
+    w = asyncio.create_task(watcher())
+    try:
+        await app(scope, slow_receive, send)
+    finally:
+        body_done.set()
+        await w
+
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    assert status == 413, f"{path}: expected 413 from MaxBody"
+    assert inner_calls["count"] == 0, f"{path}: 413 must short-circuit before inner"
+    assert peak_active["value"] == 0, f"{path}: 413 must never acquire a slot"
+
+
 @pytest.mark.asyncio
 async def test_excluded_load_path_not_gated_by_full_stack(main_module):
     """Excluded /api/inference/load must respond while the gate holds a slot."""

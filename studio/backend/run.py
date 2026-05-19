@@ -518,7 +518,7 @@ def run_server(
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
     api_only: bool = False,
-    llama_parallel_slots: int = 1,
+    llama_parallel_slots: int | None = None,
     api_max_concurrency: int | None = None,
     api_queue_policy: str | None = None,
 ):
@@ -550,13 +550,32 @@ def run_server(
         except Exception:
             pass
 
+    # Resolve effective API concurrency once. Explicit args win over env.
+    from utils.api_concurrency import (
+        InferenceConcurrencyMiddleware,
+        parse_api_max_concurrency,
+        parse_api_queue_policy,
+    )
+
+    api_concurrency_configured = (
+        api_max_concurrency is not None
+        or os.environ.get("UNSLOTH_API_MAX_CONCURRENCY") is not None
+    )
+    effective_api_max_concurrency = parse_api_max_concurrency(api_max_concurrency)
+    effective_api_queue_policy = parse_api_queue_policy(api_queue_policy)
+
+    # Derive llama_parallel_slots from API concurrency when not given explicitly
+    # so the backend and gate cannot mismatch.
+    if llama_parallel_slots is None:
+        llama_parallel_slots = effective_api_max_concurrency if api_concurrency_configured else 1
+
     # Set env vars BEFORE importing main so middleware/CORS read them at import time.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
     if api_max_concurrency is not None:
-        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(effective_api_max_concurrency)
     if api_queue_policy is not None:
-        os.environ["UNSLOTH_API_QUEUE_POLICY"] = str(api_queue_policy)
+        os.environ["UNSLOTH_API_QUEUE_POLICY"] = effective_api_queue_policy
 
     import nest_asyncio
 
@@ -568,6 +587,17 @@ def run_server(
 
     from main import app, setup_frontend
     from utils.paths import ensure_studio_directories
+
+    # Reconcile already-registered middleware so embedders that imported main
+    # before this call (or who restart with new args in-process) get the new
+    # limit rather than the stale import-time one.
+    if api_max_concurrency is not None or api_queue_policy is not None:
+        for mw in app.user_middleware:
+            if mw.cls is InferenceConcurrencyMiddleware:
+                mw.kwargs["max_concurrency"] = effective_api_max_concurrency
+                mw.kwargs["queue_policy"] = effective_api_queue_policy
+                app.middleware_stack = None
+                break
 
     # Create all standard directories on startup
     ensure_studio_directories()
@@ -636,9 +666,9 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     app.state.llama_parallel_slots = llama_parallel_slots
     if api_max_concurrency is not None:
-        app.state.api_max_concurrency = api_max_concurrency
+        app.state.api_max_concurrency = effective_api_max_concurrency
     if api_queue_policy is not None:
-        app.state.api_queue_policy = api_queue_policy
+        app.state.api_queue_policy = effective_api_queue_policy
 
     # Expose a shutdown callable via app.state before the server can accept
     # requests so /api/shutdown is available as soon as readiness is published.
