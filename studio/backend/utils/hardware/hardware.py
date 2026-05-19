@@ -1694,14 +1694,19 @@ def apply_gpu_ids(gpu_ids) -> None:
     _is_rocm = IS_ROCM or _inherits_rocm_visibility
     if not _is_rocm:
         # torch.version.hip is a non-empty string on ROCm, None on CUDA.
+        # AMD SDK / Radeon ROCm wheels can leave torch.version.hip unset but
+        # still encode "rocm" in torch.__version__, matching detect_hardware().
         # Broad except: a probe failure must never crash a training worker.
         try:
             import torch as _torch
 
-            _is_rocm = getattr(_torch.version, "hip", None) is not None
+            _is_rocm = (
+                getattr(_torch.version, "hip", None) is not None
+                or "rocm" in getattr(_torch, "__version__", "").lower()
+            )
         except Exception as e:
             logger.debug(
-                "apply_gpu_ids: torch.version.hip probe skipped (%s: %s)",
+                "apply_gpu_ids: torch ROCm probe skipped (%s: %s)",
                 type(e).__name__,
                 e,
             )

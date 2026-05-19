@@ -228,17 +228,23 @@ def _detect_rocm_version() -> tuple[int, int] | None:
 
 
 def _detect_windows_gfx_arch() -> str | None:
-    """Return the gcnArchName from hipinfo on Windows (e.g. 'gfx1200'), or None.
+    """Return the gcnArchName on Windows (e.g. 'gfx1200'), or None.
 
-    Resolves hipinfo via PATH first, then HIP_PATH\\bin and ROCM_PATH\\bin as
-    fallbacks -- the AMD HIP SDK installer sets these env vars but does not
-    always add the bin dir to the system PATH.
+    Probe order matches the PowerShell installer: env-var override first,
+    then hipinfo (PATH or HIP_PATH / ROCM_PATH bin), then amd-smi. Without
+    the amd-smi fallback, runtime-only AMD installs without hipinfo on PATH
+    return early and `studio update` cannot repair a CPU-only venv.
     """
     import re
 
+    # 1. Explicit override (matches PowerShell installer's env-var path).
+    _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+    if _override and _override.strip():
+        return _override.strip().lower()
+
+    # 2. hipinfo via PATH, then HIP_PATH\bin / ROCM_PATH\bin.
     hipinfo = shutil.which("hipinfo")
     if not hipinfo:
-        # Fallback: AMD HIP SDK sets HIP_PATH / ROCM_PATH even when bin isn't on PATH
         for _env_var in ("HIP_PATH", "ROCM_PATH"):
             _root = os.environ.get(_env_var)
             if _root:
@@ -246,25 +252,43 @@ def _detect_windows_gfx_arch() -> str | None:
                 if os.path.isfile(_candidate):
                     hipinfo = _candidate
                     break
-    if not hipinfo:
-        return None
-    try:
-        result = subprocess.run(
-            [hipinfo],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 10,
-        )
-        if result.returncode != 0:
-            return None
-        text = result.stdout.decode(errors = "replace")
-        m = re.search(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
-        # Lowercase the captured token -- some hipinfo builds emit "Gfx1151"
-        # which would miss the lowercase keys in _GFX_TO_AMD_INDEX_ARCH and
-        # silently fall back to CPU torch.
-        return m.group(1).strip().lower() if m else None
-    except Exception:
-        return None
+    if hipinfo:
+        try:
+            result = subprocess.run(
+                [hipinfo],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                timeout = 10,
+            )
+            if result.returncode == 0:
+                text = result.stdout.decode(errors = "replace")
+                m = re.search(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+                if m:
+                    # Lowercase -- hipinfo sometimes emits "Gfx1151".
+                    return m.group(1).strip().lower()
+        except Exception:
+            pass
+
+    # 3. amd-smi fallback -- runtime-only Radeon installs ship amd-smi but no hipinfo.
+    amd_smi = shutil.which("amd-smi")
+    if amd_smi:
+        for _args in (("static", "--asic"), ("list",)):
+            try:
+                result = subprocess.run(
+                    [amd_smi, *_args],
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.DEVNULL,
+                    timeout = 10,
+                )
+                if result.returncode != 0:
+                    continue
+                text = result.stdout.decode(errors = "replace").lower()
+                m = re.search(r"\bgfx[1-9][0-9a-z]{2,3}\b", text)
+                if m:
+                    return m.group(0)
+            except Exception:
+                continue
+    return None
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
@@ -518,13 +542,19 @@ def _ensure_rocm_torch() -> None:
                 "torchaudio",
                 constrain = False,
             )
+        # ROCm torch is installed (or already was); flag it so later install
+        # phases do not overwrite it with the generic CPU torch wheel. BNB is
+        # a separate dependency -- a BNB install failure must NOT roll the
+        # torch ROCm install back.
+        _rocm_windows_torch_installed = True
         # Always install AMD Windows bitsandbytes -- the PyPI wheel ships only
         # CUDA DLLs and will fail to load on ROCm.  Install even when torch was
         # already a ROCm build so that `studio update` repairs a broken bnb.
-        # Only flip the success flag when the install actually succeeds; otherwise
-        # the post-install "manual install may be required" warning is suppressed.
-        if _install_bnb_windows_rocm():
-            _rocm_windows_torch_installed = True
+        if not _install_bnb_windows_rocm():
+            print(
+                "   Warning: AMD Windows bitsandbytes install failed; "
+                "ROCm torch is installed but bitsandbytes may need manual install"
+            )
         return
 
     # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
@@ -556,7 +586,15 @@ def _ensure_rocm_torch() -> None:
             [
                 sys.executable,
                 "-c",
-                "import torch; print(getattr(torch.version,'hip','') or '')",
+                (
+                    "import torch; "
+                    "hip=getattr(torch.version,'hip','') or ''; "
+                    "ver=getattr(torch,'__version__','').lower(); "
+                    # Print the HIP version when present (back-compat), else
+                    # "rocm" sentinel when only torch.__version__ flags ROCm
+                    # (AMD SDK / Radeon wheels). Empty string = CPU/CUDA.
+                    "print(hip if hip else ('rocm' if 'rocm' in ver else ''))"
+                ),
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,

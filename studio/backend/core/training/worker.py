@@ -70,6 +70,43 @@ _TILELANG_INSTALL_TIMEOUT_S = 600
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 
+# Module-level handle so the torch.library.Library registration survives past
+# run_training_process() and is not garbage collected mid-run.
+_WINDOWS_ROCM_GROUPED_MM_LIB = None
+
+# Worker subprocesses inherit the parent env but not the parent's
+# os.add_dll_directory registrations. Replicate main.py's Windows ROCm DLL
+# setup at module load so the first `import torch` can find amdhip64.dll even
+# when HIP_PATH\bin is not on the system PATH. Handles retained at module
+# scope so they are not garbage collected.
+_ROCM_DLL_HANDLES: list = []
+if sys.platform == "win32":
+    def _add_rocm_dll_dirs_worker() -> None:
+        _candidates: list[str] = []
+        for _var in ("HIP_PATH", "ROCM_PATH"):
+            _val = os.environ.get(_var)
+            if _val:
+                _candidates.append(os.path.join(_val, "bin"))
+        _default_root = os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+        )
+        try:
+            if os.path.isdir(_default_root):
+                for _ver in sorted(os.listdir(_default_root), reverse = True):
+                    _bin = os.path.join(_default_root, _ver, "bin")
+                    if os.path.isdir(_bin):
+                        _candidates.append(_bin)
+        except OSError:
+            pass
+        for _d in _candidates:
+            if os.path.isdir(_d):
+                try:
+                    _ROCM_DLL_HANDLES.append(os.add_dll_directory(_d))
+                except (OSError, AttributeError):
+                    pass
+    _add_rocm_dll_dirs_worker()
+    del _add_rocm_dll_dirs_worker
+
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
@@ -607,11 +644,18 @@ def _tilelang_importable() -> bool:
 
 
 def _torch_has_hip() -> bool:
-    """True iff torch is a ROCm build; `torch.version.hip` is the only reliable signal on x86_64 ROCm."""
+    """True iff torch is a ROCm build.
+
+    `torch.version.hip` covers official PyTorch ROCm wheels; AMD SDK / Radeon
+    wheels can leave it unset but still encode "rocm" in `torch.__version__`.
+    """
     try:
         import torch as _torch
 
-        return getattr(_torch.version, "hip", None) is not None
+        return bool(
+            getattr(_torch.version, "hip", None)
+            or "rocm" in getattr(_torch, "__version__", "").lower()
+        )
     except Exception:
         return False
 
@@ -1916,10 +1960,21 @@ def run_training_process(
 
     # Only stub torchao on Windows ROCm hosts -- on Windows CUDA (NVIDIA) torchao
     # is real and shadowing it breaks torchao-based quantization paths.
-    # HIP_PATH / ROCM_PATH are set by the AMD HIP SDK installer on ROCm machines.
-    _is_win32_rocm = sys.platform == "win32" and bool(
-        os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH")
-    )
+    # Gate on the active torch runtime, not env-var presence -- HIP_PATH /
+    # ROCM_PATH stay set after a user installs the HIP SDK and reverts to a
+    # CUDA torch wheel. AMD SDK / Radeon ROCm wheels may not set torch.version.hip
+    # but still encode "rocm" in torch.__version__, so accept either.
+    _is_win32_rocm = False
+    if sys.platform == "win32":
+        try:
+            import torch as _torch_probe
+            _is_win32_rocm = bool(
+                getattr(getattr(_torch_probe, "version", None), "hip", None)
+                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
+            )
+            del _torch_probe
+        except Exception:
+            pass
     if _is_win32_rocm:
         # Seed torchao top-level + key submodules; the finder handles the rest.
         for _tao_name in (
@@ -1984,7 +2039,9 @@ def run_training_process(
     #   offs: optional group-split offsets (MoE-style variable-size batches)
     #
     # torch is already in sys.modules from section 1e's `import torch.distributed`.
-    _WINDOWS_ROCM_GROUPED_MM_LIB = None  # kept alive to prevent GC of registration
+    # Module-level _WINDOWS_ROCM_GROUPED_MM_LIB keeps the registration alive past
+    # function return / mid-run GC.
+    global _WINDOWS_ROCM_GROUPED_MM_LIB
     if sys.platform == "win32":
         _torch_for_rocm = sys.modules.get("torch")
         if _torch_for_rocm is not None and getattr(
