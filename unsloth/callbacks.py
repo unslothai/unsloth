@@ -160,9 +160,7 @@ class ActivationNoveltyCallback(TrainerCallback):
             self._last_training_state = is_training
             self._cached_mask = kwargs.get("attention_mask", None)
 
-        self._mask_handle = model.register_forward_pre_hook(
-            _pre_hook, with_kwargs = True
-        )
+        self._mask_handle = model.register_forward_pre_hook(_pre_hook, with_kwargs = True)
 
         def _hook(_module, _input, output):
             # Capture eval-phase activations only.  Training-step activations
