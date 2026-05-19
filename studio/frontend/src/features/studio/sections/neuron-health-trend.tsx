@@ -125,7 +125,7 @@ export function NeuronHealthTrend({
             <Tooltip
               contentStyle={tooltipStyle}
               wrapperStyle={{ outline: "none" }}
-              formatter={(value: number | undefined, name: string) => [
+              formatter={(value: number | undefined, name: string | undefined) => [
                 `${(value ?? 0).toFixed(1)}%`,
                 name === "deadPct" ? "Dead" : "Constant",
               ]}
