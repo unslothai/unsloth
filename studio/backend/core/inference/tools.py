@@ -862,10 +862,44 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
-    def _extract_string_from_node(node):
-        """Extract a plain string value from an AST node, if it is a constant."""
+    def _extract_string_from_node(node, _depth = 0):
+        """Extract a plain string value from an AST node when it can be
+        resolved statically.
+
+        Handles:
+          * ``ast.Constant`` strings (unchanged from prior behaviour).
+          * ``ast.BinOp(ast.Add)`` joining two resolvable string operands.
+            Closes ``open('/etc/' + 'shadow')`` style dynamic paths.
+          * ``ast.JoinedStr`` (f-strings) whose ``FormattedValue`` parts
+            are themselves resolvable. Closes ``open(f'/etc/{"shadow"}')``.
+
+        Resolution is depth-capped so adversarial deeply-nested
+        ``'a' + ('b' + ('c' + ...))`` cannot blow the stack.
+        Returns ``None`` whenever any subpart fails to resolve.
+        """
+        if _depth > 6:
+            return None
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = _extract_string_from_node(node.left, _depth + 1)
+            right = _extract_string_from_node(node.right, _depth + 1)
+            if left is not None and right is not None:
+                return left + right
+            return None
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    parts.append(v.value)
+                elif isinstance(v, ast.FormattedValue):
+                    inner = _extract_string_from_node(v.value, _depth + 1)
+                    if inner is None:
+                        return None
+                    parts.append(inner)
+                else:
+                    return None
+            return "".join(parts)
         return None
 
     def _extract_strings_from_list(node):
@@ -1736,10 +1770,11 @@ def _check_signal_escape_patterns(code: str):
                 or fq.endswith(".open")
             )
             if is_open_call and node.args:
-                a0 = node.args[0]
-                path_lit = None
-                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    path_lit = a0.value
+                # Use the static-string resolver so BinOp.Add of constants
+                # and JoinedStr (f-string) of constants are caught — not just
+                # bare ast.Constant. Closes ``open('/etc/' + 'shadow')``
+                # and ``open(f'/etc/{"shadow"}')``.
+                path_lit = _extract_string_from_node(node.args[0])
                 if path_lit:
                     flagged = False
                     if any(path_lit.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
