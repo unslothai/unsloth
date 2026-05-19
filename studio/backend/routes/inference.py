@@ -2383,9 +2383,7 @@ async def openai_chat_completions(
         and (_tools_passthrough or _has_response_format)
     ):
         if payload.audio_base64:
-            raise _reject(
-                400, "Audio input is not supported for GGUF chat models yet."
-            )
+            raise _reject(400, "Audio input is not supported for GGUF chat models yet.")
 
         # Preserve the vision guard that would otherwise run in the
         # non-passthrough path below: text-only tool-capable GGUFs
@@ -2437,9 +2435,7 @@ async def openai_chat_completions(
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
         if payload.audio_base64:
-            raise _reject(
-                400, "Audio input is not supported for GGUF chat models yet."
-            )
+            raise _reject(400, "Audio input is not supported for GGUF chat models yet.")
 
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64

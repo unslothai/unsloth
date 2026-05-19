@@ -155,9 +155,8 @@ class ApiMonitor:
                 entry.completion_tokens = completion_tokens
             if total_tokens is not None:
                 entry.total_tokens = total_tokens
-            elif (
-                entry.total_tokens is None
-                and (prompt_tokens is not None or completion_tokens is not None)
+            elif entry.total_tokens is None and (
+                prompt_tokens is not None or completion_tokens is not None
             ):
                 # Derive only when no authoritative total has been set;
                 # a later partial chunk must not clobber a provider total.

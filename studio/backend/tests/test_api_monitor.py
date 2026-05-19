@@ -103,7 +103,10 @@ def test_api_monitor_duration_non_negative_under_clock_step(monkeypatch):
     monkeypatch.setattr(m.time, "time", lambda: fake_now[0])
     monitor = ApiMonitor(max_entries = 1)
     entry_id = monitor.start(
-        endpoint = "/x", method = "POST", model = "m", prompt = "hi",
+        endpoint = "/x",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
     )
     fake_now[0] = 500.0
     monitor.finish(entry_id)
