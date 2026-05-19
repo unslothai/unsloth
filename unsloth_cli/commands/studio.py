@@ -1064,29 +1064,7 @@ def _run_setup_script(*, verbose: bool = False) -> None:
         result = subprocess.run(["bash", str(script)], env = env)
 
     if result.returncode != 0:
-        _print_windows_exe_lock_hint_if_relevant()
         raise typer.Exit(result.returncode)
-
-
-def _print_windows_exe_lock_hint_if_relevant() -> None:
-    """On WinError 32, point users at the python -c workaround."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    exe = venv_scripts / "unsloth.exe"
-    if not exe.exists():
-        return
-    typer.echo("")
-    typer.echo("Windows holds unsloth.exe open while it is running, so pip")
-    typer.echo("cannot replace it. Re-run the update via the venv python:")
-    typer.echo(
-        f'    {sys.executable} -c "from unsloth_cli import app; '
-        "app(['studio', 'update'])\""
-    )
-    typer.echo("(append '--local' inside the list if you installed from a checkout)")
 
 
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
@@ -1179,8 +1157,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # in install.ps1. -File reads the BOM and decodes correctly. The
         # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
         ps1_fd, ps1_path = tempfile.mkstemp(
-            prefix = "unsloth-studio-refresh-",
-            suffix = ".ps1",
+            prefix = "unsloth-studio-refresh-", suffix = ".ps1",
         )
         try:
             with os.fdopen(ps1_fd, "wb") as fh:
@@ -1313,6 +1290,8 @@ def update(
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+        if verbose:
+            typer.echo("  refresh-launcher  skipped (Tauri update)")
         return
     _refresh_desktop_shortcuts(verbose = verbose)
 
