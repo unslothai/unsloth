@@ -554,6 +554,24 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
+            // Reset Speculative Decoding to Auto whenever the user
+            // switches to a different model. Spec strategy is a
+            // per-model decision: a sub-3B non-MTP GGUF that ran with
+            // "Off" should not carry that choice into a 27B MTP GGUF
+            // where Auto would auto-promote to draft-mtp. The user can
+            // still pick a forced mode on the new model; this just
+            // clears the stale prior-model choice so the backend's
+            // platform-aware path runs by default. Same applies to
+            // spec_draft_n_max which is MTP-only.
+            if (currentCheckpoint && currentCheckpoint !== modelId) {
+              useChatRuntimeStore.setState({
+                speculativeType: null,
+                loadedSpeculativeType: null,
+                specDraftNMax: null,
+                loadedSpecDraftNMax: null,
+              });
+            }
+
             const {
               chatTemplateOverride,
               kvCacheDtype,
