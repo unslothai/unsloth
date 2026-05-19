@@ -1235,11 +1235,9 @@ elif grep -qi microsoft /proc/version 2>/dev/null; then
 fi
 step "platform" "$OS"
 
-# Regenerate desktop launcher / .app bundle without touching the venv. Used by
-# `unsloth studio update` so updates pick up new launcher logic the same way a
-# fresh install would.
+# Regen launcher/shortcuts only; used by `unsloth studio update`.
 if [ "$_SHORTCUTS_ONLY" = true ]; then
-    # Skip shortcut regen in Tauri mode (the desktop app owns its own shortcuts).
+    # Tauri owns its own shortcuts.
     if [ "$TAURI_MODE" != true ]; then
         VENV_ABS_BIN="$VENV_DIR/bin"
         if [ ! -x "$VENV_ABS_BIN/unsloth" ]; then

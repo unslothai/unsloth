@@ -1842,10 +1842,7 @@ if ($CuTag -eq "cpu") {
     }
 }
 
-# Free the running unsloth.exe entry point so pip can replace it. Windows
-# refuses to delete a mapped .exe, but any process (including this one) can
-# rename it -- the path-to-inode mapping is updated even while the image is
-# loaded by an ancestor (the user's `unsloth.exe studio update`).
+# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
 $VenvScriptsDir = Join-Path $VenvDir "Scripts"
 $RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
 if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {

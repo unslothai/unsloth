@@ -873,13 +873,9 @@ shell.Run cmd, 0, False
         }
     }
 
-    # Regenerate Start Menu / Desktop .lnk shortcuts + launch-studio scripts
-    # without touching the venv. Used by `unsloth studio update` so updates
-    # pick up new launcher logic the same way a fresh install would.
+    # Regen .lnk + launcher only; used by `unsloth studio update`.
     if ($ShortcutsOnly) {
-        if ($TauriMode) {
-            return
-        }
+        if ($TauriMode) { return }
         $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
         if (-not (Test-Path -LiteralPath $UnslothExe)) {
             Write-Host "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red

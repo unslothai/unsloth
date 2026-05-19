@@ -1068,10 +1068,7 @@ def _run_setup_script(*, verbose: bool = False) -> None:
 
 
 def _print_windows_exe_lock_hint_if_relevant() -> None:
-    """When pip's reinstall fails because unsloth.exe is locked, point users
-    at the python -m workaround. Best-effort: detection looks for our running
-    unsloth.exe in the venv Scripts dir and assumes pip's WinError 32 lock.
-    """
+    """On WinError 32, point users at the python -c workaround."""
     if platform.system() != "Windows":
         return
     try:
@@ -1095,14 +1092,7 @@ _INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
-    """Re-run installer shortcut creation so updates refresh the launcher.
-
-    setup.sh / setup.ps1 only touch the venv; the macOS .app bundle, the Linux
-    .desktop entry, the Windows Start Menu / Desktop .lnk shortcuts, and the
-    shared launcher script all bake their paths at install time. Without this
-    call, `unsloth studio update` leaves the user's icon pointing at the old
-    install.
-    """
+    """Re-run installer with --shortcuts-only to refresh launchers post-update."""
     env = {**os.environ}
     if verbose:
         env["UNSLOTH_VERBOSE"] = "1"
@@ -1111,8 +1101,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     installer_name = "install.ps1" if is_windows else "install.sh"
     installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
 
-    # Local install: reuse the installer from the same checkout (matches the
-    # behavior of `install.{sh,ps1} --local` and avoids a network fetch).
+    # Prefer local checkout, fall back to package dir, then network fetch.
     local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
     candidates: list[Path] = []
     if local_repo:
@@ -1153,8 +1142,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             except OSError:
                 continue
 
-        # PyPI installs do not ship install.ps1; fetch the upstream copy and
-        # invoke it from stdin via Invoke-Expression.
+        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
         try:
             request = urllib.request.Request(
                 installer_url, headers = {"User-Agent": "unsloth-studio-update"}
@@ -1167,9 +1155,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             )
             return
 
-        # install.ps1 wraps everything in Install-UnslothStudio and invokes it
-        # with @args at the bottom. From an Invoke-Expression-style stdin
-        # pipe, $args is empty, so append an explicit call with our flags.
+        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
         marker_args = " ".join(args)
         wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
         argv = list(ps_argv)
@@ -1195,7 +1181,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         except OSError:
             continue
 
-    # PyPI installs do not ship install.sh; fetch the upstream copy.
+    # PyPI installs lack install.sh: fetch upstream.
     try:
         request = urllib.request.Request(
             installer_url, headers = {"User-Agent": "unsloth-studio-update"}
@@ -1266,17 +1252,13 @@ def update(
 
 
 def _release_self_exe_lock_windows() -> None:
-    """Rename the running unsloth.exe out of the way so pip's reinstall can
-    drop a new copy on Windows. setup.ps1 also retries this from its own
-    PowerShell process, which is the truly reliable path.
-    """
+    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
     if platform.system() != "Windows":
         return
     try:
         venv_scripts = Path(sys.executable).resolve().parent
     except OSError:
         return
-    # python.exe sits in the venv Scripts dir alongside unsloth.exe
     exe = venv_scripts / "unsloth.exe"
     if not exe.exists():
         return
@@ -1289,7 +1271,7 @@ def _release_self_exe_lock_windows() -> None:
     try:
         exe.rename(stale)
     except OSError as e:
-        # Not fatal -- setup.ps1 retries the rename from a sibling process.
+        # Not fatal; setup.ps1 retries from a sibling process.
         print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
 
 
