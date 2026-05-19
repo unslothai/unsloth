@@ -233,13 +233,6 @@ FLASH_ATTN_SPEC = KernelPackageSpec(
     pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
 )
 
-FLASH_LINEAR_ATTN_SPEC = KernelPackageSpec(
-    import_name = "fla",
-    display_name = "flash-linear-attention",
-    pypi_spec = "flash-linear-attention==0.5.0",
-)
-
-
 def install_wheel(
     wheel_url: str,
     *,

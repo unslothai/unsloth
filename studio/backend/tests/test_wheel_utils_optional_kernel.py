@@ -34,6 +34,16 @@ def _env() -> dict[str, str]:
     }
 
 
+def _plain_pypi_spec() -> KernelPackageSpec:
+    # Synthetic PyPI-only spec: no wheel_url_builder, no package_version
+    # -> exercises the plain `pip install <pypi_spec>` path.
+    return KernelPackageSpec(
+        import_name = "definitely_missing_pypi_only_kernel",
+        display_name = "test-pypi-only",
+        pypi_spec = "test-pypi-only==1.0.0",
+    )
+
+
 def _patch_missing_package(monkeypatch):
     monkeypatch.setattr(wheel_utils, "_package_is_importable", lambda name: False)
     monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _env())
@@ -224,11 +234,12 @@ def test_missing_direct_wheel_with_fallback_runs_pypi_install(monkeypatch):
     ]
 
 
-def test_flash_linear_attention_spec_is_pypi_only():
-    assert wheel_utils.FLASH_LINEAR_ATTN_SPEC.build_wheel_url(_env()) is None
+def test_plain_pypi_spec_has_no_wheel_url():
+    # PyPI-only spec: no wheel_url_builder -> no direct wheel candidate.
+    assert _plain_pypi_spec().build_wheel_url(_env()) is None
 
 
-def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
+def test_plain_pypi_spec_fallback_runs_plain_pip_install(monkeypatch):
     _patch_missing_package(monkeypatch)
     url_exists = mock.Mock(side_effect = AssertionError("url_exists called"))
     monkeypatch.setattr(wheel_utils, "url_exists", url_exists)
@@ -241,7 +252,7 @@ def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
 
     assert (
         wheel_utils.install_optional_kernel(
-            wheel_utils.FLASH_LINEAR_ATTN_SPEC,
+            _plain_pypi_spec(),
             python_executable = sys.executable,
             use_uv = True,
             allow_pypi_fallback = True,
@@ -256,7 +267,7 @@ def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
             "-m",
             "pip",
             "install",
-            "flash-linear-attention==0.5.0",
+            "test-pypi-only==1.0.0",
         ]
     ]
     assert "--no-deps" not in calls[0]
@@ -265,7 +276,7 @@ def test_flash_linear_attention_fallback_runs_plain_pip_install(monkeypatch):
     url_exists.assert_not_called()
 
 
-def test_flash_linear_attention_fallback_runs_plain_uv_install(monkeypatch):
+def test_plain_pypi_spec_fallback_runs_plain_uv_install(monkeypatch):
     _patch_missing_package(monkeypatch)
     url_exists = mock.Mock(side_effect = AssertionError("url_exists called"))
     monkeypatch.setattr(wheel_utils, "url_exists", url_exists)
@@ -278,7 +289,7 @@ def test_flash_linear_attention_fallback_runs_plain_uv_install(monkeypatch):
 
     assert (
         wheel_utils.install_optional_kernel(
-            wheel_utils.FLASH_LINEAR_ATTN_SPEC,
+            _plain_pypi_spec(),
             python_executable = sys.executable,
             use_uv = True,
             allow_pypi_fallback = True,
@@ -294,7 +305,7 @@ def test_flash_linear_attention_fallback_runs_plain_uv_install(monkeypatch):
             "install",
             "--python",
             sys.executable,
-            "flash-linear-attention==0.5.0",
+            "test-pypi-only==1.0.0",
         ]
     ]
     assert "--no-deps" not in calls[0]
@@ -316,7 +327,7 @@ def test_pypi_fallback_tries_pip_after_uv_failure(monkeypatch):
 
     assert (
         wheel_utils.install_optional_kernel(
-            wheel_utils.FLASH_LINEAR_ATTN_SPEC,
+            _plain_pypi_spec(),
             python_executable = sys.executable,
             use_uv = True,
             allow_pypi_fallback = True,
@@ -332,14 +343,14 @@ def test_pypi_fallback_tries_pip_after_uv_failure(monkeypatch):
             "install",
             "--python",
             sys.executable,
-            "flash-linear-attention==0.5.0",
+            "test-pypi-only==1.0.0",
         ],
         [
             sys.executable,
             "-m",
             "pip",
             "install",
-            "flash-linear-attention==0.5.0",
+            "test-pypi-only==1.0.0",
         ],
     ]
 
