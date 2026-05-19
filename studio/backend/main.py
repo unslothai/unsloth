@@ -267,6 +267,26 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
+# Registered before SecurityHeadersMiddleware and MaxBodyMiddleware so the gate
+# is wrapped INSIDE both: oversized POSTs 413 before acquiring a slot, and 429
+# overflow responses pick up CSP and the other standard security headers.
+from utils.api_concurrency import (  # noqa: E402
+    InferenceConcurrencyMiddleware,
+    parse_api_max_concurrency,
+    parse_api_queue_policy,
+)
+
+_api_max_concurrency = parse_api_max_concurrency()
+_api_queue_policy = parse_api_queue_policy()
+app.state.api_max_concurrency = _api_max_concurrency
+app.state.api_queue_policy = _api_queue_policy
+app.add_middleware(
+    InferenceConcurrencyMiddleware,
+    max_concurrency = _api_max_concurrency,
+    queue_policy = _api_queue_policy,
+)
+
+
 # Web-search favicons load from *.gstatic.com; everything else is same-origin.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
@@ -428,22 +448,6 @@ app.add_middleware(
     MaxBodyMiddleware,
     max_bytes = _MAX_BODY_BYTES,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
-)
-
-from utils.api_concurrency import (  # noqa: E402
-    InferenceConcurrencyMiddleware,
-    parse_api_max_concurrency,
-    parse_api_queue_policy,
-)
-
-_api_max_concurrency = parse_api_max_concurrency()
-_api_queue_policy = parse_api_queue_policy()
-app.state.api_max_concurrency = _api_max_concurrency
-app.state.api_queue_policy = _api_queue_policy
-app.add_middleware(
-    InferenceConcurrencyMiddleware,
-    max_concurrency = _api_max_concurrency,
-    queue_policy = _api_queue_policy,
 )
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402

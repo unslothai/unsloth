@@ -15,10 +15,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 _DEFAULT_MAX_CONCURRENCY = 1
 _ALLOWED_QUEUE_POLICIES = {"wait", "reject"}
 
-# Generation endpoints whose work should hold a concurrency slot until the
-# response body has been completely sent. Model load/unload/status/cancel
-# endpoints are intentionally excluded so operators can still manage a server
-# while generation requests are queued.
+# inference_router is mounted at both /api/inference and /v1, so both prefixes
+# must be listed. Management routes (load/unload/status/cancel) and embeddings
+# are intentionally excluded.
 _INFERENCE_ENDPOINT_PREFIXES = (
     "/api/inference/generate/stream",
     "/api/inference/audio/generate",
@@ -26,6 +25,8 @@ _INFERENCE_ENDPOINT_PREFIXES = (
     "/api/inference/completions",
     "/api/inference/messages",
     "/api/inference/responses",
+    "/v1/generate/stream",
+    "/v1/audio/generate",
     "/v1/chat/completions",
     "/v1/completions",
     "/v1/messages",
