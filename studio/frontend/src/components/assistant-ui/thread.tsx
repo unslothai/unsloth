@@ -1020,10 +1020,10 @@ const CancelledIndicator: FC = () => {
 // doesn't look frozen during the gap between "model wrote intent" and
 // "tool actually invoked", or between back-to-back tool calls.
 //
-// Scope: only fires for tool-using responses. Plain text-only answers
-// keep using GeneratingIndicator (while content is empty) and then
-// nothing -- otherwise every text streaming response would get a
-// misleading "Working..." row.
+// Scope: only fires when the tail of the message has no streaming
+// answer content yet. Once the model has emitted reasoning or non-empty
+// text after the last tool, those parts already visibly show progress
+// and the "Working..." row would be misleading.
 //
 // Return value is a string ("tool:<name>" | "working" | "") rather than
 // an object so useAuiState's referential-equality memoization holds
@@ -1033,24 +1033,31 @@ const RunningToolIndicator: FC = () => {
   const signal = useAuiState(({ message }) => {
     if (message.status?.type !== "running") return "";
     const parts = message.parts;
-    let sawToolCall = false;
-    let runningTool: string | null = null;
-    // Single pass: find any tool-call part (signals tools-are-in-play)
-    // and the most-recent running one (drives the specific indicator).
+    // Walk from the tail. The first meaningful part decides what's
+    // currently visible to the user: a streaming text/reasoning part
+    // means the answer is already moving and the indicator must stay
+    // hidden; a tool-call part means we're either mid-tool (specific
+    // "Running ..." label) or in a pending gap before the next answer
+    // segment ("Working...").
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       const p = parts[i] as
-        | { type?: string; toolName?: string; status?: { type?: string } }
+        | { type?: string; text?: string; toolName?: string; status?: { type?: string } }
         | undefined;
-      if (p?.type !== "tool-call") continue;
-      sawToolCall = true;
-      if (!runningTool && p.status?.type === "running") {
-        runningTool = p.toolName ?? "tool";
+      const t = p?.type;
+      if (t === "text") {
+        // Non-empty text after the last tool -> model is streaming the
+        // final answer. Skip empty text placeholders that some adapters
+        // emit before the first delta.
+        if (typeof p?.text === "string" && p.text.length > 0) return "";
+        continue;
       }
+      if (t === "reasoning") return "";
+      if (t === "tool-call") {
+        if (p?.status?.type === "running") return `tool:${p.toolName ?? "tool"}`;
+        return "working";
+      }
+      // Other part types (source attachments, etc.) -- keep walking.
     }
-    if (runningTool) return `tool:${runningTool}`;
-    // Only fall back to "Working..." if tools have been in play. A pure
-    // text-only response (no tool-call part ever) skips the fallback.
-    if (sawToolCall) return "working";
     return "";
   });
   if (!signal) return null;
