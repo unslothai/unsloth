@@ -523,19 +523,7 @@ export function SharedComposer({
       handlesRef.current["model1"] || handlesRef.current["model2"],
     );
     const isGeneralizedCompare =
-      hasCompareHandles && Boolean(model1?.id && model2?.id);
-
-    // Generalized compare requires both panes to have a model. A
-    // half-selected send either races to an empty bubble with bogus
-    // tok/s (#5569) or leaves the empty pane with a dangling prompt.
-    // hasCompareHandles is true only in GeneralCompareContent, so
-    // LoraCompare and single-pane chats are unaffected.
-    if (hasCompareHandles && !isGeneralizedCompare) {
-      toast.error("Pick a model in each pane to compare", {
-        description: "Use the model dropdown above each pane, then send your prompt.",
-      });
-      return;
-    }
+      hasCompareHandles && Boolean(model1?.id || model2?.id);
 
     if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
       // Single mode: the loaded model's runtime capability is known
@@ -989,9 +977,11 @@ export function SharedComposer({
               aria-label={
                 reasoningLockedOn
                   ? "Thinking is required for this model"
-                  : effectiveReasoningEnabled
-                    ? "Disable thinking"
-                    : "Enable thinking"
+                  : reasoningDisabled
+                    ? "Thinking (model not loaded)"
+                    : effectiveReasoningEnabled
+                      ? "Disable thinking"
+                      : "Enable thinking"
               }
             >
               {reasoningLockedOn ||
@@ -1047,7 +1037,13 @@ export function SharedComposer({
             }}
             className="composer-pill-btn"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+            aria-label={
+              searchDisabled
+                ? "Web search (unavailable)"
+                : toolsEnabled
+                  ? "Disable web search"
+                  : "Enable web search"
+            }
           >
             <GlobeIcon className="size-3.5" />
             <span>Search</span>
@@ -1058,7 +1054,13 @@ export function SharedComposer({
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+            aria-label={
+              codeDisabled
+                ? "Code execution (unavailable)"
+                : codeToolsEnabled
+                  ? "Disable code execution"
+                  : "Enable code execution"
+            }
           >
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>

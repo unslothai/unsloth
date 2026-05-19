@@ -3,11 +3,13 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useRef,
   useState,
   type FC,
   type PropsWithChildren,
 } from "react";
+import { useAuiState } from "@assistant-ui/react";
 import { ChevronDownIcon, LoaderIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -210,14 +212,44 @@ const ToolGroupImpl: FC<
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
 
-  // Single tool call — render directly without wrapper
+  // Any tool in this group running. Drives auto-open + trigger spin.
+  const hasRunning = useAuiState(({ message }) => {
+    const parts = message.parts;
+    for (let i = startIndex; i <= endIndex && i < parts.length; i += 1) {
+      const p = parts[i] as { type?: string; status?: { type?: string } } | undefined;
+      if (p?.type === "tool-call" && p.status?.type === "running") {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  // Owning message still streaming. Keeps group sticky-open across
+  // back-to-back tool bursts where hasRunning flickers.
+  const messageStreaming = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+
+  const hasEverRunRef = useRef(false);
+  // Mutate ref in effect, not render, for StrictMode/concurrent safety.
+  useEffect(() => {
+    if (hasRunning) hasEverRunRef.current = true;
+    if (!messageStreaming) hasEverRunRef.current = false;
+  }, [hasRunning, messageStreaming]);
+
+  // Auto-follow sticky predicate until user clicks to override.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const autoOpen = hasRunning || (messageStreaming && hasEverRunRef.current);
+  const isOpen = userOpen ?? autoOpen;
+
+  // Single tool call: render directly without wrapper.
   if (toolCount <= 1) {
     return <>{children}</>;
   }
 
   return (
-    <ToolGroupRoot>
-      <ToolGroupTrigger count={toolCount} />
+    <ToolGroupRoot open={isOpen} onOpenChange={setUserOpen}>
+      <ToolGroupTrigger count={toolCount} active={hasRunning} />
       <ToolGroupContent>{children}</ToolGroupContent>
     </ToolGroupRoot>
   );
