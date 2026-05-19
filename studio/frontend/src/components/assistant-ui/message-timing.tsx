@@ -39,12 +39,16 @@ export const MessageTiming: FC<{
   const st = serverTimings?.serverTimings;
 
   // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op
-  // turns, blowing the rate up to Infinity. Require >=1 token + >=1ms.
+  // turns, blowing the rate up to Infinity. Require >=1 token and a
+  // decode window of at least 10ms (real generation never finishes in
+  // less than that, so this filters race-lost panes without hiding
+  // legitimate fast paths like cache-hit single-token responses).
+  const hasPredicted =
+    (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) >= 10;
   const predictedRate =
+    hasPredicted &&
     st?.predicted_per_second != null &&
-    Number.isFinite(st.predicted_per_second) &&
-    (st.predicted_n ?? 0) >= 1 &&
-    (st.predicted_ms ?? 0) >= 1
+    Number.isFinite(st.predicted_per_second)
       ? st.predicted_per_second
       : undefined;
 
@@ -95,7 +99,7 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {st?.predicted_ms != null && (
+              {hasPredicted && st?.predicted_ms != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Generation</span>
                   <span className="font-mono tabular-nums">
