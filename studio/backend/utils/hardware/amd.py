@@ -11,18 +11,35 @@ nvidia.py counterparts.
 import json
 import math
 import os
+import platform
 import re
 import subprocess
+import sys
 from typing import Any, Optional
 
 from loggers import get_logger
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
+# amd-smi on Windows must initialise the full ROCm runtime on first call, which
+# can take 15-25 s on cold hardware.  Linux is consistently < 2 s.
+_AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
+# Circuit breaker: stop calling amd-smi after this many consecutive failures.
+# On Windows, each failed call spawns a process that may show a UAC/DiskPart
+# elevation prompt.  Once we know amd-smi doesn't work we stop polling it.
+_AMD_SMI_FAILURE_LIMIT = 3
+_amd_smi_consecutive_failures = 0
+_amd_smi_disabled = False
+
+
+def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
     """Run amd-smi with the given arguments and return parsed JSON, or None."""
+    global _amd_smi_consecutive_failures, _amd_smi_disabled
+    if _amd_smi_disabled:
+        return None
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
@@ -30,13 +47,27 @@ def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
             text = True,
             timeout = timeout,
             env = child_env_without_native_path_secret(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("amd-smi query failed: %s", e)
+        _amd_smi_consecutive_failures += 1
+        if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
+            logger.warning(
+                "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
+            )
+            _amd_smi_disabled = True
         return None
     if result.returncode != 0 or not result.stdout.strip():
         logger.warning("amd-smi returned code %d", result.returncode)
+        _amd_smi_consecutive_failures += 1
+        if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
+            logger.warning(
+                "amd-smi unavailable -- disabling GPU polling to avoid repeated prompts"
+            )
+            _amd_smi_disabled = True
         return None
+    _amd_smi_consecutive_failures = 0  # reset on success
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -352,7 +383,7 @@ def get_visible_gpu_utilization(
         )
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
-            logger.debug(
+            logger.warning(
                 "amd-smi GPU id %r could not be parsed; falling back to "
                 "enumeration index %d",
                 raw_id,
@@ -360,7 +391,15 @@ def get_visible_gpu_utilization(
             )
             idx = fallback_idx
         else:
-            idx = int(parsed_id)
+            rounded = round(parsed_id)
+            if rounded != parsed_id:
+                logger.warning(
+                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
+                    raw_id,
+                    parsed_id,
+                    rounded,
+                )
+            idx = int(rounded)
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)

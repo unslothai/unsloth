@@ -245,6 +245,9 @@ _tauri_torch_index_family() {
                 rocm[0-9]*.[0-9]*) echo "$_diag_family" ;;
                 *) echo "auto" ;;
             esac ;;
+        # AMD arch-specific index (e.g. repo.amd.com/rocm/whl/gfx1151/) --
+        # used for Strix Halo/Point where torch 2.11+rocm7.13 has the real fix.
+        *repo.amd.com/rocm/whl/gfx*|*rocm/whl/gfx*) echo "rocm7.13" ;;
         "") echo "none" ;;
         *) echo "auto" ;;
     esac
@@ -1560,15 +1563,18 @@ _find_no_torch_runtime() {
 }
 
 # ── AMD ROCm GPU detection helper ──
-# Returns 0 (true) if an actual AMD GPU is present, 1 (false) otherwise.
-# Checks rocminfo for gfx[1-9]* (excludes gfx000 CPU agent) and
-# amd-smi list for GPU data rows (excludes header-only output).
+# Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
+# KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
 _has_amd_rocm_gpu() {
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/ && !/Name:[[:space:]]*gfx000/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         return 0
     elif command -v amd-smi >/dev/null 2>&1 && \
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        return 0
+    elif [ -e /dev/kfd ] && \
+         awk '/gpu_id/{ if ($2+0 > 0) found=1 } END{ exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         return 0
     fi
     return 1
@@ -1648,31 +1654,39 @@ get_torch_index_url() {
         if [ -n "$_rocm_tag" ]; then
             # Minimum supported: ROCm 6.0 (no PyTorch wheels exist for older)
             case "$_rocm_tag" in
-                rocm[1-5].*) echo "$_base/cpu"; return ;;
+                rocm[1-5].*)
+                    echo "[WARN] ROCm $_rocm_tag detected but PyTorch ROCm wheels require ROCm 6.0+ -- falling back to CPU-only PyTorch" >&2
+                    echo "[WARN] Upgrade ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+                    echo "$_base/cpu"; return ;;
             esac
-            # ROCm 7.2 only has torch 2.11.0 which exceeds current bounds
-            # (<2.11.0).  Fall back to rocm7.1 index which has torch 2.10.0.
-            # Enumerate explicit versions rather than matching rocm6.* so
-            # a host on ROCm 6.5 or 6.6 (no PyTorch wheels published) is
-            # clipped down to the last supported 6.x (rocm6.4) instead of
-            # constructing https://download.pytorch.org/whl/rocm6.5 which
-            # returns HTTP 403. PyTorch only ships: rocm5.7, 6.0, 6.1, 6.2,
-            # 6.3, 6.4, 7.0, 7.1, 7.2 (and 5.7 is below our minimum).
-            # TODO: uncomment rocm7.2 when the torch upper bound is bumped
-            # to >=2.11.0.
+            # Supported tags; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
+            # PyTorch publishes major.minor URLs only (no patch level), so
+            # rocm7.2.1 / rocm6.0.2 / etc. must normalise to rocm7.2 / rocm6.0.
             case "$_rocm_tag" in
-                rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*|rocm6.4|rocm6.4.*|rocm7.0|rocm7.0.*|rocm7.1|rocm7.1.*)
-                    echo "$_base/$_rocm_tag" ;;
+                rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
+                rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
+                rocm6.2|rocm6.2.*) echo "$_base/rocm6.2" ;;
+                rocm6.3|rocm6.3.*) echo "$_base/rocm6.3" ;;
+                rocm6.4|rocm6.4.*) echo "$_base/rocm6.4" ;;
+                rocm7.0|rocm7.0.*) echo "$_base/rocm7.0" ;;
+                rocm7.1|rocm7.1.*) echo "$_base/rocm7.1" ;;
+                rocm7.2|rocm7.2.*) echo "$_base/rocm7.2" ;;
                 rocm6.*)
                     # ROCm 6.5+ (no published PyTorch wheels): clip down
                     # to the last supported 6.x wheel set.
                     echo "$_base/rocm6.4" ;;
                 *)
-                    # ROCm 7.2+ (including future 10.x+): cap to rocm7.1
-                    echo "$_base/rocm7.1" ;;
+                    # ROCm 7.3+ (future): cap to rocm7.2 (latest known)
+                    echo "$_base/rocm7.2" ;;
             esac
             return
         fi
+        # AMD GPU confirmed by rocminfo/amd-smi but ROCm version could not be
+        # read from any source (amd-smi, /opt/rocm/.info/version, hipconfig,
+        # dpkg, rpm).  Warn explicitly rather than silently installing CPU PyTorch.
+        echo "[WARN] AMD GPU detected but ROCm version could not be determined -- falling back to CPU-only PyTorch" >&2
+        echo "[WARN] Ensure one of the following is accessible: amd-smi, hipconfig, /opt/rocm/.info/version, rocm-core package" >&2
+        echo "[WARN] To install ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
         echo "$_base/cpu"; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P)
@@ -1808,6 +1822,12 @@ _pick_radeon_wheel() {
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
+# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
+# All other ROCm tags and CUDA stay within <2.11.0.
+case "$TORCH_INDEX_URL" in
+    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+esac
+
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
 # (gfx in rocminfo or amd-smi list). Then require rocminfo "Marketing Name:.*Radeon".
@@ -1817,6 +1837,78 @@ case "$TORCH_INDEX_URL" in
         if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
            rocminfo 2>/dev/null | grep -q 'Marketing Name:.*Radeon'; then
             _amd_gpu_radeon=true
+        fi
+        ;;
+esac
+# ── Strix Halo / Strix Point: force rocm7.2 wheels, bypass Radeon repo ───────
+# gfx1151 (Strix Halo) and gfx1150 (Strix Point) have a ROCm 7.1 driver bug
+# that causes a segfault in torch._grouped_mm (moe_utils.py line 167).
+# The Radeon repo now ships cp313 wheels for rocm-rel-7.1, so when
+# _amd_gpu_radeon=true the installer silently lands on the broken combo.
+# Detect these GPUs when TORCH_INDEX_URL is rocm7.1 and override to rocm7.2.
+case "$TORCH_INDEX_URL" in
+    */rocm7.1|*/rocm7.1.*)
+        # Collect every gfx token in rocminfo / amd-smi enumeration order
+        # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
+        # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
+        # where the user selected the dGPU does NOT get rerouted to the
+        # Strix per-gfx index.
+        _gfx_all=""
+        if command -v rocminfo >/dev/null 2>&1; then
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+        fi
+        if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+            # PowerShell paths also probe `amd-smi static --asic`; mirror it
+            # so a host with hipinfo-less amd-smi reports the gfx target.
+            if [ -z "$_gfx_all" ]; then
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+            fi
+        fi
+        _runtime_gfx=""
+        if [ -n "$_gfx_all" ]; then
+            _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+            _idx=0
+            if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
+                _first=${_vis%%,*}
+                case "$_first" in
+                    ''|*[!0-9]*) _idx=0 ;;
+                    *) _idx=$_first ;;
+                esac
+            fi
+            _runtime_gfx=$(printf '%s\n' "$_gfx_all" | awk -v idx="$_idx" '
+                NF { vals[n++] = $0 }
+                END {
+                    if (idx < 0 || idx >= n) idx = 0
+                    if (n > 0) print vals[idx]
+                }')
+        fi
+        _strix_gfx=""
+        case "$_runtime_gfx" in
+            gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
+        esac
+        if [ -n "$_strix_gfx" ]; then
+            echo "" >&2
+            echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2
+            echo "  [WARN] ROCm 7.1 wheels are broken for gfx1150/gfx1151 (moe_utils.py:167)" >&2
+            echo "  [WARN] Routing to AMD arch-specific index (torch 2.11+rocm7.13 has the real fix)" >&2
+            echo "  [WARN] Upgrade ROCm to 7.2+ to use the standard index:" >&2
+            echo "  [WARN]   https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+            echo "" >&2
+            # AMD's arch-specific index serves torch 2.11.0+rocm7.13.0 which has AMD's
+            # actual fix for the gfx1151/gfx1150 _grouped_mm kernel bug -- preferred
+            # over the pytorch.org rocm7.2 fallback because it exercises the real GPU
+            # kernel path. Set UNSLOTH_AMD_ROCM_MIRROR to override for air-gapped installs.
+            _amd_strix_base="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+            # Strip ALL trailing slashes to match Python's .rstrip("/") -- a
+            # double-/triple-slash mirror URL would otherwise produce 404s on
+            # strict pip proxies (artifactory, sonatype).
+            while [ "${_amd_strix_base%/}" != "$_amd_strix_base" ]; do
+                _amd_strix_base="${_amd_strix_base%/}"
+            done
+            TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
+            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            _amd_gpu_radeon=false
         fi
         ;;
 esac

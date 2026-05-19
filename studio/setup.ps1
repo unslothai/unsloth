@@ -682,13 +682,203 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
+# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
+$HasROCm = $false
+$HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
+$ROCmGpuLabel = $null
+$script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
+    # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
+    # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+    $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+    if (-not $hipinfoExe) {
+        $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+        $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
+        if ($hipRoot) {
+            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+            if (Test-Path $hipinfoCandidate) {
+                substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
+                substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
+                substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
+                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+            } else {
+                substep "[WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" "Yellow"
+                substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
+                substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            }
+        }
+    }
+    if ($hipinfoExe) {
+        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+        try {
+            $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                $HasROCm = $true
+                if ($hipOut -match "(?im)^\s*gcnArchName\s*:\s*(\S+)") {
+                    $script:ROCmGfxArch = ($Matches[1] -split ':')[0].Trim().ToLower()
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                } else {
+                    $ROCmGpuLabel = "AMD ROCm"
+                }
+            } elseif ($LASTEXITCODE -ne 0) {
+                # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+                substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
+                substep "       $firstLine" "Yellow"
+                substep "       Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            }
+        } catch {}
+    }
+    # amd-smi fallback: HIP runtime present but hipinfo unavailable (no full HIP SDK).
+    # Confirms GPU visibility via 'list', then attempts 'static --asic' to extract
+    # the gfx arch that hipinfo would have provided.  Critical for Strix Halo
+    # (gfx1151) and other iGPUs where only the HIP runtime is installed.
+    if (-not $HasROCm) {
+        $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+        if ($amdSmiExe) {
+            try {
+                $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
+                    $HasROCm = $true
+                    # Attempt 1: newer amd-smi versions embed the gfx arch in list output
+                    if ($smiOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
+                        $script:ROCmGfxArch = $Matches[1].ToLower()
+                        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    } else {
+                        # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
+                        # including the GFX target needed for wheel index selection.
+                        $smiAsicOut = ""
+                        try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
+                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
+                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                        } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
+                            $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                        } else {
+                            $ROCmGpuLabel = "AMD ROCm"
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+    # WMI fallback: AMD GPU in device list but no HIP SDK → guide the user.
+    # WMI gives a marketing name (e.g. "AMD Radeon 890M") but never a gfx arch.
+    # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
+    # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
+    # so the name-based inference below can still attempt an arch lookup.
+    if (-not $HasROCm) {
+        try {
+            $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" } |
+                Select-Object -First 1
+            if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+        } catch {}
+    }
+    # ── Arch resolution: env-var override → name inference ──────────────────
+    # Runs after all probe methods.  Covers users whose amd-smi version is too
+    # old to report the GFX target and who don't have hipinfo (HIP-runtime-only
+    # installs, common on Strix Halo / iGPU systems).
+    if ($HasROCm -and -not $script:ROCmGfxArch) {
+        # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
+        if ($env:UNSLOTH_ROCM_GFX_ARCH) {
+            $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+            substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
+        }
+        # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
+        #    Ordered most-specific first; first match wins.
+        elseif ($ROCmGpuLabel) {
+            $nameArchTable = @(
+                @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
+                @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
+                @{ P = "8060S|890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";  A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo / Radeon 8060S retail)
+                @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" } # RDNA 3.5 iGPU (Strix Point)
+                @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                       A = "gfx1100" }  # RDNA 3 desktop
+                @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
+                @{ P = "780M|760M|740M|Phoenix";                               A = "gfx1103" }  # RDNA 3 iGPU (Phoenix)
+            )
+            foreach ($row in $nameArchTable) {
+                if ($ROCmGpuLabel -match $row.P) {
+                    $script:ROCmGfxArch = $row.A
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
+                    substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+                    break
+                }
+            }
+        }
+    }
+    # Capture ROCm version early for display and wheel selection.
+    # Run whenever the HIP SDK binary is present, not just when the device is accessible --
+    # hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+    if ($HasROCm -or $HipSdkInstalled) {
+        $script:ROCmVersion = $null
+        $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+        if (-not $hipConfigExe) {
+            $hipRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+            if ($hipRoot) {
+                $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
+                if (Test-Path $hipConfigCandidate) {
+                    $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
+                    substep "[WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" "Yellow"
+                    $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
+                }
+            }
+        }
+        if ($hipConfigExe) {
+            try {
+                $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0) {
+                    $hipVerLine = ($hipVerOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+                    if ($hipVerLine -match '(\d+\.\d+)') {
+                        $script:ROCmVersion     = $Matches[1]
+                        $script:ROCmVersionFull = $hipVerLine
+                    }
+                }
+            } catch {}
+        }
+        if (-not $script:ROCmVersion) {
+            $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiVer) {
+                try {
+                    $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
+                } catch {}
+            }
+        }
+    }
+}
+
+if ($HasNvidiaSmi) {
+    step "gpu" "NVIDIA GPU detected"
+} elseif ($HasROCm) {
+    step "gpu" $ROCmGpuLabel
+    $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+    substep "HIP SDK: $hipSdkPath"
+    if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
+    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+    $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
     Write-Host ""
-    step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+    step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
+    substep "       This is a driver issue, not an SDK issue." "Yellow"
+    substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
+    substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+} elseif ($ROCmGpuLabel) {
+    Write-Host ""
+    step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+    substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     Write-Host ""
 } else {
-    step "gpu" "NVIDIA GPU detected"
+    Write-Host ""
+    step "gpu" "none (chat-only / GGUF)" "Yellow"
+    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
+    Write-Host ""
 }
 
 # ============================================
@@ -1095,6 +1285,13 @@ if (-not $CudaArch) {
 }
 } else {
     step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+}
+
+if ($HasROCm) {
+    $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
+    step "rocm" $rocmVerLabel
+} elseif ($ROCmGpuLabel) {
+    step "rocm" "HIP SDK not found -- GPU-accelerated training unavailable" "Yellow"
 }
 
 # ============================================
@@ -1511,7 +1708,7 @@ if (-not $PythonCmd) {
     exit 1
 }
 
-substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
+substep "Python found: $PythonCmd"
 
 # The venv must already exist (created by install.ps1); this script only
 # updates packages. UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the
@@ -1679,6 +1876,13 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
     exit 1
 } else {
     substep "reusing existing virtual environment at $VenvDir"
+    $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    if (Test-Path -LiteralPath $_venvPyExe) {
+        try {
+            $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
+            if ($_venvPyVer) { substep $_venvPyVer }
+        } catch {}
+    }
 }
 
 # pip and python write to stderr even on success (progress bars, warnings).
@@ -1790,9 +1994,57 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+# ── GPU arch → newest compatible Windows ROCm wheel release ──
+# Wheels bundle their own ROCm runtime; the installed HIP SDK version does
+# not constrain which release to use.  Always picks the newest release that
+# supports the GPU architecture.
+# ── AMD Windows ROCm torch override ──────────────────────────────────────────
+# Uses AMD's arch-specific pip index (repo.amd.com/rocm/whl/{arch}/).
+# Wheels bundle their own ROCm runtime; HIP SDK version is irrelevant.
+$ROCmGfxArch = $script:ROCmGfxArch
+$ROCmIndexUrl = $null
+if ($HasROCm -and $CuTag -eq "cpu") {
+    $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
+    $archFamilyMap = @{
+        "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+        "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
+        "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
+        "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+        "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
+    }
+    $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+    if ($archFamily) {
+        $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+    } elseif ($ROCmGfxArch) {
+        # GPU arch detected but not in the supported wheel map — warn explicitly
+        # so the user knows why they are getting CPU PyTorch instead of ROCm.
+        substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx90a, gfx908" "Yellow"
+    } else {
+        # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
+        # readable — warn rather than silently falling back to CPU PyTorch.
+        substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
+    }
+}
+
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-if ($CuTag -eq "cpu") {
+if ($ROCmIndexUrl) {
+    substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
+    $output = Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
+    $torchInstallExit = $LASTEXITCODE
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor Yellow
+        $ROCmIndexUrl = $null
+    } else {
+        # Tell install_python_stack.py to skip probe + suppress manual-install warning.
+        $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+    }
+}
+
+if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
@@ -1807,7 +2059,7 @@ if ($CuTag -eq "cpu") {
         Write-Host $output -ForegroundColor Red
         exit 1
     }
-} else {
+} elseif (-not $ROCmIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {

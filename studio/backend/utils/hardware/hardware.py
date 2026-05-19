@@ -120,11 +120,13 @@ def detect_hardware() -> DeviceType:
 
             # Distinguish AMD ROCm (HIP) from NVIDIA CUDA for display purposes.
             # DeviceType stays CUDA since torch.cuda.* works on ROCm via HIP.
-            if getattr(torch.version, "hip", None) is not None:
+            # AMD's repo.radeon.com SDK wheels (e.g. 2.9.0+rocmsdk20251116) do
+            # not set torch.version.hip, so fall back to checking __version__.
+            _hip_ver = getattr(torch.version, "hip", None)
+            if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
-                print(
-                    f"Hardware detected: ROCm (HIP {torch.version.hip}) -- {device_name}"
-                )
+                _hip_label = _hip_ver or torch.__version__
+                print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
                 print(f"Hardware detected: CUDA -- {device_name}")
             return DEVICE
@@ -465,7 +467,7 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     try:
         func = getattr(_backend, func_name)
         result = func(*args, **kwargs)
-        if result.get("available"):
+        if isinstance(result, dict) and result.get("available"):
             return result
     except Exception as e:
         logger.warning("%s %s query failed: %s", backend_name, func_name, e)
@@ -513,6 +515,11 @@ def get_gpu_utilization() -> Dict[str, Any]:
         result = _smi_query("get_primary_gpu_utilization")
         if result is not None:
             result["backend"] = _backend_label(device)
+            if IS_ROCM:
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
+                _reconcile_primary_rocm_unified_memory(
+                    result, _get_parent_visible_gpu_spec()
+                )
             return result
 
     # MLX path: single _read_apple_gpu_stats() call carries both VRAM-used
@@ -577,6 +584,72 @@ def get_gpu_utilization() -> Dict[str, Any]:
     return {"available": False, "backend": _backend_label(device)}
 
 
+def _apply_unified_memory_correction(
+    device_metrics: Dict[str, Any], torch_info: Dict[str, Any]
+) -> None:
+    """Per-device reconciliation: when torch reports a larger memory total
+    than amd-smi, overwrite the smi VRAM fields in place.
+
+    Used by both the multi-device and primary-device reconciliation helpers
+    so the two endpoints stay in sync on AMD iGPUs with unified memory.
+    """
+    torch_total_gb = torch_info["total_gb"]
+    smi_total_gb = device_metrics.get("vram_total_gb") or 0.0
+    if torch_total_gb > smi_total_gb:
+        torch_used_gb = torch_info["used_gb"]
+        device_metrics["vram_total_gb"] = torch_total_gb
+        device_metrics["vram_used_gb"] = torch_used_gb
+        device_metrics["vram_utilization_pct"] = (
+            round((torch_used_gb / torch_total_gb) * 100, 1)
+            if torch_total_gb > 0
+            else None
+        )
+        logger.debug(
+            "ROCm unified memory: replaced amd-smi VRAM (%.2f GB) with "
+            "torch mem_get_info total (%.2f GB) for device %s",
+            smi_total_gb,
+            torch_total_gb,
+            torch_info.get("index"),
+        )
+
+
+def _reconcile_rocm_unified_memory(
+    utilization: Dict[str, Any], device_indices: list[int]
+) -> None:
+    """Fix amd-smi VRAM for ROCm unified-memory GPUs (e.g. Strix Halo).
+
+    amd-smi reports only the dedicated slice (~512 MB); torch sees the full
+    GTT pool (~128 GB). When torch total > smi total, overwrite per-device
+    VRAM fields so GPU selection uses the real available memory.
+    """
+    torch_devices = _torch_get_per_device_info(device_indices)
+    if not torch_devices:
+        return
+    torch_by_index = {td["index"]: td for td in torch_devices}
+    for dev in utilization.get("devices", []):
+        td = torch_by_index.get(dev.get("index"))
+        if td is None:
+            continue
+        _apply_unified_memory_correction(dev, td)
+
+
+def _reconcile_primary_rocm_unified_memory(
+    utilization: Dict[str, Any], parent_visible_spec: Dict[str, Any]
+) -> None:
+    """Same fix as _reconcile_rocm_unified_memory for the flat primary-GPU dict."""
+    numeric_ids = parent_visible_spec.get("numeric_ids")
+    if numeric_ids:
+        primary_idx = [int(numeric_ids[0])]
+    else:
+        # No CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES set: torch ordinal 0
+        # is the primary visible device.
+        primary_idx = [0]
+    torch_devices = _torch_get_per_device_info(primary_idx)
+    if not torch_devices:
+        return
+    _apply_unified_memory_correction(utilization, torch_devices[0])
+
+
 def get_visible_gpu_utilization() -> Dict[str, Any]:
     device = get_device()
 
@@ -589,6 +662,10 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         )
         if result is not None:
             result["backend"] = _backend_label(device)
+            numeric_ids = parent_visible_spec.get("numeric_ids")
+            if IS_ROCM and numeric_ids is not None:
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.)
+                _reconcile_rocm_unified_memory(result, numeric_ids)
             return result
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
@@ -688,7 +765,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # Use explicit None checks (not `or`) so empty string "" is honoured
     # as "no visible GPUs" rather than falling through to CUDA_VISIBLE_DEVICES.
     cuda_visible = None
-    if IS_ROCM:
+    _is_rocm_spec = IS_ROCM or (
+        "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
+    )
+    if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
         rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
         if hip_vis is not None:
@@ -865,6 +945,61 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
 def _determine_attention_impl_for_gpu_estimate(config) -> str:
     import copy as _copy
+
+    # torch.distributed is incomplete on Windows ROCm — torch._C is a C
+    # extension (not a package), so Python cannot import the submodule
+    # torch._C._distributed_c10d that torch.distributed depends on.
+    # Inject an empty stub into sys.modules BEFORE importing torch.distributed
+    # so the import succeeds, then patch the missing process-group helpers.
+    import sys as _sys
+    import types as _types
+
+    if _sys.platform == "win32":
+        # Dummy class for any name torch.distributed tries to import from these stubs
+        class _Dummy:
+            pass
+
+        for _c10d_name in (
+            "torch._C._distributed_c10d",
+            "torch._C._distributed_autograd",
+            "torch._C._distributed_rpc",
+        ):
+            if _c10d_name not in _sys.modules:
+                _stub = _types.ModuleType(_c10d_name)
+                # torch.distributed imports these names from _distributed_c10d;
+                # provide no-op dummies so the import doesn't raise AttributeError.
+                for _sym in (
+                    "FakeProcessGroup",
+                    "ProcessGroup",
+                    "Work",
+                    "Store",
+                    "PrefixStore",
+                    "FileStore",
+                    "TCPStore",
+                    "HashStore",
+                    "Reducer",
+                    "Logger",
+                    "DistributedDebugLevel",
+                    "GradBucket",
+                    "BuiltinCommHookType",
+                ):
+                    setattr(_stub, _sym, _Dummy)
+                _sys.modules[_c10d_name] = _stub
+
+    try:
+        import torch.distributed as _td
+
+        for _attr, _stub in (
+            ("is_initialized", lambda: False),
+            ("is_available", lambda: False),
+            ("get_rank", lambda: 0),
+            ("get_world_size", lambda: 1),
+            ("is_torchelastic_launched", lambda: False),
+        ):
+            if not hasattr(_td, _attr):
+                setattr(_td, _attr, _stub)
+    except ImportError:
+        pass
 
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
@@ -1551,14 +1686,35 @@ def apply_gpu_ids(gpu_ids) -> None:
     # parent process already set a ROCm visibility variable -- that
     # way a downstream ROCm process inherits the narrowed mask even
     # before Studio's hardware detection has classified the host.
+    # Final fallback: probe torch.version.hip so AMD workers without
+    # HIP_VISIBLE_DEVICES still get the correct ROCm visibility mask.
     _inherits_rocm_visibility = (
         "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
     )
-    if IS_ROCM or _inherits_rocm_visibility:
+    _is_rocm = IS_ROCM or _inherits_rocm_visibility
+    if not _is_rocm:
+        # torch.version.hip is a non-empty string on ROCm, None on CUDA.
+        # AMD SDK / Radeon ROCm wheels can leave torch.version.hip unset but
+        # still encode "rocm" in torch.__version__, matching detect_hardware().
+        # Broad except: a probe failure must never crash a training worker.
+        try:
+            import torch as _torch
+
+            _is_rocm = (
+                getattr(_torch.version, "hip", None) is not None
+                or "rocm" in getattr(_torch, "__version__", "").lower()
+            )
+        except Exception as e:
+            logger.debug(
+                "apply_gpu_ids: torch ROCm probe skipped (%s: %s)",
+                type(e).__name__,
+                e,
+            )
+    if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
         os.environ["ROCR_VISIBLE_DEVICES"] = value
     _visible_gpu_count = None
-    if IS_ROCM or _inherits_rocm_visibility:
+    if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)
     else:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
