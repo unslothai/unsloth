@@ -116,9 +116,14 @@ def _migrate_chat_threads_for_subject_scoping(conn: sqlite3.Connection) -> None:
     )
     # Carry forward rows regardless of whether the container columns existed.
     old_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(chat_threads_pre_scoping)").fetchall()
+        r[1]
+        for r in conn.execute("PRAGMA table_info(chat_threads_pre_scoping)").fetchall()
     }
-    oai = "openai_code_exec_container_id" if "openai_code_exec_container_id" in old_cols else "NULL"
+    oai = (
+        "openai_code_exec_container_id"
+        if "openai_code_exec_container_id" in old_cols
+        else "NULL"
+    )
     ant = (
         "anthropic_code_exec_container_id"
         if "anthropic_code_exec_container_id" in old_cols
@@ -1156,9 +1161,7 @@ def list_chat_messages(thread_id: str, subject: str) -> list[dict]:
         conn.close()
 
 
-def get_chat_message(
-    thread_id: str, message_id: str, subject: str
-) -> Optional[dict]:
+def get_chat_message(thread_id: str, message_id: str, subject: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute(
@@ -1173,9 +1176,7 @@ def get_chat_message(
         conn.close()
 
 
-def list_chat_messages_for_threads(
-    thread_ids: list[str], subject: str
-) -> list[dict]:
+def list_chat_messages_for_threads(thread_ids: list[str], subject: str) -> list[dict]:
     if not thread_ids:
         return []
     unique_thread_ids = list(dict.fromkeys(thread_ids))
@@ -1217,9 +1218,7 @@ def list_chat_settings(subject: str) -> dict[str, Any]:
         conn.close()
 
 
-def upsert_chat_settings(
-    settings: dict[str, Any], subject: str
-) -> dict[str, Any]:
+def upsert_chat_settings(settings: dict[str, Any], subject: str) -> dict[str, Any]:
     if not settings:
         return list_chat_settings(subject)
     conn = get_connection()
@@ -1233,10 +1232,7 @@ def upsert_chat_settings(
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             """,
-            [
-                (subject, key, json.dumps(value), now)
-                for key, value in settings.items()
-            ],
+            [(subject, key, json.dumps(value), now) for key, value in settings.items()],
         )
         conn.commit()
         return list_chat_settings(subject)
@@ -1257,9 +1253,7 @@ def _deep_merge_settings_inplace(
     return merged
 
 
-def upsert_chat_settings_merge(
-    updates: dict[str, Any], subject: str
-) -> dict[str, Any]:
+def upsert_chat_settings_merge(updates: dict[str, Any], subject: str) -> dict[str, Any]:
     """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
     cannot drop one another's updates."""
     if not updates:
@@ -1282,10 +1276,7 @@ def upsert_chat_settings_merge(
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             """,
-            [
-                (subject, key, json.dumps(value), now)
-                for key, value in merged.items()
-            ],
+            [(subject, key, json.dumps(value), now) for key, value in merged.items()],
         )
         conn.commit()
         return merged

@@ -55,14 +55,18 @@ def mount() -> tuple[Path, types.ModuleType, types.ModuleType]:
     if str(PR_ROOT) not in sys.path:
         sys.path.insert(0, str(PR_ROOT))
 
-    tmp_home = Path(tempfile.mkdtemp(prefix="unsloth_studio_test_"))
+    tmp_home = Path(tempfile.mkdtemp(prefix = "unsloth_studio_test_"))
     os.environ["UNSLOTH_STUDIO_HOME"] = str(tmp_home)
 
     _install_auth_stub()
 
     # Drop any cached versions
     for name in list(sys.modules):
-        if name.startswith("storage") or name.startswith("routes") or name.startswith("utils"):
+        if (
+            name.startswith("storage")
+            or name.startswith("routes")
+            or name.startswith("utils")
+        ):
             del sys.modules[name]
 
     from storage import studio_db  # noqa: E402
@@ -93,12 +97,12 @@ def fresh_app():
 
     _, studio_db, chat_history = mount()
     app = FastAPI()
-    app.include_router(chat_history.router, prefix="/api/chat")
+    app.include_router(chat_history.router, prefix = "/api/chat")
     return app, studio_db, chat_history
 
 
 def remove_tmp(home: Path) -> None:
     try:
-        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(home, ignore_errors = True)
     except Exception:
         pass

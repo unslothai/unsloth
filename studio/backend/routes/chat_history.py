@@ -87,7 +87,7 @@ class ChatDeleteRequest(BaseModel):
 
 
 class ChatMessagesBatchRequest(BaseModel):
-    thread_ids: list[str] = Field(default_factory=list)
+    thread_ids: list[str] = Field(default_factory = list)
 
 
 class ChatMessagesBatchResponse(BaseModel):
@@ -294,9 +294,7 @@ async def replace_thread_messages(
         )
     except ChatMessageThreadMismatch as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    return ChatMessageListResponse(
-        messages = [ChatMessage(**m) for m in rows]
-    )
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in rows])
 
 
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
@@ -310,10 +308,8 @@ async def batch_get_messages(
     sidebar/search caller can rebuild atomically.
     """
     if not payload.thread_ids:
-        return ChatMessagesBatchResponse(threads={})
-    rows = list_chat_messages_for_threads(
-        payload.thread_ids, subject = current_subject
-    )
+        return ChatMessagesBatchResponse(threads = {})
+    rows = list_chat_messages_for_threads(payload.thread_ids, subject = current_subject)
     bucket: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.thread_ids}
     for row in rows:
         thread_id = row["threadId"]
@@ -324,9 +320,7 @@ async def batch_get_messages(
 
 @router.get("/count", response_model = ChatCountResponse)
 async def count_threads(current_subject: str = Depends(get_current_subject)):
-    return ChatCountResponse(
-        count = count_chat_threads(subject = current_subject)
-    )
+    return ChatCountResponse(count = count_chat_threads(subject = current_subject))
 
 
 @router.delete("")
@@ -344,17 +338,13 @@ async def clear_history(
             detail = "DELETE /api/chat requires ?confirm=true",
         )
     deleted = clear_chat_history(subject = current_subject)
-    logger.warning(
-        "cleared %d chat threads for subject=%s", deleted, current_subject
-    )
+    logger.warning("cleared %d chat threads for subject=%s", deleted, current_subject)
     return {"status": "deleted", "count": deleted}
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)
 async def get_settings(current_subject: str = Depends(get_current_subject)):
-    return ChatSettingsResponse(
-        settings = list_chat_settings(subject = current_subject)
-    )
+    return ChatSettingsResponse(settings = list_chat_settings(subject = current_subject))
 
 
 @router.put("/settings", response_model = ChatSettingsResponse)
@@ -379,9 +369,7 @@ async def put_settings(
 async def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
 
-    threads = list_chat_threads(
-        subject = current_subject, include_archived = True
-    )
+    threads = list_chat_threads(subject = current_subject, include_archived = True)
     messages = list_chat_messages_for_threads(
         [thread["id"] for thread in threads],
         subject = current_subject,
