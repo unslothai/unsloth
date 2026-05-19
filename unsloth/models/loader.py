@@ -99,15 +99,22 @@ from ._utils import (
     fast_inference_setup,
 )
 
-global FORCE_FLOAT32
-# Forces float32 precision since float16 goes to infinity
-FORCE_FLOAT32 = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
-    "gemma3n",
-    "gpt_oss",
-    "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
-]
+# Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
+# doing `from unsloth.models.loader import FORCE_FLOAT32` keep working.
+# Fallback list mirrors zoo for users who upgrade unsloth without upgrading
+# unsloth_zoo (so this module never fails at import).
+try:
+    from unsloth_zoo import FORCE_FLOAT32  # noqa: F401
+except ImportError:
+    global FORCE_FLOAT32
+    # Forces float32 precision since float16 goes to infinity
+    FORCE_FLOAT32 = [
+        "gemma3,",  # Add comma bc gemma3 will match gemma3n
+        "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
+        "gemma3n",
+        "gpt_oss",
+        "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
+    ]
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
@@ -1381,7 +1388,6 @@ class FastModel(FastBaseModel):
         for model_type_arch in model_types:
             if model_type_arch != "siglip":
                 break
-        global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
             # add comma to model_types_all matching in case of exact match for end
             if (

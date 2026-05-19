@@ -141,10 +141,30 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
 }
 
+// Canonicalises any value the backend reports (or persisted state holds)
+// onto the five UI-facing modes the Speculative Decoding dropdown
+// understands: "auto" / "mtp" / "ngram" / "mtp+ngram" / "off" / null.
+// Mirrors backend _canonicalize_spec_mode so old persisted "default" /
+// "draft-mtp" / "ngram-mod" / chain values round-trip cleanly.
 function normalizeSpeculativeType(v: string | null | undefined): string | null {
   if (v == null) return null;
-  if (v === "default" || v === "off") return v;
-  return "default";
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "ngram-simple") return "ngram-simple";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod") return "ngram";
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older persisted state).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
 }
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -323,6 +343,12 @@ export function useChatModelRuntime() {
             speculativeType: currentSpecType,
             loadedSpeculativeType: currentSpecType,
           }),
+          ...(statusRes.spec_draft_n_max !== undefined &&
+            prevState.loadedSpecDraftNMax === null &&
+            prevState.specDraftNMax === null && {
+              specDraftNMax: statusRes.spec_draft_n_max ?? null,
+              loadedSpecDraftNMax: statusRes.spec_draft_n_max ?? null,
+            }),
           ...(statusRes.cache_type_kv !== undefined &&
             prevState.loadedKvCacheDtype === null && {
               kvCacheDtype: statusRes.cache_type_kv,
@@ -528,12 +554,31 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
+            // Reset Speculative Decoding to Auto whenever the user
+            // switches to a different model. Spec strategy is a
+            // per-model decision: a sub-3B non-MTP GGUF that ran with
+            // "Off" should not carry that choice into a 27B MTP GGUF
+            // where Auto would auto-promote to draft-mtp. The user can
+            // still pick a forced mode on the new model; this just
+            // clears the stale prior-model choice so the backend's
+            // platform-aware path runs by default. Same applies to
+            // spec_draft_n_max which is MTP-only.
+            if (currentCheckpoint && currentCheckpoint !== modelId) {
+              useChatRuntimeStore.setState({
+                speculativeType: null,
+                loadedSpeculativeType: null,
+                specDraftNMax: null,
+                loadedSpecDraftNMax: null,
+              });
+            }
+
             const {
               chatTemplateOverride,
               kvCacheDtype,
               customContextLength,
               ggufContextLength,
               speculativeType,
+              specDraftNMax,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -561,6 +606,7 @@ export function useChatModelRuntime() {
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
+              spec_draft_n_max: specDraftNMax,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -635,6 +681,8 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
+              specDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: effectiveChatTemplateOverride,

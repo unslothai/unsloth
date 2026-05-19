@@ -65,7 +65,11 @@ async function redirectToAuth(): Promise<void> {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
-      if (data.requires_password_change || mustChangePassword()) target = "/change-password";
+      // Server truth wins; keep localStorage in sync both ways.
+      if (data.requires_password_change !== mustChangePassword()) {
+        setMustChangePassword(data.requires_password_change);
+      }
+      if (data.requires_password_change) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
