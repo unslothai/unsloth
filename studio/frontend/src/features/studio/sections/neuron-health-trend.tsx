@@ -38,7 +38,6 @@ function useIsDark(): boolean {
 }
 
 export interface NeuronHealthTrendProps {
-  isTraining: boolean;
   records: ActivationRecord[];
   stepIndex: number;
   onStepChange: (idx: number) => void;

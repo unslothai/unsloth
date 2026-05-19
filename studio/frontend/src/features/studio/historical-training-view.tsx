@@ -137,7 +137,6 @@ function InterpretabilitySection({ runId }: { runId: string }): ReactElement {
       {/* Trend chart — full width, compact */}
       <div className="h-[280px]">
         <NeuronHealthTrend
-          isTraining={false}
           records={records}
           stepIndex={stepIndex}
           onStepChange={handleStepChange}

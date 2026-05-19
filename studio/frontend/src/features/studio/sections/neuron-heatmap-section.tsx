@@ -846,7 +846,6 @@ export function NeuronHeatmapSection({
 
   const [expanded,     setExpanded]     = useState(false);
   const [outlierBlend, setOutlierBlend] = useState(false);
-  const [viewMode,     setViewMode]     = useState<ViewMode>("activations");
   const [activeOverlays, setActiveOverlays] = useState<Set<OverlayKey>>(new Set());
   const [infoOpen,     setInfoOpen]     = useState(false);
 
@@ -861,8 +860,8 @@ export function NeuronHeatmapSection({
 
   // Compute heatmap values for the current view mode + step
   const computedValues = useMemo(
-    () => (record ? computeViewValues(records, stepIndex, viewMode) : null),
-    [records, stepIndex, viewMode, record],
+    () => (record ? computeViewValues(records, stepIndex, "activations") : null),
+    [records, stepIndex, record],
   );
 
   // Compute overlay cell sets (cumulative up to current step)
@@ -927,8 +926,8 @@ export function NeuronHeatmapSection({
             <ModePill
               key={mode.key}
               label={mode.label}
-              active={viewMode === mode.key}
-              onClick={() => setViewMode(mode.key)}
+              active={mode.key === "activations"}
+              onClick={() => {}}
               latex={mode.latex}
               description={mode.description}
             />
@@ -986,8 +985,8 @@ export function NeuronHeatmapSection({
               <ModePill
                 key={mode.key}
                 label={mode.label}
-                active={viewMode === mode.key}
-                onClick={() => setViewMode(mode.key)}
+                active={mode.key === "activations"}
+                onClick={() => {}}
                 latex={mode.latex}
                 description={mode.description}
               />
