@@ -618,6 +618,13 @@ export function AppSidebar() {
                         <SidebarMenuButton
                           isActive={isActiveRun}
                           className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[10px] pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
+                          // Expose full run/dataset name via native tooltip
+                          // so long titles aren't lost to CSS truncation.
+                          title={
+                            run.dataset_name
+                              ? `${run.display_name ?? run.model_name} — ${run.dataset_name}`
+                              : (run.display_name ?? run.model_name)
+                          }
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
