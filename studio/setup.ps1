@@ -962,12 +962,20 @@ if ($vsResult -and $vsResult.MsbuildToolsetVersion -eq 'v180') {
                 try {
                     winget install --id Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
                 } catch {}
-                # Prepend the winget install bin dir so the new CMake wins
-                # over any pre-existing portable CMake on PATH.
-                $wingetCmakeBin = "$env:ProgramFiles\CMake\bin"
-                if (Test-Path (Join-Path $wingetCmakeBin 'cmake.exe')) {
-                    $env:Path = "$wingetCmakeBin;$env:Path"
-                    Add-ToUserPath -Directory $wingetCmakeBin -Position 'Prepend' | Out-Null
+                # Prepend whichever default winget install location now holds
+                # cmake.exe so the new CMake wins over any pre-existing
+                # portable one on PATH. Mirrors Section 1c's location list.
+                $wingetCmakeBins = @(
+                    "$env:ProgramFiles\CMake\bin"
+                    "${env:ProgramFiles(x86)}\CMake\bin"
+                    "$env:LOCALAPPDATA\CMake\bin"
+                )
+                foreach ($d in $wingetCmakeBins) {
+                    if (Test-Path (Join-Path $d 'cmake.exe')) {
+                        $env:Path = "$d;$env:Path"
+                        Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
+                        break
+                    }
                 }
                 Refresh-Environment
                 $cmakeVersion = Get-CMakeVersion
