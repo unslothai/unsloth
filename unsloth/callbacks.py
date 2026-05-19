@@ -110,6 +110,8 @@ class ActivationNoveltyCallback(TrainerCallback):
         self.layer_getter = layer_getter
 
         self._handle = None
+        self._mask_handle = None
+        self._cached_mask: Optional[torch.Tensor] = None
         self._running_mean_abs: Optional[torch.Tensor] = None
         self._running_count: int = 0
         self._history: deque = deque(maxlen = window)
@@ -143,6 +145,13 @@ class ActivationNoveltyCallback(TrainerCallback):
             )
             return
 
+        def _mask_pre_hook(_module, args, kwargs):
+            self._cached_mask = kwargs.get("attention_mask", None)
+
+        self._mask_handle = model.register_forward_pre_hook(
+            _mask_pre_hook, with_kwargs = True
+        )
+
         def _hook(_module, _input, output):
             if not _module.training:
                 return
@@ -152,7 +161,15 @@ class ActivationNoveltyCallback(TrainerCallback):
             # when we reduce over the sequence axis — a neuron firing with +5 on
             # one token and -5 on another is active, not silent.
             if out.dim() == 3:
-                out = out.mean(dim = 1)  # (batch, hidden)
+                mask = self._cached_mask
+                if mask is not None:
+                    # Exclude padding positions so batches with different padding
+                    # ratios produce the same novelty for the same real tokens.
+                    # mask: (batch, seq) -> (batch, seq, 1) for broadcasting.
+                    m = mask.to(dtype = out.dtype, device = out.device).unsqueeze(-1)
+                    out = (out * m).sum(dim = 1) / m.sum(dim = 1).clamp(min = 1)
+                else:
+                    out = out.mean(dim = 1)  # (batch, hidden)
             elif out.dim() > 3:
                 out = out.flatten(2).mean(dim = 1)
             batch_mean_abs = out.mean(dim = 0)  # (hidden,) — already abs
@@ -172,6 +189,10 @@ class ActivationNoveltyCallback(TrainerCallback):
         if self._handle is not None:
             self._handle.remove()
             self._handle = None
+        if self._mask_handle is not None:
+            self._mask_handle.remove()
+            self._mask_handle = None
+        self._cached_mask = None
 
     def _reset_running_stats(self) -> None:
         self._running_mean_abs = None

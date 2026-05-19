@@ -256,6 +256,37 @@ def test_hook_3d_abs_before_sequence_mean():
     cb.on_train_end(args, state, control)
 
 
+def test_hook_excludes_padding_via_attention_mask():
+    """Padding positions (mask=0) must not contribute to the novelty reduction.
+
+    Two identical-content batches that differ only in padding length should
+    produce the same running stats.
+    """
+    cb = _import_callback()(layer_getter = lambda m: m.mlp)
+    model = _TinySeqModel()
+    args, state, control = _make_state_control()
+    cb.on_train_begin(args, state, control, model = model)
+
+    with torch.no_grad():
+        model.mlp.fc.weight.copy_(torch.eye(16))
+        model.mlp.fc.bias.zero_()
+
+    # One real token followed by one padding token
+    x_padded = torch.ones(1, 2, 16)
+    x_padded[0, 1, :] = 999.0  # padding — should be ignored
+    mask = torch.tensor([[1, 0]])  # only token 0 is real
+
+    # Simulate the mask being cached as if the pre-forward hook ran
+    cb._cached_mask = mask.float()
+    _ = model(x_padded)
+
+    # Stats should reflect only the real token (value ≈ 1.0), not the pad (999)
+    assert cb._running_mean_abs is not None
+    assert cb._running_mean_abs.max().item() < 10.0
+
+    cb.on_train_end(args, state, control)
+
+
 def test_auto_layer_detection():
     """_find_mlp_layers should locate the 'mlp' sub-module automatically."""
     cb = _import_callback()()  # no layer_getter
