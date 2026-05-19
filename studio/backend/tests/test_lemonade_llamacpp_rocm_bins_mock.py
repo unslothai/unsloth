@@ -30,6 +30,18 @@ if resolve_lemonade_rocm_choice is None or _LEMONADE_GFX_FAMILIES is None:
     pytest.skip("PR symbols not present - check branch", allow_module_level = True)
 
 
+@pytest.fixture(autouse = True)
+def _clear_lemonade_release_cache():
+    """Prevent cross-test pollution of the lemonade release lru_cache when
+    future tests vary the fetch_json mock return value."""
+    _cache = getattr(_mod, "_fetch_lemonade_release_cached", None)
+    if _cache is not None and hasattr(_cache, "cache_clear"):
+        _cache.cache_clear()
+    yield
+    if _cache is not None and hasattr(_cache, "cache_clear"):
+        _cache.cache_clear()
+
+
 _STUB_TAG = "b1262"
 _STUB_OS_PREFIXES = ("ubuntu", "windows")
 _STUB_FAMILIES = ("gfx1151", "gfx1150", "gfx120X", "gfx110X", "gfx103X")
@@ -238,3 +250,102 @@ def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavaila
     ), f"upstream HIP asset not included as fallback; got {kinds}"
     hip_attempt = next(a for a in plan.attempts if a.install_kind == "windows-hip")
     assert hip_attempt.source_label == "upstream"
+
+
+# ── Follow-up: pinned-tag URL helper, URL trust pinning, opt-out env, autouse cache clear ──
+
+
+def test_lemonade_release_api_url_pinned_tag():
+    """A pinned llama_tag must produce the /releases/tags/<tag> URL."""
+    assert _mod._lemonade_release_api_for("b1262").endswith("/releases/tags/b1262")
+    assert _mod._lemonade_release_api_for("latest").endswith("/releases/latest")
+    assert _mod._lemonade_release_api_for("").endswith("/releases/latest")
+
+
+def test_lemonade_release_api_url_encodes_tag():
+    """Unexpected slashes / hashes in the tag must be URL-encoded so the URL
+    cannot be reshaped (defence in depth -- tags should already be sanitised
+    upstream)."""
+    url = _mod._lemonade_release_api_for("b1260/../latest")
+    assert "/releases/tags/b1260%2F..%2Flatest" in url
+    assert "//latest" not in url.split("/releases/tags/", 1)[1]
+
+
+def test_lemonade_resolver_skipped_by_opt_out_env(monkeypatch):
+    """UNSLOTH_DISABLE_LEMONADE_ROCM=1 must short-circuit the resolver."""
+    monkeypatch.setenv("UNSLOTH_DISABLE_LEMONADE_ROCM", "1")
+    host = _make_rocm_host("gfx1151")
+    res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
+    assert res is None
+
+
+def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
+    """If the GitHub API response somehow contained an off-host download URL,
+    the resolver must refuse to use it (lemonade assets are not in the
+    approved-hash manifest)."""
+    bad_release = {
+        "tag_name": _STUB_TAG,
+        "assets": [
+            {
+                "name": f"llama-{_STUB_TAG}-ubuntu-rocm-gfx1151-x64.zip",
+                "browser_download_url": "https://attacker.invalid/llama.zip",
+            },
+        ],
+    }
+    host = _make_rocm_host("gfx1151")
+    with patch.object(_mod, "fetch_json", return_value=bad_release):
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
+    assert res is None
+
+
+def test_lemonade_resolver_rejects_http_scheme():
+    assert not _mod._is_trusted_github_release_url("http://github.com/lemonade-sdk/llamacpp-rocm/releases/download/x/y.zip", "lemonade-sdk/llamacpp-rocm")
+
+
+def test_lemonade_resolver_accepts_github_cdn():
+    assert _mod._is_trusted_github_release_url("https://objects.githubusercontent.com/abc/def", "lemonade-sdk/llamacpp-rocm")
+
+
+def test_lemonade_resolver_accepts_release_path():
+    url = "https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1262/llama-b1262-ubuntu-rocm-gfx1151-x64.zip"
+    assert _mod._is_trusted_github_release_url(url, "lemonade-sdk/llamacpp-rocm")
+
+
+def test_lemonade_resolver_rejects_wrong_repo():
+    """A github.com release URL for a different repo must be rejected."""
+    assert not _mod._is_trusted_github_release_url(
+        "https://github.com/attacker/llamacpp-rocm/releases/download/x/y.zip",
+        "lemonade-sdk/llamacpp-rocm",
+    )
+
+
+def test_lemonade_resolver_rejects_empty_browser_download_url():
+    """An asset entry with an empty browser_download_url must fall through."""
+    release = {
+        "tag_name": _STUB_TAG,
+        "assets": [
+            {
+                "name": f"llama-{_STUB_TAG}-ubuntu-rocm-gfx1151-x64.zip",
+                "browser_download_url": "",
+            },
+        ],
+    }
+    host = _make_rocm_host("gfx1151")
+    with patch.object(_mod, "fetch_json", return_value=release):
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
+    assert res is None
+
+
+def test_lemonade_runtime_patterns_include_hip_runtime():
+    """Lemonade ZIPs bundle libamdhip64.so etc; runtime overlay must catch them."""
+    from install_llama_prebuilt import runtime_patterns_for_choice, AssetChoice
+    choice = AssetChoice(
+        repo="lemonade-sdk/llamacpp-rocm", tag="b1262",
+        name="llama-b1262-ubuntu-rocm-gfx1151-x64.zip",
+        url="https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1262/x.zip",
+        source_label="lemonade", install_kind="linux-rocm",
+    )
+    pats = runtime_patterns_for_choice(choice)
+    for needed in ("libamdhip64.so*", "libhsa-runtime64.so*", "libhipblas.so*", "librocblas.so*"):
+        assert needed in pats, f"missing {needed!r} in {pats}"
+

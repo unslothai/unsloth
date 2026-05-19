@@ -114,15 +114,22 @@ def _lemonade_release_api_for(llama_tag: str) -> str:
 
     When llama_tag is unset or "latest", point at /releases/latest. When the
     caller has pinned a specific tag (e.g. "b1260"), point at the same tag in
-    lemonade -- lemonade tags llama.cpp upstream tags 1:1 -- so the resolver
-    honours the pin instead of silently drifting to whatever lemonade ships
-    as latest.
+    lemonade. Lemonade tags match `ggml-org/llama.cpp` upstream tags 1:1
+    (NOT `unslothai/llama.cpp` which has its own fork-specific tag namespace),
+    so passing an unsloth-fork tag to this helper will produce a 404 and the
+    caller will fall through to the upstream tarball. That is intentional:
+    pinned installs stay reproducible instead of silently drifting to whatever
+    lemonade ships as latest.
+
+    The tag is URL-encoded with `safe=""` so an unexpected slash / hash / query
+    character cannot reshape the URL.
     """
     normalized = (llama_tag or "").strip()
     if not normalized or normalized.lower() == "latest":
         return LEMONADE_ROCM_RELEASES_API
     return (
-        f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/{normalized}"
+        f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/"
+        f"{urllib.parse.quote(normalized, safe='')}"
     )
 
 
@@ -3360,6 +3367,32 @@ def _lemonade_gfx_family(gfx_id: str) -> str | None:
     return None
 
 
+def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
+    """Validate a release asset URL points at GitHub's expected hosts.
+
+    Accepts:
+      https://github.com/{expected_repo}/releases/download/...
+      https://objects.githubusercontent.com/...   (GitHub's release CDN)
+    Anything else (including http://, raw.githubusercontent.com, gist, etc.)
+    is rejected so a malicious API response cannot redirect downloads to an
+    attacker-chosen host.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.netloc or "").lower()
+    if host == "objects.githubusercontent.com":
+        return True
+    if host == "github.com":
+        return parsed.path.startswith(f"/{expected_repo}/releases/download/")
+    return False
+
+
 @functools.lru_cache(maxsize = 8)
 def _fetch_lemonade_release_cached(api_url: str, llama_tag: str) -> "dict | None":
     """Cached wrapper around fetch_json for lemonade release lookups.
@@ -3409,6 +3442,12 @@ def resolve_lemonade_rocm_choice(
     """
     if not host.rocm_gfx_target:
         return None
+    # Opt-out for users who want the upstream HIP build path only -- lemonade
+    # binaries are downloaded without entries in the approved-hash manifest, so
+    # the integrity gate is functional validation only.
+    if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in ("1", "true", "yes"):
+        log("UNSLOTH_DISABLE_LEMONADE_ROCM is set; skipping lemonade-sdk prebuilt")
+        return None
     gfx_family = _lemonade_gfx_family(host.rocm_gfx_target)
     if gfx_family is None:
         log(
@@ -3434,6 +3473,27 @@ def resolve_lemonade_rocm_choice(
             "skipping lemonade prebuilt"
         )
         return None
+    asset_url = assets[asset_name]
+    if not asset_url:
+        # release_asset_map defaults to "" when an asset row is missing
+        # browser_download_url; skip cleanly instead of letting
+        # download_file("") raise a less obvious error downstream.
+        log(
+            f"{LEMONADE_ROCM_REPO}@{release_tag} asset {asset_name!r} has no "
+            "browser_download_url; skipping lemonade prebuilt"
+        )
+        return None
+    # Defence in depth: lemonade browser_download_url should be on github.com
+    # or githubusercontent.com. A compromised GitHub API response that
+    # redirects to an attacker-chosen host would otherwise be honoured
+    # silently (lemonade assets are not in the approved-hash manifest).
+    if not _is_trusted_github_release_url(asset_url, LEMONADE_ROCM_REPO):
+        log(
+            f"{LEMONADE_ROCM_REPO}@{release_tag} asset {asset_name!r} points "
+            f"to an unexpected host ({asset_url!r}); refusing to download "
+            "lemonade prebuilt"
+        )
+        return None
     # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
     # generic glibc build that runs on any distro (Arch, Fedora, ...), so
     # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
@@ -3442,11 +3502,18 @@ def resolve_lemonade_rocm_choice(
         f"trying lemonade-sdk ROCm prebuilt {asset_name} "
         f"(works on any glibc Linux, not just Ubuntu)"
     )
+    log(
+        f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
+        f"Unsloth approved-hash manifest; download integrity relies on "
+        f"functional validation (llama-bench / llama-server smoke tests) "
+        f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
+        f"lemonade and fall back to the upstream HIP build path."
+    )
     return AssetChoice(
         repo = LEMONADE_ROCM_REPO,
         tag = release_tag,
         name = asset_name,
-        url = assets[asset_name],
+        url = asset_url,
         source_label = "lemonade",
         install_kind = install_kind,
     )
@@ -4075,7 +4142,7 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
 
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
-        return [
+        patterns = [
             "llama-server",
             "llama-quantize",
             "libllama-common.so*",
@@ -4088,6 +4155,26 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "libggml-hip.so*",
             "libggml-rpc.so*",
         ]
+        if choice.install_kind == "linux-rocm":
+            # Lemonade ROCm ZIPs bundle the full HIP / ROCm runtime so the
+            # install does not require system /opt/rocm. The upstream
+            # tarball links against system /opt/rocm and ships none of these
+            # globs (empty matches = no-op). Both paths therefore stay
+            # correct; lemonade users get the bundled runtime overlaid into
+            # ~/.unsloth/llama.cpp where llama-server's RPATH can find it.
+            patterns.extend([
+                "libamdhip64.so*",
+                "libhsa-runtime64.so*",
+                "libhipblas.so*",
+                "libhipblaslt.so*",
+                "librocblas.so*",
+                "librocsolver.so*",
+                "librocsparse.so*",
+                "librocrand.so*",
+                "libMIOpen.so*",
+                "libmagma.so*",
+            ])
+        return patterns
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
     if choice.install_kind in {"windows-cpu", "windows-cuda", "windows-hip"}:
