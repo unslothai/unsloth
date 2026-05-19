@@ -27,3 +27,9 @@ Your support extends beyond code:
 Finally, please be mindful of our [Code of Conduct](https://github.com/unslothai/unsloth/blob/main/CODE_OF_CONDUCT.md) to ensure a welcoming and inclusive environment for everyone.
 
 Thank you so much for reading and we hope you have lots of fun using Unsloth! 🦥
+
+
+## Pull Request Guidelines
+- Keep PRs focused on a single change
+- Include a concise description and motivation
+- Link related issues when applicable
