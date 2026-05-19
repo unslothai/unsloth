@@ -3,9 +3,9 @@
 
 import { getAuthToken } from "@/features/auth/session";
 import { apiUrl } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
-import { toast } from "sonner";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -51,7 +51,10 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
-import { createOpenAIContainer } from "./openai-containers";
+import {
+  createOpenAIContainer,
+  listOpenAIContainers,
+} from "./openai-containers";
 import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
@@ -1114,6 +1117,39 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 openaiCodeExecContainerId = null;
                 anthropicCodeExecContainerId = null;
               }
+              // Pre-send container validation (OpenAI only). The list
+              // endpoint already filters status==="expired" server-side
+              // (studio/backend/routes/inference.py — list_openai_containers),
+              // so membership in this set means "OpenAI will accept it
+              // as container_reference". A stale id silently dropped here
+              // falls through to the inheritance + lazy-create logic
+              // below, so the user never sees "Container is expired" in
+              // the chat thread. On list-call failure we leave
+              // activeContainerIds null and skip validation — the
+              // backend's transparent retry path is the safety net for
+              // that case.
+              let activeContainerIds: Set<string> | null = null;
+              if (externalProvider.providerType === "openai") {
+                try {
+                  const list = await listOpenAIContainers({
+                    apiKey: externalApiKey,
+                    baseUrl: externalProvider.baseUrl || null,
+                  });
+                  activeContainerIds = new Set(list.map((c) => c.id));
+                } catch {
+                  activeContainerIds = null;
+                }
+                if (
+                  activeContainerIds &&
+                  openaiCodeExecContainerId &&
+                  !activeContainerIds.has(openaiCodeExecContainerId)
+                ) {
+                  void updateStoredChatThreadEventually(resolvedThreadId, {
+                    openaiCodeExecContainerId: null,
+                  }).catch(() => {});
+                  openaiCodeExecContainerId = null;
+                }
+              }
               // Cross-thread inheritance: when the active thread has
               // no container yet, default to the one most recently
               // used on *any* other thread (provider-scoped).
@@ -1133,14 +1169,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   });
                   for (const t of others) {
                     if (t.id === resolvedThreadId) continue;
-                    if (t.openaiCodeExecContainerId) {
-                      openaiCodeExecContainerId = t.openaiCodeExecContainerId;
-                      void updateStoredChatThreadEventually(resolvedThreadId, {
-                        openaiCodeExecContainerId,
+                    if (!t.openaiCodeExecContainerId) continue;
+                    // Skip ids not in active set; null on source thread so
+                    // the next pass doesn't re-pick a dead id.
+                    if (
+                      activeContainerIds &&
+                      !activeContainerIds.has(t.openaiCodeExecContainerId)
+                    ) {
+                      void updateStoredChatThreadEventually(t.id, {
+                        openaiCodeExecContainerId: null,
                       })
                         .catch(() => {});
-                      break;
+                      continue;
                     }
+                    openaiCodeExecContainerId = t.openaiCodeExecContainerId;
+                    void updateStoredChatThreadEventually(resolvedThreadId, {
+                      openaiCodeExecContainerId,
+                    }).catch(() => {});
+                    break;
                   }
                 } catch {
                   /* fall through to lazy-create below */

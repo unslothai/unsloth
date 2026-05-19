@@ -40,6 +40,13 @@ import {
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
+import {
+  OPEN_DOCUMENT_SPREADSHEET_MIME,
+  OPEN_DOCUMENT_TEXT_MIME,
+  type OpenDocumentAttachmentContent,
+  readActiveOpenDocumentAttachmentContent,
+  readOpenDocumentAttachmentContent,
+} from "./open-document";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
@@ -306,6 +313,95 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
+  private readonly active = new Set<string>();
+  private readonly sending = new Set<string>();
+  private readonly content = new Map<
+    string,
+    Promise<OpenDocumentAttachmentContent | null>
+  >();
+
+  accept = [
+    ".ods",
+    ".odt",
+    OPEN_DOCUMENT_SPREADSHEET_MIME,
+    OPEN_DOCUMENT_TEXT_MIME,
+  ].join(",");
+
+  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    const id = crypto.randomUUID();
+    this.active.add(id);
+    const attachment = {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+
+    yield attachment;
+    const content = readActiveOpenDocumentAttachmentContent(
+      file,
+      file.name,
+      file.type,
+      () => this.active.has(id),
+    );
+    this.content.set(id, content);
+
+    try {
+      if ((await content) && this.active.has(id) && !this.sending.has(id)) {
+        yield {
+          ...attachment,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      }
+    } catch {
+      this.active.delete(id);
+      this.content.delete(id);
+      if (!this.sending.has(id)) {
+        yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      }
+    }
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    this.sending.add(attachment.id);
+    try {
+      const content =
+        (await this.content.get(attachment.id)) ??
+        (await readOpenDocumentAttachmentContent(
+          attachment.file,
+          attachment.name,
+          attachment.contentType ?? "",
+        ));
+      const { label, text } = content;
+
+      return {
+        id: attachment.id,
+        type: "document",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [
+          { type: "text", text: `[${label}: ${attachment.name}]\n${text}` },
+        ],
+        status: { type: "complete" },
+      };
+    } finally {
+      this.active.delete(attachment.id);
+      this.content.delete(attachment.id);
+      this.sending.delete(attachment.id);
+    }
+  }
+
+  remove(attachment: { id: string }): Promise<void> {
+    this.active.delete(attachment.id);
+    this.sending.delete(attachment.id);
+    this.content.delete(attachment.id);
     return Promise.resolve();
   }
 }
@@ -777,6 +873,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
+        new OpenDocumentAttachmentAdapter(),
       ]),
     [],
   );

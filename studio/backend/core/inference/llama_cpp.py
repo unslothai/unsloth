@@ -471,8 +471,9 @@ def _is_mtp_model_name(
 
 
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
-    """User passed --spec-type / --spec-default? llama-server accumulates
-    repeated --spec-type, so we suppress auto-emit when this is true."""
+    """User passed --spec-type / --spec-default? llama-server takes a
+    single --spec-type (comma-separated to chain), so suppress
+    auto-emit when this is true."""
     if not extra_args:
         return False
     for raw in extra_args:
@@ -2631,10 +2632,10 @@ class LlamaCppBackend:
                 #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
                 #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
                 #
-                # Params from llama.cpp docs (docs/speculative.md):
-                #   --spec-ngram-size-n 24  (small n not recommended)
-                #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
-                #     dense models can reduce these)
+                # Params from llama.cpp server README:
+                #   --spec-ngram-mod-n-match 24 (lookup length)
+                #   --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+                #   (MoEs need long drafts; dense models can reduce these)
                 # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
                 # ref: https://github.com/ggml-org/llama.cpp/pull/19164
                 # ref: https://github.com/ggml-org/llama.cpp/pull/18471
@@ -2651,9 +2652,10 @@ class LlamaCppBackend:
                 )
                 user_owns_spec_type = _extra_args_set_spec_type(extra_args)
                 # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
+                # llama.cpp #22673: MTP is compatible with mmproj, so the
+                # vision gate previously here was wrong.
                 if (
                     is_mtp_model
-                    and not effective_is_vision
                     and not user_owns_spec_type
                     and normalized_spec in (None, "", "default")
                 ):
@@ -2662,11 +2664,7 @@ class LlamaCppBackend:
                     # User --spec-type wins (it accumulates if repeated).
                     normalized_spec = None
                     self._speculative_type = None
-                if (
-                    normalized_spec
-                    and normalized_spec != "off"
-                    and not effective_is_vision
-                ):
+                if normalized_spec and normalized_spec != "off":
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
                         self._speculative_type = "default"
@@ -2695,20 +2693,22 @@ class LlamaCppBackend:
                                     ]
                                 )
                             else:
+                                # CPU/Mac: chain ngram-mod + MTP in one
+                                # comma-separated --spec-type (not repeated).
+                                # ngram-mod knobs match llama.cpp defaults
+                                # (n-match 24, n-min 48, n-max 64).
                                 cmd.extend(
                                     [
                                         "--spec-type",
-                                        mtp_token,
+                                        f"ngram-mod,{mtp_token}",
                                         "--spec-draft-n-max",
                                         "3",
-                                        "--spec-type",
-                                        "ngram-mod",
                                         "--spec-ngram-mod-n-match",
                                         "24",
                                         "--spec-ngram-mod-n-min",
                                         "48",
                                         "--spec-ngram-mod-n-max",
-                                        "6",
+                                        "64",
                                     ]
                                 )
                             self._speculative_type = "draft-mtp"
@@ -2718,13 +2718,15 @@ class LlamaCppBackend:
                     elif normalized_spec in _valid_spec_types:
                         cmd.extend(["--spec-type", normalized_spec])
                         if normalized_spec == "ngram-mod":
+                            # llama.cpp defaults; legacy --spec-ngram-size-n
+                            # / --draft-{min,max} were removed for ngram-mod.
                             cmd.extend(
                                 [
-                                    "--spec-ngram-size-n",
+                                    "--spec-ngram-mod-n-match",
                                     "24",
-                                    "--draft-min",
+                                    "--spec-ngram-mod-n-min",
                                     "48",
-                                    "--draft-max",
+                                    "--spec-ngram-mod-n-max",
                                     "64",
                                 ]
                             )
@@ -3112,22 +3114,16 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        # Vision GGUFs silently drop speculative decoding in
-        # load_model (the spec gate is "not is_vision"); treat the
-        # request's value as "off" so a vision load with
-        # speculative_type="default" still matches.
-        if self._is_vision or is_vision:
-            req_spec = "off"
-        else:
-            raw_spec = _norm(speculative_type)
-            req_spec = raw_spec or "off"
-            # Mirror load_model's auto-promotion so repeat /load matches.
-            if (
-                raw_spec in (None, "default")
-                and _is_mtp_model_name(model_identifier, gguf_path)
-                and not _extra_args_set_spec_type(extra_args)
-            ):
-                req_spec = "draft-mtp"
+        # Mirror load_model's auto-promotion. Vision is no longer a
+        # spec blocker (llama.cpp #22673: MTP is compatible with mmproj).
+        raw_spec = _norm(speculative_type)
+        req_spec = raw_spec or "off"
+        if (
+            raw_spec in (None, "default")
+            and _is_mtp_model_name(model_identifier, gguf_path)
+            and not _extra_args_set_spec_type(extra_args)
+        ):
+            req_spec = "draft-mtp"
         backend_spec = _norm(self._speculative_type) or "off"
         if req_spec != backend_spec:
             return False

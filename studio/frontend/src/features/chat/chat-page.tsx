@@ -35,9 +35,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import {
@@ -1386,12 +1387,11 @@ export function ChatPage(): ReactElement {
             ) : null}
             {!loadingModel && modelsError ? (
               <div
-                className="relative top-0.5 max-w-[28rem] truncate pl-0.5 text-xs text-destructive"
-                title={modelsError}
+                className="relative top-0.5 pl-0.5"
                 role="status"
                 aria-live="polite"
               >
-                {modelsError}
+                <CopyableErrorChip message={modelsError} />
               </div>
             ) : null}
           </div>
