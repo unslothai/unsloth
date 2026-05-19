@@ -57,6 +57,13 @@ export interface LoadModelRequest {
    * applied when speculative_type resolves to "mtp" or "mtp+ngram".
    */
   spec_draft_n_max?: number | null;
+  /**
+   * Override --spec-draft-p-min for MTP speculative decoding (drafts
+   * with probability below this are rejected). 0.0..1.0. Only applied
+   * when speculative_type resolves to "mtp" or "mtp+ngram". Functional
+   * since llama.cpp #23269.
+   */
+  spec_draft_p_min?: number | null;
 }
 
 export interface ValidateModelResponse {
@@ -135,6 +142,7 @@ export interface LoadModelResponse {
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_p_min?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -174,6 +182,7 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_p_min?: number | null;
 }
 
 export interface AudioGenerationResponse {
