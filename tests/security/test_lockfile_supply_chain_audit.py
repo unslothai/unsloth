@@ -276,12 +276,10 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         cargo_lockfiles = [lockfile],
     )
     warning_lines = [
-        line for line in proc.stderr.splitlines()
-        if line.startswith("::warning::")
+        line for line in proc.stderr.splitlines() if line.startswith("::warning::")
     ]
     assert warning_lines, (
-        "expected at least one ::warning:: annotation; "
-        f"stderr was:\n{proc.stderr}"
+        "expected at least one ::warning:: annotation; " f"stderr was:\n{proc.stderr}"
     )
     for line in warning_lines:
         # Single physical line: kind, package, detail all present
