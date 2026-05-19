@@ -256,29 +256,16 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # The safetensors / MLX loop parses these emission formats:
-    # Qwen ``<tool_call>{json}``, Qwen3.5 ``<function=name>...``,
-    # Llama-3 ``<|python_tag|>``, Llama-3.2 bare JSON ``{"name":...,
-    # "parameters":...}``, Mistral ``[TOOL_CALLS]`` (pre-v11 array +
-    # v11+ ``name{json}``), and Gemma 4 ``<|tool_call>...``. If the
-    # template advertises tools but does NOT use any of these markers,
-    # the parser cannot honour the emission - drop the pill. ``{"name":``
-    # catches Llama-3.2's ``custom_tools`` shape whose template instructs
-    # the model to "Respond in the format {\"name\": ..., \"parameters\":
-    # ...}" without a ``<|python_tag|>`` prefix.
-    _PARSER_MARKERS = (
-        "<tool_call>",
-        "<function=",
-        "<|python_tag|>",
-        "[TOOL_CALLS]",
-        "<|tool_call>",
-        '{"name":',
-        '{\\"name\\":',
-    )
+    # Our safetensors loop only parses <tool_call>{json}</tool_call>
+    # and <function=name>...</function>. Llama uses <|python_tag|>,
+    # Mistral uses [TOOL_CALLS]; advertising tools for those would
+    # enable a pill the parser cannot honour. GGUF is unaffected --
+    # llama-server normalises every format into structured deltas.
     if (
         flags.get("supports_tools")
         and chat_template
-        and not any(m in chat_template for m in _PARSER_MARKERS)
+        and "<tool_call>" not in chat_template
+        and "<function=" not in chat_template
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -436,23 +423,9 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
-# Regex for stripping leaked tool-call markup from assistant messages /
-# stream. Covers every emission format the shared parser handles
-# (Qwen / Hermes ``<tool_call>``, Qwen3.5 ``<function=name>``, Llama-3
-# ``<|python_tag|>``, Mistral ``[TOOL_CALLS]`` pre-v11 array and v11+
-# ``name{json}``, Gemma 4 ``<|tool_call>...<tool_call|>``). Closed
-# pairs only so in-progress markup stays buffered upstream.
+# Regex for stripping leaked tool-call XML from assistant messages/stream
 _TOOL_XML_RE = _re.compile(
-    "|".join(
-        [
-            r"<tool_call>.*?</tool_call>",
-            r"<function=\w+>.*?</function>",
-            r"<\|tool_call>.*?<tool_call\|>",
-            r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?",
-            r"\[TOOL_CALLS\]\s*[\w\.\-]+\s*(?:\[ARGS\])?\s*\{.*?\}",
-            r"<\|python_tag\|>[^\n<]*",
-        ]
-    ),
+    r"<tool_call>.*?</tool_call>|<function=\w+>.*?</function>",
     _re.DOTALL,
 )
 logger = get_logger(__name__)
