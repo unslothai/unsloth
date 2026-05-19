@@ -7,6 +7,8 @@ Authentication API routes
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+import ipaddress
+import os
 import threading
 import time
 from collections import deque
@@ -36,47 +38,155 @@ from auth.authentication import (
 router = APIRouter()
 
 
-# In-memory per-IP login rate limiter; multi-process deployment needs a shared store.
-_LOGIN_BUCKETS: dict[str, deque] = {}
+# Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
+# typos from blocking others; the aggregate stops username-rotation spray.
+# Single-process only -- multi-worker deployments need a shared store.
+_LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
+_LOGIN_IP_BUCKETS: dict[str, deque] = {}
 _LOGIN_BUCKETS_LOCK = threading.Lock()
 _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
+_LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
+# Bucket-dict cap. On overflow we prune stale entries; if still full the
+# failure folds into the per-IP aggregate only.
+_LOGIN_MAX_BUCKETS = 4096
+# Unrepresentable as a real username (leading NUL); folds unknown-user attempts
+# into one slot so attacker cardinality cannot blow the bucket dict.
+_UNKNOWN_LOGIN_USER = "\x00unknown-user"
 
 
-def _client_key(request: Request | None) -> str:
-    if request is None or request.client is None:
+def _trust_forwarded_for() -> bool:
+    """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set.
+
+    Off by default so a direct caller cannot spoof the header.
+    """
+    return os.environ.get("UNSLOTH_STUDIO_TRUST_FORWARDED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _normalize_forwarded_addr(value: str) -> str:
+    """Parse an XFF / Forwarded `for=` value into a bare IP (port-stripped)."""
+    value = (value or "").strip().strip('"')
+    if not value or value.lower() == "unknown":
+        return ""
+    if value.startswith("["):
+        # Bracketed IPv6, optionally with port.
+        end = value.find("]")
+        if end <= 0:
+            return ""
+        host = value[1:end]
+    elif value.count(":") == 1:
+        # IPv4:port. Bare IPv6 has multiple colons and takes the else branch.
+        head, _, tail = value.rpartition(":")
+        host = head if tail.isdigit() and head else value
+    else:
+        host = value
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return ""
+
+
+def _forwarded_for_from_element(element: str) -> str:
+    """Pick the `for=` token out of a single ``Forwarded`` element."""
+    for tok in element.split(";"):
+        key, sep, val = tok.strip().partition("=")
+        if sep and key.lower() == "for":
+            return _normalize_forwarded_addr(val)
+    return ""
+
+
+def _client_ip(request: Request | None) -> str:
+    if request is None:
         return "_unknown"
-    return request.client.host or "_unknown"
+    if _trust_forwarded_for():
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            # First entry is the originating client.
+            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
+            if normalized:
+                return normalized
+        fwd = request.headers.get("forwarded", "")
+        if fwd:
+            # First element only -- multi-element headers cannot fork buckets.
+            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
+            if normalized:
+                return normalized
+    return (request.client.host if request.client else None) or "_unknown"
 
 
-def _record_login_failure(ip: str) -> int:
+def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
+    return (_client_ip(request), (username or "").casefold())
+
+
+def _unknown_user_key(request: Request | None) -> tuple[str, str]:
+    return (_client_ip(request), _UNKNOWN_LOGIN_USER)
+
+
+def _prune_bucket(bucket: deque, now: float) -> None:
+    while bucket and now - bucket[0] > _LOGIN_WINDOW_SECONDS:
+        bucket.popleft()
+
+
+def _prune_stale_buckets(now: float) -> None:
+    """Drop empty / expired account buckets to bound memory under spray."""
+    stale: list[tuple[str, str]] = []
+    for key, bucket in _LOGIN_BUCKETS.items():
+        _prune_bucket(bucket, now)
+        if not bucket:
+            stale.append(key)
+    for key in stale:
+        _LOGIN_BUCKETS.pop(key, None)
+
+
+def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
+    ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        bucket = _LOGIN_BUCKETS.setdefault(ip, deque())
-        while bucket and now - bucket[0] > _LOGIN_WINDOW_SECONDS:
-            bucket.popleft()
-        bucket.append(now)
-        return len(bucket)
+        ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
+        _prune_bucket(ip_bucket, now)
+        ip_bucket.append(now)
+
+        if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            _prune_stale_buckets(now)
+        if key in _LOGIN_BUCKETS or len(_LOGIN_BUCKETS) < _LOGIN_MAX_BUCKETS:
+            account_bucket = _LOGIN_BUCKETS.setdefault(key, deque())
+            _prune_bucket(account_bucket, now)
+            account_bucket.append(now)
+            return len(account_bucket)
+        # Bucket dict is at its cap; per-IP cap still applies via ip_bucket.
+        return len(ip_bucket)
 
 
-def _login_blocked(ip: str) -> int:
+def _blocked_for(bucket: deque | None, now: float, max_fails: int) -> int:
+    if not bucket:
+        return 0
+    _prune_bucket(bucket, now)
+    if len(bucket) >= max_fails:
+        return max(1, int(_LOGIN_WINDOW_SECONDS - (now - bucket[0])))
+    return 0
+
+
+def _login_blocked(key: tuple[str, str]) -> int:
     """Return seconds until the next attempt is allowed, or 0."""
     now = time.monotonic()
+    ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        bucket = _LOGIN_BUCKETS.get(ip)
-        if not bucket:
-            return 0
-        while bucket and now - bucket[0] > _LOGIN_WINDOW_SECONDS:
-            bucket.popleft()
-        if len(bucket) >= _LOGIN_MAX_FAILS:
-            return max(1, int(_LOGIN_WINDOW_SECONDS - (now - bucket[0])))
-        return 0
+        return max(
+            _blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS),
+            _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
+        )
 
 
-def _clear_login_bucket(ip: str) -> None:
+def _clear_login_bucket(key: tuple[str, str]) -> None:
+    ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        _LOGIN_BUCKETS.pop(ip, None)
+        _LOGIN_BUCKETS.pop(key, None)
+        _LOGIN_IP_BUCKETS.pop(ip, None)
 
 
 @router.get("/status", response_model = AuthStatusResponse)
@@ -95,14 +205,17 @@ async def auth_status() -> AuthStatusResponse:
 
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
-    """Login with username/password. Rate-limited per source IP."""
-    ip = _client_key(request)
-    blocked_for = _login_blocked(ip)
+    """Login with username/password. Per-account + per-IP rate-limited."""
+    key = _bucket_key(request, payload.username)
+    unknown_key = _unknown_user_key(request)
+    blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            # IP is intentionally not interpolated into the body; behind a
+            # proxy or NAT it is either misleading or an info leak.
             detail = (
-                f"Too many failed login attempts from {ip}. "
+                f"Too many failed login attempts. "
                 f"Try again in {blocked_for} seconds."
             ),
             headers = {"Retry-After": str(blocked_for)},
@@ -110,7 +223,9 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     record = storage.get_user_and_secret(payload.username)
     if record is None:
-        _record_login_failure(ip)
+        # Record under a single sentinel key per IP so attacker-controlled
+        # username cardinality does not allocate buckets without bound.
+        _record_login_failure(unknown_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
@@ -118,13 +233,14 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
-        _record_login_failure(ip)
+        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
         )
 
-    _clear_login_bucket(ip)
+    _clear_login_bucket(key)
+    _clear_login_bucket(unknown_key)
     access_token = create_access_token(subject = payload.username)
     refresh_token = create_refresh_token(subject = payload.username)
     return Token(

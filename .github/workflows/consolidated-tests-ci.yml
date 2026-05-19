@@ -316,6 +316,22 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_public_api_surface.py
 
+      - name: callback signature drift detector (HARD GATE)
+        # Catches the MLX-style bug from PR #5498: a producer in
+        # unsloth_zoo (or unsloth) grows a callback arg, but a consumer
+        # callback def still declares the old arity. The producer's
+        # try/except swallows the resulting TypeError and the symptom is
+        # "callback never fires" -- usually diagnosed downstream as a
+        # confusing assertion several seconds later. This static AST
+        # check fails fast at PR time. UNSLOTH_ZOO_SRC points at the
+        # freshly cloned main so the detector sees platform-specific
+        # submodules (e.g. unsloth_zoo/mlx/) that the released wheel
+        # may strip.
+        env:
+          UNSLOTH_ZOO_SRC: ${{ runner.temp }}/unsloth-zoo
+        run: |
+          python -m pytest -v --tb=short tests/test_callback_signature_drift.py
+
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # 16 tests across 5 files. They live inside tests/saving/ and
         # tests/utils/, both of which Repo tests (CPU) excludes via --ignore

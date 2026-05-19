@@ -62,7 +62,7 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { ChevronDown } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   type ExternalProviderConfig,
@@ -243,7 +243,7 @@ function loadSavedActivePreset(): string {
   }
 }
 
-function InfoHint({ children }: { children: ReactNode }) {
+export function InfoHint({ children }: { children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -979,26 +979,25 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
-                {!currentModelIsMultimodal && (
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                        Speculative Decoding
-                      </span>
-                      <InfoHint>
-                        N-gram speculation; faster generation with negligible
-                        VRAM overhead. Text-only models.
-                      </InfoHint>
-                    </div>
-                    <Switch
-                      className="panel-switch shrink-0"
-                      checked={speculativeType != null}
-                      onCheckedChange={(checked) => {
-                        setSpeculativeType(checked ? "default" : null);
-                      }}
-                    />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Speculative Decoding
+                    </span>
+                    <InfoHint>
+                      Faster generation with 0% accuracy hit.
+                    </InfoHint>
                   </div>
-                )}
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={
+                      speculativeType !== "off" && speculativeType != null
+                    }
+                    onCheckedChange={(checked) => {
+                      setSpeculativeType(checked ? "default" : "off");
+                    }}
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (

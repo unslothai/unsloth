@@ -135,6 +135,9 @@ function parseManualModelIds(text: string): string[] {
   return out;
 }
 
+// Remote providers safe for manual model IDs (openrouter drops unused params).
+const MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES = new Set<string>(["openrouter"]);
+
 function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
   if (providerType === "anthropic") {
     return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
@@ -246,13 +249,16 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed the registry's default_models for every provider — curated and
-    // remote alike. For remote-mode providers, loadModels() will replace
-    // this with the union of defaults + the live /models response once the
-    // user clicks "Load Models"; until then (or if the call fails — e.g.
-    // decryption issues during key rotation) the seeded list ensures
-    // curated picks like claude-haiku-4-5 are always reachable.
-    setAvailableModels([...entry.default_models]);
+    // Seed default_models only when the catalog is not fetched live:
+    // curated providers (catalog too large to enumerate, defaults are
+    // the suggestion shortlist) and Ollama (local, no API key — local
+    // /models stands in). Remote-mode cloud providers stay empty until
+    // the user clicks "Load available models" with a key, since
+    // different API tiers expose different catalogs and we don't want
+    // to advertise models the user can't actually call.
+    const seedDefaults =
+      entry.model_list_mode === "curated" || providerType === "ollama";
+    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
@@ -327,6 +333,10 @@ export function ChatProvidersSettings({
               updatedAt,
             };
           });
+        // Don't wipe localStorage providers when the server has no rows.
+        if (syncedProviders.length === 0 && providersRef.current.length > 0) {
+          return;
+        }
         onProvidersChange(syncedProviders);
       } catch (error) {
         const message =
@@ -362,8 +372,11 @@ export function ChatProvidersSettings({
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry) {
-      // Keep first-open behavior consistent with provider re-selection.
-      setAvailableModels([...entry.default_models]);
+      const seedDefaults =
+        entry.model_list_mode === "curated" || providerType === "ollama";
+      if (seedDefaults) {
+        setAvailableModels([...entry.default_models]);
+      }
     }
     setPage("form");
   }
@@ -495,19 +508,28 @@ export function ChatProvidersSettings({
       return;
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
-    const manualModels = isCustomProvider || curated;
+    const manualOnly = isCustomProvider || curated;
+    const remoteAllowsManual =
+      MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType);
+    const manualIds = parseManualModelIds(manualModelIds);
+    const allowManual = manualOnly || remoteAllowsManual;
     const modelsToSave = pruneProviderModelIds(
       providerType,
-      manualModels
+      allowManual
       ? [
           ...new Set([
             ...selectedModelIds,
-            ...parseManualModelIds(manualModelIds),
+            ...manualIds,
           ]),
         ]
       : [...selectedModelIds],
     );
-    if (manualModels) {
+    if (manualOnly) {
+      if (modelsToSave.length === 0) {
+        toast.error("Add at least one model ID.");
+        return;
+      }
+    } else if (remoteAllowsManual && manualIds.length > 0) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -547,7 +569,7 @@ export function ChatProvidersSettings({
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
-        availableModels: manualModels
+        availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
@@ -591,19 +613,29 @@ export function ChatProvidersSettings({
     }
     const entry = registryByType.get(existing.providerType);
     const curated = entry?.model_list_mode === "curated";
-    const manualModels = isEditingCustomProvider || curated;
+    const manualOnly = isEditingCustomProvider || curated;
+    const remoteAllowsManual = MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(
+      existing.providerType,
+    );
+    const manualIds = parseManualModelIds(manualModelIds);
+    const allowManual = manualOnly || remoteAllowsManual;
     const modelsToSave = pruneProviderModelIds(
       existing.providerType,
-      manualModels
+      allowManual
       ? [
           ...new Set([
             ...selectedModelIds,
-            ...parseManualModelIds(manualModelIds),
+            ...manualIds,
           ]),
         ]
       : [...selectedModelIds],
     );
-    if (manualModels) {
+    if (manualOnly) {
+      if (modelsToSave.length === 0) {
+        toast.error("Add at least one model ID.");
+        return;
+      }
+    } else if (remoteAllowsManual && manualIds.length > 0) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -649,7 +681,7 @@ export function ChatProvidersSettings({
                 name: updated.display_name,
                 baseUrl: updated.base_url ?? "",
                 models: modelsToSave,
-                availableModels: manualModels
+                availableModels: manualOnly
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
                 isReasoningModel: supportsProviderReasoningToggle(
@@ -1178,71 +1210,99 @@ export function ChatProvidersSettings({
                       />
                     </div>
                   </div>
-                ) : availableModels.length === 0 ? null : (
+                ) : availableModels.length === 0 &&
+                  !MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? null : (
                   <div className="space-y-3 px-4 py-4">
-                    <div className="grid grid-cols-[112px_minmax(220px,330px)_auto] items-center gap-3 max-sm:grid-cols-1">
-                      <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-                        {availableModelsLabel}
-                      </span>
-                      <Input
-                        id={`provider-model-search-${modelsPanelKey}`}
-                        type="search"
-                        value={modelSearchQuery}
-                        onChange={(event) =>
-                          setModelSearchQuery(event.target.value)
-                        }
-                        placeholder="Search"
-                        aria-label="Search models"
-                        className={modelSearchInputClassName}
-                      />
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                          onClick={selectAllModels}
-                        >
-                          Select all
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                          onClick={clearModelSelection}
-                        >
-                          Clear
-                        </Button>
-                      </div>
-                    </div>
-                    <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
-                      {filteredAvailableModels.length === 0 ? (
-                        <li className="px-3 py-3 text-xs text-muted-foreground">
-                          No matching models
-                        </li>
-                      ) : (
-                        filteredAvailableModels.map((model, index) => (
-                          <li
-                            key={model}
-                            className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
-                            onClick={() => toggleModel(model)}
-                          >
-                            <Checkbox
-                              id={`provider-model-remote-${modelsPanelKey}-${index}`}
-                              checked={selectedModelIds.includes(model)}
-                              onCheckedChange={() => toggleModel(model)}
-                              onClick={(event) => event.stopPropagation()}
-                            />
-                            <span
-                              className="min-w-0 break-all text-sm leading-tight"
+                    {availableModels.length === 0 ? null : (
+                      <>
+                        <div className="grid grid-cols-[112px_minmax(220px,330px)_auto] items-center gap-3 max-sm:grid-cols-1">
+                          <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
+                            {availableModelsLabel}
+                          </span>
+                          <Input
+                            id={`provider-model-search-${modelsPanelKey}`}
+                            type="search"
+                            value={modelSearchQuery}
+                            onChange={(event) =>
+                              setModelSearchQuery(event.target.value)
+                            }
+                            placeholder="Search"
+                            aria-label="Search models"
+                            className={modelSearchInputClassName}
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                              onClick={selectAllModels}
                             >
-                              {model}
-                            </span>
-                          </li>
-                        ))
-                      )}
-                    </ul>
+                              Select all
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                              onClick={clearModelSelection}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+                        <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
+                          {filteredAvailableModels.length === 0 ? (
+                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                              No matching models
+                            </li>
+                          ) : (
+                            filteredAvailableModels.map((model, index) => (
+                              <li
+                                key={model}
+                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                onClick={() => toggleModel(model)}
+                              >
+                                <Checkbox
+                                  id={`provider-model-remote-${modelsPanelKey}-${index}`}
+                                  checked={selectedModelIds.includes(model)}
+                                  onCheckedChange={() => toggleModel(model)}
+                                  onClick={(event) => event.stopPropagation()}
+                                />
+                                <span
+                                  className="min-w-0 break-all text-sm leading-tight"
+                                >
+                                  {model}
+                                </span>
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      </>
+                    )}
+                    {/* Manual IDs allowed for openrouter only. */}
+                    {MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? (
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor="provider-manual-models"
+                          className="text-sm font-medium"
+                        >
+                          {availableModels.length === 0
+                            ? "Or enter model IDs manually (one per line or comma-separated)"
+                            : "Additional model IDs (one per line or comma-separated)"}
+                        </Label>
+                        <Textarea
+                          id="provider-manual-models"
+                          value={manualModelIds}
+                          onChange={(event) =>
+                            setManualModelIds(event.target.value)
+                          }
+                          placeholder={"model-id-1\nmodel-id-2"}
+                          rows={4}
+                          className="min-h-[80px] resize-y font-mono text-sm"
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </motion.div>
