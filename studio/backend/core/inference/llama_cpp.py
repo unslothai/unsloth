@@ -4485,7 +4485,10 @@ class LlamaCppBackend:
                             _it_r = _iter_timings or {}
                             _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
-                            yield {"type": "status", "text": ""}
+                            # boundary=True: the next agentic iteration
+                            # starts a fresh assistant turn, so adapters
+                            # must reset their cumulative cursor here.
+                            yield {"type": "status", "text": "", "boundary": True}
                             continue
 
                         # Content was already streamed.  Yield metadata.
@@ -4753,8 +4756,10 @@ class LlamaCppBackend:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
 
-                # Clear tool status badge before next generation iteration
-                yield {"type": "status", "text": ""}
+                # Clear tool status badge before next generation iteration.
+                # boundary=True: the model is about to start a fresh turn
+                # so cumulative-text adapters must reset their cursor.
+                yield {"type": "status", "text": "", "boundary": True}
                 # Continue the loop to let model respond with context
                 continue
 

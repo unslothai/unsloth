@@ -629,6 +629,49 @@ class TestAnthropicStreamEmitter:
         parsed = json.loads(events[0].split("data: ")[1])
         assert parsed["delta"]["text"] == "After tool"
 
+    def test_boundary_flag_closes_block_and_resets_cursor(self):
+        """An iteration-boundary status (boundary=True) must close the
+        open text block, open a fresh one, and reset _prev_text so the
+        next content delta starts from zero."""
+
+        e = AnthropicStreamEmitter()
+        e.start("msg_1", "m")
+        e.feed({"type": "content", "text": "first turn"})
+        boundary = e.feed({"type": "status", "text": "", "boundary": True})
+        # Boundary must produce content_block_stop + content_block_start
+        # so the next text lives in a new block.
+        joined = "\n".join(boundary)
+        assert "content_block_stop" in joined
+        assert "content_block_start" in joined
+        # Next content delta must include the full "second turn", not a
+        # diff against the previous turn's length.
+        nxt = e.feed({"type": "content", "text": "second turn"})
+        parsed = json.loads(nxt[0].split("data: ")[1])
+        assert parsed["delta"]["text"] == "second turn"
+
+    def test_empty_status_without_boundary_does_not_close_block(self):
+        """A non-boundary empty-status event (UI badge clear at normal
+        stream end, draining fallbacks, final status yields in
+        llama_cpp.py at lines 4501, 4584, 4794) must NOT close the
+        current text block or reset _prev_text - otherwise every normal
+        Anthropic response gets extra content_block_start/stop pairs
+        around its final text. Regression test for PR 5549 codex P2."""
+
+        e = AnthropicStreamEmitter()
+        e.start("msg_1", "m")
+        block_before = e.block_index
+        e.feed({"type": "content", "text": "hello "})
+        # Plain empty status (no boundary flag) -> no extra SSE events.
+        out = e.feed({"type": "status", "text": ""})
+        assert out == []
+        # block_index must not have advanced (no close+reopen happened).
+        assert e.block_index == block_before
+        # Next content delta is diffed against "hello ", so we only emit
+        # " world" (the new suffix).
+        nxt = e.feed({"type": "content", "text": "hello world"})
+        parsed = json.loads(nxt[0].split("data: ")[1])
+        assert parsed["delta"]["text"] == "world"
+
 
 # =====================================================================
 # Pass-through emitter tests (client-side tool execution path)

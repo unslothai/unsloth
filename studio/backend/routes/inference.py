@@ -2459,11 +2459,15 @@ async def openai_chat_completions(
                             break
 
                         if event["type"] == "status":
-                            # Empty status marks an iteration boundary
-                            # in the GGUF tool loop (e.g. after a
-                            # re-prompt).  Reset the cumulative cursor
-                            # so the next assistant turn streams cleanly.
-                            if not event["text"]:
+                            # boundary=True flags a true iteration
+                            # boundary (auto-continue re-prompt or
+                            # post-tool resume). Reset the cumulative
+                            # cursor only then; non-boundary empty
+                            # status events (UI badge clears at normal
+                            # stream end) keep the existing cursor so
+                            # we do not spuriously re-emit a duplicate
+                            # prefix on the next "content" yield.
+                            if event.get("boundary"):
                                 prev_text = ""
                             # Emit tool status as a custom SSE event
                             # (including empty ones to clear UI badges)
@@ -4370,12 +4374,13 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
             )
         elif etype == "tool_end":
             prev_text = ""
-        elif etype == "status" and not event.get("text"):
-            # Auto-continue boundary marker: the next content event
+        elif etype == "status" and event.get("boundary"):
+            # Iteration-boundary marker: the next content event
             # restarts the cumulative diff baseline, so reset prev_text
             # the same way tool_end does. Without this a shorter
             # continuation gets dropped entirely and a longer one
-            # loses its prefix.
+            # loses its prefix. Plain empty-status events (UI badge
+            # clears at normal stream end) do not match this branch.
             prev_text = ""
         elif etype == "metadata":
             usage = event.get("usage", {})

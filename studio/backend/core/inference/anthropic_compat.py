@@ -253,17 +253,23 @@ class AnthropicStreamEmitter:
         elif etype == "metadata":
             self._usage = event.get("usage", {})
             return []
-        elif etype == "status" and not event.get("text"):
-            # Auto-continue boundary marker emitted by
-            # generate_chat_completion_with_tools — the next "content"
-            # event resets to a fresh cumulative baseline, so close any
-            # open text block and clear the diff cursor. Without this
-            # the next continuation gets diffed against the previous
-            # turn's length (shorter continuations are dropped, longer
-            # ones lose their prefix).
+        elif etype == "status" and event.get("boundary"):
+            # Iteration-boundary marker emitted by
+            # generate_chat_completion_with_tools when a fresh model
+            # turn is about to begin (after an auto-continue re-prompt
+            # or after a tool result). The next "content" event resets
+            # to a fresh cumulative baseline, so we close any open text
+            # block and clear the diff cursor. Without this the next
+            # continuation gets diffed against the previous turn's
+            # length (shorter continuations are dropped, longer ones
+            # lose their prefix). Non-boundary empty status events
+            # (UI badge clears at normal completion, draining-no-tool
+            # fallbacks, final stream-end yields) do NOT reach this
+            # branch and so do NOT produce spurious extra
+            # content_block_start/stop pairs.
             return self._handle_boundary()
-        # Other status events (tool progress text) have no Anthropic
-        # equivalent.
+        # Other status events (tool progress text, non-boundary badge
+        # clears) have no Anthropic equivalent.
         return []
 
     def _handle_boundary(self) -> list[str]:
