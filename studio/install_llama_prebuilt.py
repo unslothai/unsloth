@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -2789,12 +2790,28 @@ def detect_host() -> HostInfo:
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
     elif is_windows:
-        # Windows: prefer active probes that validate GPU presence
+        # Windows: prefer active probes that validate GPU presence.
+        # AMD HIP SDK sets HIP_PATH / ROCM_PATH but does not always add
+        # %HIP_PATH%\bin to system PATH, so fall back to the env-var bin dir
+        # before giving up. Matches the PowerShell installer + the install
+        # python stack helper.
+        def _resolve_amd_exe(name: str) -> "str | None":
+            _hit = shutil.which(name)
+            if _hit:
+                return _hit
+            for _env in ("HIP_PATH", "ROCM_PATH"):
+                _root = os.environ.get(_env)
+                if _root:
+                    _cand = os.path.join(_root, "bin", f"{name}.exe")
+                    if os.path.isfile(_cand):
+                        return _cand
+            return None
+
         for _cmd, _check in (
             (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
-            _exe = shutil.which(_cmd[0])
+            _exe = _resolve_amd_exe(_cmd[0])
             if not _exe:
                 continue
             try:
@@ -3343,6 +3360,31 @@ def _lemonade_gfx_family(gfx_id: str) -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize = 8)
+def _fetch_lemonade_release_cached(api_url: str, llama_tag: str) -> "dict | None":
+    """Cached wrapper around fetch_json for lemonade release lookups.
+
+    resolve_lemonade_rocm_choice() is called twice per install (once from the
+    direct planner, once from resolve_upstream_asset_choice) with identical
+    arguments. Without memoisation, each install hits api.github.com twice,
+    doubling the rate-limit failure surface on busy CI runners. Cache is
+    process-scoped; tests that need to vary fetch_json's return value across
+    invocations should call cache_clear().
+    """
+    try:
+        return fetch_json(api_url)
+    except Exception as exc:
+        normalized = (llama_tag or "").strip().lower()
+        if normalized and normalized != "latest":
+            log(
+                f"Could not fetch {LEMONADE_ROCM_REPO} release for "
+                f"llama_tag={llama_tag!r} ({exc}); skipping lemonade prebuilt"
+            )
+        else:
+            log(f"Could not fetch {LEMONADE_ROCM_REPO} latest release: {exc}")
+        return None
+
+
 def resolve_lemonade_rocm_choice(
     host: HostInfo,
     os_prefix: str,
@@ -3375,22 +3417,8 @@ def resolve_lemonade_rocm_choice(
         )
         return None
     api_url = _lemonade_release_api_for(llama_tag)
-    try:
-        release = fetch_json(api_url)
-    except Exception as exc:
-        normalized = (llama_tag or "").strip().lower()
-        if normalized and normalized != "latest":
-            # A pinned tag that lemonade has not published surfaces here as
-            # an HTTP error from /releases/tags/<tag>. Skip silently and let
-            # the caller fall through to the upstream tarball -- this keeps
-            # pinned installs reproducible instead of silently picking up a
-            # different lemonade release.
-            log(
-                f"Could not fetch {LEMONADE_ROCM_REPO} release for "
-                f"llama_tag={llama_tag!r} ({exc}); skipping lemonade prebuilt"
-            )
-        else:
-            log(f"Could not fetch {LEMONADE_ROCM_REPO} latest release: {exc}")
+    release = _fetch_lemonade_release_cached(api_url, llama_tag)
+    if release is None:
         return None
     release_tag = release.get("tag_name") if isinstance(release, dict) else None
     if not isinstance(release_tag, str) or not release_tag:
