@@ -476,7 +476,6 @@ function HeatmapCanvas({
   overlaySets,
   expanded = false,
   outlierBlend = false,
-  viewMode = "activations",
 }: {
   values: Record<string, number[]> | null;
   capturedChannels: number[];
@@ -484,7 +483,6 @@ function HeatmapCanvas({
   overlaySets: OverlaySets;
   expanded?: boolean;
   outlierBlend?: boolean;
-  viewMode?: ViewMode;
 }): ReactElement {
   const canvasRef         = useRef<HTMLCanvasElement>(null);
   const wrapperRef        = useRef<HTMLDivElement>(null);
@@ -963,7 +961,6 @@ export function NeuronHeatmapSection({
           activeOverlays={activeOverlays}
           overlaySets={overlaySets}
           outlierBlend={outlierBlend}
-          viewMode={viewMode}
         />
 
         {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
