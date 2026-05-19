@@ -576,7 +576,6 @@ def _first_line_containing(text: str, needle: str) -> int | None:
 _PACKAGE_HEADER = re.compile(r"^\[\[package\]\]\s*$")
 
 
-
 def audit_cargo_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
@@ -805,10 +804,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root).resolve()
     # Explicit --npm-lockfile/--cargo-lockfile scopes the scan to those
     # paths; defaults apply only to the no-args CI invocation.
-    _user_explicit = (
-        args.npm_lockfile is not None
-        or args.cargo_lockfile is not None
-    )
+    _user_explicit = args.npm_lockfile is not None or args.cargo_lockfile is not None
     if _user_explicit:
         npm_paths = [root / p for p in (args.npm_lockfile or ())]
         cargo_paths = [root / p for p in (args.cargo_lockfile or ())]
