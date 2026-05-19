@@ -980,6 +980,32 @@ export function NeuronHeatmapSection({
               )}
             </DialogTitle>
           </DialogHeader>
+          {/* View + overlay pills — same as card header row */}
+          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+            {VIEW_MODES.map((mode) => (
+              <ModePill
+                key={mode.key}
+                label={mode.label}
+                active={viewMode === mode.key}
+                onClick={() => setViewMode(mode.key)}
+                latex={mode.latex}
+                description={mode.description}
+              />
+            ))}
+            <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
+            {OVERLAY_CONFIGS.map((ov) => (
+              <ModePill
+                key={ov.key}
+                label={ov.label}
+                active={activeOverlays.has(ov.key)}
+                onClick={() => toggleOverlay(ov.key)}
+                latex={ov.latex}
+                description={ov.description}
+                indicatorColor={ov.color}
+                activeColor={ov.color}
+              />
+            ))}
+          </div>
           <div className="mt-2 w-full flex flex-col gap-3">
             <HeatmapCanvas
               values={computedValues}
