@@ -12,15 +12,15 @@ Python processes (the way real users hit the load path):
 
 The `train` subcommand:
   1. Loads `unsloth/gemma-3-270m-it` via FastMLXModel.from_pretrained.
-  2. Applies LoRA r=8 on q/k/v/o.
+  2. Applies LoRA r=8 on q/k/v/o + gate/up/down.
   3. Computes pre-training loss + grad norm via mx.nn.value_and_grad.
-  4. Trains 7 deterministic steps on a dataset of the SAME row repeated
+  4. Trains 30 deterministic steps on a dataset of the SAME row repeated
      ("<<HELLO!!>> My name is Unsloth!"), with batch_size=2 and
      gradient_accumulation_steps=3 so each step processes 6 sequences
-     and the run sees 42 sequences total.
+     and the run sees 180 sequences total.
   5. Computes post-training loss + grad norm.
-  6. Generates from "<<HELLO!!>> My name is " and asserts "Unsloth"
-     appears in the in-memory completion.
+  6. Generates from "<<HELLO!!>> My name is " for regression telemetry
+     and hard-gates the teacher-forced completion loss.
   7. Saves the trained model in three formats:
        - LoRA adapter (save_pretrained_merged save_method="lora")
        - Merged 16-bit (save_pretrained_merged save_method="merged_16bit")
@@ -390,7 +390,9 @@ def cmd_train(args) -> int:
         )
         if k in train_result
     }
-    assert len(losses_per_step) == 7, f"expected 7 logged steps, got {losses_per_step}"
+    assert (
+        len(losses_per_step) == config.max_steps
+    ), f"expected {config.max_steps} logged steps, got {losses_per_step}"
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
         # the LoRA reaches loss=0 around step ~10 with this fixture +
