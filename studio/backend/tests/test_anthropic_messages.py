@@ -649,6 +649,47 @@ class TestAnthropicStreamEmitter:
         parsed = json.loads(nxt[0].split("data: ")[1])
         assert parsed["delta"]["text"] == "second turn"
 
+    def test_post_tool_empty_status_does_not_double_close(self):
+        """After tool_end already opens a fresh text block, the post-tool
+        empty-status event emitted by llama_cpp.py (line 4766) must NOT
+        close that fresh block. Otherwise every tool call produces a
+        spurious empty content_block_stop + content_block_start pair
+        before the model's post-tool text arrives. Regression test for
+        PR 5549 codex 02:42Z."""
+
+        e = AnthropicStreamEmitter()
+        e.start("msg_1", "m")
+        e.feed({"type": "content", "text": "pre"})
+        e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "arguments": {},
+            }
+        )
+        e.feed(
+            {
+                "type": "tool_end",
+                "tool_name": "t",
+                "tool_call_id": "tc_1",
+                "result": "ok",
+            }
+        )
+        block_after_tool = e.block_index
+        # Post-tool empty status (no boundary flag): should produce zero
+        # SSE events and leave block_index unchanged. The previous
+        # behaviour was to close+reopen, which produced a duplicate
+        # empty content block.
+        out = e.feed({"type": "status", "text": ""})
+        assert out == []
+        assert e.block_index == block_after_tool
+        # Next content delta lands in the same fresh text block that
+        # tool_end opened.
+        nxt = e.feed({"type": "content", "text": "post"})
+        parsed = json.loads(nxt[0].split("data: ")[1])
+        assert parsed["delta"]["text"] == "post"
+
     def test_empty_status_without_boundary_does_not_close_block(self):
         """A non-boundary empty-status event (UI badge clear at normal
         stream end, draining fallbacks, final status yields in

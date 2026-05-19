@@ -4757,9 +4757,15 @@ class LlamaCppBackend:
                     conversation.append(tool_msg)
 
                 # Clear tool status badge before next generation iteration.
-                # boundary=True: the model is about to start a fresh turn
-                # so cumulative-text adapters must reset their cursor.
-                yield {"type": "status", "text": "", "boundary": True}
+                # We do NOT mark this as a boundary: the preceding
+                # tool_end event already opened a fresh text block and
+                # reset the cumulative cursor in Anthropic streaming
+                # (see AnthropicStreamEmitter._handle_tool_end), and the
+                # OpenAI-compat path resets prev_text on tool_start. A
+                # second boundary here would close the freshly opened
+                # text block (empty) and reopen it, producing a spurious
+                # content_block_stop/start pair on every tool call.
+                yield {"type": "status", "text": ""}
                 # Continue the loop to let model respond with context
                 continue
 

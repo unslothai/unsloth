@@ -2481,8 +2481,18 @@ async def openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
-                            if event["type"] == "tool_start":
-                                prev_text = ""
+                            # Both endpoints of a tool call begin a fresh
+                            # cumulative-text window: tool_start because
+                            # the model's next visible content restarts
+                            # cumulative-from-zero in the post-tool turn,
+                            # and tool_end because after we emit the
+                            # tool result, the model's next iteration
+                            # produces its own fresh cumulative stream
+                            # (the post-tool empty-status event is just
+                            # a UI badge clear; it does NOT carry a
+                            # boundary flag, so this is the place to
+                            # reset prev_text on tool_end).
+                            prev_text = ""
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
