@@ -124,9 +124,14 @@ def expected_default_model():
     # the orchestrator -> structlog) and defaults.py's own
     # `import utils.hardware.hardware as hw` are both unavailable.
     import ast
+
     defaults_path = (
         Path(__file__).resolve().parents[2]
-        / "studio" / "backend" / "core" / "inference" / "defaults.py"
+        / "studio"
+        / "backend"
+        / "core"
+        / "inference"
+        / "defaults.py"
     )
     try:
         tree = ast.parse(defaults_path.read_text())
