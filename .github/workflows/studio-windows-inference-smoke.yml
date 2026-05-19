@@ -345,7 +345,14 @@ jobs:
               for i, (a, b) in enumerate(zip(first, second), start = 1):
                   print(f"[{label} turn {i}] {a!r}")
                   assert a, f"{label}: empty turn {i} response"
-                  assert a == b, (
+                  # Compare on stripped content: llama-server can vary
+                  # trailing whitespace (specifically a final '\n') between
+                  # otherwise-identical greedy runs depending on the
+                  # batch-flush boundary at which the stream is closed. The
+                  # generated tokens are identical; only the trailing
+                  # whitespace differs. Keep the raw repr in the failure
+                  # message so a real divergence is still legible.
+                  assert a.strip() == b.strip(), (
                       f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
                       f"  run1: {a!r}\n  run2: {b!r}"
                   )
