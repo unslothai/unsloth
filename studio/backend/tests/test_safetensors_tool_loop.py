@@ -507,6 +507,359 @@ def _make_loop(*, turns, exec_results = None, **kwargs):
     ), exec_fn
 
 
+class TestParserDeepSeek:
+    """DeepSeek R1 / V3 / V3.1 coverage. Markers use full-width pipes
+    (U+FF5C) and lower-one-eighth-block (U+2581). R1 wraps args in a
+    Markdown ``` ```json ``` ``` fence; V3 / V3.1 emit bare JSON."""
+
+    def test_r1_simple_call_with_code_fence(self):
+        import json as _json
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>function"
+            "<｜tool▁sep｜>special_function\n"
+            "```json\n"
+            '{"arg1": 1}\n'
+            "```"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "special_function"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+
+    def test_r1_short_form_outer_marker(self):
+        # llama.cpp accepts ``<｜tool▁calls｜>`` as the short-form opener.
+        import json as _json
+        text = (
+            "<｜tool▁calls｜>function"
+            "<｜tool▁sep｜>get_time\n"
+            "```json\n"
+            '{"city": "Paris"}\n'
+            "```"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+
+    def test_v3_1_bare_json(self):
+        # V3 / V3.1 omit the ``function`` prefix and the code fence.
+        import json as _json
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_v3_1_multi_call_shares_envelope(self):
+        # Parallel calls share one outer envelope; each inner call has
+        # its own ``<｜tool▁call▁begin｜>...<｜tool▁call▁end｜>``.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁call▁begin｜>get_weather"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "get_time"
+        assert result[1]["function"]["name"] == "get_weather"
+
+    def test_v3_1_with_reasoning(self):
+        # Reasoning <think>...</think> precedes the tool block. The
+        # parser only sees the tool block (reasoning handling lives
+        # in the streaming buffer / template helper); confirm the
+        # block parses even with leading prose.
+        text = (
+            "<think>I'm thinking</think>\n"
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+
+    def test_deepseek_strip_markup(self):
+        text = (
+            "before "
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>foo"
+            "<｜tool▁sep｜>"
+            "{}"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+    def test_deepseek_signal_wakes_streaming(self):
+        # The streaming buffer state machine must wake on the DeepSeek
+        # opener so the rest of the section is drained instead of
+        # leaked.
+        text = "<｜tool▁calls▁begin｜>..."
+        assert has_tool_signal(text)
+
+
+class TestParserGLM:
+    """GLM 4.5 / 4.6 / 4.7 coverage. Marker collides with Qwen's
+    ``<tool_call>`` but the body shape is XML kv pairs instead of JSON,
+    so the dispatch order keeps both formats working."""
+
+    def test_glm_simple_call(self):
+        import json as _json
+        text = (
+            "<tool_call>web_search\n"
+            "<arg_key>query</arg_key>\n"
+            "<arg_value>weather Tokyo</arg_value>\n"
+            "</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        args = _json.loads(result[0]["function"]["arguments"])
+        # Strings come through raw; the parser does not double-quote.
+        assert args == {"query": "weather Tokyo"}
+
+    def test_glm_mixed_types_decode_correctly(self):
+        # Per the chat_template.jinja, strings are emitted raw and
+        # non-strings are JSON-encoded. The parser must decode the
+        # mixed shape back to native types.
+        import json as _json
+        text = (
+            "<tool_call>complex_function\n"
+            "<arg_key>name</arg_key>\n<arg_value>John Doe</arg_value>\n"
+            "<arg_key>age</arg_key>\n<arg_value>30</arg_value>\n"
+            "<arg_key>active</arg_key>\n<arg_value>true</arg_value>\n"
+            "<arg_key>score</arg_key>\n<arg_value>95.5</arg_value>\n"
+            "</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        args = _json.loads(result[0]["function"]["arguments"])
+        assert args == {
+            "name": "John Doe",
+            "age": 30,
+            "active": True,
+            "score": 95.5,
+        }
+
+    def test_glm_multi_call_back_to_back(self):
+        # GLM emits parallel calls as consecutive ``<tool_call>...
+        # </tool_call>`` blocks with no outer envelope.
+        text = (
+            "<tool_call>a\n<arg_key>x</arg_key>\n<arg_value>1</arg_value>\n</tool_call>"
+            "<tool_call>b\n<arg_key>y</arg_key>\n<arg_value>2</arg_value>\n</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "a"
+        assert result[1]["function"]["name"] == "b"
+
+    def test_glm_unclosed_tool_call_does_not_lose_value(self):
+        # Truncated mid-stream (no </tool_call>) -- the parser must
+        # still surface what it found rather than dropping the call.
+        text = (
+            "<tool_call>web_search\n"
+            "<arg_key>query</arg_key>\n"
+            "<arg_value>partial</arg_value>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    def test_glm_does_not_break_qwen_path(self):
+        # Real Qwen emission must still be parsed by the Qwen branch,
+        # not silently misrouted to GLM (the marker is shared).
+        text = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    def test_glm_strip_markup(self):
+        text = (
+            "before "
+            "<tool_call>a\n<arg_key>x</arg_key>\n<arg_value>1</arg_value>\n</tool_call>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+
+class TestParserKimi:
+    """Kimi K2 / Moonshot coverage. ASCII pipes only (NOT full-width).
+    Name arrives as ``functions.NAME:IDX``; the parser strips the
+    prefix and the index to recover the bare callable name while
+    preserving the full id for round-trip rendering."""
+
+    def test_kimi_simple_call(self):
+        import json as _json
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.special_function:0"
+            "<|tool_call_argument_begin|>"
+            '{"arg1": 1}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        # Bare name recovered; full id preserved verbatim.
+        assert result[0]["function"]["name"] == "special_function"
+        assert result[0]["id"] == "functions.special_function:0"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+
+    def test_kimi_multi_call_with_index(self):
+        # Multiple consecutive calls inside a single section, each
+        # with its own monotonically incrementing ``:IDX``.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.read_file:0"
+            "<|tool_call_argument_begin|>"
+            '{"path":"a"}'
+            "<|tool_call_end|>"
+            "<|tool_call_begin|>functions.web_search:1"
+            "<|tool_call_argument_begin|>"
+            '{"query":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "read_file"
+        assert result[0]["id"].endswith(":0")
+        assert result[1]["function"]["name"] == "web_search"
+        assert result[1]["id"].endswith(":1")
+
+    def test_kimi_dotted_name_keeps_last_segment(self):
+        # Bare ``NAME:IDX`` (no ``functions.`` prefix) and ``a.b.c:IDX``
+        # nested names must both resolve to the final dot-segment per
+        # vLLM / SGLang behaviour.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>a.b.c:2"
+            "<|tool_call_argument_begin|>"
+            "{}"
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "c"
+
+    def test_kimi_handles_unclosed_section(self):
+        # End marker missing -- the parser must still extract the call.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.foo:0"
+            "<|tool_call_argument_begin|>"
+            '{"a":1}'
+            "<|tool_call_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "foo"
+
+    def test_kimi_strip_markup(self):
+        text = (
+            "before "
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.x:0"
+            "<|tool_call_argument_begin|>"
+            "{}"
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+    def test_kimi_signal_wakes_streaming(self):
+        text = "<|tool_calls_section_begin|>..."
+        assert has_tool_signal(text)
+
+
+class TestParserCrossFormatRouting:
+    """Ensure the per-format dispatch order doesn't misroute any
+    family. Real emissions for each new family + every old family
+    must still parse correctly when intermixed."""
+
+    def test_dispatch_routes_each_family_correctly(self):
+        cases = [
+            (
+                "Qwen",
+                '<tool_call>{"name":"a","arguments":{"x":1}}</tool_call>',
+                "a",
+            ),
+            (
+                "DeepSeek V3.1",
+                "<｜tool▁calls▁begin｜>"
+                "<｜tool▁call▁begin｜>get_time"
+                "<｜tool▁sep｜>"
+                '{"city":"Tokyo"}'
+                "<｜tool▁call▁end｜>"
+                "<｜tool▁calls▁end｜>",
+                "get_time",
+            ),
+            (
+                "GLM",
+                "<tool_call>web_search\n"
+                "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
+                "</tool_call>",
+                "web_search",
+            ),
+            (
+                "Kimi",
+                "<|tool_calls_section_begin|>"
+                "<|tool_call_begin|>functions.add:0"
+                "<|tool_call_argument_begin|>"
+                '{"a":1}'
+                "<|tool_call_end|>"
+                "<|tool_calls_section_end|>",
+                "add",
+            ),
+        ]
+        for label, text, expected_name in cases:
+            result = parse_tool_calls_from_text(text)
+            assert len(result) == 1, f"{label}: parser missed the call"
+            assert result[0]["function"]["name"] == expected_name, (
+                f"{label}: got {result[0]['function']['name']!r}, "
+                f"expected {expected_name!r}"
+            )
+
+    def test_all_new_markers_in_tool_xml_signals(self):
+        # The safetensors / MLX streaming buffer must wake on every
+        # supported emission marker -- otherwise the BUFFERING state
+        # leaks tool content to the user before parse.
+        from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+
+        for marker in (
+            "<｜tool▁calls▁begin｜>",
+            "<｜tool▁call▁begin｜>",
+            "<|tool_calls_section_begin|>",
+            "<|tool_call_begin|>",
+        ):
+            assert marker in TOOL_XML_SIGNALS, (
+                f"streaming loop would not wake on {marker!r}"
+            )
+
+
 class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".
@@ -630,6 +983,71 @@ class TestLoopBasic:
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "weather"})]
+
+    def test_deepseek_v3_1_form(self):
+        # DeepSeek V3.1 emission inside the agentic loop -- the buffer
+        # state machine must wake on ``<｜tool▁calls▁begin｜>`` and the
+        # parser must extract the V3.1 bare-JSON body.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<｜tool▁calls▁begin｜>",
+                    "<｜tool▁call▁begin｜>web_search",
+                    "<｜tool▁sep｜>",
+                    '{"query":"Tokyo weather"}',
+                    "<｜tool▁call▁end｜>",
+                    "<｜tool▁calls▁end｜>",
+                ],
+                ["The weather is sunny."],
+            ],
+            exec_results = ["Sunny, 22C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "Tokyo weather"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "sunny" in contents[-1]["text"].lower()
+
+    def test_glm_form(self):
+        # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<tool_call>web_search\n",
+                    "<arg_key>query</arg_key>\n",
+                    "<arg_value>Tokyo</arg_value>\n",
+                    "</tool_call>",
+                ],
+                ["found"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
+
+    def test_kimi_form(self):
+        # Kimi K2 emission ``<|tool_calls_section_begin|>...``.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<|tool_calls_section_begin|>",
+                    "<|tool_call_begin|>functions.web_search:0",
+                    "<|tool_call_argument_begin|>",
+                    '{"query":"Tokyo"}',
+                    "<|tool_call_end|>",
+                    "<|tool_calls_section_end|>",
+                ],
+                ["done"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        # The bare name must reach execute_tool, even though the model
+        # emitted ``functions.web_search:0`` as the formatted id.
+        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
+        # tool_start carries the original full id so the conversation
+        # roundtrip can replay it verbatim.
+        tool_start = next(e for e in events if e["type"] == "tool_start")
+        assert tool_start["tool_call_id"] == "functions.web_search:0"
 
     def test_truncated_unclosed_tool_call(self):
         loop, exec_fn = _make_loop(

@@ -16,6 +16,10 @@ the same call shape llama-server normalises for GGUF:
   - ``[TOOL_CALLS]name{json}``                  (Mistral v11+ / Magistral)
   - ``[TOOL_CALLS]name[ARGS]{json}``            (Ministral / Mistral Large 3)
   - ``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>``  (Gemma 4)
+  - ``<｜tool▁calls▁begin｜>...function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`...``  (DeepSeek R1)
+  - ``<｜tool▁calls▁begin｜>...<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``  (DeepSeek V3 / V3.1)
+  - ``<tool_call>NAME\\n<arg_key>k</arg_key>\\n<arg_value>v</arg_value>...</tool_call>``  (GLM 4.5 / 4.6 / 4.7)
+  - ``<|tool_calls_section_begin|>...<|tool_call_begin|>functions.NAME:IDX<|tool_call_argument_begin|>{json}<|tool_call_end|>...``  (Kimi K2)
 
 Closing tags / brackets are tolerated when missing because models
 frequently truncate them mid-stream.
@@ -39,6 +43,16 @@ TOOL_XML_SIGNALS = (
     "<|python_tag|>",
     "[TOOL_CALLS]",
     "<|tool_call>",
+    # DeepSeek R1 / V3 / V3.1 (full-width pipes + lower-one-eighth-block).
+    "<｜tool▁calls▁begin｜>",
+    "<｜tool▁call▁begin｜>",
+    # Alternative DeepSeek openers llama.cpp also recognises -- some
+    # checkpoints emit ASCII underscores, others a short form.
+    "<｜tool_calls_begin｜>",
+    "<｜tool▁calls｜>",
+    # Kimi K2 / Moonshot section start.
+    "<|tool_calls_section_begin|>",
+    "<|tool_call_begin|>",
 )
 
 
@@ -55,6 +69,10 @@ _TOOL_CLOSED_PATS = [
     re.compile(r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?", re.DOTALL),
     # Mistral v11+ ``[TOOL_CALLS]name{json}`` (may chain), close at ``}``.
     re.compile(r"\[TOOL_CALLS\]\s*[\w\.\-]+\s*(?:\[ARGS\])?\s*\{.*?\}", re.DOTALL),
+    # DeepSeek R1 / V3 / V3.1: full envelope ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
+    re.compile(r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>", re.DOTALL),
+    # Kimi K2: ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
+    re.compile(r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
@@ -62,6 +80,12 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
     re.compile(r"<\|python_tag\|>.*$", re.DOTALL),
+    # DeepSeek envelopes truncated mid-stream.
+    re.compile(r"<｜tool[▁_]calls[▁_]begin｜>.*$", re.DOTALL),
+    re.compile(r"<｜tool▁call▁begin｜>.*$", re.DOTALL),
+    # Kimi K2 envelope truncated.
+    re.compile(r"<\|tool_calls_section_begin\|>.*$", re.DOTALL),
+    re.compile(r"<\|tool_call_begin\|>.*$", re.DOTALL),
 ]
 
 
@@ -127,6 +151,53 @@ _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
 
+# DeepSeek R1 / V3 / V3.1 markers (full-width pipe U+FF5C, lower-
+# one-eighth-block U+2581). llama.cpp accepts five variants of the
+# outer block-open; we mirror its tolerance.
+_DEEPSEEK_BEGIN_RE = re.compile(
+    r"<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\_calls\\_begin|tool▁calls)｜>"
+)
+_DEEPSEEK_END = "<｜tool▁calls▁end｜>"
+_DEEPSEEK_CALL_BEGIN = "<｜tool▁call▁begin｜>"
+_DEEPSEEK_SEP = "<｜tool▁sep｜>"
+_DEEPSEEK_CALL_END = "<｜tool▁call▁end｜>"
+# R1 specifically wraps the args in a Markdown ```json ... ``` fence and
+# prefixes the call with the literal ``function`` token; V3 / V3.1 do
+# not. Detect R1 by the presence of ``function<｜tool▁sep｜>`` followed
+# by ``\n```json``.
+_DEEPSEEK_R1_FUNC_RE = re.compile(
+    r"(?:" + re.escape(_DEEPSEEK_CALL_BEGIN) + r")?function"
+    + re.escape(_DEEPSEEK_SEP) + r"([^\n]+)\n```json\n",
+)
+_DEEPSEEK_R1_CLOSE_RE = re.compile(
+    r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_END)
+)
+_DEEPSEEK_V3_FUNC_RE = re.compile(
+    r"(?:" + re.escape(_DEEPSEEK_CALL_BEGIN) + r")?([^\n<]+?)"
+    + re.escape(_DEEPSEEK_SEP),
+)
+
+# GLM 4.5 / 4.6 / 4.7 markers. Body is ``NAME\n<arg_key>K</arg_key>\n
+# <arg_value>V</arg_value>...`` per chat_template.jinja; strings are
+# raw, non-strings are JSON-encoded.
+_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*)\n")
+_GLM_TC_CLOSE = "</tool_call>"
+_GLM_ARG_PAIR_RE = re.compile(
+    r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
+    re.DOTALL,
+)
+
+# Kimi K2 / Moonshot markers (ASCII pipes, NOT full-width). The name
+# arrives as ``functions.NAME:IDX`` between ``<|tool_call_begin|>`` and
+# ``<|tool_call_argument_begin|>``. Strip the prefix and suffix to
+# recover the bare name.
+_KIMI_SECTION_BEGIN = "<|tool_calls_section_begin|>"
+_KIMI_SECTION_END = "<|tool_calls_section_end|>"
+_KIMI_CALL_BEGIN = "<|tool_call_begin|>"
+_KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
+_KIMI_CALL_END = "<|tool_call_end|>"
+_KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
+
 # Gemma 4 <|tool_call>call:NAME{...}<tool_call|>. ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_STR_BEGIN = '<|"|>'
@@ -163,8 +234,32 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     emission format in turn; returns as soon as one yields calls so
     we never double-count.
     """
+    # DeepSeek R1 / V3 / V3.1 ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
+    # Run early -- the full-width markers cannot collide with any
+    # other family, and R1's code-fence body would fail Qwen's
+    # JSON-start regex anyway.
+    calls = _parse_deepseek_tool_calls(content, id_offset = id_offset)
+    if calls:
+        return calls
+
+    # Kimi K2 ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
+    # Markers cannot collide with any other family.
+    calls = _parse_kimi_tool_calls(content, id_offset = id_offset)
+    if calls:
+        return calls
+
     # Qwen / Hermes <tool_call>{json}
     calls = _parse_tool_call_json(content, id_offset = id_offset)
+    if calls:
+        return calls
+
+    # GLM 4.5 / 4.6 / 4.7 ``<tool_call>NAME\n<arg_key>K</arg_key>
+    # <arg_value>V</arg_value>...</tool_call>``. Marker collides with
+    # Qwen's ``<tool_call>``, but Qwen requires ``\s*{`` after the tag
+    # while GLM emits a bare name then ``\n``, so Qwen returns no calls
+    # before we get here. Running GLM AFTER Qwen also keeps Qwen
+    # behaviour unchanged on real Qwen emissions.
+    calls = _parse_glm_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
@@ -797,4 +892,236 @@ def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
             break
         v, i = _gemma_parse_value(body, i)
         out[key] = v
+    return out
+
+
+# ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
+
+
+def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+    """DeepSeek emissions:
+      R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
+      V3.x:  ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``
+
+    Mirrors llama.cpp's common_chat_parse_deepseek_r1 / _v3_1 in
+    chat-parser.cpp lines 801-879 and vLLM's deepseekv3 /
+    deepseekv31 tool_parsers. Tolerates four outer-marker variants
+    that real checkpoints emit.
+    """
+    out: list[dict] = []
+    begin = _DEEPSEEK_BEGIN_RE.search(content)
+    if not begin:
+        return out
+    scan_start = begin.end()
+    end_pos = content.find(_DEEPSEEK_END, scan_start)
+    scan_end = end_pos if end_pos >= 0 else len(content)
+    body = content[scan_start:scan_end]
+
+    # R1 path first: ``function<｜tool▁sep｜>NAME\n```json\n{...}\n```<｜tool▁call▁end｜>``.
+    pos = 0
+    while pos < len(body):
+        m = _DEEPSEEK_R1_FUNC_RE.search(body, pos)
+        if not m:
+            break
+        name = m.group(1).strip()
+        json_start = m.end()
+        # Walk a balanced ``{`` even if the trailing fence is truncated.
+        if json_start >= len(body) or body[json_start] != "{":
+            pos = m.end()
+            continue
+        brace_end = _balanced_brace_end(body, json_start)
+        if brace_end is None:
+            break
+        try:
+            args = json.loads(body[json_start : brace_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pos = brace_end + 1
+            continue
+        if not isinstance(args, dict):
+            pos = brace_end + 1
+            continue
+        if name:
+            out.append({
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args),
+                },
+            })
+        # Move past the closing fence + ``<｜tool▁call▁end｜>``.
+        close_m = _DEEPSEEK_R1_CLOSE_RE.search(body, brace_end + 1)
+        pos = close_m.end() if close_m else brace_end + 1
+    if out:
+        return out
+
+    # V3 / V3.1 path: name then bare JSON.
+    pos = 0
+    while pos < len(body):
+        m = _DEEPSEEK_V3_FUNC_RE.search(body, pos)
+        if not m:
+            break
+        name = m.group(1).strip()
+        json_start = m.end()
+        # Skip any whitespace before the JSON.
+        while json_start < len(body) and body[json_start] in " \t\n\r":
+            json_start += 1
+        if json_start >= len(body) or body[json_start] != "{":
+            pos = m.end()
+            continue
+        brace_end = _balanced_brace_end(body, json_start)
+        if brace_end is None:
+            break
+        try:
+            args = json.loads(body[json_start : brace_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pos = brace_end + 1
+            continue
+        if not isinstance(args, dict):
+            pos = brace_end + 1
+            continue
+        if name:
+            out.append({
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args),
+                },
+            })
+        # Skip past optional ``<｜tool▁call▁end｜>``.
+        next_end = body.find(_DEEPSEEK_CALL_END, brace_end + 1)
+        pos = next_end + len(_DEEPSEEK_CALL_END) if next_end >= 0 else brace_end + 1
+    return out
+
+
+# ── GLM 4.5 / 4.6 / 4.7 ─────────────────────────────────────────────
+
+
+def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+    """GLM 4.x emission:
+      ``<tool_call>NAME\\n<arg_key>K1</arg_key>\\n<arg_value>V1</arg_value>...
+      <arg_key>Kn</arg_key>\\n<arg_value>Vn</arg_value>\\n</tool_call>``
+
+    Strings come through raw; non-string args are JSON-encoded per the
+    template's ``{{ v | tojson(ensure_ascii=False) if v is not string
+    else v }}`` rule. Multi-call is back-to-back ``<tool_call>...
+    </tool_call>`` blocks with no outer envelope. Mirrors llama.cpp's
+    common_chat_parse_glm_4_5 (chat-parser.cpp:1040-1052) and vLLM's
+    glm4_moe_tool_parser.
+    """
+    out: list[dict] = []
+    pos = 0
+    while pos < len(content):
+        m = _GLM_TC_OPEN_RE.search(content, pos)
+        if not m:
+            break
+        name = m.group(1).strip()
+        body_start = m.end()
+        close = content.find(_GLM_TC_CLOSE, body_start)
+        body_end = close if close >= 0 else len(content)
+        body = content[body_start:body_end]
+
+        args: dict[str, Any] = {}
+        for pair in _GLM_ARG_PAIR_RE.finditer(body):
+            key = pair.group(1).strip()
+            raw_val = pair.group(2).strip()
+            # JSON literal first, then ast-literal fallback, else raw string.
+            try:
+                args[key] = json.loads(raw_val)
+                continue
+            except (json.JSONDecodeError, ValueError):
+                pass
+            try:
+                import ast as _ast
+                args[key] = _ast.literal_eval(raw_val)
+                continue
+            except (ValueError, SyntaxError):
+                pass
+            args[key] = raw_val
+
+        if name:
+            out.append({
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args),
+                },
+            })
+        pos = close + len(_GLM_TC_CLOSE) if close >= 0 else len(content)
+    return out
+
+
+# ── Kimi K2 / Moonshot ──────────────────────────────────────────────
+
+
+def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+    """Kimi K2 emission:
+      ``<|tool_calls_section_begin|>
+        <|tool_call_begin|>functions.NAME:IDX<|tool_call_argument_begin|>{json}<|tool_call_end|>
+        ...
+        <|tool_calls_section_end|>``
+
+    Name arrives as ``functions.NAME:IDX``. Strip the ``functions.``
+    prefix and ``:N`` suffix to recover the bare name. The full id
+    string is preserved as ``tool_calls[i].id`` so the conversation
+    replay round-trips the exact form the model emitted (vLLM and
+    SGLang both do this).
+    """
+    out: list[dict] = []
+    section_start = content.find(_KIMI_SECTION_BEGIN)
+    if section_start < 0:
+        return out
+    scan_start = section_start + len(_KIMI_SECTION_BEGIN)
+    section_end = content.find(_KIMI_SECTION_END, scan_start)
+    scan_end = section_end if section_end >= 0 else len(content)
+    body = content[scan_start:scan_end]
+
+    pos = 0
+    while pos < len(body):
+        call_start = body.find(_KIMI_CALL_BEGIN, pos)
+        if call_start < 0:
+            break
+        id_start = call_start + len(_KIMI_CALL_BEGIN)
+        arg_begin = body.find(_KIMI_ARG_BEGIN, id_start)
+        if arg_begin < 0:
+            break
+        full_id = body[id_start:arg_begin].strip()
+        m = _KIMI_ID_RE.match(full_id)
+        if m:
+            name = m.group(1).split(".")[-1]
+        else:
+            name = full_id.split(":")[0].split(".")[-1]
+        json_start = arg_begin + len(_KIMI_ARG_BEGIN)
+        # Walk a balanced brace so streaming truncation that drops the
+        # trailing ``<|tool_call_end|>`` still surfaces a call.
+        # Skip whitespace before the ``{``.
+        while json_start < len(body) and body[json_start] in " \t\n\r":
+            json_start += 1
+        if json_start >= len(body) or body[json_start] != "{":
+            pos = arg_begin + len(_KIMI_ARG_BEGIN)
+            continue
+        brace_end = _balanced_brace_end(body, json_start)
+        if brace_end is None:
+            break
+        try:
+            args = json.loads(body[json_start : brace_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pos = brace_end + 1
+            continue
+        if not isinstance(args, dict):
+            pos = brace_end + 1
+            continue
+        if name:
+            out.append({
+                "id": full_id or f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args),
+                },
+            })
+        call_end = body.find(_KIMI_CALL_END, brace_end + 1)
+        pos = call_end + len(_KIMI_CALL_END) if call_end >= 0 else brace_end + 1
     return out

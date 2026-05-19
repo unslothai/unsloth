@@ -260,12 +260,16 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     # Qwen ``<tool_call>{json}``, Qwen3.5 ``<function=name>...``,
     # Llama-3 ``<|python_tag|>``, Llama-3.2 bare JSON ``{"name":...,
     # "parameters":...}``, Mistral ``[TOOL_CALLS]`` (pre-v11 array +
-    # v11+ ``name{json}``), and Gemma 4 ``<|tool_call>...``. If the
-    # template advertises tools but does NOT use any of these markers,
-    # the parser cannot honour the emission - drop the pill. ``{"name":``
-    # catches Llama-3.2's ``custom_tools`` shape whose template instructs
-    # the model to "Respond in the format {\"name\": ..., \"parameters\":
-    # ...}" without a ``<|python_tag|>`` prefix.
+    # v11+ ``name{json}``), Gemma 4 ``<|tool_call>...``, DeepSeek R1 /
+    # V3 / V3.1 ``<｜tool▁calls▁begin｜>...``, GLM 4.5 / 4.6 / 4.7
+    # ``<tool_call>NAME\n<arg_key>...``, and Kimi K2
+    # ``<|tool_calls_section_begin|>...``. If the template advertises
+    # tools but does NOT use any of these markers, the parser cannot
+    # honour the emission - drop the pill. ``{"name":`` catches Llama-3.2's
+    # bare JSON ``custom_tools`` shape whose template instructs the model
+    # to "Respond in the format {\"name\": ..., \"parameters\": ...}"
+    # without a ``<|python_tag|>`` prefix. ``<arg_key>`` covers GLM
+    # template variants whose only stable signal is the per-arg tag.
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -274,6 +278,14 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         "<|tool_call>",
         '{"name":',
         '{\\"name\\":',
+        # DeepSeek R1 / V3 / V3.1 (full-width pipes + lower-1/8-block).
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool▁call▁begin｜>",
+        # GLM 4.x: arg_key is unique to GLM's emission shape.
+        "<arg_key>",
+        # Kimi K2 / Moonshot.
+        "<|tool_calls_section_begin|>",
+        "<|tool_call_begin|>",
     )
     if (
         flags.get("supports_tools")
@@ -440,8 +452,11 @@ _TOOL_ACTION_NUDGE = (
 # stream. Covers every emission format the shared parser handles
 # (Qwen / Hermes ``<tool_call>``, Qwen3.5 ``<function=name>``, Llama-3
 # ``<|python_tag|>``, Mistral ``[TOOL_CALLS]`` pre-v11 array and v11+
-# ``name{json}``, Gemma 4 ``<|tool_call>...<tool_call|>``). Closed
-# pairs only so in-progress markup stays buffered upstream.
+# ``name{json}``, Gemma 4 ``<|tool_call>...<tool_call|>``, DeepSeek R1
+# / V3 / V3.1 ``<｜tool▁calls▁begin｜>...``, GLM 4.x ``<tool_call>NAME
+# \n<arg_key>...</tool_call>`` -- already covered by the Qwen pattern
+# above, Kimi K2 ``<|tool_calls_section_begin|>...``). Closed pairs
+# only so in-progress markup stays buffered upstream.
 _TOOL_XML_RE = _re.compile(
     "|".join(
         [
@@ -451,6 +466,8 @@ _TOOL_XML_RE = _re.compile(
             r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?",
             r"\[TOOL_CALLS\]\s*[\w\.\-]+\s*(?:\[ARGS\])?\s*\{.*?\}",
             r"<\|python_tag\|>[^\n<]*",
+            r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>",
+            r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>",
         ]
     ),
     _re.DOTALL,
