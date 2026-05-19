@@ -286,7 +286,7 @@ def _normalize_path_separators(text: str) -> str:
         # resolves to ``~/.aws/credentials`` rather than getting eaten.
         for prefix in ("~/", "$HOME/", "${HOME}/", "%USERPROFILE%/"):
             if collapsed.startswith(prefix):
-                tail = collapsed[len(prefix):]
+                tail = collapsed[len(prefix) :]
                 tail = posixpath.normpath("/" + tail).lstrip("/")
                 return prefix + tail
         collapsed = posixpath.normpath(collapsed)
@@ -1327,9 +1327,9 @@ def _check_signal_escape_patterns(code: str):
                 _val = _extract_string_from_node(_assign.value)
                 if _val is not None:
                     string_bindings[_target.id] = _val
-                elif (
-                    isinstance(_assign.value, ast.Name)
-                    and _assign.value.id in ("eval", "exec")
+                elif isinstance(_assign.value, ast.Name) and _assign.value.id in (
+                    "eval",
+                    "exec",
                 ):
                     eval_exec_aliases[_target.id] = _assign.value.id
 
@@ -1385,8 +1385,14 @@ def _check_signal_escape_patterns(code: str):
     _PATHLIB_PASS_THROUGH = frozenset({"expanduser", "resolve", "absolute"})
     # Pathlib concrete classes that behave like Path for our purposes.
     _PATHLIB_PATH_CLASSES = frozenset(
-        {"Path", "PurePath", "PosixPath", "WindowsPath",
-         "PurePosixPath", "PureWindowsPath"}
+        {
+            "Path",
+            "PurePath",
+            "PosixPath",
+            "WindowsPath",
+            "PurePosixPath",
+            "PureWindowsPath",
+        }
     )
 
     def _extract_pathlib_target(node, path_aliases, pathlib_aliases, _depth = 0):
@@ -1440,10 +1446,9 @@ def _check_signal_escape_patterns(code: str):
             # ``Path.home()`` (and aliases) resolves to ``~`` so
             # ``Path.home() / '.aws/credentials'`` reaches the
             # ``~/.aws/credentials`` home-anchored regex below.
-            if (
-                ctor_fq in {f"{a}.home" for a in path_aliases}
-                or ctor_fq in {f"{a}.Path.home" for a in pathlib_aliases}
-            ):
+            if ctor_fq in {f"{a}.home" for a in path_aliases} or ctor_fq in {
+                f"{a}.Path.home" for a in pathlib_aliases
+            }:
                 return "~"
             is_path_ctor = ctor_fq in path_aliases or any(
                 ctor_fq == f"{alias}.{cls}"
@@ -2659,10 +2664,15 @@ def _check_signal_escape_patterns(code: str):
             # ``open()`` does, and the copy gives the attacker a second
             # exfil channel (rename/print/upload the destination). Gate
             # the source argument with the same sensitive-path checks.
-            _FILE_COPY_FUNCS = frozenset({
-                "shutil.copyfile", "shutil.copy", "shutil.copy2",
-                "shutil.copytree", "shutil.move",
-            })
+            _FILE_COPY_FUNCS = frozenset(
+                {
+                    "shutil.copyfile",
+                    "shutil.copy",
+                    "shutil.copy2",
+                    "shutil.copytree",
+                    "shutil.move",
+                }
+            )
             if fq in _FILE_COPY_FUNCS:
                 src_lit = None
                 if node.args:

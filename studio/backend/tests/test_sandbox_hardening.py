@@ -1032,9 +1032,7 @@ class TestR3Finding1_ParentDirNormalisation:
         ],
     )
     def test_parent_dir_legit_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"legit parent-dir path blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(cmd), f"legit parent-dir path blocked: {cmd!r}"
 
 
 class TestR3Finding2_OpenPathLike:
@@ -1308,6 +1306,4 @@ class TestR3Finding22_RequestsRequestPositionalKeyword:
         ],
     )
     def test_request_method_then_kw_trusted_url_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"trusted method+kw blocked: {code!r}"
-        )
+        assert not _is_blocked(code), f"trusted method+kw blocked: {code!r}"
