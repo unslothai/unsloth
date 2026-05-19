@@ -32,13 +32,9 @@ function resolveTheme(theme: Theme): ResolvedTheme {
 
 function applyToDocument(resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
-  // Keep "dark" and "light" mutually exclusive. The Sonner Toaster reads
-  // next-themes (mounted at provider.tsx with attribute="class"
-  // defaultTheme="light"), so on first mount next-themes adds a "light"
-  // class to <html>. When the user later picks Dark, only toggling "dark"
-  // here leaves the stale "light" alongside it (html.className = "light dark"),
-  // which is harmless in cascade but reads as a UI defect in devtools and
-  // can trip CSS-aware tooling that branches on class lists.
+  // Keep "dark"/"light" mutually exclusive. next-themes (via Sonner)
+  // adds "light" on first mount; without the explicit toggle we'd end
+  // up with `class="light dark"` after a switch.
   const cl = document.documentElement.classList;
   cl.toggle("dark", resolved === "dark");
   cl.toggle("light", resolved === "light");
