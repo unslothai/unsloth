@@ -50,27 +50,25 @@ function InterpretabilitySection({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Top row: heatmap | trend line */}
-      <div className="flex gap-4 items-stretch min-h-[400px]">
-        <div className="w-[340px] shrink-0">
-          <NeuronHeatmapSection
-            isTraining={isTraining}
-            records={records}
-            metadata={metadata}
-            loading={loading}
-            record={record}
-            stepIndex={displayIndex}
-            onStepChange={handleStepChange}
-          />
-        </div>
-        <div className="flex-1 min-w-0">
-          <NeuronHealthTrend
-            isTraining={isTraining}
-            records={records}
-            stepIndex={displayIndex}
-            onStepChange={handleStepChange}
-          />
-        </div>
+      {/* Heatmap — full width, horizontal */}
+      <NeuronHeatmapSection
+        isTraining={isTraining}
+        records={records}
+        metadata={metadata}
+        loading={loading}
+        record={record}
+        stepIndex={displayIndex}
+        onStepChange={handleStepChange}
+      />
+
+      {/* Trend chart — full width, compact */}
+      <div className="h-[200px]">
+        <NeuronHealthTrend
+          isTraining={isTraining}
+          records={records}
+          stepIndex={displayIndex}
+          onStepChange={handleStepChange}
+        />
       </div>
 
       {/* Replay controls */}

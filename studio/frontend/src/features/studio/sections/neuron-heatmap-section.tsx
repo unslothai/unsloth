@@ -354,9 +354,6 @@ interface ViewModeConfig {
   label: string;
   latex: string;
   description: string;
-  requiresGradients?: boolean;
-  requiresLoraNorms?: boolean;
-  requiresMultipleSteps?: boolean;
 }
 
 const VIEW_MODES: ViewModeConfig[] = [
@@ -365,34 +362,6 @@ const VIEW_MODES: ViewModeConfig[] = [
     label: "Activations",
     latex: "\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]",
     description: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value from the activation log — how strongly each channel fires on average.",
-  },
-  {
-    key: "gradients",
-    label: "Gradients",
-    latex: "g \\equiv \\|\\nabla_{W}L\\|_2 = \\sqrt{\\sum_i \\left(\\tfrac{\\partial L}{\\partial w_i}\\right)^2}",
-    description: "Per-layer gradient norm. Near zero → vanishing. Very large → exploding.",
-    requiresGradients: true,
-  },
-  {
-    key: "lora_norms",
-    label: "LoRA",
-    latex: "\\|\\Delta W\\|_F \\equiv \\sqrt{\\sum_{i,j}(BA)_{ij}^2}",
-    description: "B, A = LoRA matrices. Low norm → adapter barely adapting this layer.",
-    requiresLoraNorms: true,
-  },
-  {
-    key: "delta",
-    label: "Delta",
-    latex: "\\Delta \\equiv |\\bar{a}_t - \\bar{a}_{t-1}|",
-    description: "Absolute change from the previous step. High → actively changing right now.",
-    requiresMultipleSteps: true,
-  },
-  {
-    key: "trend",
-    label: "Trend",
-    latex: "\\beta \\equiv \\frac{\\sum(t_i-\\bar{t})(x_i-\\bar{x})}{\\sum(t_i-\\bar{t})^2}",
-    description: "|β| shown — slope of mean_abs over training. Large → rapidly changing channel.",
-    requiresMultipleSteps: true,
   },
 ];
 
@@ -557,7 +526,7 @@ function HeatmapCanvas({
 
       layoutRef.current = drawHeatmap(
         canvas, values, capturedChannels, outlierColor, palette,
-        activeOverlays, overlaySets, expanded, physicalScale,
+        activeOverlays, overlaySets, true, physicalScale,
       );
     }
     imperativeDrawRef.current = draw;
@@ -615,15 +584,9 @@ function HeatmapCanvas({
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 
   if (!values) {
-    const nullMsg =
-      viewMode === "gradients"
-        ? "Gradient data not captured. Enable capture_gradients in activation capture settings."
-        : viewMode === "lora_norms"
-          ? "LoRA norm data not captured. Enable capture_lora_norms in activation capture settings."
-          : "No activation data yet";
     return (
       <div className="flex h-[120px] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
-        <p className="text-xs text-muted-foreground">{nullMsg}</p>
+        <p className="text-xs text-muted-foreground">No activation data yet</p>
       </div>
     );
   }
@@ -915,20 +878,6 @@ export function NeuronHeatmapSection({
     [records, stepIndex],
   );
 
-  // Disabled reasons for view mode pills
-  const hasGradients  = metadata?.capture_gradients ?? false;
-  const hasLoraNorms  = metadata?.capture_lora_norms ?? false;
-  const hasMultiSteps = records.length >= 2;
-
-  function getDisabledReason(mode: ViewModeConfig): string | undefined {
-    if (mode.requiresGradients && !hasGradients)
-      return "Enable capture_gradients in activation capture settings to use this view.";
-    if (mode.requiresLoraNorms && !hasLoraNorms)
-      return "Enable capture_lora_norms in activation capture settings to use this view.";
-    if (mode.requiresMultipleSteps && !hasMultiSteps)
-      return "Need at least 2 captured steps to use this view.";
-    return undefined;
-  }
 
   return (
     <Card size="sm" className="shadow-border border border-border/60 bg-card/90 backdrop-blur-sm">
@@ -979,27 +928,19 @@ export function NeuronHeatmapSection({
           </div>
         </div>
 
-        {/* Row 2: View mode pills */}
-        <div className="flex flex-wrap gap-1 mt-2">
-          {VIEW_MODES.map((mode) => {
-            const disabledReason = getDisabledReason(mode);
-            return (
-              <ModePill
-                key={mode.key}
-                label={mode.label}
-                active={viewMode === mode.key}
-                disabled={!!disabledReason}
-                disabledReason={disabledReason}
-                onClick={() => setViewMode(mode.key)}
-                latex={mode.latex}
-                description={mode.description}
-              />
-            );
-          })}
-        </div>
-
-        {/* Row 3: Overlay pills */}
-        <div className="flex flex-wrap gap-1 mt-1">
+        {/* Row 2: View mode pill + overlay pills on one line */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          {VIEW_MODES.map((mode) => (
+            <ModePill
+              key={mode.key}
+              label={mode.label}
+              active={viewMode === mode.key}
+              onClick={() => setViewMode(mode.key)}
+              latex={mode.latex}
+              description={mode.description}
+            />
+          ))}
+          <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
           {OVERLAY_CONFIGS.map((ov) => (
             <ModePill
               key={ov.key}
@@ -1013,15 +954,6 @@ export function NeuronHeatmapSection({
             />
           ))}
         </div>
-
-        {/* Scalar-mode info banner */}
-        {(viewMode === "gradients" || viewMode === "lora_norms") && (
-          <p className="mt-1 text-[10px] text-muted-foreground/70 leading-relaxed">
-            {viewMode === "gradients"
-              ? "Each row is the gradient norm ‖∇L‖₂ for that layer — a per-layer scalar broadcast across all channels. Brighter rows = larger gradient flow."
-              : "Each row is the LoRA adapter Frobenius norm ‖ΔW‖_F for that layer — a per-layer scalar broadcast across channels. Darker rows = adapter barely moving."}
-          </p>
-        )}
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">

@@ -58,81 +58,44 @@ export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogPro
           <section className="flex flex-col gap-2">
             <h3 className="font-semibold text-foreground">Neuron Activations heatmap</h3>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Each cell is one neuron channel in one layer. The color encodes the mean absolute
-              activation for that channel at the current training step. Bright green = strongly
-              firing. Dark/dim = barely firing. Red = outlier above the 99th percentile.
+              Each cell is one neuron channel in one layer. Columns = channels, rows = layers.
+              Color encodes mean absolute activation at the current step.
+              Bright green = strongly firing. Dark/dim = barely firing. Red = outlier above p99.
             </p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              The color scale ceiling is set to <strong>p99</strong> of all values so a small
-              number of very large activations don&apos;t wash out everything else.
-            </p>
-          </section>
-
-          {/* View modes */}
-          <section className="flex flex-col gap-3">
-            <h3 className="font-semibold text-foreground">View modes</h3>
-            <p className="text-xs text-muted-foreground">
-              Swap what the heatmap encodes. Only one view is active at a time.
-            </p>
-            {[
-              {
-                label: "Activations (default)",
-                latex: "\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]",
-                desc: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value stored in the activation log — the average absolute magnitude per channel.",
-              },
-              {
-                label: "Gradients",
-                latex: "g \\equiv \\|\\nabla_{W}L\\|_2 = \\sqrt{\\sum_i \\left(\\frac{\\partial L}{\\partial w_i}\\right)^2}",
-                desc: "Per-layer gradient norm. Near zero in early layers → vanishing gradients. Very large → exploding gradients.",
-              },
-              {
-                label: "LoRA norms",
-                latex: "\\|\\Delta W\\|_F \\equiv \\sqrt{\\sum_{i,j}(BA)_{ij}^2}",
-                desc: "B, A = LoRA matrices, ΔW = BA. Shows how much each layer's adapter has moved. Low → adapter barely adapting.",
-              },
-              {
-                label: "Delta",
-                latex: "\\Delta \\equiv |\\bar{a}_t - \\bar{a}_{t-1}|",
-                desc: "āₜ = mean_abs at current step. Absolute change from the previous captured step. High → actively changing right now.",
-              },
-              {
-                label: "Trend",
-                latex: "\\beta \\equiv \\frac{\\sum(t_i-\\bar{t})(x_i-\\bar{x})}{\\sum(t_i-\\bar{t})^2}",
-                desc: "Linear regression slope per channel across all captured steps. |β| shown — large → rapidly changing over training.",
-              },
-            ].map(({ label, latex, desc }) => (
-              <div key={label} className="flex flex-col gap-0.5 border-l-2 border-border/60 pl-3">
-                <p className="text-xs font-medium text-foreground">{label}</p>
-                <KatexDisplay latex={latex} />
-                <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
-              </div>
-            ))}
+            <div className="border-l-2 border-border/60 pl-3 mt-1">
+              <p className="text-xs font-medium text-foreground mb-1">Activations</p>
+              <KatexDisplay latex="\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]" />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                N = batch × seq tokens, x<sub>n,c</sub> = activation at token n, channel c.
+                The average absolute firing magnitude per channel.
+              </p>
+            </div>
           </section>
 
           {/* Overlays */}
           <section className="flex flex-col gap-3">
             <h3 className="font-semibold text-foreground">Overlays</h3>
             <p className="text-xs text-muted-foreground">
-              Drawn on top of whichever view is active. Multiple overlays can be enabled at once.
+              Highlight neuron health issues on top of the heatmap. Multiple can be active at once.
             </p>
             {[
               {
                 label: "Dead",
                 color: "rgb(96,165,250)",
                 latex: "\\max_t(\\bar{a}_t) < \\varepsilon, \\quad \\varepsilon = 0.01",
-                desc: "Channel never exceeded ε across all captured steps. Dead neurons contribute nothing to model output. May indicate too-high learning rate or poor initialisation.",
+                desc: "Channel never exceeded ε across all captured steps. Dead neurons contribute nothing to model output.",
               },
               {
                 label: "Constant",
                 color: "rgb(251,146,60)",
-                latex: "CV \\equiv \\frac{\\sigma}{\\mu} < 0.05, \\quad \\sigma = \\sqrt{\\frac{\\sum(\\bar{a}_t - \\mu)^2}{N}}",
-                desc: "Neuron fires but its output barely changes over training (CV < 5%). Limits the model's expressive capacity.",
+                latex: "CV \\equiv \\frac{\\sigma}{\\mu} < 0.05",
+                desc: "Neuron fires but barely changes over training (CV < 5%). Limits the model's expressive capacity.",
               },
               {
                 label: "Onset Dead",
                 color: "rgb(147,51,234)",
                 latex: "\\bar{a}_0 \\geq \\varepsilon \\;\\wedge\\; \\max_{t>0}(\\bar{a}_t) < \\varepsilon",
-                desc: "Neuron was alive at step 0 but died mid-training. This is the critical red flag — dying neurons suggest an unstable learning rate or a corrupted batch.",
+                desc: "Was alive at step 0 but died mid-training — the critical red flag. Suggests unstable learning rate or corrupted batch.",
               },
             ].map(({ label, color, latex, desc }) => (
               <div key={label} className="flex flex-col gap-0.5 border-l-2 pl-3" style={{ borderColor: color }}>
@@ -141,30 +104,6 @@ export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogPro
                 <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
               </div>
             ))}
-          </section>
-
-          {/* Trend chart */}
-          <section className="flex flex-col gap-2">
-            <h3 className="font-semibold text-foreground">Neuron Health Trend chart</h3>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Shows how the average dead% and constant% evolve over training steps.
-              The dashed vertical line tracks the current replay position.
-              Click anywhere on the chart to scrub to that step.
-            </p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              A flat dead% line means neurons died at initialisation (possibly expected).
-              A rising dead% line mid-training is the concerning case — something is killing neurons.
-            </p>
-          </section>
-
-          {/* Diagnostics */}
-          <section className="flex flex-col gap-2">
-            <h3 className="font-semibold text-foreground">Diagnostics panel</h3>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Automatically scans activation records and surfaces notable findings.
-              Red = likely problem. Orange = warning worth investigating. Grey = informational.
-              Click a finding to jump to the step where it was first detected.
-            </p>
           </section>
 
         </div>

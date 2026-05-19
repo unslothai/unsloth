@@ -123,27 +123,25 @@ function InterpretabilitySection({ runId }: { runId: string }): ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Top row: heatmap | trend line */}
-      <div className="flex gap-4 items-stretch min-h-[400px]">
-        <div className="w-[340px] shrink-0">
-          <NeuronHeatmapSection
-            isTraining={false}
-            records={records}
-            metadata={metadata}
-            loading={loading}
-            record={record}
-            stepIndex={stepIndex}
-            onStepChange={handleStepChange}
-          />
-        </div>
-        <div className="flex-1 min-w-0">
-          <NeuronHealthTrend
-            isTraining={false}
-            records={records}
-            stepIndex={stepIndex}
-            onStepChange={handleStepChange}
-          />
-        </div>
+      {/* Heatmap — full width, horizontal */}
+      <NeuronHeatmapSection
+        isTraining={false}
+        records={records}
+        metadata={metadata}
+        loading={loading}
+        record={record}
+        stepIndex={stepIndex}
+        onStepChange={handleStepChange}
+      />
+
+      {/* Trend chart — full width, compact */}
+      <div className="h-[200px]">
+        <NeuronHealthTrend
+          isTraining={false}
+          records={records}
+          stepIndex={stepIndex}
+          onStepChange={handleStepChange}
+        />
       </div>
 
       {/* Replay controls */}
