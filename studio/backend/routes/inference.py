@@ -2459,11 +2459,10 @@ async def openai_chat_completions(
                             break
 
                         if event["type"] == "status":
-                            # Empty status marks an iteration boundary
-                            # in the GGUF tool loop (e.g. after a
-                            # re-prompt).  Reset the cumulative cursor
-                            # so the next assistant turn streams cleanly.
-                            if not event["text"]:
+                            # boundary=True: auto-continue reprompt.
+                            # Reset cursor only then; plain empty-status
+                            # events (badge clears) keep the cursor.
+                            if event.get("boundary"):
                                 prev_text = ""
                             # Emit tool status as a custom SSE event
                             # (including empty ones to clear UI badges)
@@ -2477,8 +2476,10 @@ async def openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
-                            if event["type"] == "tool_start":
-                                prev_text = ""
+                            # Both edges of a tool call restart cumulative
+                            # text: tool_start opens a new stream, tool_end
+                            # is the cursor reset for the post-tool turn.
+                            prev_text = ""
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -4665,6 +4666,9 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
                 )
             )
         elif etype == "tool_end":
+            prev_text = ""
+        elif etype == "status" and event.get("boundary"):
+            # Iteration-boundary marker: reset like tool_end does.
             prev_text = ""
         elif etype == "metadata":
             usage = event.get("usage", {})
