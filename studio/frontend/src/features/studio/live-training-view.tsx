@@ -12,7 +12,8 @@ import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
 import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-section";
-import { DeadNeuronPanel } from "./sections/dead-neuron-panel";
+import { NeuronHealthTrend } from "./sections/neuron-health-trend";
+import { DiagnosticsPanel } from "./sections/diagnostics-panel";
 import { ProgressSection } from "./sections/progress-section";
 import { TrainingStartOverlay } from "./training-start-overlay";
 import { useActivationData } from "@/features/training/hooks/use-activation-data";
@@ -49,6 +50,7 @@ function InterpretabilitySection({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Top row: heatmap | trend line */}
       <div className="flex gap-4 items-stretch min-h-[400px]">
         <div className="w-[340px] shrink-0">
           <NeuronHeatmapSection
@@ -57,12 +59,12 @@ function InterpretabilitySection({
             metadata={metadata}
             loading={loading}
             record={record}
-            stepIndex={stepIndex}
+            stepIndex={displayIndex}
             onStepChange={handleStepChange}
           />
         </div>
         <div className="flex-1 min-w-0">
-          <DeadNeuronPanel
+          <NeuronHealthTrend
             isTraining={isTraining}
             records={records}
             stepIndex={displayIndex}
@@ -70,12 +72,24 @@ function InterpretabilitySection({
           />
         </div>
       </div>
+
+      {/* Replay controls */}
       {!isTraining && records.length > 1 && (
         <ReplayControls
           stepIndex={stepIndex}
           totalSteps={records.length}
           onStepChange={handleStepChange}
           currentStep={record?.step ?? 0}
+        />
+      )}
+
+      {/* Diagnostics */}
+      {records.length > 0 && (
+        <DiagnosticsPanel
+          records={records}
+          stepIndex={displayIndex}
+          metadata={metadata}
+          onStepChange={handleStepChange}
         />
       )}
     </div>
