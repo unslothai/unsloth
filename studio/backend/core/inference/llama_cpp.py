@@ -511,9 +511,8 @@ def _backfill_usage_from_timings(usage, timings):
         out["completion_tokens"] = predicted_n
     if not out.get("prompt_tokens") and prompt_n is not None:
         out["prompt_tokens"] = prompt_n
-    out["total_tokens"] = (
-        int(out.get("prompt_tokens") or 0)
-        + int(out.get("completion_tokens") or 0)
+    out["total_tokens"] = int(out.get("prompt_tokens") or 0) + int(
+        out.get("completion_tokens") or 0
     )
     return out
 
@@ -2698,9 +2697,7 @@ class LlamaCppBackend:
                 # CPU 0.8B 84.5 -> 64.9 t/s. >=2B is the inflection point;
                 # 4B is +1.07x, 9B +1.14x, 27B +1.44x.
                 _mtp_size_b = _extract_model_size_b(model_identifier)
-                _mtp_too_small = (
-                    _mtp_size_b is not None and _mtp_size_b < 2.0
-                )
+                _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 2.0
                 # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
                 # llama.cpp #22673: MTP is compatible with mmproj, so the
                 # vision gate previously here was wrong.
@@ -3204,9 +3201,7 @@ class LlamaCppBackend:
         raw_spec = _norm(speculative_type)
         req_spec = raw_spec or "off"
         _reload_size_b = _extract_model_size_b(model_identifier)
-        _reload_too_small = (
-            _reload_size_b is not None and _reload_size_b < 2.0
-        )
+        _reload_too_small = _reload_size_b is not None and _reload_size_b < 2.0
         if (
             raw_spec in (None, "default")
             and _is_mtp_model_name(model_identifier, gguf_path)
@@ -4487,9 +4482,10 @@ class LlamaCppBackend:
                                 }
                             )
                             # Accumulate tokens and timing from this iteration
-                            _fu_r = _backfill_usage_from_timings(
-                                _iter_usage, _iter_timings
-                            ) or {}
+                            _fu_r = (
+                                _backfill_usage_from_timings(_iter_usage, _iter_timings)
+                                or {}
+                            )
                             _accumulated_completion_tokens += _fu_r.get(
                                 "completion_tokens", 0
                             )
@@ -4501,9 +4497,10 @@ class LlamaCppBackend:
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
-                        _fu = _backfill_usage_from_timings(
-                            _iter_usage, _iter_timings
-                        ) or {}
+                        _fu = (
+                            _backfill_usage_from_timings(_iter_usage, _iter_timings)
+                            or {}
+                        )
                         _fc = _fu.get("completion_tokens", 0)
                         _fp = _fu.get("prompt_tokens", 0)
                         _tc = _fc + _accumulated_completion_tokens
@@ -4593,9 +4590,10 @@ class LlamaCppBackend:
                             )
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
-                        _fu = _backfill_usage_from_timings(
-                            _iter_usage, _iter_timings
-                        ) or {}
+                        _fu = (
+                            _backfill_usage_from_timings(_iter_usage, _iter_timings)
+                            or {}
+                        )
                         _fc = _fu.get("completion_tokens", 0)
                         _fp = _fu.get("prompt_tokens", 0)
                         _tc = _fc + _accumulated_completion_tokens
