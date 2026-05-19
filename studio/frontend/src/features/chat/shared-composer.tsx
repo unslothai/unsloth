@@ -532,7 +532,7 @@ export function SharedComposer({
     // LoraCompare and single-pane chats are unaffected.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
-        description: "Use the model dropdowns at the top of each pane, then send your prompt.",
+        description: "Use the model dropdown above each pane, then send your prompt.",
       });
       return;
     }
