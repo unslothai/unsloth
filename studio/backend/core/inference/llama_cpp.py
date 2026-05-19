@@ -44,6 +44,9 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from core.inference.tool_call_parser import (
+    parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+)
 
 logger = get_logger(__name__)
 
@@ -3904,16 +3907,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _parse_tool_calls_from_text(content: str) -> list[dict]:
-        """
-        Parse tool calls from XML markup in content text.
-
-        Handles formats like:
-          <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
-          <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
-        Closing tags (</tool_call>, </function>, </parameter>) are all optional
-        since models frequently omit them.
-        """
-        return parse_tool_calls_from_text(content)
+        """Thin wrapper around the shared parser in tool_call_parser
+        so safetensors and llama_cpp pick up the same fixes."""
+        return _shared_parse_tool_calls_from_text(content)
 
     @staticmethod
     def _build_openai_messages(
