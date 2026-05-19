@@ -660,3 +660,300 @@ class TestCrossCuttingNoRegression:
         assert not _is_blocked(
             code
         ), f"REGRESSION: pre-existing pass-through now blocked: {code!r}"
+
+
+# ---------------------------------------------------------------------------
+# Review-round 3 regressions: fixes for findings surfaced by the second
+# 20-reviewer pass. Each class corresponds to a specific finding number
+# in that report.
+# ---------------------------------------------------------------------------
+
+
+class TestR2Finding1_PathlibReaders:
+    """Path.read_text() / Path.read_bytes() now flow through the same
+    sensitive-file gate that Path.open() does."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('/etc/shadow').read_text()",
+            "from pathlib import Path\nPath('/home/u/.aws/credentials').read_text()",
+            "from pathlib import Path\nPath('/proc/self/environ').read_bytes()",
+            "import pathlib\npathlib.Path('/home/u/.ssh/id_rsa').read_bytes()",
+            "exec(\"from pathlib import Path\\nPath('/etc/shadow').read_text()\")",
+        ],
+    )
+    def test_pathlib_readers_blocked(self, code):
+        assert _is_blocked(code), f"pathlib reader bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('README.md').read_text()",
+            "from pathlib import Path\nPath('data/config.json').read_bytes()",
+        ],
+    )
+    def test_pathlib_legit_readers_allowed(self, code):
+        assert not _is_blocked(code), f"legit pathlib reader blocked: {code!r}"
+
+
+class TestR2Finding2_TildeUserExpansion:
+    """POSIX ``~user/`` home expansion: bash resolves
+    ``cat ~ubuntu/.aws/credentials`` to that user's home before exec."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~root/.ssh/id_rsa",
+            "cat ~ubuntu/.npmrc",
+            "cat ~alice/.aws/credentials",
+            "cat ~root/.docker/config.json",
+        ],
+    )
+    def test_tilde_user_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"tilde-user bypass: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os; os.system('cat ~ubuntu/.aws/credentials')",
+            "import subprocess; subprocess.run(['bash', '-c', 'cat ~ubuntu/.npmrc'])",
+        ],
+    )
+    def test_tilde_user_paths_blocked_via_python(self, code):
+        assert _is_blocked(code), f"tilde-user python bypass: {code!r}"
+
+
+class TestR2Finding3_KeywordNetworkArgs:
+    """Network host extraction now resolves ``url=``, ``host=``,
+    ``hostname=``, and ``address=`` keyword arguments. Bare-host APIs
+    (``socket.getaddrinfo``, ``http.client.HTTPConnection``) treat the
+    first positional arg as the host."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests; requests.get(url='http://' + '169.254.169.254/')",
+            "import urllib.request; urllib.request.urlopen(url='http://169.254.169.254/')",
+            "import http.client; http.client.HTTPConnection(host='169.254.169.254')",
+            "import socket; socket.create_connection(address=('169.254.169.254', 80))",
+            "import socket; socket.getaddrinfo('169.254.' + '169.254', 80)",
+            "import http.client; http.client.HTTPConnection('169.254.' + '169.254')",
+            "import requests; requests.request('GET', 'http://169.254.169.254/')",
+            "import requests; requests.request(method='GET', url='http://169.254.169.254/')",
+            "import httpx; httpx.get(url=f'http://{\"169.254.169.254\"}/')",
+        ],
+    )
+    def test_keyword_metadata_hosts_blocked(self, code):
+        assert _is_blocked(code), f"metadata bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests; requests.get(url='https://wikipedia.org/')",
+            "import requests; requests.request(method='GET', url='https://huggingface.co/')",
+            "import http.client; http.client.HTTPSConnection(host='huggingface.co')",
+        ],
+    )
+    def test_keyword_trusted_hosts_allowed(self, code):
+        assert not _is_blocked(code), f"trusted host kw blocked: {code!r}"
+
+
+class TestR2Finding4_BuiltinsEvalExec:
+    """``builtins.exec(...)`` / ``__builtins__.eval(...)`` flow through
+    the same literal-payload recursion as bare ``exec`` / ``eval``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nbuiltins.exec(\"open('/etc/shadow').read()\")",
+            "import builtins\nbuiltins.eval(\"open('/etc/shadow').read()\")",
+            "import builtins as b\nb.eval(\"open('/etc/shadow').read()\")",
+            "__builtins__.eval(\"open('/etc/shadow').read()\")",
+        ],
+    )
+    def test_qualified_eval_exec_payloads_blocked(self, code):
+        assert _is_blocked(code), f"builtins.exec bypass: {code!r}"
+
+
+class TestR2Finding5_OpenFileKeyword:
+    """``open(file='/etc/shadow')`` keyword form is gated alongside the
+    positional form."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(file='/etc/shadow').read()",
+            "open(file='/proc/self/environ').read()",
+            "open(file='/home/u/.aws/credentials').read()",
+            "import io; io.open(file='/etc/shadow').read()",
+            "exec(\"open(file='/etc/shadow').read()\")",
+        ],
+    )
+    def test_open_file_keyword_blocked(self, code):
+        assert _is_blocked(code), f"open(file=) bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(file='README.md')",
+            "open(file='logs/today.log', mode='w')",
+        ],
+    )
+    def test_open_file_keyword_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit open(file=) blocked: {code!r}"
+
+
+class TestR2Finding6_SshKeyRedirectAttached:
+    """The SSH private-key end anchor now treats ``>`` as a token
+    boundary, so a redirect with no preceding space is blocked the
+    same way the spaced form is."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/.ssh/id_rsa>" + ("/" + "tmp/leak"),
+            "cat ~/.ssh/id_ed25519>>" + ("/" + "tmp/leak"),
+            "cat /home/u/.ssh/id_rsa>" + ("/" + "tmp/leak"),
+        ],
+    )
+    def test_ssh_key_with_attached_redirection_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"redirect-attached bypass: {cmd!r}"
+
+
+class TestR2Finding7_ShellCommandSubstitution:
+    """Sensitive root prefixes followed by ``$(...)`` or backtick
+    substitution are flagged because the attacker is dynamically
+    constructing a protected path."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /proc/1/$(echo environ)",
+            "cat /etc/$(printf shadow)",
+            "cat ~/.aws/$(echo credentials)",
+            "cat /etc/`printf shadow`",
+        ],
+    )
+    def test_substitution_sensitive_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"substitution bypass: {cmd!r}"
+
+
+class TestR2Finding8_ShellBraceExpansion:
+    """Bash brace expansion ``{a,b}`` and small glob char classes
+    ``[abc]`` are enumerated before the regex scan."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/sh{ad,ad}ow",
+            "cat /etc/shado[w]",
+            "cat /proc/self/{environ,environ}",
+            "cat /proc/self/enviro[n]",
+            "cat $HOME/{.aws/credentials,.bashrc}",
+        ],
+    )
+    def test_brace_expansion_sensitive_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"brace expansion bypass: {cmd!r}"
+
+
+class TestR2Finding9_PathSeparatorNormalisation:
+    """``cat /etc//shadow`` and ``cat /etc/./shadow`` resolve to
+    ``/etc/shadow`` for the OS; the projection does the same so they
+    cannot bypass the regex."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc//shadow",
+            "cat /etc/./shadow",
+            "cat ~/.aws//credentials",
+            "cat ~/.aws/./credentials",
+            "cat ${HOME}/.ssh//id_rsa",
+            "cat /proc/self//environ",
+        ],
+    )
+    def test_equivalent_path_spellings_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"equivalent path bypass: {cmd!r}"
+
+
+class TestR2Finding10_OpenEquivalentSpellings:
+    """Same normalization gap inside the Python open() gate."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/etc//shadow').read()",
+            "open('/etc/./shadow').read()",
+            "open('/home/u/.aws//credentials').read()",
+            "open('/home/u/.aws/./credentials').read()",
+        ],
+    )
+    def test_equivalent_open_paths_blocked(self, code):
+        assert _is_blocked(code), f"equivalent open() bypass: {code!r}"
+
+
+class TestR2Finding12_PathlibOpenWithMode:
+    """``Path('/etc/shadow').open('r')`` previously read ``'r'`` as the
+    path arg; the receiver-side resolver now takes precedence for
+    pathlib readers."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('/etc/shadow').open('r').read()",
+            "from pathlib import Path\nPath('/home/u/.aws/credentials').open('rb').read()",
+            "import pathlib\npathlib.Path('/proc/self/environ').open('rb').read()",
+        ],
+    )
+    def test_pathlib_open_with_mode_blocked(self, code):
+        assert _is_blocked(code), f"Path.open(mode) bypass: {code!r}"
+
+
+class TestR2Finding13_14_15_PathlibCompositions:
+    """``joinpath()``, ``/``, and multi-part ``Path()`` constructions
+    all resolve to a single path string before the sensitive-file check."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('/etc').joinpath('shadow').open().read()",
+            "from pathlib import Path\nPath('/etc').joinpath('shadow').read_text()",
+            "from pathlib import Path\nPath('/home/u').joinpath('.aws/credentials').open().read()",
+            "from pathlib import Path\n(Path('/etc') / 'shadow').open().read()",
+            "from pathlib import Path\n(Path('/etc') / 'shadow').read_text()",
+            "from pathlib import Path\nPath('/etc', 'shadow').open().read()",
+            "from pathlib import Path\nPath('/home', 'u', '.aws', 'credentials').open().read()",
+            "from pathlib import Path\nPath('/proc', 'self', 'environ').read_bytes()",
+        ],
+    )
+    def test_pathlib_compositions_blocked(self, code):
+        assert _is_blocked(code), f"pathlib composition bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('data', 'file.txt').open()",
+            "from pathlib import Path\nPath('logs').joinpath('today.log').open('w')",
+            "from pathlib import Path\n(Path('data') / 'file.txt').read_text()",
+        ],
+    )
+    def test_pathlib_compositions_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit pathlib composition blocked: {code!r}"
+
+
+class TestR2Finding16_PathlibAliasImport:
+    """``from pathlib import Path as P`` and ``import pathlib as pl``
+    register the alias so constructor recognition fires."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path as P\nP('/etc/shadow').open().read()",
+            "from pathlib import Path as P\nP('/etc/shadow').read_text()",
+            "import pathlib as pl\npl.Path('/home/u/.aws/credentials').open().read()",
+            "import pathlib as pl\npl.Path('/etc').joinpath('shadow').open().read()",
+        ],
+    )
+    def test_aliased_pathlib_blocked(self, code):
+        assert _is_blocked(code), f"alias bypass: {code!r}"

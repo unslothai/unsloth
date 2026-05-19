@@ -160,7 +160,7 @@ _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # the matching public key ``~/.ssh/id_rsa.pub`` (legitimate developer
 # action) is NOT blocked. Non-key entries deliberately omit the end
 # anchor: ``.aws/credentials.bak`` etc. are still credentials.
-_SSH_KEY_END = r"(?=$|[\s'\";&|)<])"
+_SSH_KEY_END = r"(?=$|[\s'\";&|)<>])"
 _HOME_RELATIVE_SENSITIVE = (
     # SSH private keys (config / known_hosts / *.pub intentionally allowed)
     rf"\.ssh/id_rsa{_SSH_KEY_END}",
@@ -195,15 +195,17 @@ _ABSOLUTE_SENSITIVE = (
 )
 
 # Home-equivalent prefix the path must be preceded by for HOME_RELATIVE
-# entries to fire. Covers POSIX tilde / $HOME / ${HOME}, POSIX absolute
-# homes (/home/<u>, /root, /Users/<u>), and Windows env-var / drive-letter
-# homes (%USERPROFILE%, %HOMEDRIVE%%HOMEPATH%, $env:USERPROFILE,
-# C:/Users/<u>). Backslashes get normalized to forward slashes in
-# _find_sensitive_paths before matching, so Windows-style C:\Users\...
-# input is covered by the C:/Users/... branch here.
+# entries to fire. Covers POSIX tilde forms (``~/`` and ``~user/``),
+# $HOME / ${HOME}, POSIX absolute homes (/home/<u>, /root, /Users/<u>),
+# and Windows env-var / drive-letter homes (%USERPROFILE%,
+# %HOMEDRIVE%%HOMEPATH%, $env:USERPROFILE, C:/Users/<u>). Backslashes get
+# normalized to forward slashes in _find_sensitive_paths before matching,
+# so Windows-style C:\Users\... input is covered by the C:/Users/...
+# branch here. ``~ubuntu/`` matches the POSIX ``~user/`` shell expansion
+# that bash resolves to that user's home directory before exec.
 _HOME_PREFIX_RE = (
     r"(?:"
-    r"~"
+    r"~(?:[^/\s'\";&|)<>]*)?"
     r"|\$\{?HOME\}?"
     r"|%USERPROFILE%"
     r"|%HOMEDRIVE%%HOMEPATH%"
@@ -234,6 +236,80 @@ _ABSOLUTE_SENSITIVE_RE = re.compile(
     _PATH_TOKEN_START + r"(?:" + "|".join(_ABSOLUTE_SENSITIVE) + r")",
     re.IGNORECASE,
 )
+
+# Sensitive root prefix immediately followed by a shell substitution
+# (``$(...)`` or backticks). Catches dynamic-path constructions like
+# ``cat /etc/$(printf shadow)`` or ``cat /proc/1/$(echo environ)`` that
+# materialise a protected path AFTER the literal scan has run.
+_SENSITIVE_ROOT_WITH_EXPANSION_RE = re.compile(
+    _PATH_TOKEN_START
+    + r"(?:"
+    + r"~(?:[^/\s'\";&|)<>]*)?/"
+    + r"|\$\{?HOME\}?/"
+    + r"|/home/[^/\s'\"]+/"
+    + r"|/root/"
+    + r"|/Users/[^/\s'\"]+/"
+    + r"|/etc/"
+    + r"|/proc/(?:self|\d+)/"
+    + r"|/var/spool/"
+    + r")"
+    + r"[^\s'\";&|`$]*"
+    + r"(?:\$\([^)]*\)|`[^`]+`)",
+    re.IGNORECASE,
+)
+
+_BRACE_EXPANSION_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+
+
+def _normalize_path_separators(text: str) -> str:
+    """Collapse ``//`` to ``/`` and remove ``/./`` segments so that
+    filesystem-equivalent spellings of a sensitive path
+    (``/etc//shadow``, ``/etc/./shadow``) match the canonical pattern."""
+    if not text:
+        return text
+    # Preserve the scheme separator (``http://``); collapse only path slashes.
+    collapsed = re.sub(r"(?<!:)//+", "/", text)
+    while "/./" in collapsed:
+        collapsed = collapsed.replace("/./", "/")
+    if collapsed.endswith("/."):
+        collapsed = collapsed[:-2] or "/"
+    return collapsed
+
+
+def _expand_brace_projections(text: str, limit: int = 64) -> set[str]:
+    """Return the set of strings reachable from *text* by applying bash
+    brace expansion ``{a,b}`` and bounded ``[abc]`` glob character
+    classes. Bounded to ``limit`` to keep adversarial inputs from
+    fanning out unboundedly."""
+    out = {text}
+    if "{" not in text and "[" not in text:
+        return out
+    queue = [text]
+    glob_re = re.compile(r"\[([^\]/\\!^]{1,8})\]")
+    while queue and len(out) < limit:
+        cur = queue.pop()
+        brace = _BRACE_EXPANSION_RE.search(cur)
+        if brace:
+            for alt in brace.group(1).split(","):
+                nxt = cur[: brace.start()] + alt + cur[brace.end():]
+                if nxt not in out:
+                    out.add(nxt)
+                    queue.append(nxt)
+                    if len(out) >= limit:
+                        break
+            continue
+        klass = glob_re.search(cur)
+        if klass:
+            for ch in klass.group(1):
+                if ch == "-":
+                    continue
+                nxt = cur[: klass.start()] + ch + cur[klass.end():]
+                if nxt not in out:
+                    out.add(nxt)
+                    queue.append(nxt)
+                    if len(out) >= limit:
+                        break
+    return out
 
 
 def _find_sensitive_paths(command: str) -> set[str]:
@@ -289,17 +365,32 @@ def _find_sensitive_paths(command: str) -> set[str]:
     except ValueError:
         tokens = normalized.split()
 
-    scan_targets = [command]
+    raw_targets = [command]
     if normalized is not command:
-        scan_targets.append(normalized)
+        raw_targets.append(normalized)
     if tokens:
-        scan_targets.append(" ".join(tokens))
+        raw_targets.append(" ".join(tokens))
+
+    # Cross-product the projections so the regexes see every shape:
+    # raw / backslash-normalised / shlex-dequoted x with-and-without
+    # path-separator normalisation x brace and glob expansions.
+    scan_targets: set[str] = set()
+    for text in raw_targets:
+        for projected in _expand_brace_projections(text):
+            scan_targets.add(projected)
+            normalized_path = _normalize_path_separators(projected)
+            if normalized_path != projected:
+                scan_targets.add(normalized_path)
 
     found: set[str] = set()
     for text in scan_targets:
         for m in _HOME_SENSITIVE_RE.finditer(text):
             found.add(m.group(0))
         for m in _ABSOLUTE_SENSITIVE_RE.finditer(text):
+            found.add(m.group(0))
+        # Sensitive prefix + shell substitution that the literal scan
+        # cannot statically resolve (``cat /etc/$(printf shadow)``).
+        for m in _SENSITIVE_ROOT_WITH_EXPANSION_RE.finditer(text):
             found.add(m.group(0))
 
     # Recurse into nested shells. Mirrors the structure in
@@ -1109,6 +1200,108 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
+    def _join_path_parts(parts):
+        """Stitch path parts the way ``pathlib.Path(*parts)`` does for
+        statically-resolvable string segments."""
+        if not parts:
+            return None
+        out = parts[0]
+        for p in parts[1:]:
+            if out.endswith(("/", "\\")):
+                out = out + p.lstrip("/\\")
+            else:
+                out = out + "/" + p.lstrip("/\\")
+        return out
+
+    def _fq_chain_name(func):
+        """Return the dotted FQ chain for an attribute / name expression,
+        or empty string if the chain stops at something other than a Name."""
+        parts: list[str] = []
+        cur = func
+        while isinstance(cur, ast.Attribute):
+            parts.insert(0, cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.insert(0, cur.id)
+        return ".".join(parts) if parts else ""
+
+    def _extract_pathlib_target(node, path_aliases, pathlib_aliases, _depth = 0):
+        """Statically resolve a pathlib expression to its target path
+        string, or None if any subpart is not resolvable.
+
+        Recognises (with depth cap):
+          * Plain string literals (delegated to ``_extract_string_from_node``).
+          * ``Path('/etc/shadow')`` and aliased ``P('/etc/shadow')`` /
+            ``pl.Path('/etc/shadow')`` constructors.
+          * Multi-part construction ``Path('/etc', 'shadow')``.
+          * ``Path('/etc').joinpath('shadow')`` (one or more parts).
+          * ``Path('/etc') / 'shadow'`` (``__truediv__`` chain).
+        """
+        if _depth > 32:
+            return None
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+                base = _extract_pathlib_target(
+                    node.func.value, path_aliases, pathlib_aliases, _depth + 1
+                )
+                if base is None:
+                    return None
+                parts = [base]
+                for arg in node.args:
+                    s = _extract_pathlib_target(
+                        arg, path_aliases, pathlib_aliases, _depth + 1
+                    )
+                    if s is None:
+                        return None
+                    parts.append(s)
+                return _join_path_parts(parts)
+            ctor_fq = _fq_chain_name(node.func)
+            is_path_ctor = (
+                ctor_fq in path_aliases
+                or any(ctor_fq == f"{alias}.Path" for alias in pathlib_aliases)
+            )
+            if is_path_ctor and node.args:
+                parts = []
+                for arg in node.args:
+                    s = _extract_pathlib_target(
+                        arg, path_aliases, pathlib_aliases, _depth + 1
+                    )
+                    if s is None:
+                        return None
+                    parts.append(s)
+                return _join_path_parts(parts)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = _extract_pathlib_target(
+                node.left, path_aliases, pathlib_aliases, _depth + 1
+            )
+            right = _extract_pathlib_target(
+                node.right, path_aliases, pathlib_aliases, _depth + 1
+            )
+            if left is not None and right is not None:
+                return _join_path_parts([left, right])
+        # Last-ditch: BinOp.Add of string constants, JoinedStr, etc.
+        return _extract_string_from_node(node)
+
+    _PATH_RECEIVER_READ_METHODS = frozenset({"open", "read_text", "read_bytes"})
+
+    def _eval_exec_call_name(func, builtins_aliases):
+        """Match ``eval`` / ``exec`` invocations including the qualified
+        forms ``builtins.exec``, ``__builtins__.eval``, and any tracked
+        alias of ``builtins``. Returns the bare function name (``eval``
+        or ``exec``) when recognised, else None."""
+        if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
+            return func.id
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in ("eval", "exec")
+            and isinstance(func.value, ast.Name)
+            and func.value.id in builtins_aliases
+        ):
+            return func.attr
+        return None
+
     # Keyword argument names that carry command content (as opposed to
     # control flags like check=True, text=True, capture_output=True).
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
@@ -1142,6 +1335,10 @@ def _check_signal_escape_patterns(code: str):
             # Maps bare function names to their fully-qualified form
             # for from-import tracking (e.g. "system" -> "os.system")
             self.shell_exec_aliases: dict[str, str] = {}
+            # Builtins aliases so ``builtins.exec`` / ``__builtins__.eval``
+            # and ``import builtins as b; b.exec(...)`` flow through the
+            # same recursion guard as the bare-name forms.
+            self.builtins_aliases = {"builtins", "__builtins__"}
             self.loop_depth = 0
             # Cap recursion into nested eval/exec literals; an adversarial
             # ``eval("eval('eval(...)')")`` should not blow the stack.
@@ -1155,6 +1352,8 @@ def _check_signal_escape_patterns(code: str):
                         self.signal_aliases.add(alias.asname)
                 elif alias.name == "os":
                     self.os_aliases.add(alias.asname or "os")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
             self.generic_visit(node)
@@ -1206,7 +1405,8 @@ def _check_signal_escape_patterns(code: str):
             # network policy). If the payload is not statically resolvable
             # we flag it as a dynamic shell-escape candidate — eval/exec
             # of runtime data is the classic injection vector.
-            if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
+            eval_exec_name = _eval_exec_call_name(func, self.builtins_aliases)
+            if eval_exec_name is not None:
                 if node.args:
                     payload = _extract_string_from_node(node.args[0])
                     if payload is None:
@@ -1216,7 +1416,7 @@ def _check_signal_escape_patterns(code: str):
                                 "type": "shell_escape_dynamic",
                                 "line": node.lineno,
                                 "description": (
-                                    f"{func.id}() called with non-literal "
+                                    f"{eval_exec_name}() called with non-literal "
                                     "argument (potential code-injection escape)"
                                 ),
                             }
@@ -1230,7 +1430,7 @@ def _check_signal_escape_patterns(code: str):
                                 "type": "shell_escape_dynamic",
                                 "line": node.lineno,
                                 "description": (
-                                    f"{func.id}() literal payload nesting "
+                                    f"{eval_exec_name}() literal payload nesting "
                                     "exceeds sandbox inspection depth"
                                 ),
                             }
@@ -1916,6 +2116,27 @@ def _check_signal_escape_patterns(code: str):
         def __init__(self):
             super().__init__()
             self._eval_depth = 0
+            # Builtins / pathlib alias tracking so the receiver-side
+            # pathlib detection and the eval/exec recursion both reach
+            # qualified and aliased forms (``builtins.exec``, ``P('/etc/x')``).
+            self.builtins_aliases = {"builtins", "__builtins__"}
+            self.path_aliases = {"Path"}
+            self.pathlib_aliases = {"pathlib"}
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                if alias.name == "pathlib":
+                    self.pathlib_aliases.add(alias.asname or "pathlib")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            if node.module == "pathlib":
+                for alias in node.names:
+                    if alias.name == "Path":
+                        self.path_aliases.add(alias.asname or "Path")
+            self.generic_visit(node)
 
         def visit_Call(self, node):
             func = node.func
@@ -1923,7 +2144,8 @@ def _check_signal_escape_patterns(code: str):
             # the dual gate. Catches ``exec("open('/etc/shadow').read()")``
             # by parsing the literal payload and walking it through the
             # same sensitive-file / network / upload checks.
-            if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
+            eval_exec_name = _eval_exec_call_name(func, self.builtins_aliases)
+            if eval_exec_name is not None:
                 if node.args:
                     payload = _extract_string_from_node(node.args[0])
                     if payload is not None:
@@ -1936,7 +2158,7 @@ def _check_signal_escape_patterns(code: str):
                                     "type": "sensitive_file_read",
                                     "line": getattr(node, "lineno", -1),
                                     "description": (
-                                        f"{func.id}() literal payload nesting "
+                                        f"{eval_exec_name}() literal payload nesting "
                                         "exceeds sandbox inspection depth"
                                     ),
                                 }
@@ -1978,16 +2200,28 @@ def _check_signal_escape_patterns(code: str):
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
-                and node.args
             ):
-                a0 = node.args[0]
                 # Use the static-string resolver so a concatenated /
                 # f-string host literal (e.g. ``'169.254.' + '169.254'``)
                 # is recognised the same as a bare ast.Constant.
-                if isinstance(a0, ast.Tuple) and a0.elts:
-                    host_lit = _extract_string_from_node(a0.elts[0])
-                else:
-                    host_lit = _extract_string_from_node(a0)
+                host_lit = None
+                if node.args:
+                    a0 = node.args[0]
+                    if isinstance(a0, ast.Tuple) and a0.elts:
+                        host_lit = _extract_string_from_node(a0.elts[0])
+                    else:
+                        host_lit = _extract_string_from_node(a0)
+                # Keyword forms: sock.connect(address=(host, port)).
+                if host_lit is None:
+                    for kw in node.keywords or []:
+                        if kw.arg in ("address", "host", "hostname"):
+                            v = kw.value
+                            if isinstance(v, ast.Tuple) and v.elts:
+                                host_lit = _extract_string_from_node(v.elts[0])
+                            else:
+                                host_lit = _extract_string_from_node(v)
+                            if host_lit:
+                                break
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -2022,18 +2256,55 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
-                # Same static-string resolver as elsewhere so ``'http://' +
-                # '169.254.169.254'`` and ``f'http://{"169.254.169.254"}/'``
-                # are resolvable the same as a bare constant.
+                # 2) Extract literal host. Three call shapes are handled:
+                #
+                #   * Host-first APIs whose positional arg 0 is the host
+                #     directly (``socket.getaddrinfo('169.254.169.254', 80)``,
+                #     ``http.client.HTTPConnection('169.254.169.254')``).
+                #   * URL-second APIs whose positional arg 1 is the URL
+                #     (``requests.request('GET', 'http://...')``).
+                #   * Everything else: positional arg 0 is a URL or
+                #     ``(host, port)`` tuple, with keyword fallbacks for
+                #     ``url=``, ``address=``, ``host=`` / ``hostname=``.
+                _HOST_FIRST_FQ = (
+                    "socket.create_connection",
+                    "socket.getaddrinfo",
+                    "http.client.HTTPConnection",
+                    "http.client.HTTPSConnection",
+                )
+                _URL_SECOND_FQ = ("requests.request", "httpx.request")
+
                 host_arg = None
                 url_arg = None
+
                 if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Tuple) and a0.elts:
-                        host_arg = _extract_string_from_node(a0.elts[0])
+                    if fq in _URL_SECOND_FQ and len(node.args) >= 2:
+                        url_arg = _extract_string_from_node(node.args[1])
                     else:
-                        url_arg = _extract_string_from_node(a0)
+                        a0 = node.args[0]
+                        if isinstance(a0, ast.Tuple) and a0.elts:
+                            host_arg = _extract_string_from_node(a0.elts[0])
+                        elif fq in _HOST_FIRST_FQ:
+                            host_arg = _extract_string_from_node(a0)
+                        else:
+                            url_arg = _extract_string_from_node(a0)
+
+                # Keyword fallback. ``url=`` and ``address=`` carry the
+                # full URL or (host, port); ``host=`` / ``hostname=``
+                # carry just the host.
+                for kw in node.keywords or []:
+                    if kw.arg in ("url", "address"):
+                        v = kw.value
+                        if isinstance(v, ast.Tuple) and v.elts:
+                            if host_arg is None:
+                                host_arg = _extract_string_from_node(v.elts[0])
+                        else:
+                            if url_arg is None and host_arg is None:
+                                url_arg = _extract_string_from_node(v)
+                    elif kw.arg in ("host", "hostname"):
+                        if host_arg is None:
+                            host_arg = _extract_string_from_node(kw.value)
+
                 if url_arg and host_arg is None:
                     m = re.match(r"^\w+://([^/?#]+)", url_arg)
                     if m:
@@ -2060,52 +2331,68 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            # ``fq`` resolves only when the attribute chain ends in a Name.
-            # ``Path('/etc/shadow').open()`` has a Call in the chain, which
-            # short-circuits fq to ``"open"`` -- so treat any Attribute call
-            # whose attr is ``open`` as a candidate too, then resolve the
-            # actual path from the receiver below.
+            # File-read surface detection. Three families are recognised:
+            #
+            #   * Bare ``open(arg)`` / ``open(file=...)`` and ``io.open``.
+            #   * Receiver-side pathlib reads: ``Path(...).open()``,
+            #     ``Path(...).open('r')`` (where ``args[0]`` is the MODE,
+            #     not the path), ``Path(...).read_text()``, and
+            #     ``Path(...).read_bytes()``. The path is extracted from
+            #     the receiver expression by ``_extract_pathlib_target``,
+            #     which handles ``Path(a, b)``, ``Path().joinpath()``,
+            #     ``Path() / arg``, and aliased Path constructors.
+            #
+            # ``fq`` only resolves when the attribute chain ends in a
+            # Name, so ``Path(...).open()`` (with a Call in the chain)
+            # short-circuits to ``"open"`` — we accept any Attribute
+            # call whose attr is in the path-reader set and pull the
+            # actual target from the receiver.
+            receiver_read_method = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _PATH_RECEIVER_READ_METHODS
+            ):
+                receiver_read_method = node.func.attr
+
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
                 or fq in ("io.open", "pathlib.Path.open")
                 or fq.endswith(".open")
-                or (isinstance(node.func, ast.Attribute) and node.func.attr == "open")
+                or receiver_read_method is not None
             )
             if is_open_call:
-                # Resolve the open target. The literal path can live in
-                # ``open(arg)`` or in the receiver constructor for the
-                # ``Path('/etc/shadow').open()`` form (Fix #8).
                 path_lit = None
-                if node.args:
+
+                if receiver_read_method is not None:
+                    # For ``Path('/etc/shadow').open('r')`` the positional
+                    # arg is the open mode, not the path. Pull the path
+                    # exclusively from the receiver to avoid misreading
+                    # ``'r'`` as a target.
+                    path_lit = _extract_pathlib_target(
+                        node.func.value,
+                        self.path_aliases,
+                        self.pathlib_aliases,
+                    )
+
+                if path_lit is None and node.args:
                     path_lit = _extract_string_from_node(node.args[0])
-                if (
-                    path_lit is None
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "open"
-                ):
-                    receiver = node.func.value
-                    if isinstance(receiver, ast.Call) and receiver.args:
-                        ctor_parts: list[str] = []
-                        cur = receiver.func
-                        while isinstance(cur, ast.Attribute):
-                            ctor_parts.insert(0, cur.attr)
-                            cur = cur.value
-                        if isinstance(cur, ast.Name):
-                            ctor_parts.insert(0, cur.id)
-                        ctor_fq = ".".join(ctor_parts) if ctor_parts else ""
-                        if ctor_fq in ("Path", "pathlib.Path") or ctor_fq.endswith(
-                            ".Path"
-                        ):
-                            path_lit = _extract_string_from_node(receiver.args[0])
+
+                # ``open(file=...)`` / ``io.open(file=...)`` keyword form.
+                if path_lit is None:
+                    for kw in node.keywords or []:
+                        if kw.arg in ("file", "path"):
+                            path_lit = _extract_string_from_node(kw.value)
+                            if path_lit is not None:
+                                break
 
                 if path_lit:
-                    # Match both the original literal and a backslash-
-                    # normalized projection so Windows-style paths
-                    # ``C:\Users\alice\.aws\credentials`` reach the
-                    # /Users/<u>/ home prefix.
+                    # Cross-product the projections: backslash-normalised
+                    # and path-separator-collapsed (``/etc//shadow``,
+                    # ``/etc/./shadow``) so equivalent spellings match.
                     candidates = {path_lit}
                     if "\\" in path_lit:
                         candidates.add(path_lit.replace("\\", "/"))
+                    candidates.add(_normalize_path_separators(path_lit))
 
                     flagged = False
                     for cand in candidates:
@@ -2118,21 +2405,20 @@ def _check_signal_escape_patterns(code: str):
                         # The credential / process-state allow-list lives
                         # in ``_find_sensitive_paths`` (Patch B). Reuse it
                         # so ``open('/home/u/.aws/credentials')`` is
-                        # blocked the same as the bash equivalent --
-                        # otherwise the new home/credential guard would
-                        # only cover shell command flows and leave the
-                        # direct Python open() path open.
+                        # blocked the same as the bash equivalent.
                         if _find_sensitive_paths(cand):
                             flagged = True
                             break
                     if flagged:
+                        method_label = receiver_read_method or "open"
                         sensitive_file_reads.append(
                             {
                                 "type": "sensitive_file_read",
                                 "line": getattr(node, "lineno", -1),
                                 "description": (
-                                    f"open({path_lit!r}) targets a host identity / "
-                                    "credential file; sandboxed code may not read it"
+                                    f"{method_label}({path_lit!r}) targets a host "
+                                    "identity / credential file; sandboxed code "
+                                    "may not read it"
                                 ),
                             }
                         )
