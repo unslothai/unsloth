@@ -1,6 +1,6 @@
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { registerNativeModelPath } from "./api";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";

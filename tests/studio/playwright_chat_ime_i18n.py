@@ -3,12 +3,16 @@
 
 """Studio chat composer IME + multilingual regression smoke.
 
-Covers two surfaces:
+Covers three surfaces:
   A. Stuck IME composition (issue #5318 / PR #5327): duplicate
      compositionstart with no compositionend left isComposing=true,
      dropping all subsequent keystrokes including ASCII.
   B. Multilingual paste round-trip across 31 scripts -- guards the
      controlled-textarea / React state plumbing against Unicode mangling.
+  C. Stuck compositionend (issue #5546): Chrome on Windows over WSL
+     fires compositionstart + compositionupdate but never compositionend,
+     wedging Send disabled after the IME commits. Verifies the
+     watchdog in useImeComposerInputHandlers releases the flag.
 
 Model-free; the bug surface is the composer, not inference.
 
@@ -424,6 +428,195 @@ with sync_playwright() as p:
     info("stuck-composition recovery PASS")
     clear()
 
+    # 6b. WSL + Windows Chrome repro for issue #5546: Chrome never emits
+    #     compositionend after the IME commit, so the watchdog has to
+    #     release the composing flag on its own once the events go silent.
+    #     This dispatches a realistic "compose, commit, then nothing"
+    #     sequence — no compositionend, no follow-up keystrokes — and
+    #     waits for the Send button to come back enabled.
+    step("BUG REPRO: stuck compositionend recovery (issue #5546)")
+    clear()
+    composer.click()
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'你'}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'你好'}));
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, el.value + '你好');
+            el.dispatchEvent(new InputEvent('input', {
+                bubbles:true, inputType:'insertCompositionText',
+                data:'你好', isComposing:true,
+            }));
+            // Deliberately omit compositionend — that is the WSL/Chrome
+            // bug surface. The watchdog in useImeComposerInputHandlers
+            // should reset isComposing after IME_STUCK_TIMEOUT_MS.
+        }"""
+    )
+    send_btn_5546 = page.locator('button[aria-label="Send message"]')
+    if send_btn_5546.count() == 0:
+        soft_fail("Send button not found for #5546 repro")
+    else:
+        # Watchdog is 2500ms; allow generous slack for slow CI.
+        try:
+            expect(send_btn_5546).not_to_be_disabled(timeout = 8_000)
+            info("Send button enabled after compositionend never fired")
+        except Exception:
+            shoot("06b-compositionend-watchdog-FAIL")
+            fail(
+                "Send button stayed disabled with no compositionend — "
+                "watchdog did not release the composing flag (issue #5546)."
+            )
+    after_value = read_value()
+    if "你好" not in after_value:
+        soft_fail(f"compositionend-watchdog repro lost committed text: {after_value!r}")
+    shoot("06b-compositionend-watchdog")
+    info("compositionend watchdog recovery PASS")
+    clear()
+
+    # 6c. Watchdog-race repro: after the watchdog clears composingRef during a
+    #     long candidate pause, a subsequent IME keydown (browser still sees
+    #     isComposing=true / keyCode 229) must not slip preedit text through
+    #     the form submit. The onKeyDown gate re-pins composingRef so the
+    #     handleSubmit / blockSend guards keep refusing. The Send button stays
+    #     visually enabled (watchdog has already cleared the React state); the
+    #     refusal happens at form.requestSubmit() time, not at the button.
+    step(
+        "BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)"
+    )
+    clear()
+    composer.click()
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'半'}));
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, el.value + '半角');
+            el.dispatchEvent(new InputEvent('input', {
+                bubbles:true, inputType:'insertCompositionText',
+                data:'半角', isComposing:true,
+            }));
+        }"""
+    )
+    send_btn_keydown = page.locator('button[aria-label="Send message"]')
+    # Wait past the watchdog so composingRef has cleared.
+    try:
+        expect(send_btn_keydown).not_to_be_disabled(timeout = 8_000)
+    except Exception:
+        soft_fail("watchdog did not clear before keydown re-pin test")
+    # Fire the IME-confirm Enter (keyCode 229, isComposing=true) then trigger
+    # the form submit synchronously. With the keydown gate, composingRef is
+    # re-pinned before handleSubmit runs and the submit is prevented; the
+    # textarea must still hold the preedit text.
+    submit_probe = composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles:true, key:'Enter', code:'Enter', keyCode:229,
+                isComposing:true,
+            }));
+            const form = el.closest('form');
+            const before = el.value;
+            try { form && form.requestSubmit(); } catch (e) {}
+            return {before, after: el.value, cleared: before !== '' && el.value === ''};
+        }"""
+    )
+    if submit_probe.get("cleared"):
+        shoot("06c-keydown-repin-FAIL")
+        fail(
+            "Form submitted after an IME keydown -- preedit text leaked "
+            "through the watchdog gap (#5546 follow-up regression)."
+        )
+    info(
+        f"Form submit refused after IME keydown; textarea retained {submit_probe.get('after')!r}"
+    )
+    shoot("06c-keydown-repin")
+    info("keydown re-pin gate PASS")
+    clear()
+
+    # 6d. Keydown re-pin must also re-arm the watchdog. On the WSL+Chrome
+    #     stuck-compositionend path the IME never fires a follow-up
+    #     compositionend or non-composing input, so after the IME keydown
+    #     re-pins composingRef the watchdog has to take it back to false on
+    #     its own — otherwise Send re-locks permanently after the very
+    #     scenario this PR was supposed to fix. (Codex P1, commit 597af0d0.)
+    step("BUG REPRO: keydown re-pin re-arms watchdog (#5546 follow-up regression)")
+    clear()
+    composer.click()
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+            el.dispatchEvent(new CompositionEvent('compositionupdate', {bubbles:true, data:'你'}));
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            ).set;
+            setter.call(el, el.value + '你好');
+            el.dispatchEvent(new InputEvent('input', {
+                bubbles:true, inputType:'insertCompositionText',
+                data:'你好', isComposing:true,
+            }));
+        }"""
+    )
+    send_btn_rearm = page.locator('button[aria-label="Send message"]')
+    # First watchdog cycle: wait for it to clear composingRef.
+    try:
+        expect(send_btn_rearm).not_to_be_disabled(timeout = 8_000)
+    except Exception:
+        soft_fail("watchdog did not clear before re-arm test (first cycle)")
+    # IME-confirm keydown re-pins composingRef. Without the re-arm fix the
+    # watchdog would never run again and Send would stay blocked at the
+    # submit-time guard forever, even though no follow-up IME event arrives.
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles:true, key:'Enter', code:'Enter', keyCode:229,
+                isComposing:true,
+            }));
+        }"""
+    )
+    # Second watchdog cycle: a real submit attempt now must eventually be
+    # allowed. Trigger requestSubmit() after the re-armed watchdog window
+    # plus a little slack; on the buggy build the form stays gated forever.
+    rearm_probe = page.evaluate(
+        """async (selector) => {
+            const ta = document.querySelector(selector);
+            const form = ta && ta.closest('form');
+            if (!form || !ta) return {ok: false, reason: 'composer missing'};
+            const before = ta.value;
+            // Wait past the 2500ms watchdog + slack so the re-armed timer
+            // fires. If the fix is missing this still resolves but the
+            // submit will not flush the textarea.
+            await new Promise(r => setTimeout(r, 3500));
+            try { form.requestSubmit(); } catch (e) {}
+            // Give the submit handler a tick to flush state.
+            await new Promise(r => setTimeout(r, 250));
+            return {ok: true, before, after: ta.value};
+        }""",
+        'textarea[aria-label="Message input"]',
+    )
+    if rearm_probe.get("ok") and rearm_probe.get("after") == rearm_probe.get("before"):
+        shoot("06d-keydown-rearm-FAIL")
+        fail(
+            "After the keydown re-pin the watchdog never re-armed; Send "
+            "stayed permanently locked on the WSL+Chrome stuck-end path "
+            "(#5546 follow-up Codex P1)."
+        )
+    info(
+        "watchdog re-armed after keydown re-pin: textarea flushed from "
+        f"{rearm_probe.get('before')!r} to {rearm_probe.get('after')!r}"
+    )
+    shoot("06d-keydown-rearm")
+    info("keydown re-pin re-arm PASS")
+    clear()
+
     # 7. Final state. The change-password redirect emits benign 401 noise,
     #    so we filter via is_benign_* and only fail on real errors.
     shoot("07-final")
@@ -451,7 +644,9 @@ with sync_playwright() as p:
 
     info(
         f"DONE: ascii=OK paste={len(I18N_SAMPLES)}/{len(I18N_SAMPLES)} "
-        f"normal_composition=OK stuck_recovery=OK"
+        f"normal_composition=OK stuck_recovery=OK "
+        f"compositionend_watchdog=OK keydown_repin=OK "
+        f"keydown_repin_rearm=OK"
     )
     _watchdog.cancel()
     browser.close()
