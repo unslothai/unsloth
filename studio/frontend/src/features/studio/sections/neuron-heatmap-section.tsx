@@ -993,7 +993,6 @@ export function NeuronHeatmapSection({
               overlaySets={overlaySets}
               expanded={true}
               outlierBlend={outlierBlend}
-              viewMode={viewMode}
             />
             {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
             {!isTraining && records.length > 1 && (
