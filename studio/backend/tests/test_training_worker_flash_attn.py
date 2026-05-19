@@ -36,94 +36,73 @@ def _missing_module_import(missing: str):
 
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    assert worker._should_try_runtime_flash_attn_install(32767) is False
+    assert worker._should_try_runtime_flash_attn_install(16384) is False
     assert worker._should_try_runtime_flash_attn_install(
-        32768
+        16385
     ) is sys.platform.startswith("linux")
 
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
-    assert worker._should_try_runtime_flash_attn_install(32768) is False
+    assert worker._should_try_runtime_flash_attn_install(16385) is False
 
 
-def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
+def test_runtime_flash_attn_uses_shared_optional_kernel_installer(monkeypatch):
+    statuses: list[str] = []
+    calls: list[tuple[Any, dict[str, Any]]] = []
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+
+    def fake_install(spec, **kwargs):
+        calls.append((spec, kwargs))
+        kwargs["status"]("Installing prebuilt flash-attn wheel...")
+        return True
+
+    monkeypatch.setattr(worker, "install_optional_kernel", fake_install)
+
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 16385)
+
+    assert len(calls) == 1
+    spec, kwargs = calls[0]
+    assert spec is worker.FLASH_ATTN_SPEC
+    assert kwargs["python_executable"] == sys.executable
+    assert kwargs["use_uv"] is True
+    assert kwargs["allow_pypi_fallback"] is True
+    assert kwargs["run"] is worker._sp.run
+    assert statuses == ["Installing prebuilt flash-attn wheel..."]
+
+
+def test_runtime_flash_attn_reports_shared_installer_failure(monkeypatch):
     statuses: list[str] = []
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
-    monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
-    monkeypatch.setattr(
-        worker,
-        "flash_attn_wheel_url",
-        lambda env: "https://example.com/fa.whl",
-    )
-    monkeypatch.setattr(worker, "url_exists", lambda url: True)
     monkeypatch.setattr(
         worker,
         "_send_status",
         lambda queue, message: statuses.append(message),
     )
     monkeypatch.setattr(
-        worker,
-        "install_wheel",
-        lambda *args, **kwargs: [("pip", subprocess.CompletedProcess(["pip"], 0, ""))],
+        worker, "install_optional_kernel", mock.Mock(return_value = False)
     )
 
-    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 16385)
 
-    assert statuses == ["Installing flash-attn for faster training..."]
-
-
-def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
-    calls: list[list[str]] = []
-    statuses: list[str] = []
-
-    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
-    monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
-    monkeypatch.setattr(
-        worker,
-        "probe_torch_wheel_env",
-        lambda timeout = 30: {
-            "python_tag": "cp313",
-            "torch_mm": "2.10",
-            "cuda_major": "13",
-            "cxx11abi": "TRUE",
-            "platform_tag": "linux_x86_64",
-        },
-    )
-    monkeypatch.setattr(
-        worker,
-        "flash_attn_wheel_url",
-        lambda env: "https://example.com/fa.whl",
-    )
-    monkeypatch.setattr(worker, "url_exists", lambda url: False)
-    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
-    monkeypatch.setattr(
-        worker,
-        "_send_status",
-        lambda queue, message: statuses.append(message),
-    )
-    monkeypatch.setattr(worker, "install_wheel", mock.Mock())
-
-    def fake_run(cmd, stdout = None, stderr = None, text = None):
-        calls.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, "")
-
-    monkeypatch.setattr(worker._sp, "run", fake_run)
-
-    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
-
-    assert statuses == ["Installing flash-attn from PyPI for long-context training..."]
-    assert calls == [[sys.executable, "-m", "pip", "install", "flash-attn"]]
+    assert statuses == ["Continuing without flash-attn"]
 
 
 def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
-    monkeypatch.setattr(worker._sp, "run", mock.Mock())
+    install_mock = mock.Mock()
+    monkeypatch.setattr(worker, "install_optional_kernel", install_mock)
 
-    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 16385)
 
-    worker._sp.run.assert_not_called()
+    install_mock.assert_not_called()
 
 
 def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
@@ -135,7 +114,7 @@ def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
         worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True
     )
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
-    monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.setattr(worker, "install_optional_kernel", install_mock)
     monkeypatch.setattr(
         worker,
         "_send_status",
@@ -221,6 +200,7 @@ def _force_missing_fla_imports(monkeypatch):
 
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)
@@ -239,6 +219,28 @@ def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     assert "--no-deps" in args
     assert run_mock.call_args.kwargs["timeout"] == worker._TILELANG_INSTALL_TIMEOUT_S
     assert any("flash-linear-attention" in s for s in statuses)
+
+
+def test_flash_linear_attention_skipped_on_blackwell(monkeypatch):
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "_model_wants_tilelang", lambda model_name: True)
+    monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
+    run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
+    monkeypatch.setattr(worker._sp, "run", run_mock)
+    _force_missing_fla_imports(monkeypatch)
+    statuses: list[str] = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, msg: statuses.append(msg))
+
+    worker._ensure_flash_linear_attention(
+        event_queue = [],
+        model_name = "unsloth/Qwen3.5-2B",
+    )
+
+    run_mock.assert_not_called()
+    assert statuses == [
+        "Skipping flash-linear-attention install: Blackwell GPU detected"
+    ]
 
 
 def test_flash_linear_attention_skips_for_unrelated_models(monkeypatch):
@@ -272,6 +274,7 @@ def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
 
 def test_flash_linear_attention_matches_full_qwen3_family(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)
@@ -1693,15 +1696,13 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
     )
     _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
-    captured: dict[str, str] | None = {"_called": "no"}
+    captured: dict[str, str] = {}
 
     def fake_run(cmd, **kwargs):
         env = kwargs.get("env")
         if env is not None:
             captured.clear()
             captured.update(env)
-        else:
-            captured["_called"] = "yes_no_env"
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1717,10 +1718,12 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # subprocess.run was invoked without env override (the user already
-    # set HIPCC_COMPILE_FLAGS_APPEND with --gcc-install-dir, so we left
-    # the env alone — the existing value is inherited normally).
-    assert captured == {"_called": "yes_no_env"}
+    # The sanitized child env preserves the user's explicit gcc-install-dir
+    # rather than appending a second one.
+    assert (
+        captured.get("HIPCC_COMPILE_FLAGS_APPEND")
+        == "--gcc-install-dir=/opt/custom/gcc-13"
+    )
 
 
 def test_install_does_not_inject_env_on_cuda(monkeypatch):
@@ -1767,5 +1770,5 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # CUDA branch never sets the env, never invokes the gcc helper.
-    assert captured.get("env_in_kwargs") is False
+    # CUDA branch still uses the sanitized child env, but never invokes the gcc helper.
+    assert captured.get("env_in_kwargs") is True

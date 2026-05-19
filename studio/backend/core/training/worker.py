@@ -27,13 +27,16 @@ from typing import Any, Callable
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.wheel_utils import (
+    FLASH_ATTN_SPEC,
     direct_wheel_url,
-    flash_attn_wheel_url,
     has_blackwell_gpu,
+    install_optional_kernel,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    _hipcc_gcc_install_dir as _wheel_utils_hipcc_gcc_install_dir,
 )
 
 
@@ -50,7 +53,7 @@ _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
-_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
+_FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 16384
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
 # apache-tvm-ffi 0.1.10/0.1.11 crash Triton with "CUDA: misaligned address" on sm_100.
 _TILELANG_PACKAGE_VERSION = "0.1.8"
@@ -112,18 +115,7 @@ def _hipcc_gcc_install_dir() -> str | None:
     via ``HIPCC_COMPILE_FLAGS_APPEND``. Mirrors the same loop ``bbf004c`` added
     to ``studio/setup.sh`` for the llama.cpp HIP build branch (PR #5301).
     """
-    if not sys.platform.startswith("linux"):
-        return None
-    import platform as _platform
-
-    if _platform.machine().lower() != "x86_64":
-        return None
-    for _ver in (14, 13, 12, 11):
-        _runtime = f"/usr/lib/gcc/x86_64-linux-gnu/{_ver}/include"
-        _headers = f"/usr/include/c++/{_ver}"
-        if os.path.isdir(_runtime) and os.path.isdir(_headers):
-            return f"/usr/lib/gcc/x86_64-linux-gnu/{_ver}"
-    return None
+    return _wheel_utils_hipcc_gcc_install_dir()
 
 
 def _install_package_wheel_first(
@@ -260,6 +252,7 @@ def _install_package_wheel_first(
         "stdout": _sp.PIPE,
         "stderr": _sp.STDOUT,
         "text": True,
+        "env": child_env_without_native_path_secret(),
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
@@ -423,6 +416,12 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             ),
         )
         return False
+    if has_blackwell_gpu():
+        _send_status(
+            event_queue,
+            "Skipping flash-linear-attention install: Blackwell GPU detected",
+        )
+        return False
 
     # Probe once; reuse result so the --force-reinstall decision and the short-circuit
     # share the same call count (stable for tests).
@@ -474,6 +473,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             stderr = _sp.STDOUT,
             text = True,
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
+            env = child_env_without_native_path_secret(),
         )
     except _sp.TimeoutExpired:
         logger.warning("flash-linear-attention install timed out; continuing")
@@ -648,6 +648,7 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
             stderr = _sp.STDOUT,
             text = True,
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
+            env = child_env_without_native_path_secret(),
         )
     except _sp.TimeoutExpired:
         logger.warning("%s install timed out; continuing", label)
@@ -919,7 +920,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
 def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
     if os.getenv(_FLASH_ATTN_SKIP_ENV) == "1":
         return False
-    if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
+    if max_seq_length <= _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
     return sys.platform.startswith("linux")
 
@@ -934,14 +935,13 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         )
         return
 
-    installed = _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "flash_attn",
-        display_name = "flash-attn",
-        pypi_name = "flash-attn",
-        wheel_url_builder = flash_attn_wheel_url,
-        pypi_spec = "flash-attn",
-        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+    installed = install_optional_kernel(
+        FLASH_ATTN_SPEC,
+        python_executable = sys.executable,
+        use_uv = True,
+        allow_pypi_fallback = True,
+        status = lambda message: _send_status(event_queue, message),
+        run = _sp.run,
     )
     if not installed:
         _send_status(event_queue, "Continuing without flash-attn")

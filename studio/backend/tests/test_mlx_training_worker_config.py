@@ -14,6 +14,7 @@ def _load_worker_module():
         "loggers",
         "utils",
         "utils.hardware",
+        "utils.native_path_leases",
         "utils.wheel_utils",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
@@ -33,14 +34,23 @@ def _load_worker_module():
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
         sys.modules["utils.hardware"] = hardware
 
+        native_path_leases = types.ModuleType("utils.native_path_leases")
+        native_path_leases.child_env_without_native_path_secret = (
+            lambda *_args, **_kwargs: None
+        )
+        sys.modules["utils.native_path_leases"] = native_path_leases
+
         wheel_utils = types.ModuleType("utils.wheel_utils")
         for name in (
+            "FLASH_ATTN_SPEC",
             "direct_wheel_url",
             "flash_attn_wheel_url",
             "has_blackwell_gpu",
+            "install_optional_kernel",
             "install_wheel",
             "probe_torch_wheel_env",
             "url_exists",
+            "_hipcc_gcc_install_dir",
         ):
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
