@@ -364,6 +364,38 @@ export async function listChatMessages(
   return data.messages;
 }
 
+/**
+ * Fetch messages for many threads in one HTTP call. Falls back to
+ * per-thread listChatMessages on 404/405 (older servers without the
+ * batch route).
+ */
+export async function batchListChatMessages(
+  threadIds: string[],
+): Promise<Map<string, MessageRecord[]>> {
+  const out = new Map<string, MessageRecord[]>();
+  if (threadIds.length === 0) return out;
+  const response = await authFetch("/api/chat/messages:batch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ thread_ids: threadIds }),
+  });
+  if (response.status === 404 || response.status === 405) {
+    // Older server: fall back to per-thread fetches.
+    const per = await Promise.all(
+      threadIds.map(async (id) => [id, await listChatMessages(id)] as const),
+    );
+    for (const [id, msgs] of per) out.set(id, msgs);
+    return out;
+  }
+  const data = await parseJsonOrThrow<{
+    threads: Record<string, MessageRecord[]>;
+  }>(response);
+  for (const id of threadIds) {
+    out.set(id, data.threads[id] ?? []);
+  }
+  return out;
+}
+
 export async function getChatMessage(
   threadId: string,
   messageId: string,

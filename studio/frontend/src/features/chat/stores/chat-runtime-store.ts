@@ -35,7 +35,6 @@ let hasShownSettingsPersistenceWarning = false;
 let customPresetsMutationVersion = 0;
 let activePresetMutationVersion = 0;
 let activePresetSourceMutationVersion = 0;
-let settingsSaveQueue: Promise<void> = Promise.resolve();
 let settingsHydrationPromise: Promise<void> | null = null;
 
 function warnSettingsPersistenceFailure(): void {
@@ -48,18 +47,65 @@ function warnSettingsPersistenceFailure(): void {
   });
 }
 
-function saveSettingsPatch(
-  patch: Parameters<typeof savePersistedChatSettingsPatch>[0],
-): void {
-  settingsSaveQueue = settingsSaveQueue
-    .catch(() => undefined)
-    .then(async () => {
-      try {
-        await savePersistedChatSettingsPatch(patch);
-      } catch {
-        warnSettingsPersistenceFailure();
-      }
-    });
+// Coalesce setting writes into one pendingPatch (deep merge for nested
+// keys), flush on a trailing-edge debounce, flush on beforeunload so a
+// pending patch survives tab close. Slider drag ticks now produce one
+// HTTP write per quiet window instead of one per tick.
+type SettingsPatch = Parameters<typeof savePersistedChatSettingsPatch>[0];
+
+const SETTINGS_DEBOUNCE_MS = 400;
+let pendingPatch: SettingsPatch = {};
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let inflightFlush: Promise<void> = Promise.resolve();
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value)
+  );
+}
+
+function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
+  for (const [key, value] of Object.entries(more)) {
+    const intoAny = into as Record<string, unknown>;
+    const prev = intoAny[key];
+    if (isPlainObject(prev) && isPlainObject(value)) {
+      intoAny[key] = { ...prev, ...value };
+    } else {
+      intoAny[key] = value;
+    }
+  }
+}
+
+async function flushSettingsPatch(): Promise<void> {
+  if (Object.keys(pendingPatch).length === 0) return;
+  const patch = pendingPatch;
+  pendingPatch = {};
+  try {
+    await savePersistedChatSettingsPatch(patch);
+  } catch {
+    warnSettingsPersistenceFailure();
+  }
+}
+
+function saveSettingsPatch(patch: SettingsPatch): void {
+  mergePatch(pendingPatch, patch);
+  if (pendingTimer !== null) clearTimeout(pendingTimer);
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    inflightFlush = inflightFlush.catch(() => undefined).then(flushSettingsPatch);
+  }, SETTINGS_DEBOUNCE_MS);
+}
+
+// Best-effort flush of any pending patch when the tab closes. Relies on
+// savePersistedChatSettingsPatch using keepalive fetch / sendBeacon.
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    if (Object.keys(pendingPatch).length === 0) return;
+    inflightFlush = inflightFlush
+      .catch(() => undefined)
+      .then(flushSettingsPatch);
+  });
 }
 
 function canUseStorage(): boolean {
@@ -468,7 +514,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           return nextState;
         });
       } catch {
+        // Hydrate failed: treat as hydrated-with-defaults so future
+        // setParams calls reach saveSettingsPatch (which surfaces its
+        // own toast on real network failure).
         warnSettingsPersistenceFailure();
+        set({ settingsHydrated: true });
       } finally {
         settingsHydrationPromise = null;
       }
@@ -480,11 +530,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
     set((state) => {
-      if (!state.settingsHydrated) {
-        return { params };
-      }
+      // Bump version unconditionally so a late hydration response
+      // won't clobber a pre-hydrate user edit; only the HTTP write
+      // is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
-      if (hasKeys(changedParams)) {
+      if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
       return { params };

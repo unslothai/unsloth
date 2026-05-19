@@ -57,6 +57,185 @@ _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900
 
 
+_LEGACY_UNSCOPED_SUBJECT = "__legacy_unscoped__"
+
+
+def _table_has_subject_column(conn: sqlite3.Connection, table: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == "subject" for row in rows)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (table,)
+    ).fetchone()
+    return row is not None
+
+
+def _migrate_chat_threads_for_subject_scoping(conn: sqlite3.Connection) -> None:
+    """Bring chat_threads to PRIMARY KEY (id, subject). Idempotent."""
+    if not _table_exists(conn, "chat_threads"):
+        conn.execute(
+            """
+            CREATE TABLE chat_threads (
+                id TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                title TEXT NOT NULL,
+                model_type TEXT NOT NULL,
+                model_id TEXT,
+                pair_id TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                openai_code_exec_container_id TEXT,
+                anthropic_code_exec_container_id TEXT,
+                PRIMARY KEY (id, subject)
+            )
+            """
+        )
+        return
+    if _table_has_subject_column(conn, "chat_threads"):
+        return  # already migrated
+    # Pre-A1 shape: single-column PK on id. Rename + rebuild + copy.
+    conn.execute("ALTER TABLE chat_threads RENAME TO chat_threads_pre_scoping")
+    conn.execute(
+        """
+        CREATE TABLE chat_threads (
+            id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            title TEXT NOT NULL,
+            model_type TEXT NOT NULL,
+            model_id TEXT,
+            pair_id TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            openai_code_exec_container_id TEXT,
+            anthropic_code_exec_container_id TEXT,
+            PRIMARY KEY (id, subject)
+        )
+        """
+    )
+    # Carry forward rows regardless of whether the container columns existed.
+    old_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(chat_threads_pre_scoping)").fetchall()
+    }
+    oai = "openai_code_exec_container_id" if "openai_code_exec_container_id" in old_cols else "NULL"
+    ant = (
+        "anthropic_code_exec_container_id"
+        if "anthropic_code_exec_container_id" in old_cols
+        else "NULL"
+    )
+    conn.execute(
+        f"""
+        INSERT INTO chat_threads
+            (id, subject, title, model_type, model_id, pair_id, archived, created_at,
+             openai_code_exec_container_id, anthropic_code_exec_container_id)
+        SELECT id, '{_LEGACY_UNSCOPED_SUBJECT}', title, model_type, model_id, pair_id,
+               archived, created_at, {oai}, {ant}
+        FROM chat_threads_pre_scoping
+        """
+    )
+    conn.execute("DROP TABLE chat_threads_pre_scoping")
+    conn.commit()
+
+
+def _migrate_chat_messages_for_subject_scoping(conn: sqlite3.Connection) -> None:
+    """Bring chat_messages to PRIMARY KEY (id, subject) with a composite FK
+    on (thread_id, subject). Idempotent."""
+    if not _table_exists(conn, "chat_messages"):
+        conn.execute(
+            """
+            CREATE TABLE chat_messages (
+                id TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                parent_id TEXT,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                attachments_json TEXT,
+                metadata_json TEXT,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (id, subject),
+                FOREIGN KEY (thread_id, subject)
+                    REFERENCES chat_threads(id, subject) ON DELETE CASCADE
+            )
+            """
+        )
+        return
+    if _table_has_subject_column(conn, "chat_messages"):
+        return
+    conn.execute("ALTER TABLE chat_messages RENAME TO chat_messages_pre_scoping")
+    conn.execute(
+        """
+        CREATE TABLE chat_messages (
+            id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            parent_id TEXT,
+            role TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            attachments_json TEXT,
+            metadata_json TEXT,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (id, subject),
+            FOREIGN KEY (thread_id, subject)
+                REFERENCES chat_threads(id, subject) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO chat_messages
+            (id, subject, thread_id, parent_id, role,
+             content_json, attachments_json, metadata_json, created_at)
+        SELECT id, '{_LEGACY_UNSCOPED_SUBJECT}', thread_id, parent_id, role,
+               content_json, attachments_json, metadata_json, created_at
+        FROM chat_messages_pre_scoping
+        """
+    )
+    conn.execute("DROP TABLE chat_messages_pre_scoping")
+    conn.commit()
+
+
+def _migrate_chat_settings_for_subject_scoping(conn: sqlite3.Connection) -> None:
+    """Bring chat_settings to PRIMARY KEY (subject, key). Idempotent."""
+    if not _table_exists(conn, "chat_settings"):
+        conn.execute(
+            """
+            CREATE TABLE chat_settings (
+                subject TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (subject, key)
+            )
+            """
+        )
+        return
+    if _table_has_subject_column(conn, "chat_settings"):
+        return
+    conn.execute("ALTER TABLE chat_settings RENAME TO chat_settings_pre_scoping")
+    conn.execute(
+        """
+        CREATE TABLE chat_settings (
+            subject TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (subject, key)
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO chat_settings (subject, key, value_json, updated_at)
+        SELECT '{_LEGACY_UNSCOPED_SUBJECT}', key, value_json, updated_at
+        FROM chat_settings_pre_scoping
+        """
+    )
+    conn.execute("DROP TABLE chat_settings_pre_scoping")
+    conn.commit()
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create tables and indexes if they don't exist. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -119,21 +298,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS chat_threads (
-            id TEXT NOT NULL PRIMARY KEY,
-            title TEXT NOT NULL,
-            model_type TEXT NOT NULL,
-            model_id TEXT,
-            pair_id TEXT,
-            archived INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            openai_code_exec_container_id TEXT,
-            anthropic_code_exec_container_id TEXT
-        )
-        """
-    )
+    # Subject scoping. Composite PRIMARY KEY (id, subject) so two
+    # subjects can independently use the same client-generated id without
+    # one stealing the other's row. Pre-existing rows claim the sentinel
+    # `__legacy_unscoped__` subject so single-user installs keep working.
+    _migrate_chat_threads_for_subject_scoping(conn)
+    _migrate_chat_messages_for_subject_scoping(conn)
+    _migrate_chat_settings_for_subject_scoping(conn)
+
     chat_thread_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
     }
@@ -146,36 +318,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
         )
     conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id TEXT NOT NULL PRIMARY KEY,
-            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
-            parent_id TEXT,
-            role TEXT NOT NULL,
-            content_json TEXT NOT NULL,
-            attachments_json TEXT,
-            metadata_json TEXT,
-            created_at INTEGER NOT NULL
-        )
-        """
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_subject_created_at ON chat_threads(subject, created_at)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_subject_model_type ON chat_threads(subject, model_type, created_at)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)"
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_subject_pair_id ON chat_threads(subject, pair_id)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS chat_settings (
-            key TEXT NOT NULL PRIMARY KEY,
-            value_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_subject_thread_created ON chat_messages(subject, thread_id, created_at)"
     )
 
 
@@ -679,15 +831,26 @@ def _chat_message_from_row(row: sqlite3.Row) -> dict:
     return message
 
 
-def upsert_chat_thread(thread: dict) -> dict:
+# Chat-history storage. Every public function requires `subject` so one
+# authenticated identity cannot read or mutate another's data. Routes
+# inject `subject` from `get_current_subject`; tests pass it explicitly.
+
+
+class ChatMessageThreadMismatch(Exception):
+    """Upsert would re-parent an existing message; route should map to 409."""
+
+
+def upsert_chat_thread(thread: dict, subject: str) -> dict:
     conn = get_connection()
     try:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
+                (id, subject, title, model_type, model_id, pair_id, archived,
+                 created_at, openai_code_exec_container_id,
+                 anthropic_code_exec_container_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id, subject) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
                 model_id = excluded.model_id,
@@ -699,6 +862,7 @@ def upsert_chat_thread(thread: dict) -> dict:
             """,
             (
                 thread["id"],
+                subject,
                 thread.get("title") or "New Chat",
                 thread["modelType"],
                 thread.get("modelId") or "",
@@ -710,12 +874,12 @@ def upsert_chat_thread(thread: dict) -> dict:
             ),
         )
         conn.commit()
-        return get_chat_thread(thread["id"]) or thread
+        return get_chat_thread(thread["id"], subject) or thread
     finally:
         conn.close()
 
 
-def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
+def update_chat_thread(id: str, patch: dict, subject: str) -> Optional[dict]:
     allowed = {
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
@@ -739,37 +903,45 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
             assignments.append(f"{column} = ?")
             values.append(value)
     if not assignments:
-        return get_chat_thread(id)
+        return get_chat_thread(id, subject)
 
     conn = get_connection()
     try:
         conn.execute(
-            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE id = ?",
-            (*values, id),
+            f"UPDATE chat_threads SET {', '.join(assignments)} "
+            "WHERE id = ? AND subject = ?",
+            (*values, id, subject),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM chat_threads WHERE id = ? AND subject = ?",
+            (id, subject),
+        ).fetchone()
         return _chat_thread_from_row(row) if row is not None else None
     finally:
         conn.close()
 
 
-def get_chat_thread(id: str) -> Optional[dict]:
+def get_chat_thread(id: str, subject: str) -> Optional[dict]:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM chat_threads WHERE id = ? AND subject = ?",
+            (id, subject),
+        ).fetchone()
         return _chat_thread_from_row(row) if row is not None else None
     finally:
         conn.close()
 
 
 def list_chat_threads(
+    subject: str,
     model_type: str | None = None,
     pair_id: str | None = None,
     include_archived: bool = True,
 ) -> list[dict]:
-    clauses = []
-    values: list[object] = []
+    clauses = ["subject = ?"]
+    values: list[object] = [subject]
     if model_type is not None:
         clauses.append("model_type = ?")
         values.append(model_type)
@@ -778,7 +950,7 @@ def list_chat_threads(
         values.append(pair_id)
     if not include_archived:
         clauses.append("archived = 0")
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    where = "WHERE " + " AND ".join(clauses)
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -790,53 +962,80 @@ def list_chat_threads(
         conn.close()
 
 
-def delete_chat_threads(ids: list[str]) -> None:
+def delete_chat_threads(ids: list[str], subject: str) -> int:
+    """Delete the named threads owned by `subject`. Returns the number of
+    rows actually removed; ids that don't belong to this subject are ignored."""
     if not ids:
-        return
+        return 0
     conn = get_connection()
     try:
-        conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
+        cursor = conn.cursor()
+        cursor.executemany(
+            "DELETE FROM chat_threads WHERE id = ? AND subject = ?",
+            [(thread_id, subject) for thread_id in ids],
+        )
         conn.commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
     finally:
         conn.close()
 
 
-def clear_chat_history() -> None:
+def clear_chat_history(subject: str) -> int:
+    """Delete every chat thread for `subject`. Returns row count for audit."""
     conn = get_connection()
     try:
-        conn.execute("DELETE FROM chat_threads")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM chat_threads WHERE subject = ?", (subject,))
         conn.commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
     finally:
         conn.close()
 
 
-def count_chat_threads() -> int:
+def count_chat_threads(subject: str) -> int:
     conn = get_connection()
     try:
-        return int(conn.execute("SELECT COUNT(*) FROM chat_threads").fetchone()[0])
+        row = conn.execute(
+            "SELECT COUNT(*) FROM chat_threads WHERE subject = ?", (subject,)
+        ).fetchone()
+        return int(row[0])
     finally:
         conn.close()
 
 
-def upsert_chat_message(message: dict) -> dict:
+def upsert_chat_message(message: dict, subject: str) -> dict:
+    """Insert or update a chat message under `subject`. Raises
+    ChatMessageThreadMismatch if the message id already exists under a
+    different thread for this subject (A2 hijack guard)."""
     conn = get_connection()
     try:
+        existing_thread = conn.execute(
+            "SELECT thread_id FROM chat_messages WHERE id = ? AND subject = ?",
+            (message["id"], subject),
+        ).fetchone()
+        if existing_thread is not None and existing_thread[0] != message["threadId"]:
+            raise ChatMessageThreadMismatch(
+                f"message {message['id']} already exists under thread "
+                f"{existing_thread[0]!r}; cannot re-parent to {message['threadId']!r}"
+            )
         conn.execute(
             """
             INSERT INTO chat_messages
-                (id, thread_id, parent_id, role, content_json, attachments_json, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                thread_id = excluded.thread_id,
+                (id, subject, thread_id, parent_id, role, content_json,
+                 attachments_json, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id, subject) DO UPDATE SET
                 parent_id = excluded.parent_id,
                 role = excluded.role,
                 content_json = excluded.content_json,
                 attachments_json = excluded.attachments_json,
                 metadata_json = excluded.metadata_json,
                 created_at = excluded.created_at
+            WHERE chat_messages.thread_id = excluded.thread_id
             """,
             (
                 message["id"],
+                subject,
                 message["threadId"],
                 message.get("parentId"),
                 message["role"],
@@ -859,30 +1058,63 @@ def upsert_chat_message(message: dict) -> dict:
 def sync_chat_messages(
     thread_id: str,
     messages: list[dict],
+    subject: str,
     prune_missing: bool = False,
 ) -> list[dict]:
+    """Bulk upsert messages into `thread_id`. Any message whose payload
+    threadId differs from `thread_id` is rejected with ChatMessageThreadMismatch
+    (A2 part 2). Pre-existing ids under a different thread (same subject) are
+    also rejected."""
+    for m in messages:
+        if m.get("threadId") not in (None, thread_id):
+            raise ChatMessageThreadMismatch(
+                f"message {m.get('id')!r} threadId={m.get('threadId')!r} "
+                f"does not match URL thread {thread_id!r}"
+            )
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        if messages:
+            placeholders = ",".join("?" for _ in messages)
+            existing = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    f"SELECT id, thread_id FROM chat_messages "
+                    f"WHERE subject = ? AND id IN ({placeholders})",
+                    (subject, *(m["id"] for m in messages)),
+                ).fetchall()
+            }
+            for m in messages:
+                prior = existing.get(m["id"])
+                if prior is not None and prior != thread_id:
+                    raise ChatMessageThreadMismatch(
+                        f"message {m['id']!r} already exists under thread "
+                        f"{prior!r}; cannot move to {thread_id!r}"
+                    )
         if prune_missing:
-            conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
+            conn.execute(
+                "DELETE FROM chat_messages WHERE thread_id = ? AND subject = ?",
+                (thread_id, subject),
+            )
         conn.executemany(
             """
             INSERT INTO chat_messages
-                (id, thread_id, parent_id, role, content_json, attachments_json, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                thread_id = excluded.thread_id,
+                (id, subject, thread_id, parent_id, role, content_json,
+                 attachments_json, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id, subject) DO UPDATE SET
                 parent_id = excluded.parent_id,
                 role = excluded.role,
                 content_json = excluded.content_json,
                 attachments_json = excluded.attachments_json,
                 metadata_json = excluded.metadata_json,
                 created_at = excluded.created_at
+            WHERE chat_messages.thread_id = excluded.thread_id
             """,
             [
                 (
                     m["id"],
+                    subject,
                     thread_id,
                     m.get("parentId"),
                     m["role"],
@@ -899,7 +1131,7 @@ def sync_chat_messages(
             ],
         )
         conn.commit()
-        return list_chat_messages(thread_id)
+        return list_chat_messages(thread_id, subject)
     except sqlite3.Error:
         logger.exception("Failed to sync chat messages for thread %s", thread_id)
         conn.rollback()
@@ -908,38 +1140,42 @@ def sync_chat_messages(
         conn.close()
 
 
-def list_chat_messages(thread_id: str) -> list[dict]:
+def list_chat_messages(thread_id: str, subject: str) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
             """
             SELECT * FROM chat_messages
-            WHERE thread_id = ?
+            WHERE thread_id = ? AND subject = ?
             ORDER BY created_at ASC, id ASC
             """,
-            (thread_id,),
+            (thread_id, subject),
         ).fetchall()
         return [_chat_message_from_row(row) for row in rows]
     finally:
         conn.close()
 
 
-def get_chat_message(thread_id: str, message_id: str) -> Optional[dict]:
+def get_chat_message(
+    thread_id: str, message_id: str, subject: str
+) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute(
             """
             SELECT * FROM chat_messages
-            WHERE thread_id = ? AND id = ?
+            WHERE thread_id = ? AND id = ? AND subject = ?
             """,
-            (thread_id, message_id),
+            (thread_id, message_id, subject),
         ).fetchone()
         return _chat_message_from_row(row) if row is not None else None
     finally:
         conn.close()
 
 
-def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
+def list_chat_messages_for_threads(
+    thread_ids: list[str], subject: str
+) -> list[dict]:
     if not thread_ids:
         return []
     unique_thread_ids = list(dict.fromkeys(thread_ids))
@@ -952,10 +1188,9 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             rows = conn.execute(
                 f"""
                 SELECT * FROM chat_messages
-                WHERE thread_id IN ({placeholders})
-                ORDER BY created_at ASC, id ASC
+                WHERE subject = ? AND thread_id IN ({placeholders})
                 """,
-                chunk,
+                (subject, *chunk),
             ).fetchall()
             messages.extend(_chat_message_from_row(row) for row in rows)
         return sorted(
@@ -966,11 +1201,13 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
         conn.close()
 
 
-def list_chat_settings() -> dict[str, Any]:
+def list_chat_settings(subject: str) -> dict[str, Any]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT key, value_json FROM chat_settings ORDER BY key"
+            "SELECT key, value_json FROM chat_settings "
+            "WHERE subject = ? ORDER BY key",
+            (subject,),
         ).fetchall()
         settings: dict[str, Any] = {}
         for row in rows:
@@ -980,23 +1217,80 @@ def list_chat_settings() -> dict[str, Any]:
         conn.close()
 
 
-def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+def upsert_chat_settings(
+    settings: dict[str, Any], subject: str
+) -> dict[str, Any]:
     if not settings:
-        return list_chat_settings()
+        return list_chat_settings(subject)
     conn = get_connection()
     try:
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """
-            INSERT INTO chat_settings (key, value_json, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
+            INSERT INTO chat_settings (subject, key, value_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(subject, key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
             """,
-            [(key, json.dumps(value), now) for key, value in settings.items()],
+            [
+                (subject, key, json.dumps(value), now)
+                for key, value in settings.items()
+            ],
         )
         conn.commit()
-        return list_chat_settings()
+        return list_chat_settings(subject)
+    finally:
+        conn.close()
+
+
+def _deep_merge_settings_inplace(
+    current: dict[str, Any], updates: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in updates.items():
+        current_value = merged.get(key)
+        if isinstance(current_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_settings_inplace(current_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def upsert_chat_settings_merge(
+    updates: dict[str, Any], subject: str
+) -> dict[str, Any]:
+    """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
+    cannot drop one another's updates."""
+    if not updates:
+        return list_chat_settings(subject)
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current_rows = conn.execute(
+            "SELECT key, value_json FROM chat_settings WHERE subject = ?",
+            (subject,),
+        ).fetchall()
+        current = {r["key"]: _json_loads(r["value_json"], None) for r in current_rows}
+        merged = _deep_merge_settings_inplace(current, updates)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO chat_settings (subject, key, value_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(subject, key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (subject, key, json.dumps(value), now)
+                for key, value in merged.items()
+            ],
+        )
+        conn.commit()
+        return merged
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

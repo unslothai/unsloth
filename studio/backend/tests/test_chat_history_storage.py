@@ -34,19 +34,21 @@ def _message(message_id: str, created_at: int, content: str) -> dict:
 
 def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_thread(_thread(), subject = "test-subject")
     studio_db.sync_chat_messages(
         "thread-1",
         [
             _message("msg-1", 1, "keep me"),
             _message("msg-2", 2, "old text"),
         ],
+        subject = "test-subject",
         prune_missing = True,
     )
 
     messages = studio_db.sync_chat_messages(
         "thread-1",
         [_message("msg-2", 2, "updated text")],
+        subject = "test-subject",
     )
 
     by_id = {message["id"]: message for message in messages}
@@ -56,18 +58,20 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
 
 def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_thread(_thread(), subject = "test-subject")
     studio_db.sync_chat_messages(
         "thread-1",
         [
             _message("msg-1", 1, "delete me"),
             _message("msg-2", 2, "keep me"),
         ],
+        subject = "test-subject",
     )
 
     messages = studio_db.sync_chat_messages(
         "thread-1",
         [_message("msg-2", 2, "keep me")],
+        subject = "test-subject",
         prune_missing = True,
     )
 
