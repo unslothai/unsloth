@@ -454,7 +454,13 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  if (autoLoadInflight) return autoLoadInflight;
+  // Pre-aborted callers bail before even creating a toast.
+  if (abortSignal?.aborted) {
+    return { loaded: false, blockedByTrustRemoteCode: false };
+  }
+  // Followers share the leader's cascade result but race against their own
+  // abortSignal so a cancelled stream isn't blocked on the leader.
+  if (autoLoadInflight) return awaitWithAbort(autoLoadInflight, abortSignal);
   const work = runAutoLoadCascade(abortSignal);
   autoLoadInflight = work;
   try {
@@ -464,10 +470,38 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
   }
 }
 
+function awaitWithAbort(
+  work: Promise<{ loaded: boolean; blockedByTrustRemoteCode: boolean }>,
+  signal?: AbortSignal,
+): Promise<{ loaded: boolean; blockedByTrustRemoteCode: boolean }> {
+  if (!signal) return work;
+  if (signal.aborted) {
+    return Promise.resolve({ loaded: false, blockedByTrustRemoteCode: false });
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () =>
+      resolve({ loaded: false, blockedByTrustRemoteCode: false });
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
 async function runAutoLoadCascade(abortSignal?: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  if (abortSignal?.aborted) {
+    return { loaded: false, blockedByTrustRemoteCode: false };
+  }
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
@@ -658,9 +692,13 @@ async function runAutoLoadCascade(abortSignal?: AbortSignal): Promise<{
       }
     }
 
+    if (abortSignal?.aborted) {
+      toast.dismiss(toastId);
+      return { loaded: false, blockedByTrustRemoteCode: false };
+    }
     // Cap also gates the default download so the total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    if (abortSignal?.aborted || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       toast.dismiss(toastId);
       return {
         loaded: false,
