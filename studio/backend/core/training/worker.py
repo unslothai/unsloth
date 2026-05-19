@@ -2264,6 +2264,29 @@ def run_training_process(
                     "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
 
+    # ── 1g. ROCm/CUDA OOM guard ──
+    # On RDNA 4 (gfx1200/gfx1201) and other ROCm GPUs, exhausting VRAM can
+    # cause a HIP driver hang that freezes the entire system rather than
+    # raising a Python exception.  set_per_process_memory_fraction caps the
+    # HIP/CUDA allocator at 90% of available VRAM so PyTorch raises
+    # OutOfMemoryError before hitting the hardware limit, giving the UI a
+    # clean error message instead of a system freeze.
+    # Non-fatal: if torch is not importable here (CPU-only path) the guard
+    # is silently skipped and the training path will handle it later.
+    if _hw.DEVICE == _hw.DeviceType.CUDA:
+        try:
+            import torch as _torch_mem
+
+            if _torch_mem.cuda.is_available():
+                _torch_mem.cuda.set_per_process_memory_fraction(0.90)
+                logger.info(
+                    "GPU OOM guard: set_per_process_memory_fraction(0.90) — "
+                    "HIP/CUDA allocator will raise OutOfMemoryError before "
+                    "hitting the hardware VRAM limit"
+                )
+        except Exception as _oom_guard_err:
+            logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
+
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
         _send_status(event_queue, "Importing Unsloth...")
@@ -2717,14 +2740,38 @@ def run_training_process(
             )
 
     except Exception as exc:
-        event_queue.put(
-            {
-                "type": "error",
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            }
+        _exc_str = str(exc).lower()
+        _is_oom = (
+            "out of memory" in _exc_str
+            or "hip out of memory" in _exc_str
+            or "cuda out of memory" in _exc_str
+            or type(exc).__name__ == "OutOfMemoryError"
         )
+        if _is_oom:
+            _oom_msg = (
+                "GPU ran out of VRAM during training.\n"
+                "To fix: reduce max_seq_length (e.g. 2048–4096), enable "
+                "gradient_checkpointing=True, lower per_device_train_batch_size, "
+                "or use a smaller model / higher quantization."
+            )
+            logger.error("Training stopped: GPU OOM — %s", exc)
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": _oom_msg,
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+        else:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
 
 
 def _send_status(event_queue: Any, message: str) -> None:
