@@ -67,7 +67,12 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_TOOLS_ENABLED_KEY,
+  loadOptionalBool,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
@@ -776,6 +781,13 @@ export function ChatPage(): ReactElement {
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
         provider?.providerType === "openai");
+    const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+    const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const nextToolsEnabled = supportsBuiltinWebSearch
+      ? isKimi
+        ? false
+        : (storedToolsEnabled ?? searchOnByDefault)
+      : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -801,8 +813,10 @@ export function ChatPage(): ReactElement {
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
-      toolsEnabled: searchOnByDefault,
-      codeToolsEnabled: false,
+      toolsEnabled: nextToolsEnabled,
+      codeToolsEnabled: supportsBuiltinCodeExecution
+        ? (storedCodeToolsEnabled ?? false)
+        : false,
     });
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -978,6 +992,15 @@ export function ChatPage(): ReactElement {
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
             selectedProvider?.providerType === "openai");
+        const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+        const storedCodeToolsEnabled = loadOptionalBool(
+          CHAT_CODE_TOOLS_ENABLED_KEY,
+        );
+        const nextToolsEnabled = supportsBuiltinWebSearch
+          ? isKimi
+            ? false
+            : (storedToolsEnabled ?? searchOnByDefault)
+          : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -1007,8 +1030,10 @@ export function ChatPage(): ReactElement {
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
-          toolsEnabled: searchOnByDefault,
-          codeToolsEnabled: false,
+          toolsEnabled: nextToolsEnabled,
+          codeToolsEnabled: supportsBuiltinCodeExecution
+            ? (storedCodeToolsEnabled ?? false)
+            : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
         return;
