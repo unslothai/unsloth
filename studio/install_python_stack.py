@@ -282,10 +282,21 @@ def _detect_windows_gfx_arch() -> str | None:
                 )
                 if result.returncode != 0:
                     continue
-                text = result.stdout.decode(errors = "replace").lower()
-                m = re.search(r"\bgfx[1-9][0-9a-z]{2,3}\b", text)
-                if m:
-                    return m.group(0)
+                text = result.stdout.decode(errors = "replace")
+                # Anchor on a labelled gfx line (e.g. "TARGET_GRAPHICS_VERSION: gfx1151"
+                # or "Arch:  gfx1151") to avoid catching stray gfx mentions in
+                # warnings or device-name strings. Fall back to a bare token match
+                # only if no labelled line is found.
+                m = re.search(
+                    r"(?im)^\s*(?:target_graphics_version|gfx|arch|asic)\b[^:\r\n]*:\s*(gfx[1-9][0-9a-z]{2,3})\b",
+                    text,
+                )
+                if not m:
+                    m = re.search(r"\bgfx[1-9][0-9a-z]{2,3}\b", text.lower())
+                    if m:
+                        return m.group(0)
+                    continue
+                return m.group(1).lower()
             except Exception:
                 continue
     return None
@@ -610,42 +621,44 @@ def _ensure_rocm_torch() -> None:
 
     rocm_torch_ready = has_hip_torch
 
-    # Strix Halo (gfx1151) segfaults under ROCm 7.1 due to a ROCm driver bug
-    # fixed in ROCm 7.2.  Warn early so users know why training may crash.
+    # Strix Halo / Strix Point (gfx1151 / gfx1150) segfault under ROCm 7.1
+    # in torch._grouped_mm. AMD's per-gfx repo ships torch 2.11.0+rocm7.13.0
+    # with the real fix, so route those hosts there instead of the generic
+    # pytorch.org rocm7.1 wheel. Mirrors install.sh's Strix override.
+    _strix_override_url: "str | None" = None
+    _strix_override_pkgs: "tuple[str, str, str] | None" = None
     if ver < (7, 2):
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150"}
-        if _strix_gfx.intersection(gfx_codes):
-            _gfx_str = ", ".join(sorted(_strix_gfx.intersection(gfx_codes)))
+        _detected_strix = _strix_gfx.intersection(gfx_codes)
+        if _detected_strix:
+            _gfx_str = ", ".join(sorted(_detected_strix))
+            _selected_gfx = sorted(_detected_strix)[0]
+            _amd_mirror = (
+                os.environ.get("UNSLOTH_AMD_ROCM_MIRROR")
+                or "https://repo.amd.com/rocm/whl"
+            ).rstrip("/")
+            _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
+            _strix_override_pkgs = (
+                "torch>=2.11.0,<2.12.0",
+                "torchvision",
+                "torchaudio",
+            )
             print(
-                f"\n   ⚠️  {_gfx_str} (AMD Strix Halo) detected with ROCm {ver[0]}.{ver[1]}.\n"
-                f"   ROCm 7.1 has a known segfault on this GPU when tensors are\n"
-                f"   moved to the GPU.  Upgrade to ROCm 7.2+ to enable training.\n"
+                f"\n   ⚠️  {_gfx_str} (AMD Strix) detected with ROCm {ver[0]}.{ver[1]}.\n"
+                f"   ROCm 7.1 has a known _grouped_mm segfault on this GPU;\n"
+                f"   routing torch install to AMD's arch-specific index\n"
+                f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
+                f"   with the upstream fix.\n"
             )
 
     if not has_hip_torch:
-        # Select best matching wheel tag (newest ROCm version <= installed)
-        tag = next(
-            (
-                t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                if ver >= (maj, mn)
-            ),
-            None,
-        )
-        if tag is None:
-            print(
-                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- "
-                f"skipping torch reinstall"
-            )
-        else:
-            index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
-            _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
-                tag, _ROCM_TORCH_PKG_SPECS["_default"]
-            )
+        if _strix_override_url is not None and _strix_override_pkgs is not None:
+            index_url = _strix_override_url
+            _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
+            print(f"   Strix ROCm 7.1 override -- installing torch from {index_url}")
             pip_install(
-                f"ROCm torch ({tag})",
+                "ROCm torch (Strix arch-specific)",
                 "--force-reinstall",
                 "--no-cache-dir",
                 _torch_pkg,
@@ -656,6 +669,39 @@ def _ensure_rocm_torch() -> None:
                 constrain = False,
             )
             rocm_torch_ready = True
+        else:
+            # Select best matching wheel tag (newest ROCm version <= installed)
+            tag = next(
+                (
+                    t
+                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                    if ver >= (maj, mn)
+                ),
+                None,
+            )
+            if tag is None:
+                print(
+                    f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- "
+                    f"skipping torch reinstall"
+                )
+            else:
+                index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+                print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
+                    tag, _ROCM_TORCH_PKG_SPECS["_default"]
+                )
+                pip_install(
+                    f"ROCm torch ({tag})",
+                    "--force-reinstall",
+                    "--no-cache-dir",
+                    _torch_pkg,
+                    _vision_pkg,
+                    _audio_pkg,
+                    "--index-url",
+                    index_url,
+                    constrain = False,
+                )
+                rocm_torch_ready = True
 
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix) and falls

@@ -792,7 +792,7 @@ if (-not $HasNvidiaSmi) {
             $nameArchTable = @(
                 @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
                 @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
-                @{ P = "890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";        A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo)
+                @{ P = "8060S|890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";  A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo / Radeon 8060S retail)
                 @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" } # RDNA 3.5 iGPU (Strix Point)
                 @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                       A = "gfx1100" }  # RDNA 3 desktop
                 @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
