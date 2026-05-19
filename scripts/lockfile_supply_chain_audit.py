@@ -412,7 +412,20 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
         )
         return findings
 
-    raw = path.read_text(encoding = "utf-8")
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        # Permission denied, is-a-directory, broken-pipe etc. -- surface
+        # as a finding instead of crashing CI with a raw traceback.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
     try:
         lock = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -580,7 +593,18 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         )
         return findings
 
-    raw = path.read_text(encoding = "utf-8")
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
     try:
         import tomllib  # type: ignore[import-not-found]
     except ImportError:
