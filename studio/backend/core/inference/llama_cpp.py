@@ -56,6 +56,22 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 
+# Token-budget guard for the agentic loop.  Without it, the tool loop
+# happily appends tool results until llama-server returns "request
+# (N tokens) exceeds the available context size" and the whole turn
+# dead-ends as a red banner with no answer (see issue #5562).  When the
+# estimated next prompt exceeds this fraction of the effective context
+# window, the loop breaks early and the existing post-loop synthesis
+# pass produces a final answer from whatever was already gathered.
+# 0.85 leaves ~15% headroom for the final non-tool generation.
+_CONTEXT_BUDGET_RATIO = 0.85
+# Conservative chars-per-token average across English + JSON tool
+# payloads, used only for the budget heuristic above.  /v1/tokenize
+# would be exact but adds a synchronous round-trip per iteration;
+# overestimating (early break) is safer than underestimating
+# (llama-server error).
+_CHARS_PER_TOKEN_ESTIMATE = 3.5
+
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
 # fails. t_max_predict_ms is a wall-clock backstop applied unconditionally,
@@ -75,6 +91,29 @@ _REPROMPT_MAX_CHARS = 2000
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+
+
+def _estimate_conversation_tokens(
+    messages: list[dict],
+    tools: Optional[list] = None,
+) -> int:
+    """Cheap char-based token estimate for the agentic-loop budget guard.
+
+    Sums JSON-serialized message and tool payloads and divides by a
+    conservative chars-per-token average.  Used only to decide whether
+    the next tool round-trip would push the prompt past the context
+    window -- it does not need to be exact, just in the right ballpark.
+    """
+    try:
+        body = json.dumps(messages, ensure_ascii = False)
+    except (TypeError, ValueError):
+        body = "".join(str(m) for m in messages)
+    if tools:
+        try:
+            body += json.dumps(tools, ensure_ascii = False)
+        except (TypeError, ValueError):
+            body += str(tools)
+    return int(len(body) / _CHARS_PER_TOKEN_ESTIMATE)
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -4025,9 +4064,44 @@ class LlamaCppBackend:
         # consume the caller's tool-call budget.  Only add the
         # extra slot when tool iterations are actually allowed.
         _extra = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+        # Set when the loop breaks because the conversation got too
+        # close to the context cap; switches the post-loop nudge from
+        # "all tool calls used" to "context budget reached" so the
+        # synthesized answer is framed correctly.
+        _budget_exhausted = False
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
+
+            # ── Token-budget guard ─────────────────────────────────
+            # Skip on iteration 0 -- the initial prompt is the user's
+            # baseline and we always give the model at least one shot.
+            # From iteration 1 onward, if accumulated tool results have
+            # pushed the projected next prompt past the budget, break
+            # early and let the post-loop pass produce a synthesized
+            # answer rather than letting llama-server return "request
+            # exceeds context size".  See issue #5562.
+            if iteration > 0 and self._effective_context_length:
+                _projected_tokens = _estimate_conversation_tokens(conversation, tools)
+                _budget_tokens = int(
+                    _CONTEXT_BUDGET_RATIO * self._effective_context_length
+                )
+                if _projected_tokens > _budget_tokens:
+                    logger.info(
+                        "Agentic loop: context budget reached "
+                        f"(~{_projected_tokens} of {_budget_tokens} "
+                        f"budgeted, n_ctx={self._effective_context_length}) "
+                        f"after iteration {iteration}; synthesizing final answer."
+                    )
+                    yield {
+                        "type": "status",
+                        "text": (
+                            "Context budget reached; synthesizing final "
+                            "answer from gathered context..."
+                        ),
+                    }
+                    _budget_exhausted = True
+                    break
 
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
@@ -4674,19 +4748,28 @@ class LlamaCppBackend:
                     return
                 raise
 
-        # ── Tool iteration cap reached -- synthesize final answer ──
-        # The model used all iterations without producing a final text
-        # response. Inject a nudge so the final streaming pass produces
-        # a useful answer instead of continuing to request tools.
+        # ── Loop exit -- synthesize final answer ──
+        # The model either used all iterations or the context-budget
+        # guard tripped.  Either way, inject a nudge so the final
+        # streaming pass produces a useful answer instead of
+        # continuing to request tools.
         if max_tool_iterations > 0:
+            if _budget_exhausted:
+                _final_nudge = (
+                    "The conversation has reached its context budget. "
+                    "Based on everything you have found so far, provide "
+                    "your final answer now. Do not call any more tools."
+                )
+            else:
+                _final_nudge = (
+                    "You have used all available tool calls. Based on "
+                    "everything you have found so far, provide your final "
+                    "answer now. Do not call any more tools."
+                )
             conversation.append(
                 {
                     "role": "user",
-                    "content": (
-                        "You have used all available tool calls. Based on "
-                        "everything you have found so far, provide your final "
-                        "answer now. Do not call any more tools."
-                    ),
+                    "content": _final_nudge,
                 }
             )
 
