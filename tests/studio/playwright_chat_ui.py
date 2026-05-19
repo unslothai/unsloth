@@ -993,13 +993,35 @@ with sync_playwright() as p:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem missing")
                 break
-            try:
-                theme_item.click(force = True)
-            except Exception as exc:
+            # Click sequence with two fallbacks. On small CI viewports the
+            # Radix dropdown can render the theme item below the visible
+            # area; force=True still requires the element to be in the
+            # viewport, so the regular .click() fails with "Element is
+            # outside of the viewport". Fall back to scroll-into-view +
+            # click, then to a synthetic .click() via evaluate() that
+            # bypasses Playwright's viewport check entirely (Radix's
+            # menuitem handler only needs the click event, not a real
+            # pointer landing on a pixel).
+            click_err = None
+            for click_attempt in range(3):
+                try:
+                    if click_attempt == 0:
+                        theme_item.click(force = True, timeout = 3_000)
+                    elif click_attempt == 1:
+                        theme_item.scroll_into_view_if_needed(timeout = 2_000)
+                        theme_item.click(force = True, timeout = 3_000)
+                    else:
+                        theme_item.evaluate("el => el.click()")
+                    click_err = None
+                    break
+                except Exception as exc:
+                    click_err = exc
+                    page.wait_for_timeout(200)
+            if click_err is not None:
                 page.keyboard.press("Escape")
                 soft_fail(
                     f"theme cycle {cycle + 1}: theme menuitem click failed "
-                    f"({exc!r})"
+                    f"({click_err!r})"
                 )
                 break
             # Settle. The ".dark" class on <html> is the ground
