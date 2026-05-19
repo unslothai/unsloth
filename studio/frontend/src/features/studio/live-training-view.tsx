@@ -130,6 +130,7 @@ export function LiveTrainingView(): ReactElement {
       selectedModel: state.selectedModel,
       trainingMethod: state.trainingMethod,
       enableActivationCapture: state.enableActivationCapture,
+      dataset: state.dataset,
     })),
   );
 
@@ -151,6 +152,7 @@ export function LiveTrainingView(): ReactElement {
     error: runtime.error,
     isTrainingRunning: runtime.isTrainingRunning,
     modelName: config.selectedModel ?? "",
+    datasetName: config.dataset ?? null,
     trainingMethod: config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,

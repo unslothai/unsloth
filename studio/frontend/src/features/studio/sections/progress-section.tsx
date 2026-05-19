@@ -283,6 +283,11 @@ export function ProgressSection({
             <MetricStat label="Model" valueClassName="truncate" title={data.modelName || "--"}>
               {data.modelName || "--"}
             </MetricStat>
+            {data.datasetName && (
+              <MetricStat label="Dataset" valueClassName="truncate" title={data.datasetName}>
+                {data.datasetName}
+              </MetricStat>
+            )}
             <MetricStat label="Method">
               {trainingMethodLabel}
             </MetricStat>
