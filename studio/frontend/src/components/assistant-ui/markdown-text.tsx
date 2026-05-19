@@ -14,7 +14,7 @@ import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown } from "streamdown";
+import { Block, type BlockProps, Streamdown, type UrlTransform } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -427,6 +427,19 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
   return text;
 }
 
+const safeImageUrl: UrlTransform = (url, _key, node) => {
+  // Only restrict image src; leave link hrefs and other attributes alone.
+  if (node.tagName !== "img") return url;
+  // Trim whitespace first — a leading space or newline would otherwise let
+  // " //attacker.com/pixel" bypass the protocol-relative guard below.
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return trimmed;
+  if (trimmed.startsWith("//")) return null;
+  if (!trimmed.includes(":")) return trimmed;
+  return null;
+};
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
   const displayText = useRafCoalescedText(text, status.type === "running");
@@ -447,6 +460,7 @@ const MarkdownTextImpl = () => {
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
+        urlTransform={safeImageUrl}
         controls={{
           code: false,
           mermaid: {
