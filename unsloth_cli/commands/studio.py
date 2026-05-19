@@ -1086,6 +1086,7 @@ def _print_windows_exe_lock_hint_if_relevant() -> None:
         f'    {sys.executable} -c "from unsloth_cli import app; '
         "app(['studio', 'update'])\""
     )
+    typer.echo("(append '--local' inside the list if you installed from a checkout)")
 
 
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
@@ -1171,26 +1172,37 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
         marker_args = " ".join(args)
         wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
-        argv = list(ps_argv)
-        argv.extend(["-ExecutionPolicy", "Bypass", "-Command", "-"])
+
+        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
+        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
+        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
+        # in install.ps1. -File reads the BOM and decodes correctly.
+        ps1_fd, ps1_path = tempfile.mkstemp(suffix = ".ps1")
         try:
-            # encoding="utf-8" so box-drawing chars in the script body don't
-            # raise UnicodeEncodeError on CP1252-locale Windows boxes.
-            result = subprocess.run(
-                argv,
-                input = wrapper,
-                text = True,
-                encoding = "utf-8",
-                env = env,
-                check = False,
-                **_windows_hidden_subprocess_kwargs(),
-            )
-            if result.returncode != 0:
-                typer.echo(
-                    f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
+            argv = list(ps_argv)
+            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
+            try:
+                result = subprocess.run(
+                    argv,
+                    env = env,
+                    check = False,
+                    **_windows_hidden_subprocess_kwargs(),
                 )
-        except OSError as exc:
-            typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
+                    )
+            except OSError as exc:
+                typer.echo(
+                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
+                )
+        finally:
+            try:
+                os.unlink(ps1_path)
+            except OSError:
+                pass
         return
 
     for script in candidates:
@@ -1305,19 +1317,16 @@ def _release_self_exe_lock_windows() -> None:
         return
     stale = exe.with_suffix(".exe.deleteme")
     try:
-        if stale.exists():
-            stale.unlink()
-    except OSError:
-        pass
-    try:
-        exe.rename(stale)
+        # os.replace is atomic-overwrite on Windows; os.rename would raise
+        # FileExistsError if a prior aborted update left a .deleteme behind.
+        os.replace(exe, stale)
     except OSError as e:
         # Not fatal; setup.ps1 retries from a sibling process.
         print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
 
 
 def _restore_self_exe_lock_windows() -> None:
-    """If setup failed before pip wrote a new unsloth.exe, restore .deleteme."""
+    """If setup failed before pip wrote a working unsloth.exe, restore .deleteme."""
     if platform.system() != "Windows":
         return
     try:
@@ -1326,10 +1335,18 @@ def _restore_self_exe_lock_windows() -> None:
         return
     exe = venv_scripts / "unsloth.exe"
     stale = exe.with_suffix(".exe.deleteme")
-    if exe.exists() or not stale.exists():
+    if not stale.exists():
         return
+    # Treat a missing or zero-byte exe as "pip didn't produce a usable
+    # replacement"; otherwise leave the new binary alone.
+    if exe.exists():
+        try:
+            if exe.stat().st_size > 0:
+                return
+        except OSError:
+            return
     try:
-        stale.rename(exe)
+        os.replace(stale, exe)
     except OSError as e:
         print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
 
