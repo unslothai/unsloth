@@ -4252,7 +4252,17 @@ async def openai_responses(
                 prompt = _monitor_prompt_from_messages(messages),
                 context_length = _monitor_context_length(),
             )
-        return await _responses_stream(payload, messages, request, monitor_id)
+        try:
+            return await _responses_stream(payload, messages, request, monitor_id)
+        except HTTPException as exc:
+            detail = exc.detail
+            if not isinstance(detail, str):
+                detail = json.dumps(detail, default = str)
+            api_monitor.fail(monitor_id, detail)
+            raise
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            raise
     return await _responses_non_streaming(payload, messages, request)
 
 
