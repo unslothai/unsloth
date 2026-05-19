@@ -439,8 +439,32 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+// /validate is cheaper but a long trust-blocked cache still produces one POST
+// per repo; cap that path separately so the cascade is fully bounded.
+const MAX_AUTO_VALIDATE_ATTEMPTS = 10;
 
-async function autoLoadSmallestModel(): Promise<{
+// Singleflight handle: concurrent sends arriving while a cascade is in
+// flight share its result instead of fanning out another /load budget.
+let autoLoadInflight: Promise<{
+  loaded: boolean;
+  blockedByTrustRemoteCode: boolean;
+}> | null = null;
+
+async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
+  loaded: boolean;
+  blockedByTrustRemoteCode: boolean;
+}> {
+  if (autoLoadInflight) return autoLoadInflight;
+  const work = runAutoLoadCascade(abortSignal);
+  autoLoadInflight = work;
+  try {
+    return await work;
+  } finally {
+    autoLoadInflight = null;
+  }
+}
+
+async function runAutoLoadCascade(abortSignal?: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
@@ -455,6 +479,7 @@ async function autoLoadSmallestModel(): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  let validateAttempts = 0;
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -462,6 +487,8 @@ async function autoLoadSmallestModel(): Promise<{
     is_lora: boolean;
     gguf_variant?: string | null;
   }): Promise<boolean> {
+    if (validateAttempts >= MAX_AUTO_VALIDATE_ATTEMPTS) return false;
+    validateAttempts += 1;
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
@@ -480,11 +507,17 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
 
+    if (abortSignal?.aborted) {
+      toast.dismiss(toastId);
+      return { loaded: false, blockedByTrustRemoteCode: false };
+    }
+
     // Try GGUF first: pick the repo with the smallest total size,
     // then pick its smallest downloaded variant.
     if (ggufRepos.length > 0) {
       const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
+        if (abortSignal?.aborted) break;
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
           const variants = await listGgufVariants(repo.repo_id);
@@ -566,6 +599,7 @@ async function autoLoadSmallestModel(): Promise<{
     if (modelRepos.length > 0) {
       const sorted = [...modelRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
+        if (abortSignal?.aborted) break;
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
           if (
@@ -626,7 +660,7 @@ async function autoLoadSmallestModel(): Promise<{
 
     // Cap also gates the default download so the total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (abortSignal?.aborted || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       toast.dismiss(toastId);
       return {
         loaded: false,
@@ -736,7 +770,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       if (!useChatRuntimeStore.getState().params.checkpoint) {
         // Auto-load the smallest downloaded model
         const { loaded, blockedByTrustRemoteCode } =
-          await autoLoadSmallestModel();
+          await autoLoadSmallestModel(abortSignal);
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
