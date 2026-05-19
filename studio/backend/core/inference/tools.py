@@ -271,26 +271,27 @@ def _find_sensitive_paths(command: str) -> set[str]:
     if not command:
         return set()
 
-    # Tokenize once: powers both the dequoted scan target and the
-    # nested-shell recursion below. shlex matches the platform default.
+    # Pre-normalise backslashes so the POSIX shlex below does not treat
+    # ``C:\Users\alice`` as containing escape sequences (POSIX shlex
+    # would otherwise collapse it to ``C:Usersalice`` and lose the path
+    # structure). Both projections feed the regex scan.
+    normalized = command.replace("\\", "/") if "\\" in command else command
+
+    # Always use POSIX shlex for the dequote reconstruction regardless of
+    # host OS: the threat model is shell-quote splicing (``cat /etc/sha''dow``,
+    # ``bash -c "cat ~/'.ssh/id_rsa'"``) which is POSIX syntax. Running
+    # non-POSIX shlex on Windows leaves the splice quotes intact and the
+    # bypass slips through.
     try:
-        if sys.platform == "win32":
-            tokens = shlex.split(command, posix = False)
-        else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
+        lexer = shlex.shlex(normalized, posix = True, punctuation_chars = ";&|()`")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except ValueError:
-        tokens = command.split()
+        tokens = normalized.split()
 
     scan_targets = [command]
-    # Windows path normalisation: regex uses forward slashes so
-    # ``C:\Users\alice\.ssh\id_rsa`` and ``%USERPROFILE%\.aws\credentials``
-    # have to be presented in normalized form to match.
-    if "\\" in command:
-        scan_targets.append(command.replace("\\", "/"))
-    # Shlex-dequoted reconstruction: collapses ``cat /etc/sha''dow`` into
-    # ``cat /etc/shadow`` so quote splicing cannot hide a sensitive token.
+    if normalized is not command:
+        scan_targets.append(normalized)
     if tokens:
         scan_targets.append(" ".join(tokens))
 
