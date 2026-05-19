@@ -2625,17 +2625,31 @@ class LlamaCppBackend:
 
                     # Will MTP engage on this load? If so, the auto-fit
                     # budget needs to reserve extra VRAM for the draft
-                    # model's KV cache + compute graph.
-                    _normalized_spec = (
-                        speculative_type.lower().strip() if speculative_type else None
+                    # model's KV cache + compute graph. Mirrors the
+                    # canonical-mode resolver in _build_speculative_flags:
+                    # forced mtp / mtp+ngram always engage; auto only
+                    # engages on an MTP GGUF >= 3B (sub-3B auto falls
+                    # back to ngram-mod which doesn't need headroom);
+                    # ngram / ngram-simple / off never engage MTP.
+                    _mtp_canonical = _canonicalize_spec_mode(speculative_type)
+                    _mtp_effective = _mtp_canonical or "auto"
+                    _mtp_size_for_fit = _extract_model_size_b(model_identifier)
+                    _mtp_sub_3b_for_fit = (
+                        _mtp_size_for_fit is not None and _mtp_size_for_fit < 3.0
                     )
                     _mtp_will_engage = bool(
-                        (
-                            bool(self._nextn_predict_layers)
-                            or _is_mtp_model_name(model_identifier, model_path)
+                        not _extra_args_set_spec_type(extra_args)
+                        and (
+                            _mtp_effective in ("mtp", "mtp+ngram")
+                            or (
+                                _mtp_effective == "auto"
+                                and (
+                                    bool(self._nextn_predict_layers)
+                                    or _is_mtp_model_name(model_identifier, model_path)
+                                )
+                                and not _mtp_sub_3b_for_fit
+                            )
                         )
-                        and _normalized_spec not in {"off"}
-                        and not _extra_args_set_spec_type(extra_args)
                     )
 
                     # Auto-cap context to fit in GPU VRAM and select GPUs.
