@@ -674,6 +674,14 @@ class TestGgufVisionMessages:
         assert len(messages[2]["content"]) == 2
         assert isinstance(messages[1]["content"], str)
 
+        # Legacy top-level image_base64 must be ignored when any message-level
+        # image already exists; otherwise turn 2 ends up with two image parts.
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                image_parts = [p for p in content if p.get("type") == "image_url"]
+                assert len(image_parts) == 1, msg
+
     def test_legacy_image_base64_is_injected_when_messages_are_text_only(self):
         req = ChatCompletionRequest(
             model = "default",

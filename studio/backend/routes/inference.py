@@ -4744,10 +4744,12 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
         for msg in messages
     )
     if payload.image_base64 and not has_message_image:
+        # Legacy bytes can be any format; the normalizer below sniffs and
+        # re-encodes to PNG, so the declared mime is rewritten anyway.
         image_part = {
             "type": "image_url",
             "image_url": {
-                "url": f"data:image/unknown;base64,{payload.image_base64}",
+                "url": f"data:image/png;base64,{payload.image_base64}",
             },
         }
         for msg in reversed(messages):
