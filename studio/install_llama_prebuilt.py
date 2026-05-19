@@ -129,7 +129,7 @@ def _lemonade_release_api_for(llama_tag: str) -> str:
         return LEMONADE_ROCM_RELEASES_API
     return (
         f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/"
-        f"{urllib.parse.quote(normalized, safe='')}"
+        f"{urllib.parse.quote(normalized, safe = '')}"
     )
 
 
@@ -3445,7 +3445,11 @@ def resolve_lemonade_rocm_choice(
     # Opt-out for users who want the upstream HIP build path only -- lemonade
     # binaries are downloaded without entries in the approved-hash manifest, so
     # the integrity gate is functional validation only.
-    if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
         log("UNSLOTH_DISABLE_LEMONADE_ROCM is set; skipping lemonade-sdk prebuilt")
         return None
     gfx_family = _lemonade_gfx_family(host.rocm_gfx_target)
@@ -4162,18 +4166,20 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             # globs (empty matches = no-op). Both paths therefore stay
             # correct; lemonade users get the bundled runtime overlaid into
             # ~/.unsloth/llama.cpp where llama-server's RPATH can find it.
-            patterns.extend([
-                "libamdhip64.so*",
-                "libhsa-runtime64.so*",
-                "libhipblas.so*",
-                "libhipblaslt.so*",
-                "librocblas.so*",
-                "librocsolver.so*",
-                "librocsparse.so*",
-                "librocrand.so*",
-                "libMIOpen.so*",
-                "libmagma.so*",
-            ])
+            patterns.extend(
+                [
+                    "libamdhip64.so*",
+                    "libhsa-runtime64.so*",
+                    "libhipblas.so*",
+                    "libhipblaslt.so*",
+                    "librocblas.so*",
+                    "librocsolver.so*",
+                    "librocsparse.so*",
+                    "librocrand.so*",
+                    "libMIOpen.so*",
+                    "libmagma.so*",
+                ]
+            )
         return patterns
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]

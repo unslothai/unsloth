@@ -275,7 +275,7 @@ def test_lemonade_resolver_skipped_by_opt_out_env(monkeypatch):
     """UNSLOTH_DISABLE_LEMONADE_ROCM=1 must short-circuit the resolver."""
     monkeypatch.setenv("UNSLOTH_DISABLE_LEMONADE_ROCM", "1")
     host = _make_rocm_host("gfx1151")
-    res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
+    res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
@@ -293,17 +293,24 @@ def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
         ],
     }
     host = _make_rocm_host("gfx1151")
-    with patch.object(_mod, "fetch_json", return_value=bad_release):
-        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
+    with patch.object(_mod, "fetch_json", return_value = bad_release):
+        res = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = "latest"
+        )
     assert res is None
 
 
 def test_lemonade_resolver_rejects_http_scheme():
-    assert not _mod._is_trusted_github_release_url("http://github.com/lemonade-sdk/llamacpp-rocm/releases/download/x/y.zip", "lemonade-sdk/llamacpp-rocm")
+    assert not _mod._is_trusted_github_release_url(
+        "http://github.com/lemonade-sdk/llamacpp-rocm/releases/download/x/y.zip",
+        "lemonade-sdk/llamacpp-rocm",
+    )
 
 
 def test_lemonade_resolver_accepts_github_cdn():
-    assert _mod._is_trusted_github_release_url("https://objects.githubusercontent.com/abc/def", "lemonade-sdk/llamacpp-rocm")
+    assert _mod._is_trusted_github_release_url(
+        "https://objects.githubusercontent.com/abc/def", "lemonade-sdk/llamacpp-rocm"
+    )
 
 
 def test_lemonade_resolver_accepts_release_path():
@@ -331,21 +338,30 @@ def test_lemonade_resolver_rejects_empty_browser_download_url():
         ],
     }
     host = _make_rocm_host("gfx1151")
-    with patch.object(_mod, "fetch_json", return_value=release):
-        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
+    with patch.object(_mod, "fetch_json", return_value = release):
+        res = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = "latest"
+        )
     assert res is None
 
 
 def test_lemonade_runtime_patterns_include_hip_runtime():
     """Lemonade ZIPs bundle libamdhip64.so etc; runtime overlay must catch them."""
     from install_llama_prebuilt import runtime_patterns_for_choice, AssetChoice
+
     choice = AssetChoice(
-        repo="lemonade-sdk/llamacpp-rocm", tag="b1262",
-        name="llama-b1262-ubuntu-rocm-gfx1151-x64.zip",
-        url="https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1262/x.zip",
-        source_label="lemonade", install_kind="linux-rocm",
+        repo = "lemonade-sdk/llamacpp-rocm",
+        tag = "b1262",
+        name = "llama-b1262-ubuntu-rocm-gfx1151-x64.zip",
+        url = "https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1262/x.zip",
+        source_label = "lemonade",
+        install_kind = "linux-rocm",
     )
     pats = runtime_patterns_for_choice(choice)
-    for needed in ("libamdhip64.so*", "libhsa-runtime64.so*", "libhipblas.so*", "librocblas.so*"):
+    for needed in (
+        "libamdhip64.so*",
+        "libhsa-runtime64.so*",
+        "libhipblas.so*",
+        "librocblas.so*",
+    ):
         assert needed in pats, f"missing {needed!r} in {pats}"
-
