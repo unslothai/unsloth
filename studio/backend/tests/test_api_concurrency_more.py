@@ -353,9 +353,7 @@ async def test_reject_burst_invariant():
         await held.wait()
         await send({"type": "http.response.body", "body": b"ok", "more_body": False})
 
-    mw = InferenceConcurrencyMiddleware(
-        inner, max_concurrency = 1, queue_policy = "reject"
-    )
+    mw = InferenceConcurrencyMiddleware(inner, max_concurrency = 1, queue_policy = "reject")
     holder = asyncio.create_task(_call_asgi(mw))
     await asyncio.sleep(0.05)
     rejected = await asyncio.gather(*[_call_asgi(mw) for _ in range(9)])
@@ -375,9 +373,7 @@ async def test_reject_429_response_shape():
         await held.wait()
         await send({"type": "http.response.body", "body": b"ok", "more_body": False})
 
-    mw = InferenceConcurrencyMiddleware(
-        inner, max_concurrency = 1, queue_policy = "reject"
-    )
+    mw = InferenceConcurrencyMiddleware(inner, max_concurrency = 1, queue_policy = "reject")
     holder = asyncio.create_task(_call_asgi(mw))
     await asyncio.sleep(0.05)
     r = await _call_asgi(mw)
@@ -416,9 +412,7 @@ async def test_wait_policy_allows_up_to_max():
         async with lock:
             in_flight -= 1
 
-    mw = InferenceConcurrencyMiddleware(
-        inner, max_concurrency = 3, queue_policy = "wait"
-    )
+    mw = InferenceConcurrencyMiddleware(inner, max_concurrency = 3, queue_policy = "wait")
     results = await asyncio.gather(*[_call_asgi(mw) for _ in range(8)])
     assert all(r["status"] == 200 for r in results)
     assert peak == 3, f"expected peak=3 under max=3, got {peak}"
@@ -436,7 +430,9 @@ def main_module():
     return _main
 
 
-def _build_chat_app(main_module, *, max_concurrency: int, queue_policy: str, max_body: int):
+def _build_chat_app(
+    main_module, *, max_concurrency: int, queue_policy: str, max_body: int
+):
     """Mirror the production middleware registration order from main.py with a
     minimal /v1/chat/completions and /api/inference/load route."""
     from fastapi import FastAPI
@@ -576,9 +572,9 @@ async def test_413_does_not_hold_concurrency_slot(main_module):
     status = next(m["status"] for m in sent if m["type"] == "http.response.start")
     assert status == 413
     assert inner_calls["count"] == 0, "413 must short-circuit before the inner app"
-    assert peak_active["value"] == 0, (
-        f"413 path must never acquire a concurrency slot; peak={peak_active['value']}"
-    )
+    assert (
+        peak_active["value"] == 0
+    ), f"413 path must never acquire a concurrency slot; peak={peak_active['value']}"
 
 
 @pytest.mark.asyncio
