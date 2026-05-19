@@ -1156,6 +1156,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    model_random_state = config.get("model_random_state", 3407)
+    lora_random_state = config.get("lora_random_state", 3407)
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit = config.get("load_in_4bit", True),
@@ -1163,7 +1165,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         text_only = None if is_dataset_image else True,
         token = hf_token,
         trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = config.get("random_seed", 3407),
+        random_state = model_random_state,
     )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
@@ -1188,7 +1190,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             lora_dropout = config.get("lora_dropout", 0.0),
             use_rslora = config.get("use_rslora", False),
             init_lora_weights = config.get("init_lora_weights", True),
-            random_state = config.get("random_seed", 3407),
+            random_state = lora_random_state,
             target_modules = config.get("target_modules")
             or [
                 "q_proj",
@@ -1390,7 +1392,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # global reduction that breaks MLX's eager pipeline). 1.0 (not 5.0):
     # |g_i| > 5 rarely fires, so the historical 5.0 was effectively no-op.
     max_grad_norm = 0.0
-    max_grad_value = 1.0  # TODO: expose MLX grad-clip in Studio UI for power users
+    max_grad_value = config.get("max_grad_value")
+    max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)
 
     trainer = MLXTrainer(
         model = model,
