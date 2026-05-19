@@ -304,6 +304,26 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
+# Registered before SecurityHeadersMiddleware and MaxBodyMiddleware so the gate
+# is wrapped INSIDE both: oversized POSTs 413 before acquiring a slot, and 429
+# overflow responses pick up CSP and the other standard security headers.
+from utils.api_concurrency import (  # noqa: E402
+    InferenceConcurrencyMiddleware,
+    parse_api_max_concurrency,
+    parse_api_queue_policy,
+)
+
+_api_max_concurrency = parse_api_max_concurrency()
+_api_queue_policy = parse_api_queue_policy()
+app.state.api_max_concurrency = _api_max_concurrency
+app.state.api_queue_policy = _api_queue_policy
+app.add_middleware(
+    InferenceConcurrencyMiddleware,
+    max_concurrency = _api_max_concurrency,
+    queue_policy = _api_queue_policy,
+)
+
+
 # Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
 # kept for legacy web-search faviconV2 paths. Everything else is same-origin.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
@@ -362,8 +382,15 @@ import json as _json_for_413  # noqa: E402
 
 _MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
 _BODY_PROTECTED_PREFIXES = (
+    # /v1 generation routes mirrored from inference_router; every prefix gated
+    # by InferenceConcurrencyMiddleware must also be capped here so an
+    # oversized slow upload cannot hold the concurrency slot during 413.
     "/v1/chat/completions",
     "/v1/completions",
+    "/v1/messages",
+    "/v1/responses",
+    "/v1/generate/stream",
+    "/v1/audio/generate",
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
@@ -467,7 +494,6 @@ app.add_middleware(
     max_bytes = _MAX_BODY_BYTES,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
 )
-
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 

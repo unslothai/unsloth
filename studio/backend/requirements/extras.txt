@@ -12,6 +12,7 @@ hypothesis
 kgb
 parameterized
 pytest<9.0
+pytest-asyncio
 pytest-json-report
 pytest-rerunfailures==15.1
 pytest-xdist
