@@ -13,7 +13,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { Trash2Icon } from "lucide-react";
-import { useCallback, useState, type ReactNode } from "react";
+import {
+  type ButtonHTMLAttributes,
+  type ReactNode,
+  useCallback,
+  useState,
+} from "react";
 import { toast } from "@/lib/toast";
 
 interface ModelDeleteActionProps {
@@ -24,6 +29,7 @@ interface ModelDeleteActionProps {
   loadingLabel?: string;
   buttonClassName?: string;
   iconClassName?: string;
+  buttonProps?: ButtonHTMLAttributes<HTMLButtonElement>;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
   onDeleted?: () => void;
@@ -37,12 +43,18 @@ export function ModelDeleteAction({
   loadingLabel = "Deleting...",
   buttonClassName,
   iconClassName,
+  buttonProps,
   disabled = false,
   onConfirm,
   onDeleted,
 }: ModelDeleteActionProps) {
   const [open, setOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const {
+    className: extraButtonClassName,
+    onClick: extraButtonOnClick,
+    ...extraButtonProps
+  } = buttonProps ?? {};
 
   const handleConfirm = useCallback(async () => {
     setDeleting(true);
@@ -64,7 +76,10 @@ export function ModelDeleteAction({
     <>
       <button
         type="button"
+        {...extraButtonProps}
         onClick={(e) => {
+          extraButtonOnClick?.(e);
+          if (e.defaultPrevented) return;
           e.stopPropagation();
           if (disabled) return;
           setOpen(true);
@@ -75,6 +90,7 @@ export function ModelDeleteAction({
           "shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
           disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
           buttonClassName,
+          extraButtonClassName,
         )}
       >
         <Trash2Icon className={cn("size-3.5", iconClassName)} />
