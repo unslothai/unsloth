@@ -468,6 +468,7 @@ def patch_loss_functions(torch_compile = True):
     # the floor pin moves past unslothai/unsloth-zoo#656.
     try:
         import transformers.loss.loss_utils as _lu
+
         _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")
         if _unsloth_loss is not None:
             for _key, _fn in list(_lu.LOSS_MAPPING.items()):
