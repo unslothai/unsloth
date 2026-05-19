@@ -440,6 +440,16 @@ class FastLanguageModel(FastLlamaModel):
         model_config = None
         peft_config = None
         local_files_only = kwargs.get("local_files_only", False)
+        # Honour HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE so offline mode is
+        # respected even when local_files_only is not explicitly passed.
+        if not local_files_only:
+            _offline_vals = {"1", "true", "yes", "on"}
+            if (
+                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline_vals
+                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
+            ):
+                local_files_only = True
+                kwargs["local_files_only"] = True
 
         try:
             model_config = AutoConfig.from_pretrained(
