@@ -49,9 +49,33 @@ def test_hub_and_lora_pickers_are_wired_to_roving_listboxes():
     assert "loraModelList.getOptionProps" in src
 
 
-def test_arrow_down_from_tab_enters_active_model_list():
+def test_expanded_gguf_variants_join_keyboard_navigation():
+    src = PICKERS_TSX.read_text()
+    assert "function focusFirstChildOption" in src
+    assert "onArrowDownIntoChildren" in src
+    assert 'makeModelOptionKey("gguf-variant"' in src
+    assert 'makeModelOptionKey("gguf-variant-delete"' in src
+    assert "parentOptionKey={optionKey}" in src
+    assert "onNavigatePastStart" in src
+    assert "onNavigatePastEnd" in src
+
+
+def test_visible_delete_buttons_join_roving_order():
+    src = PICKERS_TSX.read_text()
+    assert 'makeModelOptionKey("downloaded-model-delete"' in src
+    assert 'makeModelOptionKey("lora-delete"' in src
+    assert "buttonProps={hubModelList.getOptionProps" in src
+    assert "loraModelList.getOptionProps(\n" in src
+    assert "buttonProps={\n                  deleteDisabled" in src
+    assert "variantList.getOptionProps(" in src
+
+
+def test_arrow_down_from_tab_or_search_enters_active_model_list():
     src = SELECTOR_TSX.read_text()
+    pickers = PICKERS_TSX.read_text()
     assert "function handlePickerEntryKeyDown" in src
     assert 'event.key !== "ArrowDown"' in src
     assert '[data-model-picker-option][tabindex="0"]' in src
+    assert "data-model-picker-search-input" in pickers
+    assert "isPickerSearchInput" in src
     assert "focusActiveModelOption(event.currentTarget)" in src

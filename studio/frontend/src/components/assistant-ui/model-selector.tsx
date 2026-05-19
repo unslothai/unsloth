@@ -265,9 +265,13 @@ function ModelSelectorContent({
     if (!(target instanceof HTMLElement)) {
       return;
     }
+    const isPickerSearchInput = target.matches(
+      "[data-model-picker-search-input]",
+    );
     if (
-      target.closest("input, textarea, [contenteditable='true']") ||
-      target.closest('[role="listbox"]')
+      target.closest('[role="listbox"]') ||
+      (!isPickerSearchInput &&
+        target.closest("input, textarea, [contenteditable='true']"))
     ) {
       return;
     }
