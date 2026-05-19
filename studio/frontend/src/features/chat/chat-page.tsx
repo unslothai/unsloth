@@ -613,6 +613,7 @@ export function ChatPage(): ReactElement {
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
+  const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
@@ -631,6 +632,7 @@ export function ChatPage(): ReactElement {
     const turnedOff =
       prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
+      clearCheckpoint();
       void ejectModel();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -639,7 +641,12 @@ export function ChatPage(): ReactElement {
       }
     }
     prevConnectionsEnabledRef.current = connectionsEnabled;
-  }, [connectionsEnabled, ejectModel, inferenceParams.checkpoint]);
+  }, [
+    clearCheckpoint,
+    connectionsEnabled,
+    ejectModel,
+    inferenceParams.checkpoint,
+  ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
   );
