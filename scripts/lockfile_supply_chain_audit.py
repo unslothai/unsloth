@@ -689,9 +689,10 @@ def audit_bun_lockfile(path: Path) -> list[Finding]:
 
         # 2. Integrity hash: registry-resolved entries carry a sha-prefixed
         # tail element. Missing tail on a registry entry is a finding.
-        has_sha_tail = (
-            isinstance(entry[-1], str)
-            and (entry[-1].startswith("sha512-") or entry[-1].startswith("sha256-") or entry[-1].startswith("sha1-"))
+        has_sha_tail = isinstance(entry[-1], str) and (
+            entry[-1].startswith("sha512-")
+            or entry[-1].startswith("sha256-")
+            or entry[-1].startswith("sha1-")
         )
         if not source and not has_sha_tail:
             findings.append(
