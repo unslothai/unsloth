@@ -5,8 +5,12 @@ import type { TrainingViewData } from "@/features/training";
 import { getTrainingRun, onTrainingRunUpdated } from "@/features/training";
 import type { TrainingRunDetailResponse } from "@/features/training";
 import { parseBackendTrainingMethod } from "@/features/training/lib/training-methods";
-import { type ReactElement, useEffect, useState } from "react";
+import { useActivationData } from "@/features/training/hooks/use-activation-data";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
+import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-section";
+import { DeadNeuronPanel } from "./sections/dead-neuron-panel";
 import { ProgressSection } from "./sections/progress-section";
 
 interface HistoricalTrainingViewProps {
@@ -80,6 +84,74 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     gradNormHistory,
     evalLossHistory,
   };
+}
+
+function InterpretabilitySection({ runId }: { runId: string }): ReactElement {
+  const { metadata, records, loading } = useActivationData({ isTraining: false, jobId: runId });
+  const [stepIndex, setStepIndex] = useState(0);
+
+  useEffect(() => {
+    setStepIndex(Math.max(0, records.length - 1));
+  }, [records.length]);
+
+  const handleStepChange = useCallback(
+    (idx: number) => {
+      if (idx === -1) {
+        setStepIndex((prev) => Math.min(prev + 1, records.length - 1));
+      } else {
+        setStepIndex(Math.max(0, Math.min(idx, records.length - 1)));
+      }
+    },
+    [records.length],
+  );
+
+  const record = records[stepIndex] ?? null;
+
+  if (!loading && records.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[300px] gap-3 text-center text-muted-foreground">
+        <p className="text-sm">No activation data for this run.</p>
+        <p className="text-xs max-w-sm">
+          Enable <span className="font-medium text-foreground">Neuron activation capture</span> in
+          training parameters before starting training to capture interpretability data.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex gap-4 items-stretch min-h-[400px]">
+        <div className="w-[340px] shrink-0">
+          <NeuronHeatmapSection
+            isTraining={false}
+            records={records}
+            metadata={metadata}
+            loading={loading}
+            record={record}
+            stepIndex={stepIndex}
+            onStepChange={handleStepChange}
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <DeadNeuronPanel
+            isTraining={false}
+            records={records}
+            stepIndex={stepIndex}
+            onStepChange={handleStepChange}
+          />
+        </div>
+      </div>
+      {records.length > 1 && (
+        <ReplayControls
+          stepIndex={stepIndex}
+          totalSteps={records.length}
+          onStepChange={handleStepChange}
+          currentStep={record?.step ?? 0}
+        />
+      )}
+    </div>
+  );
 }
 
 export function HistoricalTrainingView({
@@ -161,16 +233,27 @@ export function HistoricalTrainingView({
         isHistorical
         configOverride={configOverride}
       />
-      <ChartsSection
-        currentStep={viewData.currentStep}
-        totalSteps={viewData.totalSteps}
-        isTraining={false}
-        evalEnabled={viewData.evalEnabled}
-        lossHistory={viewData.lossHistory}
-        lrHistory={viewData.lrHistory}
-        gradNormHistory={viewData.gradNormHistory}
-        evalLossHistory={viewData.evalLossHistory}
-      />
+      <Tabs defaultValue="training">
+        <TabsList className="mb-2">
+          <TabsTrigger value="training">Training</TabsTrigger>
+          <TabsTrigger value="interpretability">Interpretability</TabsTrigger>
+        </TabsList>
+        <TabsContent value="training">
+          <ChartsSection
+            currentStep={viewData.currentStep}
+            totalSteps={viewData.totalSteps}
+            isTraining={false}
+            evalEnabled={viewData.evalEnabled}
+            lossHistory={viewData.lossHistory}
+            lrHistory={viewData.lrHistory}
+            gradNormHistory={viewData.gradNormHistory}
+            evalLossHistory={viewData.evalLossHistory}
+          />
+        </TabsContent>
+        <TabsContent value="interpretability">
+          <InterpretabilitySection runId={runId} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
