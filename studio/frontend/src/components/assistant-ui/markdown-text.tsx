@@ -411,6 +411,24 @@ function StreamdownBlock(props: BlockProps) {
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
+/**
+ * Drop image URLs that would cause the browser to issue requests to arbitrary
+ * external origins (tracking-pixel / IP-leak vector via prompt injection).
+ *
+ * Allowed:
+ *   data:   — inline images, mermaid SVG output, user attachments
+ *   blob:   — locally generated object URLs
+ *   relative paths (no scheme) — assets served from the same origin
+ *
+ * Everything else (http:, https:, ftp:, …) is dropped by returning null,
+ * which tells Streamdown to omit the <img> element entirely.
+ */
+function safeImageUrl(url: string): string | null {
+  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+  if (!url.includes(":")) return url; // relative path — same origin
+  return null;
+}
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
   const processedText = useMemo(() => preprocessLaTeX(text), [text]);
@@ -427,6 +445,7 @@ const MarkdownTextImpl = () => {
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
+        urlTransform={safeImageUrl}
         controls={{
           code: false,
           mermaid: {
