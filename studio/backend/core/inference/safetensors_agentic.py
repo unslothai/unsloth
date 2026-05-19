@@ -314,9 +314,7 @@ def run_safetensors_tool_loop(
                         _MAX_REPROMPTS,
                         len(_stripped),
                     )
-                    conversation.append(
-                        {"role": "assistant", "content": _stripped}
-                    )
+                    conversation.append({"role": "assistant", "content": _stripped})
                     conversation.append(
                         {"role": "user", "content": _REPROMPT_INSTRUCTION}
                     )

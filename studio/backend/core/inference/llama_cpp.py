@@ -39,6 +39,7 @@ from core.tool_healing import (
     _TOOL_CLOSED_PATS,
     parse_tool_calls_from_text,
 )
+
 # Stripping and signal-marker constants come from the multi-format
 # parser so Llama-3 / Mistral / Gemma 4 emissions are also detected
 # in the BUFFERING state machine and stripped from the assistant
@@ -4306,9 +4307,7 @@ class LlamaCppBackend:
         # content. Covers all five emission formats the shared parser
         # understands: Qwen <tool_call>, Qwen3.5 <function=, Llama-3
         # <|python_tag|>, Mistral [TOOL_CALLS], Gemma 4 <|tool_call>.
-        _TOOL_XML_SIGNALS = (
-            _SHARED_TOOL_XML_SIGNALS if auto_heal_tool_calls else ()
-        )
+        _TOOL_XML_SIGNALS = _SHARED_TOOL_XML_SIGNALS if auto_heal_tool_calls else ()
         _MAX_BUFFER_CHARS = 32
 
         # ── Duplicate tool-call detection ────────────────────────

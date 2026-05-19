@@ -938,10 +938,7 @@ class TestLoopCanonicalHealKey:
     def test_python_bare_string_heals_to_code(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"python","arguments":"print(1)"}'
-                    "</tool_call>"
-                ],
+                ['<tool_call>{"name":"python","arguments":"print(1)"}' "</tool_call>"],
                 ["done"],
             ],
             exec_results = ["1\n"],
@@ -954,10 +951,7 @@ class TestLoopCanonicalHealKey:
     def test_terminal_bare_string_heals_to_command(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"terminal","arguments":"ls -la"}'
-                    "</tool_call>"
-                ],
+                ['<tool_call>{"name":"terminal","arguments":"ls -la"}' "</tool_call>"],
                 ["done"],
             ],
             exec_results = ["..."],
@@ -968,10 +962,7 @@ class TestLoopCanonicalHealKey:
     def test_unknown_tool_bare_string_heals_to_query(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":"hello"}'
-                    "</tool_call>"
-                ],
+                ['<tool_call>{"name":"web_search","arguments":"hello"}' "</tool_call>"],
                 ["ok"],
             ],
             exec_results = ["..."],
@@ -993,9 +984,7 @@ class TestGGUFSafetensorsHealingParity:
 
         from core.inference.llama_cpp import LlamaCppBackend
 
-        src = inspect.getsource(
-            LlamaCppBackend.generate_chat_completion_with_tools
-        )
+        src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
         assert "_SHARED_TOOL_XML_SIGNALS" in src, (
             "GGUF agentic loop must reuse the shared TOOL_XML_SIGNALS "
             "tuple so it wakes on all five emission formats"
@@ -1010,9 +999,7 @@ class TestGGUFSafetensorsHealingParity:
 
         from core.inference.llama_cpp import LlamaCppBackend
 
-        src = inspect.getsource(
-            LlamaCppBackend.generate_chat_completion_with_tools
-        )
+        src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
         assert "_shared_strip_tool_markup" in src, (
             "GGUF stream cleanup must delegate to the shared "
             "strip_tool_markup helper"
@@ -1026,9 +1013,7 @@ class TestGGUFSafetensorsHealingParity:
 
         from core.inference.llama_cpp import LlamaCppBackend
 
-        src = inspect.getsource(
-            LlamaCppBackend.generate_chat_completion_with_tools
-        )
+        src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
         # The canonical key dict literal must be present in the heal
         # path so a Llama-3 / Mistral / Gemma 4 bare-string emission
         # for python doesn't get routed as {"query": "print(1)"}.
