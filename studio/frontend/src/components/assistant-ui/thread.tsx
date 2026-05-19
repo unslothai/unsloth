@@ -987,15 +987,59 @@ const MessageError: FC = () => {
   );
 };
 
+// Heuristic: text the model emits before a tool actually starts often
+// includes the opening of one of the tool-call markup shapes the
+// backend strips. When that shape appears in the assistant's
+// content but no tool-call PART has landed yet (because the backend
+// only emits tool_start after the markup parses cleanly), the user
+// otherwise stares at a frozen "Generating..." for the whole time it
+// takes the model to finish writing the tool call.
+const TOOL_CALL_PROBE = /<tool_call>|<function=|<\|tool_call>|<\|python_tag\|>|\[TOOL_CALLS\]/i;
+
 const GeneratingIndicator: FC = () => {
-  const show = useAuiState(
-    ({ message }) =>
-      message.content.length === 0 && message.status?.type === "running",
-  );
-  if (!show) {
+  const phase = useAuiState(({ message }) => {
+    if (message.status?.type !== "running") return null;
+    const content = message.content;
+    if (!content || content.length === 0) return "generating";
+    // If every part is empty (placeholder text added but no chars yet)
+    // we still want to surface generating activity.
+    let allEmpty = true;
+    let sawToolSignal = false;
+    for (const p of content) {
+      const t = (p as { type?: string }).type;
+      if (t === "text" || t === "reasoning") {
+        const text = ((p as { text?: string }).text ?? "");
+        if (text.length > 0) {
+          allEmpty = false;
+          if (TOOL_CALL_PROBE.test(text)) {
+            sawToolSignal = true;
+          }
+        }
+      } else {
+        // tool-call / source / etc. mean a real part exists; the
+        // RunningToolIndicator or message body handles those.
+        return null;
+      }
+    }
+    if (sawToolSignal) return "calling-tool";
+    if (allEmpty) return "generating";
     return null;
-  }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  });
+  if (!phase) return null;
+  return (
+    <span
+      data-slot="generating-indicator"
+      data-phase={phase}
+      className="aui-generating-indicator inline-flex items-center gap-2 text-sm text-muted-foreground"
+      aria-live="polite"
+    >
+      <span
+        aria-hidden
+        className="aui-generating-indicator-dot inline-block size-2 animate-pulse rounded-full bg-muted-foreground/60"
+      />
+      <span>{phase === "calling-tool" ? "Calling tool..." : "Generating..."}</span>
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
