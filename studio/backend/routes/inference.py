@@ -442,19 +442,38 @@ _TOOL_ACTION_NUDGE = (
 # ``<|python_tag|>``, Mistral ``[TOOL_CALLS]`` pre-v11 array and v11+
 # ``name{json}``, Gemma 4 ``<|tool_call>...<tool_call|>``). Closed
 # pairs only so in-progress markup stays buffered upstream.
+# Flat-regex patterns. Mistral ``[TOOL_CALLS]`` blocks need balanced
+# brace/bracket scanning -- a non-greedy ``\{.*?\}`` truncates at the
+# first ``}`` of a nested JSON arg, so those are handled by the parser
+# module's ``_strip_mistral_closed_calls`` helper invoked by
+# ``_strip_tool_xml`` below.
 _TOOL_XML_RE = _re.compile(
     "|".join(
         [
             r"<tool_call>.*?</tool_call>",
             r"<function=\w+>.*?</function>",
             r"<\|tool_call>.*?<tool_call\|>",
-            r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?",
-            r"\[TOOL_CALLS\]\s*[\w\.\-]+\s*(?:\[ARGS\])?\s*\{.*?\}",
-            r"<\|python_tag\|>[^\n<]*",
+            # ``<|python_tag|>...`` runs to end of line. ``[^\n<]`` was
+            # used to stop at any ``<`` but that leaked the tail of
+            # any tool call whose argument contained a literal ``<``
+            # (queries, code snippets) into the user-visible stream.
+            r"<\|python_tag\|>[^\n]*",
         ]
     ),
     _re.DOTALL,
 )
+
+
+def _strip_tool_xml(text: str) -> str:
+    """Strip closed-pair tool-call markup with balanced brace scanning.
+
+    Combines the shared parser's Mistral helper (handles nested JSON
+    correctly) with ``_TOOL_XML_RE`` for the remaining flat patterns.
+    """
+    from studio.backend.core.inference.tool_call_parser import (
+        _strip_mistral_closed_calls,
+    )
+    return _TOOL_XML_RE.sub("", _strip_mistral_closed_calls(text))
 logger = get_logger(__name__)
 
 
@@ -2418,7 +2437,7 @@ async def openai_chat_completions(
                 if _msg.get("role") == "assistant" and isinstance(
                     _msg.get("content"), str
                 ):
-                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                    _msg["content"] = _strip_tool_xml(_msg["content"]).strip()
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -2519,7 +2538,7 @@ async def openai_chat_completions(
                         # the last sanitized snapshot so cross-chunk XML
                         # tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        clean_cumulative = _strip_tool_xml(raw_cumulative)
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -2904,7 +2923,7 @@ async def openai_chat_completions(
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
+                        "content": _strip_tool_xml(_msg["content"]).strip(),
                     }
                 )
             else:
@@ -2991,7 +3010,7 @@ async def openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    clean_cumulative = _strip_tool_xml(raw_cumulative)
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
@@ -3063,7 +3082,7 @@ async def openai_chat_completions(
                     if cancel_event.is_set():
                         break
                     if event.get("type") == "content":
-                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                        full_text = _strip_tool_xml(event.get("text", ""))
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
@@ -4490,7 +4509,7 @@ async def anthropic_messages(
         # Strip stale tool-call XML from conversation
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                _msg["content"] = _strip_tool_xml(_msg["content"]).strip()
 
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
@@ -4582,7 +4601,7 @@ async def _anthropic_tool_stream(
                 # Strip leaked tool-call XML from content events
                 if event.get("type") == "content":
                     event = dict(event)
-                    event["text"] = _TOOL_XML_RE.sub("", event["text"])
+                    event["text"] = _strip_tool_xml(event["text"])
                 for line in emitter.feed(event):
                     yield line
         except Exception as e:
@@ -4673,7 +4692,7 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
         etype = event.get("type", "")
         if etype == "content":
             # Strip leaked tool-call XML
-            clean = _TOOL_XML_RE.sub("", event["text"])
+            clean = _strip_tool_xml(event["text"])
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
@@ -5010,7 +5029,7 @@ async def _anthropic_passthrough_non_streaming(
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        text = _TOOL_XML_RE.sub("", text).strip()
+        text = _strip_tool_xml(text).strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
