@@ -445,7 +445,8 @@ class FastLanguageModel(FastLlamaModel):
         if not local_files_only:
             _offline_vals = {"1", "true", "yes", "on"}
             if (
-                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline_vals
+                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower()
+                in _offline_vals
                 or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
             ):
                 local_files_only = True
