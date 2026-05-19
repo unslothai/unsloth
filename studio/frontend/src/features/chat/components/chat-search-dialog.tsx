@@ -26,15 +26,9 @@ function formatRelative(createdAt: number): string {
   return "Older";
 }
 
-/**
- * Substring-token filter. cmdk's default `commandScore` returns a small
- * non-zero score when the query shares a few characters with an item
- * (out of order), so a unique marker like `UNIQUEMARKER567890` ends up
- * "matching" an unrelated `What's 2+2?` row instead of triggering the
- * "No chats match." empty state. We require every whitespace-delimited
- * token in the query to appear (case-insensitive substring) in the
- * item's value before returning a non-zero score.
- */
+// Strict substring-token filter. cmdk's default fuzzy scorer matches
+// unrelated rows on shared characters; require every query token to be
+// a case-insensitive substring of the item.
 function strictFilter(value: string, search: string): number {
   const query = search.trim().toLowerCase();
   if (query.length === 0) return 1;
