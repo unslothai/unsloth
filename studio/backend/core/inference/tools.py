@@ -320,7 +320,7 @@ def _expand_brace_projections(text: str, limit: int = 64) -> set[str]:
         brace = _BRACE_EXPANSION_RE.search(cur)
         if brace:
             for alt in brace.group(1).split(","):
-                nxt = cur[: brace.start()] + alt + cur[brace.end():]
+                nxt = cur[: brace.start()] + alt + cur[brace.end() :]
                 if nxt not in out:
                     out.add(nxt)
                     queue.append(nxt)
@@ -332,7 +332,7 @@ def _expand_brace_projections(text: str, limit: int = 64) -> set[str]:
             for ch in klass.group(1):
                 if ch == "-":
                     continue
-                nxt = cur[: klass.start()] + ch + cur[klass.end():]
+                nxt = cur[: klass.start()] + ch + cur[klass.end() :]
                 if nxt not in out:
                     out.add(nxt)
                     queue.append(nxt)
@@ -1445,13 +1445,10 @@ def _check_signal_escape_patterns(code: str):
                 or ctor_fq in {f"{a}.Path.home" for a in pathlib_aliases}
             ):
                 return "~"
-            is_path_ctor = (
-                ctor_fq in path_aliases
-                or any(
-                    ctor_fq == f"{alias}.{cls}"
-                    for alias in pathlib_aliases
-                    for cls in _PATHLIB_PATH_CLASSES
-                )
+            is_path_ctor = ctor_fq in path_aliases or any(
+                ctor_fq == f"{alias}.{cls}"
+                for alias in pathlib_aliases
+                for cls in _PATHLIB_PATH_CLASSES
             )
             if is_path_ctor and node.args:
                 parts = []
@@ -2411,10 +2408,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
-            if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "connect"
-            ):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
                 # Resolve the host through the strict literal extractor:
                 # variable assignments stay opaque to this gate so
                 # ``host = some_input; sock.connect((host, 80))`` keeps
