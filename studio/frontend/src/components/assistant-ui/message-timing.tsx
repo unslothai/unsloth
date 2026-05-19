@@ -38,12 +38,8 @@ export const MessageTiming: FC<{
   )?.custom as { serverTimings?: Record<string, number> } | undefined;
   const st = serverTimings?.serverTimings;
 
-  // Guard against unphysical readouts: llama.cpp can emit predicted_ms=0
-  // when a turn produced no real generation (e.g. a race-lost compare pane
-  // where the user message arrived after EOS), which makes
-  // predicted_per_second arithmetic explode into Infinity / 1000000+ tok/s.
-  // Require at least one predicted token AND a measurable ms before trusting
-  // the rate, and keep the value finite.
+  // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op
+  // turns, blowing the rate up to Infinity. Require >=1 token + >=1ms.
   const predictedRate =
     st?.predicted_per_second != null &&
     Number.isFinite(st.predicted_per_second) &&
