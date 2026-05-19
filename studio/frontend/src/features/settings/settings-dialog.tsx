@@ -110,7 +110,7 @@ export function SettingsDialog() {
           Manage your Unsloth Studio preferences.
         </DialogDescription>
         <div className="flex h-full min-h-0 max-sm:flex-col">
-          <aside className="font-heading flex w-[200px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
+          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
             <nav className="flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;
