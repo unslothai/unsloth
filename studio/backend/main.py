@@ -17,6 +17,10 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
 if sys.platform == "win32":
 
+    # Retained at module scope -- os.add_dll_directory returns a handle that
+    # removes the search-path entry when garbage collected.
+    _ROCM_DLL_HANDLES: list = []
+
     def _add_rocm_dll_dirs() -> None:
         candidates = []
         # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer
@@ -40,7 +44,7 @@ if sys.platform == "win32":
         for _d in candidates:
             if os.path.isdir(_d):
                 try:
-                    os.add_dll_directory(_d)
+                    _ROCM_DLL_HANDLES.append(os.add_dll_directory(_d))
                 except (OSError, AttributeError):
                     pass
 
@@ -54,10 +58,18 @@ if sys.platform == "win32":
     # this the server process crashes with "Configured ROCm binary not found".
     # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
     # before any import that pulls in bitsandbytes (mirrors worker.py logic).
-    # Guard: only set on ROCm hosts (HIP_PATH/ROCM_PATH present) -- setting
-    # BNB_ROCM_VERSION on a Windows CUDA machine makes bitsandbytes look for a
-    # ROCm DLL that doesn't exist and fail to initialise the CUDA backend.
-    _is_rocm_host = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
+    # Gate on the active torch runtime, not env-var presence -- HIP_PATH /
+    # ROCM_PATH stay set after a user installs the HIP SDK and reverts to a
+    # CUDA torch wheel, and setting BNB_ROCM_VERSION there makes bitsandbytes
+    # look for a ROCm DLL that doesn't exist and crash the CUDA backend.
+    _is_rocm_host = False
+    if os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"):
+        try:
+            import torch as _torch_probe
+            _is_rocm_host = bool(getattr(_torch_probe.version, "hip", None))
+            del _torch_probe
+        except Exception:
+            pass
     if _is_rocm_host and "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
 
