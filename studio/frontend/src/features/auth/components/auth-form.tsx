@@ -105,8 +105,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
 
-          // Drop stale localStorage flag so a prior install cannot pin the user
-          // on /change-password after the server has cleared the requirement.
+          // Server truth wins; clear stale localStorage flag.
           if (!result.requires_password_change && mustChangePassword()) {
             setMustChangePassword(false);
           }

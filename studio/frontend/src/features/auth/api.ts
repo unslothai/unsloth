@@ -65,8 +65,7 @@ async function redirectToAuth(): Promise<void> {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
-      // Server is the source of truth; drop a stale localStorage flag so a
-      // prior install does not pin redirects on /change-password.
+      // Server truth wins; clear stale localStorage flag.
       if (!data.requires_password_change && mustChangePassword()) {
         setMustChangePassword(false);
       }
