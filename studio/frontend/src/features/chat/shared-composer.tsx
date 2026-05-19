@@ -282,6 +282,8 @@ export function SharedComposer({
   model2?: CompareModelSelection;
 }): ReactElement {
   const [text, setText] = useState("");
+  const textRef = useRef(text);
+  textRef.current = text;
   const [running, setRunning] = useState(false);
   const [sending, setSending] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -558,7 +560,7 @@ export function SharedComposer({
   async function send() {
     sendRef.current = send;
     if (composingRef.current || sendingRef.current) return;
-    const msg = text.trim();
+    const msg = textRef.current.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
 
     const hasCompareHandles = Boolean(
