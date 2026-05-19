@@ -486,6 +486,40 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return False
 
 
+def _build_ngram_mod_flags(
+    caps: Optional[dict],
+    n_match: int = 24,
+    n_min: int = 48,
+    n_max: int = 64,
+) -> list[str]:
+    """Emit the right ngram-mod knob flags for the running llama-server.
+
+    Post-rename builds expose ``--spec-ngram-mod-n-{match,min,max}``;
+    pre-rename builds expose the legacy ``--spec-ngram-size-n`` /
+    ``--draft-min`` / ``--draft-max``. ``caps`` comes from
+    ``probe_server_capabilities``; ``ngram_mod_flavor`` tells us which
+    set is real (vs a removal-stub entry). Returns ``[]`` when neither
+    set is available so the caller can drop ngram-mod entirely.
+    """
+    flavor = caps.get("ngram_mod_flavor") if caps else None
+    if flavor == "new":
+        return [
+            "--spec-ngram-mod-n-match", str(n_match),
+            "--spec-ngram-mod-n-min", str(n_min),
+            "--spec-ngram-mod-n-max", str(n_max),
+        ]
+    if flavor == "legacy":
+        # Legacy llama.cpp before the spec arg rename: same knobs lived
+        # under --spec-ngram-size-n (lookup length) and the generic
+        # --draft-min / --draft-max (ngram size N range).
+        return [
+            "--spec-ngram-size-n", str(n_match),
+            "--draft-min", str(n_min),
+            "--draft-max", str(n_max),
+        ]
+    return []
+
+
 def _backfill_usage_from_timings(usage, timings):
     """Synthesize ``usage`` from llama-server's ``timings`` when the
     OpenAI-style usage block is missing or reports zero tokens.
@@ -965,11 +999,31 @@ class LlamaCppBackend:
         cls, binary: Optional[str] = None
     ) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
-        {found, mtp_token, supports_mtp}. mtp_token is "draft-mtp"
-        (older) or "mtp" (renamed upstream), or None."""
+        {found, mtp_token, supports_mtp, ngram_mod_flavor,
+        supports_ngram_mod, spec_draft_n_max_flag}.
+
+        ``ngram_mod_flavor`` is ``"new"`` when the binary exposes the
+        post-rename ``--spec-ngram-mod-n-match / -n-min / -n-max`` as
+        real args, ``"legacy"`` when only the pre-rename
+        ``--spec-ngram-size-n / --draft-min / --draft-max`` are real
+        (the rename ships with stub removal entries for the legacy
+        names; we tell stubs apart by the "argument has been removed"
+        description), or ``None`` if neither set is usable.
+
+        ``spec_draft_n_max_flag`` is the actual flag name the binary
+        accepts: ``--spec-draft-n-max`` on post-rename builds, or
+        ``--draft-max`` on legacy. ``None`` means n_max cannot be set.
+        """
         bin_path = binary or cls._find_llama_server_binary()
         if not bin_path or not Path(bin_path).is_file():
-            return {"found": False, "mtp_token": None, "supports_mtp": False}
+            return {
+                "found": False,
+                "mtp_token": None,
+                "supports_mtp": False,
+                "ngram_mod_flavor": None,
+                "supports_ngram_mod": False,
+                "spec_draft_n_max_flag": None,
+            }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
         except OSError:
@@ -980,6 +1034,8 @@ class LlamaCppBackend:
             return cached
 
         mtp_token: Optional[str] = None
+        ngram_mod_flavor: Optional[str] = None
+        spec_draft_n_max_flag: Optional[str] = None
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -989,6 +1045,52 @@ class LlamaCppBackend:
                 check = False,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            # Split into per-flag blocks: each --flag line plus its
+            # indented continuation lines, so the "argument has been
+            # removed" description sits with its flag.
+            blocks: dict[str, str] = {}
+            current_flags: list[str] = []
+            current_desc: list[str] = []
+            for line in help_text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("-") and not line.startswith(" "):
+                    # New flag line; flush previous.
+                    if current_flags:
+                        desc = " ".join(current_desc)
+                        for f in current_flags:
+                            blocks[f] = desc
+                    current_flags = []
+                    current_desc = [stripped]
+                    # Extract long-form flag tokens from the DECLARATION
+                    # prefix only (comma-separated aliases). Stop at the
+                    # first token that isn't itself a flag, so flag
+                    # references inside descriptions are ignored.
+                    for tok in re.split(r"[,\s]+", stripped):
+                        if tok.startswith("--") and re.match(
+                            r"--[A-Za-z][A-Za-z0-9_-]*$", tok
+                        ):
+                            current_flags.append(tok)
+                        elif tok.startswith("-") and len(tok) > 1:
+                            # short alias like -fa; keep scanning aliases.
+                            continue
+                        else:
+                            # First non-flag token marks end of decl.
+                            break
+                else:
+                    current_desc.append(stripped)
+            if current_flags:
+                desc = " ".join(current_desc)
+                for f in current_flags:
+                    blocks[f] = desc
+
+            def _is_real(flag: str) -> bool:
+                """True if the flag exists AND is not a removal stub."""
+                desc = blocks.get(flag)
+                if desc is None:
+                    return False
+                return "argument has been removed" not in desc
+
+            # MTP token detection from --spec-type line.
             spec_line = ""
             for line in help_text.splitlines():
                 if "--spec-type" in line:
@@ -999,6 +1101,30 @@ class LlamaCppBackend:
                 mtp_token = "draft-mtp"
             elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
                 mtp_token = "mtp"
+
+            # ngram-mod flag flavor. Post-rename builds advertise both
+            # the new args (real) and the legacy ones (stubs); pre-rename
+            # builds only have the legacy ones as real.
+            new_ngram_real = (
+                _is_real("--spec-ngram-mod-n-match")
+                and _is_real("--spec-ngram-mod-n-min")
+                and _is_real("--spec-ngram-mod-n-max")
+            )
+            legacy_ngram_real = (
+                _is_real("--spec-ngram-size-n")
+                and _is_real("--draft-max")
+                and _is_real("--draft-min")
+            )
+            if new_ngram_real:
+                ngram_mod_flavor = "new"
+            elif legacy_ngram_real:
+                ngram_mod_flavor = "legacy"
+
+            # n_max flag: prefer post-rename, fall back to legacy.
+            if _is_real("--spec-draft-n-max"):
+                spec_draft_n_max_flag = "--spec-draft-n-max"
+            elif _is_real("--draft-max"):
+                spec_draft_n_max_flag = "--draft-max"
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1006,6 +1132,9 @@ class LlamaCppBackend:
             "found": True,
             "mtp_token": mtp_token,
             "supports_mtp": mtp_token is not None,
+            "ngram_mod_flavor": ngram_mod_flavor,
+            "supports_ngram_mod": ngram_mod_flavor is not None,
+            "spec_draft_n_max_flag": spec_draft_n_max_flag,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -2763,12 +2892,20 @@ class LlamaCppBackend:
                                 self._spec_draft_n_max = draft_n_max
                             else:
                                 draft_n_max = 2 if gpus else 3
+                            # MTP requires post-rename llama-server (MTP
+                            # merge #22673 landed after the rename), so
+                            # --spec-draft-n-max is always real here;
+                            # still resolve via probe for symmetry.
+                            n_max_flag = (
+                                caps.get("spec_draft_n_max_flag")
+                                or "--spec-draft-n-max"
+                            )
                             if gpus:
                                 cmd.extend(
                                     [
                                         "--spec-type",
                                         mtp_token,
-                                        "--spec-draft-n-max",
+                                        n_max_flag,
                                         str(draft_n_max),
                                     ]
                                 )
@@ -2777,20 +2914,27 @@ class LlamaCppBackend:
                                 # comma-separated --spec-type (not repeated).
                                 # ngram-mod knobs match llama.cpp defaults
                                 # (n-match 24, n-min 48, n-max 64).
+                                ngram_knobs = _build_ngram_mod_flags(caps)
+                                if ngram_knobs:
+                                    spec_value = f"ngram-mod,{mtp_token}"
+                                else:
+                                    # Binary has no usable ngram-mod knob
+                                    # surface; degrade to MTP-only so the
+                                    # spec block still engages.
+                                    logger.warning(
+                                        "llama-server lacks ngram-mod tuning "
+                                        "flags; loading MTP only (no ngram chain)"
+                                    )
+                                    spec_value = mtp_token
                                 cmd.extend(
                                     [
                                         "--spec-type",
-                                        f"ngram-mod,{mtp_token}",
-                                        "--spec-draft-n-max",
+                                        spec_value,
+                                        n_max_flag,
                                         str(draft_n_max),
-                                        "--spec-ngram-mod-n-match",
-                                        "24",
-                                        "--spec-ngram-mod-n-min",
-                                        "48",
-                                        "--spec-ngram-mod-n-max",
-                                        "64",
                                     ]
                                 )
+                                cmd.extend(ngram_knobs)
                             self._speculative_type = "draft-mtp"
                             logger.info(
                                 f"Spec decoding: {mtp_token} ({'GPU' if gpus else 'CPU/Mac'})"
@@ -2798,18 +2942,19 @@ class LlamaCppBackend:
                     elif normalized_spec in _valid_spec_types:
                         cmd.extend(["--spec-type", normalized_spec])
                         if normalized_spec == "ngram-mod":
-                            # llama.cpp defaults; legacy --spec-ngram-size-n
-                            # / --draft-{min,max} were removed for ngram-mod.
-                            cmd.extend(
-                                [
-                                    "--spec-ngram-mod-n-match",
-                                    "24",
-                                    "--spec-ngram-mod-n-min",
-                                    "48",
-                                    "--spec-ngram-mod-n-max",
-                                    "64",
-                                ]
-                            )
+                            # Probe so we use the right flag set: new
+                            # binaries take --spec-ngram-mod-n-*, legacy
+                            # binaries take --spec-ngram-size-n /
+                            # --draft-min / --draft-max. The two sets
+                            # carry the same defaults.
+                            ngram_caps = self.probe_server_capabilities(binary)
+                            ngram_knobs = _build_ngram_mod_flags(ngram_caps)
+                            if not ngram_knobs:
+                                logger.warning(
+                                    "llama-server lacks ngram-mod tuning "
+                                    "flags; loading without --spec-ngram-mod-* knobs"
+                                )
+                            cmd.extend(ngram_knobs)
                         self._speculative_type = normalized_spec
                     else:
                         self._speculative_type = None

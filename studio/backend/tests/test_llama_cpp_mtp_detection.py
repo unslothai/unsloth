@@ -53,6 +53,7 @@ import pytest
 from core.inference.llama_cpp import (
     LlamaCppBackend,
     _backfill_usage_from_timings,
+    _build_ngram_mod_flags,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
 )
@@ -541,6 +542,120 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+
+
+# ngram-mod flag flavor detection (new vs legacy llama-server).
+
+# Help-text fixtures mirror the actual `llama-server --help` block
+# layout (flag on its own line; description indented underneath).
+_POST_RENAME_HELP = """\
+--spec-draft-n-max N                    number of tokens to draft for speculative decoding (default: 16)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_MAX)
+--spec-draft-n-min N                    minimum number of draft tokens to use for speculative decoding (default: 0)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_MIN)
+--spec-draft-p-min, --draft-p-min P     minimum speculative decoding probability (greedy) (default: 0.75)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_P_MIN)
+--spec-ngram-mod-n-min N                minimum number of ngram tokens (default: 48)
+--spec-ngram-mod-n-max N                maximum number of ngram tokens (default: 64)
+--spec-ngram-mod-n-match N              ngram-mod lookup length (default: 24)
+--spec-type none,draft-simple,draft-mtp,ngram-mod                                        comma-separated list of types of speculative decoding to use
+                                        (env: LLAMA_ARG_SPEC_TYPE)
+--draft, --draft-n, --draft-max N       the argument has been removed. use --spec-draft-n-max or --spec-ngram-mod-n-max
+                                        (env: LLAMA_ARG_DRAFT_MAX)
+--draft-min, --draft-n-min N            the argument has been removed. use --spec-draft-n-min or --spec-ngram-mod-n-min
+                                        (env: LLAMA_ARG_DRAFT_MIN)
+--spec-ngram-size-n N                   the argument has been removed. use the respective --spec-ngram-*-size-n or --spec-ngram-mod-n-match
+"""
+
+_LEGACY_HELP = """\
+--draft, --draft-n, --draft-max N       number of tokens to draft for speculative decoding (default: 8)
+                                        (env: LLAMA_ARG_DRAFT_MAX)
+--draft-min, --draft-n-min N            minimum number of draft tokens to use for speculative decoding (default: 0)
+                                        (env: LLAMA_ARG_DRAFT_MIN)
+--spec-ngram-size-n N                   ngram lookup length (default: 24)
+--spec-type none,ngram-mod,ngram-simple                                        comma-separated list of types of speculative decoding to use
+"""
+
+
+@_NEEDS_BASH
+def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _POST_RENAME_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["ngram_mod_flavor"] == "new"
+    assert caps["supports_ngram_mod"] is True
+    assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
+
+
+@_NEEDS_BASH
+def test_probe_detects_legacy_ngram_mod_flavor(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _LEGACY_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["ngram_mod_flavor"] == "legacy"
+    assert caps["supports_ngram_mod"] is True
+    assert caps["spec_draft_n_max_flag"] == "--draft-max"
+
+
+@_NEEDS_BASH
+def test_probe_ignores_removal_stub_descriptions(tmp_path):
+    # Post-rename binary: legacy flags are present but with
+    # "argument has been removed" descriptions; must not be detected
+    # as legacy.
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _POST_RENAME_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["ngram_mod_flavor"] == "new"
+
+
+@_NEEDS_BASH
+def test_probe_no_ngram_mod_on_minimal_binary(tmp_path):
+    # Pre-anything: neither set present.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none\n--threads N\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["ngram_mod_flavor"] is None
+    assert caps["supports_ngram_mod"] is False
+
+
+def test_build_ngram_mod_flags_new():
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"})
+    assert flags == [
+        "--spec-ngram-mod-n-match", "24",
+        "--spec-ngram-mod-n-min", "48",
+        "--spec-ngram-mod-n-max", "64",
+    ]
+
+
+def test_build_ngram_mod_flags_legacy():
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"})
+    assert flags == [
+        "--spec-ngram-size-n", "24",
+        "--draft-min", "48",
+        "--draft-max", "64",
+    ]
+
+
+def test_build_ngram_mod_flags_empty_when_unsupported():
+    assert _build_ngram_mod_flags({"ngram_mod_flavor": None}) == []
+    assert _build_ngram_mod_flags(None) == []
+    assert _build_ngram_mod_flags({}) == []
+
+
+def test_build_ngram_mod_flags_respects_custom_values():
+    flags = _build_ngram_mod_flags(
+        {"ngram_mod_flavor": "new"}, n_match=16, n_min=24, n_max=32
+    )
+    assert flags == [
+        "--spec-ngram-mod-n-match", "16",
+        "--spec-ngram-mod-n-min", "24",
+        "--spec-ngram-mod-n-max", "32",
+    ]
 
 
 @_NEEDS_BASH
