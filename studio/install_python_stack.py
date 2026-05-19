@@ -299,9 +299,10 @@ def _detect_windows_gfx_arch() -> str | None:
                 text = result.stdout.decode(errors = "replace")
                 # findall picks every gcnArchName line so multi-GPU hosts
                 # are enumerable and HIP_VISIBLE_DEVICES selects correctly.
-                _tokens = [t.strip().lower() for t in re.findall(
-                    r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text
-                )]
+                _tokens = [
+                    t.strip().lower()
+                    for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+                ]
                 _pick = _dedup_pick(_tokens)
                 if _pick:
                     return _pick
@@ -678,9 +679,7 @@ def _ensure_rocm_torch() -> None:
             # first listed GPU. Skip the override unless the resolved GPU is
             # Strix.
             _runtime_gfx = (
-                gfx_codes[_pick_visible_index(len(gfx_codes))]
-                if gfx_codes
-                else None
+                gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
             )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
