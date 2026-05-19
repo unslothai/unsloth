@@ -1172,11 +1172,18 @@
 	mix-blend-mode: normal;
 }
 
-/* Override sonner's hardcoded top: 0 on the toast close button. */
+/* Override sonner top: 0 and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
 	top: 8px !important;
+	background: var(--popover) !important;
+	color: var(--popover-foreground) !important;
+	border-color: var(--border) !important;
 }
-/* Bump the X stroke so it stays visible against dark backgrounds. */
 [data-sonner-toast][data-styled="true"] [data-close-button] svg {
 	stroke-width: 2.25;
+}
+[data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
+	background: var(--muted) !important;
+	color: var(--popover-foreground) !important;
+	border-color: var(--border) !important;
 }
