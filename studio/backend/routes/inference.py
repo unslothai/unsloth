@@ -270,7 +270,10 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             flags["reasoning_style"] = "reasoning_effort"
             flags["supports_tools"] = False
     except Exception:
-        pass
+        logger.debug(
+            "safetensors_features.gpt_oss_check_failed",
+            exc_info = True,
+        )
     return flags
 
 
@@ -3028,15 +3031,23 @@ async def openai_chat_completions(
                 cancel_event.set()
                 backend.reset_generation_state()
                 raise
-            except Exception as e:
+            except Exception:
                 backend.reset_generation_state()
-                import traceback
-
-                tb = traceback.format_exc()
-                logger.error(f"Error during safetensors tool streaming: {e}\n{tb}")
+                # Log the full exception with traceback server-side, but
+                # only emit a constant string over the SSE wire to avoid
+                # CWE-209 stack-trace exposure (CodeQL py/stack-trace-
+                # exposure). The classification helper is intentionally
+                # not invoked here -- the GGUF tool stream above exposes
+                # a friendlier message because its upstream is a managed
+                # llama-server with a known error surface, but the
+                # safetensors path can raise arbitrary transformers /
+                # torch errors that may carry sensitive paths.
+                logger.exception(
+                    "Error during safetensors tool streaming",
+                )
                 error_chunk = {
                     "error": {
-                        "message": _friendly_error(e),
+                        "message": "An internal error occurred.",
                         "type": "server_error",
                     },
                 }
@@ -3084,13 +3095,18 @@ async def openai_chat_completions(
                 ],
             )
             return JSONResponse(content = response.model_dump())
-        except Exception as e:
+        except Exception:
             backend.reset_generation_state()
-            logger.error(
-                f"Error during safetensors tool completion: {e}",
-                exc_info = True,
+            # Same CWE-209 hygiene as the streaming sibling above:
+            # log the full exception, expose only a constant to the
+            # client.
+            logger.exception(
+                "Error during safetensors tool completion",
             )
-            raise HTTPException(status_code = 500, detail = _friendly_error(e))
+            raise HTTPException(
+                status_code = 500,
+                detail = "An internal error occurred.",
+            )
         finally:
             _sf_tracker.__exit__(None, None, None)
 

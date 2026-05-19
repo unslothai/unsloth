@@ -355,6 +355,81 @@ class TestLoopBehaviour:
         tool_end = next(e for e in events if e["type"] == "tool_end")
         assert "__IMAGES__" in tool_end["result"]
 
+    def test_image_sentinel_stripped_with_leading_marker(self):
+        # Sentinel at the very start (no preceding newline) -- the
+        # original ``rsplit("\n__IMAGES__:", 1)`` would have left the
+        # marker visible to the model. The current split-based logic
+        # must cut it off cleanly.
+        from core.inference import safetensors_agentic as _sa
+
+        captured: list[list[dict]] = []
+
+        def fake_single_turn(messages, **_kw):
+            captured.append([dict(m) for m in messages])
+            if len(captured) == 1:
+                yield '<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'
+            else:
+                yield "done"
+
+        events = list(
+            _sa.run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "plot please"}],
+                tools = [{"function": {"name": "python"}}],
+                execute_tool = lambda *_a, **_kw: "__IMAGES__:/tmp/x.png",
+                cancel_event = threading.Event(),
+                max_tool_iterations = 3,
+                auto_heal_tool_calls = True,
+            )
+        )
+        # The model's second turn must not see "__IMAGES__" in the
+        # tool result message.
+        assert len(captured) >= 2
+        tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
+        assert tool_msgs, "no tool message reached the model"
+        for tm in tool_msgs:
+            assert "__IMAGES__" not in tm["content"], (
+                f"sentinel leaked to model: {tm['content']!r}"
+            )
+
+    def test_image_sentinel_stripped_with_multiple_markers(self):
+        # Two sentinels back-to-back: the old rsplit-with-maxsplit=1
+        # would only remove the trailing one, leaving the first in the
+        # model-visible content. The current split-on-sentinel logic
+        # cuts at the FIRST occurrence so nothing leaks downstream.
+        from core.inference import safetensors_agentic as _sa
+
+        captured: list[list[dict]] = []
+
+        def fake_single_turn(messages, **_kw):
+            captured.append([dict(m) for m in messages])
+            if len(captured) == 1:
+                yield '<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'
+            else:
+                yield "done"
+
+        multi = "panel\n__IMAGES__:/tmp/a.png\n__IMAGES__:/tmp/b.png"
+        events = list(
+            _sa.run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "plot please"}],
+                tools = [{"function": {"name": "python"}}],
+                execute_tool = lambda *_a, **_kw: multi,
+                cancel_event = threading.Event(),
+                max_tool_iterations = 3,
+                auto_heal_tool_calls = True,
+            )
+        )
+        tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
+        assert tool_msgs
+        for tm in tool_msgs:
+            assert "__IMAGES__" not in tm["content"], (
+                f"second sentinel leaked: {tm['content']!r}"
+            )
+            assert tm["content"] == "panel", (
+                f"expected payload-only 'panel', got {tm['content']!r}"
+            )
+
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(
             turns = [

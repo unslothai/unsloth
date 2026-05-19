@@ -372,12 +372,17 @@ def run_safetensors_tool_loop(
 
             # Strip frontend image sentinel before feeding the result
             # back to the model so it does not see UI plumbing.
+            # Split on the sentinel itself (no leading newline) so that
+            # a leading sentinel and multiple sentinels are both peeled
+            # off in one cut.
             result_for_model = result
             if (
                 isinstance(result_for_model, str)
-                and "\n__IMAGES__:" in result_for_model
+                and "__IMAGES__:" in result_for_model
             ):
-                result_for_model = result_for_model.rsplit("\n__IMAGES__:", 1)[0]
+                result_for_model = result_for_model.split(
+                    "__IMAGES__:", 1
+                )[0].rstrip()
             if is_error:
                 result_for_model = result_for_model + TOOL_ERROR_NUDGE
 
