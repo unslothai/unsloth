@@ -125,11 +125,11 @@ export function NeuronHealthTrend({
             <Tooltip
               contentStyle={tooltipStyle}
               wrapperStyle={{ outline: "none" }}
-              formatter={(value: number, name: string) => [
-                `${value.toFixed(1)}%`,
+              formatter={(value: number | undefined, name: string) => [
+                `${(value ?? 0).toFixed(1)}%`,
                 name === "deadPct" ? "Dead" : "Constant",
               ]}
-              labelFormatter={(label: number) => `Step ${label}`}
+              labelFormatter={(label: unknown) => `Step ${label}`}
             />
             {/* Cursor line at current step */}
             <ReferenceLine
