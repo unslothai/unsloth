@@ -533,11 +533,12 @@ export function AppSidebar() {
                       data-thread-type={item.type}
                       data-thread-id={item.id}
                       isActive={activeThreadId === item.id}
-                      // Expose full title via native tooltip + aria-label so
-                      // long thread titles aren't lost to CSS truncation
-                      // (the inner span uses `truncate` with no title attr).
+                      // Expose full title via the native browser tooltip so
+                      // sighted users can read titles that the inner span's
+                      // `truncate` clips. The truncated span still carries
+                      // the full text content, so screen readers already
+                      // announce the full title without an explicit aria-label.
                       title={item.title}
-                      aria-label={item.title}
                       className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium"
                       onClick={() => {
                         navigate({
