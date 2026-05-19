@@ -73,15 +73,23 @@ _TRAILING_PLAN_INTENT = re.compile(
     r")[^.!?\n]*[.!?]?\s*$"
 )
 _TRAILING_PLAN_LIST = re.compile(
-    # No `m` flag: terminal `\s*$` must match end-of-string, not end-of-line.
-    # With `m` an answer like "1. one\n2. two\n\nDone." would still match on
-    # the list block and trigger a spurious auto-continue.
+    # No `m` flag: the trailing anchor must match end-of-string, not
+    # end-of-line. With `m` an answer like "1. one\n2. two\n\nDone." would
+    # still match on the list block and trigger a spurious auto-continue.
+    #
+    # Anchors below also defend against a subtler backtrack: each list
+    # item starts with `[ \t]*` (horizontal whitespace only, NOT `\s*`)
+    # so the marker must sit on its own line, not be picked up mid-prose
+    # via a substring like "42." inside a sentence such as
+    # "Let me explain:\n1. The function returns 42.\n\nThat's the answer."
+    # The item content ends with `(?:\n|\Z)` so the iteration boundary
+    # is a real line break or end-of-buffer.
     r"(?i)"
     r"(?:let me|i['’]ll|i will|i['’]m going to|i am going to|"
     r"here['’]?s (?:my |the |a )?(?:plan|approach|steps?)|"
     r"as follows|the (?:plan|steps?) (?:is|are))"
     r"[^:\n]{0,160}:\s*\n"
-    r"(?:\s*(?:[-*•]|\d+\.)\s+[^\n]+\n?)+"
+    r"(?:[ \t]*(?:[-*•]|\d+\.)[ \t]+[^\n]+(?:\n|\Z))+"
     r"\s*\Z"
 )
 _TRAILING_PLAN_COLON = re.compile(
