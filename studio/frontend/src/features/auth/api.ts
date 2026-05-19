@@ -159,6 +159,14 @@ export async function authFetch(
     });
   } catch (err) {
     if (err instanceof TypeError) {
+      // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
+      // it's always backend-down; in the web build distinguish offline
+      // so the user gets the right recovery path.
+      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+        throw new Error(
+          "You appear to be offline. Check your network connection and try again.",
+        );
+      }
       throw new Error("Studio isn't running -- please relaunch it.");
     }
     throw err;
