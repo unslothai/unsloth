@@ -415,17 +415,34 @@ const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
  * Drop image URLs that would cause the browser to issue requests to arbitrary
  * external origins (tracking-pixel / IP-leak vector via prompt injection).
  *
- * Allowed:
+ * Only applied to <img src="…"> — link hrefs are passed through unchanged so
+ * normal assistant links such as [docs](https://example.com) are unaffected.
+ *
+ * Allowed image sources:
  *   data:   — inline images, mermaid SVG output, user attachments
  *   blob:   — locally generated object URLs
- *   relative paths (no scheme) — assets served from the same origin
+ *   relative paths (no scheme, not protocol-relative) — same-origin assets
  *
- * Everything else (http:, https:, ftp:, …) is dropped by returning null,
- * which tells Streamdown to omit the <img> element entirely.
+ * Everything else (http:, https:, //host/…, ftp:, …) returns null, which
+ * tells Streamdown to omit the <img> element entirely.
  */
-function safeImageUrl(url: string): string | null {
-  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
-  if (!url.includes(":")) return url; // relative path — same origin
+function safeImageUrl(
+  url: string,
+  _key: string,
+  node: Readonly<Element>,
+): string | null {
+  // Only restrict image src; leave link hrefs and other attributes alone.
+  if ((node as { tagName?: string }).tagName !== "img") return url;
+
+  const lower = url.toLowerCase();
+  // Explicitly allowed safe schemes (case-insensitive).
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return url;
+  // Protocol-relative URLs (//attacker.com/…) have no colon but still trigger
+  // an external network request on the current scheme — must be blocked first.
+  if (url.startsWith("//")) return null;
+  // Plain relative paths (no scheme at all) are same-origin and safe.
+  if (!url.includes(":")) return url;
+  // Everything else (http:, https:, ftp:, …) is an external origin — drop it.
   return null;
 }
 
