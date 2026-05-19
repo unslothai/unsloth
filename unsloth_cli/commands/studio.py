@@ -1176,8 +1176,11 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
         # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
         # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
-        # in install.ps1. -File reads the BOM and decodes correctly.
-        ps1_fd, ps1_path = tempfile.mkstemp(suffix = ".ps1")
+        # in install.ps1. -File reads the BOM and decodes correctly. The
+        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
+        ps1_fd, ps1_path = tempfile.mkstemp(
+            prefix = "unsloth-studio-refresh-", suffix = ".ps1",
+        )
         try:
             with os.fdopen(ps1_fd, "wb") as fh:
                 fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
@@ -1301,6 +1304,15 @@ def update(
         # produced a replacement; otherwise the user has no CLI for recovery.
         _restore_self_exe_lock_windows()
         raise
+    # On Windows clear the .deleteme orphan now that pip wrote a fresh
+    # unsloth.exe; on next update os.replace would overwrite it anyway,
+    # but leaving a stale binary around invites cross-version restore
+    # confusion from _restore_self_exe_lock_windows.
+    _cleanup_self_exe_lock_windows()
+    # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
+    # so a Tauri-initiated update doesn't create duplicate shortcuts.
+    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+        return
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
@@ -1349,6 +1361,21 @@ def _restore_self_exe_lock_windows() -> None:
         os.replace(stale, exe)
     except OSError as e:
         print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+
+
+def _cleanup_self_exe_lock_windows() -> None:
+    """Remove the .deleteme orphan after a successful update on Windows."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
+    try:
+        stale.unlink(missing_ok = True)
+    except OSError:
+        pass
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
