@@ -85,14 +85,14 @@ def test_settings_merge_atomic_under_concurrency(tmp_path, monkeypatch):
 
     def writer(key: str, value: float) -> None:
         barrier.wait()
-        studio_db.upsert_chat_settings_merge(
-            {"inferenceParams": {key: value}}
-        )
+        studio_db.upsert_chat_settings_merge({"inferenceParams": {key: value}})
 
     t1 = threading.Thread(target = writer, args = ("temperature", 0.7))
     t2 = threading.Thread(target = writer, args = ("topP", 0.9))
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
     merged = studio_db.list_chat_settings()["inferenceParams"]
     assert merged.get("temperature") == 0.7
@@ -104,9 +104,7 @@ def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     studio_db.upsert_chat_settings_merge(
         {"inferenceParams": {"temperature": 0.5, "topP": 0.8}}
     )
-    studio_db.upsert_chat_settings_merge(
-        {"inferenceParams": {"temperature": 0.9}}
-    )
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.9}})
 
     params = studio_db.list_chat_settings()["inferenceParams"]
     assert params == {"temperature": 0.9, "topP": 0.8}
