@@ -105,9 +105,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
 
-          // Server truth wins; clear stale localStorage flag.
-          if (!result.requires_password_change && mustChangePassword()) {
-            setMustChangePassword(false);
+          // Server truth wins; keep localStorage in sync both ways.
+          if (result.requires_password_change !== mustChangePassword()) {
+            setMustChangePassword(result.requires_password_change);
           }
 
           // Redirect between login ↔ change-password based on server state

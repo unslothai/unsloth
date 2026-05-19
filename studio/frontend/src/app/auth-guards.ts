@@ -28,9 +28,9 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
     const status = (await res.json()) as AuthStatus;
-    // Server truth wins; clear stale localStorage flag.
-    if (!status.requires_password_change && mustChangePassword()) {
-      setMustChangePassword(false);
+    // Server truth wins; keep localStorage in sync both ways.
+    if (status.requires_password_change !== mustChangePassword()) {
+      setMustChangePassword(status.requires_password_change);
     }
     return status;
   } catch {
