@@ -515,7 +515,8 @@ def _request_matches_loaded_settings(
         and request.spec_draft_p_min is not None
         and abs(
             float(request.spec_draft_p_min) - (llama_backend.spec_draft_p_min or 0.0)
-        ) > 1e-6
+        )
+        > 1e-6
     ):
         return False
     if (request.chat_template_override or None) != (
@@ -657,7 +658,8 @@ async def load_model(
                     supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
-                    spec_draft_n_max = llama_backend.spec_draft_n_max, spec_draft_p_min = llama_backend.spec_draft_p_min,
+                    spec_draft_n_max = llama_backend.spec_draft_n_max,
+                    spec_draft_p_min = llama_backend.spec_draft_p_min,
                 )
         else:
             if (
@@ -788,7 +790,8 @@ async def load_model(
                         strip_cache = "cache_type_kv" in fields_set,
                         strip_spec = (
                             "speculative_type" in fields_set
-                            or "spec_draft_n_max" in fields_set or "spec_draft_p_min" in fields_set
+                            or "spec_draft_n_max" in fields_set
+                            or "spec_draft_p_min" in fields_set
                         ),
                         strip_template = "chat_template_override" in fields_set,
                     )
@@ -830,7 +833,8 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max, spec_draft_p_min = request.spec_draft_p_min,
+                    spec_draft_n_max = request.spec_draft_n_max,
+                    spec_draft_p_min = request.spec_draft_p_min,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -854,7 +858,8 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max, spec_draft_p_min = request.spec_draft_p_min,
+                    spec_draft_n_max = request.spec_draft_n_max,
+                    spec_draft_p_min = request.spec_draft_p_min,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -914,7 +919,8 @@ async def load_model(
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
-                spec_draft_n_max = llama_backend.spec_draft_n_max, spec_draft_p_min = llama_backend.spec_draft_p_min,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
+                spec_draft_p_min = llama_backend.spec_draft_p_min,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -1403,7 +1409,8 @@ async def get_status(
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
-                spec_draft_n_max = llama_backend.spec_draft_n_max, spec_draft_p_min = llama_backend.spec_draft_p_min,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
+                spec_draft_p_min = llama_backend.spec_draft_p_min,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
