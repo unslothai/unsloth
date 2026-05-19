@@ -104,7 +104,7 @@ export function SettingsDialog() {
           // `w-[820px]` overflows by 26px on each side.
           "!max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
           "shadow-border rounded-xl border-border",
-          "max-sm:h-dvh max-sm:w-dvw max-sm:max-w-none max-sm:rounded-none",
+          "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
