@@ -218,6 +218,7 @@ from core.inference.anthropic_compat import (
 from auth.authentication import get_current_subject
 
 from core.inference.key_exchange import decrypt_api_key
+from core.inference.api_monitor import api_monitor
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from storage import providers_db
@@ -376,6 +377,150 @@ _TOOL_XML_RE = _re.compile(
     _re.DOTALL,
 )
 logger = get_logger(__name__)
+
+
+def _monitor_content_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype in ("text", "input_text", "output_text"):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                elif ptype in ("image_url", "input_image", "image"):
+                    parts.append("[image]")
+                else:
+                    parts.append(f"[{ptype or 'content'}]")
+            else:
+                ptype = getattr(part, "type", None)
+                text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                elif ptype in ("image_url", "input_image", "image"):
+                    parts.append("[image]")
+                elif ptype:
+                    parts.append(f"[{ptype}]")
+        return "\n".join(parts)
+    return str(content)
+
+
+def _monitor_prompt_from_messages(messages) -> str:
+    lines: list[str] = []
+    for msg in messages or []:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+        content = (
+            msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        )
+        tool_calls = (
+            msg.get("tool_calls")
+            if isinstance(msg, dict)
+            else getattr(msg, "tool_calls", None)
+        )
+        text = _monitor_content_text(content)
+        if tool_calls and not text:
+            text = "[tool calls]"
+        if text:
+            lines.append(f"{role or 'message'}: {text}")
+    return "\n\n".join(lines)
+
+
+def _monitor_usage(
+    monitor_id: Optional[str], usage: Optional[dict], context_length = None
+):
+    if not usage:
+        return
+    api_monitor.set_usage(
+        monitor_id,
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
+        total_tokens = usage.get("total_tokens"),
+        context_length = context_length,
+    )
+
+
+def _monitor_openai_chunk(monitor_id: Optional[str], data: dict, context_length = None):
+    if not monitor_id:
+        return
+    _monitor_usage(monitor_id, data.get("usage"), context_length)
+    # Defensive: ignore malformed shapes so the helper never raises into the
+    # streaming generator and aborts the user's response.
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return
+    delta = choice.get("delta") or {}
+    message = choice.get("message") or {}
+    content = delta.get("content") if isinstance(delta, dict) else None
+    if content:
+        api_monitor.append_reply(monitor_id, content)
+    elif isinstance(choice.get("text"), str):
+        api_monitor.append_reply(monitor_id, choice["text"])
+    elif isinstance(message, dict):
+        text = message.get("content")
+        if isinstance(text, str):
+            api_monitor.set_reply(monitor_id, text)
+
+
+def _monitor_openai_error_message(data: dict) -> Optional[str]:
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+        return json.dumps(error)
+    if isinstance(error, str) and error:
+        return error
+    return None
+
+
+def _monitor_openai_sse_line(
+    monitor_id: Optional[str],
+    raw_line: str,
+    context_length = None,
+) -> Optional[str]:
+    if not monitor_id:
+        return None
+    # SSE spec allows `data:value` and `data: value`; accept both.
+    if not raw_line.startswith("data:"):
+        return None
+    data_str = raw_line[5:].lstrip()
+    if data_str == "[DONE]":
+        api_monitor.finish(monitor_id)
+        return "done"
+    try:
+        data = json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        error_message = _monitor_openai_error_message(data)
+        if error_message:
+            api_monitor.fail(monitor_id, error_message)
+            return "error"
+        _monitor_openai_chunk(monitor_id, data, context_length)
+    return None
+
+
+def _monitor_context_length() -> Optional[int]:
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded:
+        return llama_backend.context_length
+    return None
+
+
+def _monitor_active_model() -> Optional[str]:
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded:
+        return llama_backend.model_identifier
+    backend = get_inference_backend()
+    return backend.active_model_name
 
 
 def _validate_native_mmproj_companion(
@@ -1449,6 +1594,28 @@ async def get_load_progress(
         return LoadProgressResponse()
 
 
+@studio_router.get("/monitor")
+async def get_api_monitor(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return recent OpenAI-compatible API activity for Studio."""
+    active_model = _monitor_active_model()
+    active_requests = api_monitor.active_count()
+    if active_requests:
+        operating_status = "generating"
+    elif active_model:
+        operating_status = "ready"
+    else:
+        operating_status = "idle"
+    return {
+        "status": operating_status,
+        "active_model": active_model,
+        "context_length": _monitor_context_length(),
+        "active_requests": active_requests,
+        "entries": api_monitor.snapshot(),
+    }
+
+
 # =====================================================================
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
@@ -1739,6 +1906,15 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = "external_model is required when using an external provider.",
         )
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            model = model,
+            prompt = _monitor_prompt_from_messages(payload.messages),
+            context_length = None,
+        )
 
     # Build messages preserving multimodal content for vision-capable providers
     from core.inference.providers import get_provider_info as _get_provider_info
@@ -1772,13 +1948,20 @@ async def _proxy_to_external_provider(
         )
         try:
             sent_done = False
+            stream_failed = False
             async for line in gen:
+                monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 yield f"{line}\n\n"
-                if "[DONE]" in line:
+                if monitor_event == "done" or "[DONE]" in line:
                     sent_done = True
+                elif monitor_event == "error":
+                    stream_failed = True
             if not sent_done:
+                if not stream_failed:
+                    api_monitor.finish(monitor_id)
                 yield "data: [DONE]\n\n"
         except Exception as exc:
+            api_monitor.fail(monitor_id, str(exc))
             logger.error("external_provider.stream_error", error = str(exc))
         finally:
             try:
@@ -2152,6 +2335,17 @@ async def openai_chat_completions(
                 )
             else:
                 full_text = "".join(audio_input_generate())
+                monitor_id = None
+                if not getattr(request.state, "skip_api_monitor", False):
+                    monitor_id = api_monitor.start(
+                        endpoint = request.url.path,
+                        method = request.method,
+                        model = model_name,
+                        prompt = _monitor_prompt_from_messages(payload.messages),
+                        context_length = None,
+                    )
+                    api_monitor.set_reply(monitor_id, full_text)
+                    api_monitor.finish(monitor_id)
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
@@ -2164,6 +2358,22 @@ async def openai_chat_completions(
                     ],
                 )
                 return JSONResponse(content = response.model_dump())
+
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            model = model_name,
+            prompt = _monitor_prompt_from_messages(payload.messages),
+            context_length = llama_backend.context_length if using_gguf else None,
+        )
+
+    # Finalize the monitor entry on validation rejection before raising.
+    def _reject(status_code: int, detail: str) -> "HTTPException":
+        if monitor_id is not None:
+            api_monitor.fail(monitor_id, detail)
+        return HTTPException(status_code = status_code, detail = detail)
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -2193,10 +2403,7 @@ async def openai_chat_completions(
         and (_tools_passthrough or _has_response_format)
     ):
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
-            )
+            raise _reject(400, "Audio input is not supported for GGUF chat models yet.")
 
         # Preserve the vision guard that would otherwise run in the
         # non-passthrough path below: text-only tool-capable GGUFs
@@ -2210,9 +2417,9 @@ async def openai_chat_completions(
                 for m in payload.messages
             )
         ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+            raise _reject(
+                400,
+                "Image provided but current GGUF model does not support vision.",
             )
 
         cancel_event = threading.Event()
@@ -2228,11 +2435,13 @@ async def openai_chat_completions(
                 payload,
                 model_name,
                 completion_id,
+                monitor_id = monitor_id,
             )
         return await _openai_passthrough_non_streaming(
             llama_backend,
             payload,
             model_name,
+            monitor_id = monitor_id,
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
@@ -2241,25 +2450,19 @@ async def openai_chat_completions(
     )
 
     if not chat_messages:
-        raise HTTPException(
-            status_code = 400,
-            detail = "At least one non-system message is required.",
-        )
+        raise _reject(400, "At least one non-system message is required.")
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
-            )
+            raise _reject(400, "Audio input is not supported for GGUF chat models yet.")
 
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
         if image_b64 and not llama_backend.is_vision:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+            raise _reject(
+                400,
+                "Image provided but current GGUF model does not support vision.",
             )
 
         # Convert image to PNG for llama-server (stb_image has limited format support)
@@ -2279,15 +2482,9 @@ async def openai_chat_completions(
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
             except _UIE:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unsupported or corrupt image format.",
-                )
+                raise _reject(400, "Unsupported or corrupt image format.")
             except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Failed to process image.",
-                )
+                raise _reject(400, "Failed to process image.")
 
         # Build message list with system prompt prepended
         gguf_messages = []
@@ -2452,6 +2649,7 @@ async def openai_chat_completions(
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            api_monitor.finish(monitor_id, "cancelled")
                             return
 
                         event = await asyncio.to_thread(next, gen, _tool_sentinel)
@@ -2485,6 +2683,11 @@ async def openai_chat_completions(
                         if event["type"] == "metadata":
                             _stream_usage = event.get("usage")
                             _stream_timings = event.get("timings")
+                            _monitor_usage(
+                                monitor_id,
+                                _stream_usage,
+                                llama_backend.context_length,
+                            )
                             continue
 
                         # "content" type -- cumulative text
@@ -2497,6 +2700,7 @@ async def openai_chat_completions(
                         prev_text = clean_cumulative
                         if not new_text:
                             continue
+                        api_monitor.append_reply(monitor_id, new_text)
                         chunk = ChatCompletionChunk(
                             id = completion_id,
                             created = created,
@@ -2540,10 +2744,15 @@ async def openai_chat_completions(
                             timings = _stream_timings,
                         )
                         yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    api_monitor.finish(
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
+                    )
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
                     cancel_event.set()
+                    api_monitor.finish(monitor_id, "cancelled")
                     raise
                 except Exception as e:
                     import traceback
@@ -2556,6 +2765,7 @@ async def openai_chat_completions(
                             "type": "server_error",
                         },
                     }
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
                     _tracker.__exit__(None, None, None)
@@ -2623,6 +2833,7 @@ async def openai_chat_completions(
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            api_monitor.finish(monitor_id, "cancelled")
                             return
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
@@ -2632,6 +2843,11 @@ async def openai_chat_completions(
                             if cumulative.get("type") == "metadata":
                                 _stream_usage = cumulative.get("usage")
                                 _stream_timings = cumulative.get("timings")
+                                _monitor_usage(
+                                    monitor_id,
+                                    _stream_usage,
+                                    llama_backend.context_length,
+                                )
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",
@@ -2646,6 +2862,7 @@ async def openai_chat_completions(
                         prev_text = cumulative
                         if not new_text:
                             continue
+                        api_monitor.append_reply(monitor_id, new_text)
                         chunk = ChatCompletionChunk(
                             id = completion_id,
                             created = created,
@@ -2690,13 +2907,19 @@ async def openai_chat_completions(
                             timings = _stream_timings,
                         )
                         yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    api_monitor.finish(
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
+                    )
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
                     cancel_event.set()
+                    api_monitor.finish(monitor_id, "cancelled")
                     raise
                 except Exception as e:
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     error_chunk = {
                         "error": {
                             "message": _friendly_error(e),
@@ -2721,8 +2944,16 @@ async def openai_chat_completions(
                 full_text = ""
                 for token in gguf_generate():
                     if isinstance(token, dict):
+                        if token.get("type") == "metadata":
+                            _monitor_usage(
+                                monitor_id,
+                                token.get("usage"),
+                                llama_backend.context_length,
+                            )
                         continue  # skip metadata dict in non-streaming path
                     full_text = token
+                api_monitor.set_reply(monitor_id, full_text)
+                api_monitor.finish(monitor_id)
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -2739,6 +2970,7 @@ async def openai_chat_completions(
 
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
+                api_monitor.fail(monitor_id, str(e))
                 raise HTTPException(status_code = 500, detail = str(e))
 
     # ── Standard Unsloth path ─────────────────────────────────
@@ -2755,9 +2987,9 @@ async def openai_chat_completions(
 
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Image provided but current model is text-only. Load a vision model.",
+                raise _reject(
+                    400,
+                    "Image provided but current model is text-only. Load a vision model.",
                 )
 
             image_data = base64.b64decode(image_b64)
@@ -2767,7 +2999,7 @@ async def openai_chat_completions(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
+            raise _reject(400, f"Failed to decode image: {e}")
 
     # Shared generation kwargs
     gen_kwargs = dict(
@@ -2847,11 +3079,13 @@ async def openai_chat_completions(
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
                         continue
+                    api_monitor.append_reply(monitor_id, new_text)
                     chunk = ChatCompletionChunk(
                         id = completion_id,
                         created = created,
@@ -2877,15 +3111,21 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                api_monitor.finish(
+                    monitor_id,
+                    "cancelled" if cancel_event.is_set() else "completed",
+                )
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
                 cancel_event.set()
                 backend.reset_generation_state()
+                api_monitor.finish(monitor_id, "cancelled")
                 raise
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 error_chunk = {
                     "error": {
                         "message": _friendly_error(e),
@@ -2912,6 +3152,8 @@ async def openai_chat_completions(
             full_text = ""
             for token in generate():
                 full_text = token
+            api_monitor.set_reply(monitor_id, full_text)
+            api_monitor.finish(monitor_id)
 
             response = ChatCompletion(
                 id = completion_id,
@@ -2929,6 +3171,7 @@ async def openai_chat_completions(
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
+            api_monitor.fail(monitor_id, str(e))
             raise HTTPException(status_code = 500, detail = str(e))
 
 
@@ -3088,6 +3331,18 @@ async def openai_completions(
     body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
+    raw_prompt = body.get("prompt", "")
+    if isinstance(raw_prompt, list):
+        prompt_text = "\n".join(str(part) for part in raw_prompt)
+    else:
+        prompt_text = str(raw_prompt)
+    monitor_id = api_monitor.start(
+        endpoint = request.url.path,
+        method = request.method,
+        model = str(body.get("model") or llama_backend.model_identifier or "default"),
+        prompt = prompt_text,
+        context_length = llama_backend.context_length,
+    )
 
     if is_stream:
 
@@ -3104,13 +3359,49 @@ async def openai_completions(
             client = httpx.AsyncClient(timeout = 600)
             resp = None
             bytes_iter = None
+            # Residual buffer for SSE lines split across TCP chunk boundaries.
+            sse_residual = ""
+            stream_failed = False
             try:
                 req = client.build_request("POST", target_url, json = body)
                 resp = await client.send(req, stream = True)
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    api_monitor.fail(monitor_id, err_text[:500])
+                    logger.error(
+                        "openai_completions upstream error: status=%s body=%s",
+                        resp.status_code,
+                        err_text[:500],
+                    )
+                    yield err_bytes
+                    return
                 bytes_iter = resp.aiter_bytes()
                 async for chunk in bytes_iter:
+                    sse_residual += chunk.decode("utf-8", errors = "ignore")
+                    *complete, sse_residual = sse_residual.split("\n")
+                    for raw_line in complete:
+                        monitor_event = _monitor_openai_sse_line(
+                            monitor_id,
+                            raw_line.strip(),
+                            llama_backend.context_length,
+                        )
+                        if monitor_event == "error":
+                            stream_failed = True
                     yield chunk
+                # Flush any final line not terminated by a newline.
+                if sse_residual.strip():
+                    monitor_event = _monitor_openai_sse_line(
+                        monitor_id,
+                        sse_residual.strip(),
+                        llama_backend.context_length,
+                    )
+                    if monitor_event == "error":
+                        stream_failed = True
+                if not stream_failed:
+                    api_monitor.finish(monitor_id)
             except Exception as e:
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 logger.error("openai_completions stream error: %s", e)
             finally:
                 if bytes_iter is not None:
@@ -3130,8 +3421,29 @@ async def openai_completions(
 
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(target_url, json = body, timeout = 600)
+        except httpx.RequestError as e:
+            logger.error("openai_completions upstream unreachable: %s", e)
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            raise HTTPException(
+                status_code = 502,
+                detail = _friendly_error(e),
+            )
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                _monitor_openai_chunk(
+                    monitor_id,
+                    data,
+                    llama_backend.context_length,
+                )
+            except Exception:
+                pass
+            api_monitor.finish(monitor_id)
+        else:
+            api_monitor.fail(monitor_id, resp.text[:500])
         return Response(
             content = resp.content,
             status_code = resp.status_code,
@@ -3528,6 +3840,7 @@ async def _responses_stream(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
     request: Request,
+    monitor_id: Optional[str] = None,
 ):
     """Handle a streaming Responses API call, emitting named SSE events.
 
@@ -3658,12 +3971,15 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = 600)
         resp = None
         lines_iter = None
+        stream_failed = False
+        stream_cancelled = False
         try:
             req = client.build_request("POST", target_url, json = body)
             try:
                 resp = await client.send(req, stream = True)
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': 502, 'message': _friendly_error(e)}}})}\n\n"
                 return
 
@@ -3675,12 +3991,14 @@ async def _responses_stream(
                     resp.status_code,
                     err_text[:500],
                 )
+                api_monitor.fail(monitor_id, err_text[:500])
                 yield f"event: response.failed\ndata: {json.dumps({'type': 'response.failed', 'response': {'id': resp_id, 'object': 'response', 'created_at': created_at, 'status': 'failed', 'model': payload.model, 'output': [], 'error': {'code': resp.status_code, 'message': f'llama-server error: {err_text[:500]}'}}})}\n\n"
                 return
 
             lines_iter = resp.aiter_lines()
             async for raw_line in lines_iter:
                 if await request.is_disconnected():
+                    stream_cancelled = True
                     break
                 if not raw_line:
                     continue
@@ -3706,6 +4024,7 @@ async def _responses_stream(
                 content = delta.get("content")
                 if content:
                     full_text += content
+                    api_monitor.append_reply(monitor_id, content)
                     delta_event = {
                         "type": "response.output_text.delta",
                         "item_id": msg_id,
@@ -3776,8 +4095,15 @@ async def _responses_stream(
                 if usage:
                     input_tokens = usage.get("prompt_tokens", input_tokens)
                     output_tokens = usage.get("completion_tokens", output_tokens)
+                    _monitor_usage(
+                        monitor_id,
+                        usage,
+                        llama_backend.context_length,
+                    )
         except Exception as e:
             logger.error("responses stream error: %s", e)
+            stream_failed = True
+            api_monitor.fail(monitor_id, str(e))
         finally:
             if lines_iter is not None:
                 try:
@@ -3793,6 +4119,12 @@ async def _responses_stream(
                 await client.aclose()
             except Exception:
                 pass
+
+        if stream_failed:
+            return
+        if stream_cancelled:
+            api_monitor.finish(monitor_id, "cancelled")
+            return
 
         # ── Closing events for tool calls ──
         for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
@@ -3878,6 +4210,7 @@ async def _responses_stream(
                 },
             },
         }
+        api_monitor.finish(monitor_id)
         yield f"event: response.completed\ndata: {json.dumps(completed_response)}\n\n"
 
     return StreamingResponse(
@@ -3910,7 +4243,26 @@ async def openai_responses(
         raise HTTPException(status_code = 400, detail = "No input provided.")
 
     if payload.stream:
-        return await _responses_stream(payload, messages, request)
+        monitor_id = None
+        if not getattr(request.state, "skip_api_monitor", False):
+            monitor_id = api_monitor.start(
+                endpoint = request.url.path,
+                method = request.method,
+                model = payload.model,
+                prompt = _monitor_prompt_from_messages(messages),
+                context_length = _monitor_context_length(),
+            )
+        try:
+            return await _responses_stream(payload, messages, request, monitor_id)
+        except HTTPException as exc:
+            detail = exc.detail
+            if not isinstance(detail, str):
+                detail = json.dumps(detail, default = str)
+            api_monitor.fail(monitor_id, detail)
+            raise
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            raise
     return await _responses_non_streaming(payload, messages, request)
 
 
@@ -4859,6 +5211,7 @@ async def _openai_passthrough_stream(
     payload,
     model_name,
     completion_id,
+    monitor_id = None,
 ):
     """Streaming client-side pass-through for /v1/chat/completions.
 
@@ -4896,6 +5249,7 @@ async def _openai_passthrough_stream(
         except httpx.RequestError as e:
             # llama-server subprocess crashed / still starting / unreachable.
             logger.error("openai passthrough stream: upstream unreachable: %s", e)
+            api_monitor.fail(monitor_id, _friendly_error(e))
             if resp is not None:
                 try:
                     await resp.aclose()
@@ -4913,6 +5267,7 @@ async def _openai_passthrough_stream(
         if resp.status_code != 200:
             err_bytes = await resp.aread()
             err_text = err_bytes.decode("utf-8", errors = "replace")
+            api_monitor.fail(monitor_id, err_text[:500])
             logger.error(
                 "openai passthrough upstream error: status=%s body=%s",
                 resp.status_code,
@@ -4947,6 +5302,7 @@ async def _openai_passthrough_stream(
             cancel_watcher = asyncio.create_task(
                 _await_cancel_then_close(cancel_event, resp)
             )
+            stream_failed = False
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in lines_iter:
@@ -4961,17 +5317,28 @@ async def _openai_passthrough_stream(
                         continue
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
+                    monitor_event = _monitor_openai_sse_line(
+                        monitor_id,
+                        raw_line,
+                        llama_backend.context_length,
+                    )
+                    if monitor_event == "error":
+                        stream_failed = True
                     yield raw_line + "\n\n"
-                    if raw_line[6:].strip() == "[DONE]":
+                    if monitor_event:
                         break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 # Watcher closed resp on cancel. Emit nothing extra; the
                 # client either initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
+                    stream_failed = True
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
             except Exception as e:
                 # 200 headers are already flushed; errors must be in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
+                stream_failed = True
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 err = {
                     "error": {
                         "message": _friendly_error(e),
@@ -4998,6 +5365,11 @@ async def _openai_passthrough_stream(
                     await client.aclose()
                 except Exception:
                     pass
+                if not stream_failed:
+                    api_monitor.finish(
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
+                    )
                 _tracker.__exit__(None, None, None)
 
         return StreamingResponse(
@@ -5018,6 +5390,7 @@ async def _openai_passthrough_non_streaming(
     llama_backend,
     payload,
     model_name,
+    monitor_id = None,
 ):
     """Non-streaming client-side pass-through for /v1/chat/completions.
 
@@ -5039,12 +5412,14 @@ async def _openai_passthrough_non_streaming(
         # Surface the same friendly message the sync chat path emits so
         # operators don't see a bare 500 with no diagnostic.
         logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+        api_monitor.fail(monitor_id, _friendly_error(e))
         raise HTTPException(
             status_code = 502,
             detail = _friendly_error(e),
         )
 
     if resp.status_code != 200:
+        api_monitor.fail(monitor_id, resp.text[:500])
         raise HTTPException(
             status_code = resp.status_code,
             detail = f"llama-server error: {resp.text[:500]}",
@@ -5076,6 +5451,8 @@ async def _openai_passthrough_non_streaming(
                 msg["content"] = f"```json\n{stripped}\n```"
                 changed = True
             if changed:
+                _monitor_openai_chunk(monitor_id, data, llama_backend.context_length)
+                api_monitor.finish(monitor_id)
                 return JSONResponse(content = data)
         except Exception as exc:
             # Wrap is best-effort; fall through to the verbatim body if
@@ -5089,4 +5466,10 @@ async def _openai_passthrough_non_streaming(
     # parse+re-serialize round-trip and keeps the response truly
     # verbatim (matches the docstring). Status is guaranteed 200 by
     # the check above.
+    try:
+        data = resp.json()
+        _monitor_openai_chunk(monitor_id, data, llama_backend.context_length)
+    except Exception:
+        pass
+    api_monitor.finish(monitor_id)
     return Response(content = resp.content, media_type = "application/json")

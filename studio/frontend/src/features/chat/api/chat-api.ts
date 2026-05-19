@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   AudioGenerationResponse,
+  ApiMonitorResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -52,6 +53,11 @@ export async function listLoras(outputsDir?: string): Promise<ListLorasResponse>
 export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
   const response = await authFetch("/api/inference/status");
   return parseJsonOrThrow<InferenceStatusResponse>(response);
+}
+
+export async function getApiMonitor(): Promise<ApiMonitorResponse> {
+  const response = await authFetch("/api/inference/monitor");
+  return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
 export async function loadModel(

@@ -24,8 +24,10 @@ Covers:
 No running server or GPU required.
 """
 
+import asyncio
 import os
 import sys
+from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -33,8 +35,10 @@ sys.path.insert(0, _backend)
 import json
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
+from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatMessage,
     ResponsesFunctionCallInputItem,
@@ -57,6 +61,7 @@ from routes.inference import (
     _translate_responses_tool_choice_to_chat,
     _translate_responses_tools_to_chat,
 )
+from routes import inference as inference_routes
 
 
 # =====================================================================
@@ -665,3 +670,37 @@ class TestTranslatedMessagesValidate:
             # Constructing a fresh ChatMessage from the dump round-trips the
             # role-shape validator — the key invariant for the passthrough.
             ChatMessage(**m.model_dump(exclude_none = True))
+
+
+class TestResponsesStreamMonitorFailures:
+    def test_streaming_validation_error_marks_monitor_failed(self, monkeypatch):
+        async def _run():
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inference_routes,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(is_loaded = False),
+            )
+
+            payload = ResponsesRequest(input = "hello", stream = True)
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/responses"),
+                method = "POST",
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                await inference_routes.openai_responses(
+                    payload,
+                    request,
+                    current_subject = "u",
+                )
+
+            assert exc_info.value.status_code == 400
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "requires a GGUF model loaded" in entry["error"]
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
