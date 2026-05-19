@@ -20,7 +20,7 @@ import type {
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
-function notifyChatHistoryUpdated(): void {
+export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
   }

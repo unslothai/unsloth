@@ -76,11 +76,14 @@ export async function getChatSettings(): Promise<PersistedChatSettings> {
 
 export async function saveChatSettingsPatch(
   patch: PersistedChatSettings,
+  options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
   const response = await authFetch("/api/chat/settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
+    // keepalive lets the PUT survive a tab close from the beforeunload flush.
+    keepalive: options.keepalive,
   });
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
   return data.settings;

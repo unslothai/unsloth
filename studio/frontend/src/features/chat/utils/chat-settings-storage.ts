@@ -378,6 +378,9 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
 
 export async function savePersistedChatSettingsPatch(
   patch: PersistedChatSettings,
+  options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
-  return sanitizeChatSettings(await saveChatSettingsPatch(sanitizeChatSettings(patch)));
+  return sanitizeChatSettings(
+    await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
+  );
 }

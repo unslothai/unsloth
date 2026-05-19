@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
@@ -19,6 +19,7 @@ export interface ChatSearchItem {
 
 const THREAD_LIMIT = 200;
 const PREVIEW_MAX = 120;
+const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 
 function extractText(message: MessageRecord): string {
   const content = message.content;
@@ -134,6 +135,7 @@ export function useChatSearchIndex(enabled: boolean): {
 } {
   const [items, setItems] = useState<ChatSearchItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const requestSeqRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) {
@@ -142,24 +144,42 @@ export function useChatSearchIndex(enabled: boolean): {
       return;
     }
     let cancelled = false;
-    const build = () => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const run = () => {
+      const seq = ++requestSeqRef.current;
       setLoading(true);
       buildIndex()
         .then((result) => {
-          if (!cancelled) setItems(result);
+          // Drop out-of-order responses so a slower rebuild can't clobber
+          // a fresher one.
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setItems(result);
         })
         .catch(() => {
-          if (!cancelled) setItems([]);
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setItems([]);
         })
         .finally(() => {
-          if (!cancelled) setLoading(false);
+          if (cancelled || seq !== requestSeqRef.current) return;
+          setLoading(false);
         });
     };
-    build();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, build);
+
+    const scheduleRebuild = () => {
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (!cancelled) run();
+      }, SEARCH_REBUILD_DEBOUNCE_MS);
+    };
+
+    run();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     return () => {
       cancelled = true;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, build);
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     };
   }, [enabled]);
 

@@ -116,14 +116,6 @@ export function removeChatThreadTombstones(threadIds: Iterable<string>): void {
   if (changed) persist();
 }
 
-/** Clear every tombstone. Call after the legacy import flag is set AND
- * Dexie has been wiped; the caller must confirm both. */
-export function clearAllChatThreadTombstones(): void {
-  if (deletedThreads.size === 0) return;
-  deletedThreads.clear();
-  persist();
-}
-
 export function __resetChatThreadTombstonesForTests(): void {
   deletedThreads.clear();
 }

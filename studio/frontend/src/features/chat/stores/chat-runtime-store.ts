@@ -76,12 +76,12 @@ function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
   }
 }
 
-async function flushSettingsPatch(): Promise<void> {
+async function flushSettingsPatch(keepalive = false): Promise<void> {
   if (Object.keys(pendingPatch).length === 0) return;
   const patch = pendingPatch;
   pendingPatch = {};
   try {
-    await savePersistedChatSettingsPatch(patch);
+    await savePersistedChatSettingsPatch(patch, { keepalive });
   } catch {
     warnSettingsPersistenceFailure();
   }
@@ -92,19 +92,20 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
-    inflightFlush = inflightFlush.catch(() => undefined).then(flushSettingsPatch);
+    inflightFlush = inflightFlush.catch(() => undefined).then(() => flushSettingsPatch());
   }, SETTINGS_DEBOUNCE_MS);
 }
 
-// Best-effort flush of any pending patch when the tab closes. Relies on
-// savePersistedChatSettingsPatch using keepalive fetch / sendBeacon.
+// Best-effort flush of any pending patch when the tab closes. keepalive
+// lets the PUT outlive the unload; without it the browser cancels the
+// fetch and the user's last slider drag is dropped.
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     if (pendingTimer !== null) clearTimeout(pendingTimer);
     if (Object.keys(pendingPatch).length === 0) return;
     inflightFlush = inflightFlush
       .catch(() => undefined)
-      .then(flushSettingsPatch);
+      .then(() => flushSettingsPatch(true));
   });
 }
 
