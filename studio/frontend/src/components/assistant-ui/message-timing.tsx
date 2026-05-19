@@ -39,12 +39,11 @@ export const MessageTiming: FC<{
   const st = serverTimings?.serverTimings;
 
   // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op
-  // turns, blowing the rate up to Infinity. Require >=1 token and a
-  // decode window of at least 10ms (real generation never finishes in
-  // less than that, so this filters race-lost panes without hiding
-  // legitimate fast paths like cache-hit single-token responses).
+  // turns, blowing the rate up to Infinity. Require >=1 token AND a
+  // non-zero decode window AND a finite rate. Fast cached single-token
+  // responses (sub-10ms) are legitimate and must stay visible.
   const hasPredicted =
-    (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) >= 10;
+    (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) > 0;
   const predictedRate =
     hasPredicted &&
     st?.predicted_per_second != null &&
