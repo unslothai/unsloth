@@ -313,8 +313,12 @@ class TestPatchD_EvalExecDynamicPayload:
     @pytest.mark.parametrize(
         "code",
         [
-            # Non-literal payloads — flagged as dynamic shell escape
-            "payload = 'print(1)'; exec(payload)",
+            # Truly dynamic payloads (no static resolution possible) —
+            # flagged as dynamic shell escape. ``payload = 'print(1)'
+            # ; exec(payload)`` is intentionally NOT in this list: the
+            # variable-binding pre-pass folds the literal and the inner
+            # ``print(1)`` is then visited and confirmed safe, which is
+            # the correct behaviour.
             "import os; exec(os.environ['PAYLOAD'])",
             "import base64; exec(base64.b64decode('cHJpbnQoMSk=').decode())",
             "exec(input())",
@@ -322,6 +326,30 @@ class TestPatchD_EvalExecDynamicPayload:
     )
     def test_dynamic_payload_flagged(self, code):
         assert _is_blocked(code), f"expected to block: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Statically resolvable variable-name payloads now reach
+            # the literal-payload recursion: safe inner code is allowed.
+            "payload = 'print(1)'; exec(payload)",
+            "p = '1 + 2'; eval(p)",
+        ],
+    )
+    def test_resolvable_variable_payload_allowed_when_safe(self, code):
+        assert not _is_blocked(code), f"safe resolved payload blocked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Statically resolvable variable-name payloads that contain
+            # an attack — must still block via the recursive inspection.
+            "payload = \"open('/etc/shadow').read()\"; exec(payload)",
+            "p = \"import os; os.system('sudo whoami')\"; exec(p)",
+        ],
+    )
+    def test_resolvable_variable_payload_blocked_when_unsafe(self, code):
+        assert _is_blocked(code), f"unsafe resolved payload missed: {code!r}"
 
 
 class TestPatchD_NestedDepthCap:
@@ -957,3 +985,329 @@ class TestR2Finding16_PathlibAliasImport:
     )
     def test_aliased_pathlib_blocked(self, code):
         assert _is_blocked(code), f"alias bypass: {code!r}"
+
+
+# ---------------------------------------------------------------------------
+# Review-round 4 regressions: fixes for findings surfaced by the third
+# 20-reviewer pass. Each class corresponds to a finding number from that
+# report.
+# ---------------------------------------------------------------------------
+
+
+class TestR3Finding1_ParentDirNormalisation:
+    """``/etc/../etc/shadow``, ``~/.ssh/../.aws/credentials``, and the
+    pathlib equivalent now collapse through posixpath.normpath before the
+    sensitive-path regex sees them."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/etc/apt/../shadow').read()",
+            "open('/proc/self/fd/../environ').read()",
+            "open('/etc/ssl/../shadow').read()",
+            "from pathlib import Path\nPath('/proc/self/fd/../environ').read_text()",
+            "from pathlib import Path\nPath('/etc/apt/../shadow').read_text()",
+        ],
+    )
+    def test_parent_dir_open_blocked(self, code):
+        assert _is_blocked(code), f"parent-dir bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/apt/../shadow",
+            "cat /etc/ssl/../shadow",
+            "cat /proc/self/fd/../environ",
+            "cat ~/.ssh/../.aws/credentials",
+        ],
+    )
+    def test_parent_dir_bash_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"bash parent-dir bypass: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /tmp/test/../README.md",
+            "cat ./build/../README.md",
+        ],
+    )
+    def test_parent_dir_legit_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"legit parent-dir path blocked: {cmd!r}"
+        )
+
+
+class TestR3Finding2_OpenPathLike:
+    """Built-in ``open()`` accepts ``PathLike`` objects, so
+    ``open(Path('/etc/shadow'))`` now flows through the pathlib resolver."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path; open(Path('/etc/shadow')).read()",
+            "from pathlib import Path; open(file=Path('/etc/shadow')).read()",
+            "from pathlib import Path; open(Path('/etc') / 'shadow').read()",
+            "from pathlib import Path; open(Path('/home/u', '.aws/credentials')).read()",
+        ],
+    )
+    def test_open_pathlike_blocked(self, code):
+        assert _is_blocked(code), f"open(Path) bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path; open(Path('data.csv')).read()",
+            "from pathlib import Path; open(Path('logs', 'today.log'), 'w')",
+        ],
+    )
+    def test_open_pathlike_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit open(Path) blocked: {code!r}"
+
+
+class TestR3Finding3_PathlibHomeAndTransforms:
+    """``Path.home()``, ``.expanduser()``, ``.resolve()``, and
+    ``.absolute()`` are now handled by the pathlib resolver as
+    pass-through / home-substitution helpers."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path; (Path.home() / '.aws/credentials').read_text()",
+            "from pathlib import Path; Path.home().joinpath('.ssh/id_rsa').read_text()",
+            "from pathlib import Path; Path('~/.aws/credentials').expanduser().read_text()",
+            "from pathlib import Path; Path('/etc/shadow').resolve().read_text()",
+            "from pathlib import Path; Path('/etc/shadow').absolute().read_text()",
+        ],
+    )
+    def test_path_home_and_transforms_blocked(self, code):
+        assert _is_blocked(code), f"home/transforms bypass: {code!r}"
+
+
+class TestR3Finding5_AbsoluteSegmentReset:
+    """``Path('/tmp', '/etc/shadow')`` resolves to ``/etc/shadow`` at
+    runtime; the helper now models the same semantics."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path; (Path('/tmp') / '/etc/shadow').read_text()",
+            "from pathlib import Path; Path('/tmp').joinpath('/etc/shadow').read_text()",
+            "from pathlib import Path; Path('/tmp', '/etc/shadow').read_text()",
+            "from pathlib import Path; Path('/tmp').joinpath('/home/u/.aws/credentials').open().read()",
+        ],
+    )
+    def test_absolute_reset_blocked(self, code):
+        assert _is_blocked(code), f"absolute-reset bypass: {code!r}"
+
+
+class TestR3Finding6_7_8_FromBuiltinsImportAs:
+    """``from builtins import exec as e`` registers ``e`` for the same
+    literal-payload recursion as bare ``exec``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from builtins import exec as e\ne(\"open('/etc/shadow').read()\")",
+            "from builtins import eval as e\ne(\"open('/etc/shadow').read()\")",
+            "from builtins import exec as run\nrun(\"import os; os.system('cat /etc/shadow')\")",
+        ],
+    )
+    def test_from_builtins_import_as_blocked(self, code):
+        assert _is_blocked(code), f"from-builtins-import bypass: {code!r}"
+
+
+class TestR3Finding11_12_ProcStateExtensions:
+    """``/proc/self/cmdline``, ``/proc/thread-self/*``, and
+    ``/proc/<pid>/task/<tid>/*`` are extensions of the existing process-
+    state sensitive set."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /proc/self/cmdline",
+            "cat /proc/thread-self/environ",
+            "cat /proc/thread-self/cmdline",
+            "cat /proc/self/task/123/environ",
+            "cat /proc/1234/task/567/maps",
+        ],
+    )
+    def test_proc_state_extensions_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"proc-state bypass: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/proc/self/cmdline').read()",
+            "open('/proc/thread-self/environ').read()",
+            "open('/proc/self/task/123/environ').read()",
+        ],
+    )
+    def test_proc_state_extensions_open_blocked(self, code):
+        assert _is_blocked(code), f"proc-state open bypass: {code!r}"
+
+
+class TestR3Finding13_NumericFString:
+    """``f'/proc/{1}/environ'`` and ``f'http://{169}.{254}.{169}.{254}/'``
+    fold to literal strings because numeric f-string parts are stringified."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(f'/proc/{1}/environ').read()",
+            "import requests; requests.get(f'http://169.254.{169}.{254}/')",
+        ],
+    )
+    def test_numeric_fstring_blocked(self, code):
+        assert _is_blocked(code), f"numeric f-string bypass: {code!r}"
+
+
+class TestR3Finding15_OsPathJoin:
+    """``os.path.join('/etc', 'shadow')`` resolves the same way pathlib
+    composition does."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os; open(os.path.join('/etc', 'shadow')).read()",
+            "import os; open(os.path.join('/home/u', '.aws/credentials')).read()",
+            "import os; open(os.path.join('/etc', 'ssh', 'ssh_host_rsa_key')).read()",
+        ],
+    )
+    def test_os_path_join_blocked(self, code):
+        assert _is_blocked(code), f"os.path.join bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os; open(os.path.join('logs', 'today.log'), 'w')",
+            "import os; open(os.path.join('data', 'config.json'))",
+        ],
+    )
+    def test_os_path_join_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit os.path.join blocked: {code!r}"
+
+
+class TestR3Finding16_19_NameBindings:
+    """Simple ``name = 'literal'`` and ``name = eval`` assignments are
+    folded by the pre-pass so subsequent ``open(name)`` / ``name(...)``
+    invocations see the resolved value."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "p = '/etc/shadow'; open(p).read()",
+            "p = '/home/u/.aws/credentials'; open(p).read()",
+            "p = '/etc/shadow'; from pathlib import Path; Path(p).read_text()",
+            "e = eval\ne(\"open('/etc/shadow').read()\")",
+        ],
+    )
+    def test_name_binding_blocked(self, code):
+        assert _is_blocked(code), f"name-binding bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Legit dynamic URL — the network gate intentionally stays
+            # opaque to bindings so untrusted-host policy enforcement
+            # does not over-block.
+            "url = 'https://example.com/'; import requests; requests.get(url)",
+            # Legit string variable for non-sensitive file
+            "p = 'data.csv'; open(p)",
+            "p = 'logs/today.log'; open(p, 'w')",
+        ],
+    )
+    def test_name_binding_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit name-binding blocked: {code!r}"
+
+
+class TestR3Finding18_OsPathExpanduser:
+    """``os.path.expanduser('~/.aws/credentials')`` is statically
+    resolvable to a tilde-prefix sensitive path."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os; open(os.path.expanduser('~/.aws/credentials')).read()",
+            "import os; open(os.path.expanduser('~/.ssh/id_rsa')).read()",
+        ],
+    )
+    def test_os_path_expanduser_blocked(self, code):
+        assert _is_blocked(code), f"os.path.expanduser bypass: {code!r}"
+
+
+class TestR3Finding20_ShutilCopyExfil:
+    """``shutil.copyfile`` / ``copy`` / ``copy2`` / ``copytree`` /
+    ``move`` read the source path; the gate now treats their source arg
+    the same as ``open()``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil; shutil.copyfile('/etc/shadow', 'out')",
+            "import shutil; shutil.copy('/home/u/.aws/credentials', '/tmp/x')",
+            "import shutil; shutil.copy2(src='/etc/shadow', dst='out')",
+            "import shutil; shutil.move('/etc/shadow', 'leak')",
+            "from pathlib import Path; import shutil; shutil.copyfile(Path('/etc/shadow'), 'out')",
+        ],
+    )
+    def test_shutil_copy_source_blocked(self, code):
+        assert _is_blocked(code), f"shutil.copy bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil; shutil.copyfile('a.txt', 'b.txt')",
+            "import shutil; shutil.copy('src/main.py', 'src/main.py.bak')",
+            "import shutil; shutil.move('logs/today.log', 'logs/archive.log')",
+        ],
+    )
+    def test_shutil_copy_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit shutil.copy blocked: {code!r}"
+
+
+class TestR3Finding21_ConcretePathlibClasses:
+    """``PosixPath``, ``WindowsPath``, ``PurePath`` etc. all map to the
+    same constructor recognition as ``Path``."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import PosixPath\nPosixPath('/etc/shadow').read_text()",
+            "from pathlib import WindowsPath\nWindowsPath('/etc/shadow').read_text()",
+            "from pathlib import PurePath\nPurePath('/etc/shadow').read_text()",
+            "import pathlib\npathlib.PosixPath('/etc/shadow').read_text()",
+            "import pathlib\npathlib.PurePosixPath('/etc/shadow').read_text()",
+        ],
+    )
+    def test_concrete_pathlib_classes_blocked(self, code):
+        assert _is_blocked(code), f"concrete-class bypass: {code!r}"
+
+
+class TestR3Finding22_RequestsRequestPositionalKeyword:
+    """``requests.request('GET', url='http://...')`` previously ate the
+    positional ``'GET'`` as the URL; the URL-second branch now skips it
+    so the ``url=`` keyword is read correctly."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests; requests.request('GET', url='http://169.254.169.254/')",
+            "import requests; requests.request('POST', url='http://169.254.169.254/secrets')",
+            "import requests; requests.request(method='GET', url='http://169.254.169.254/')",
+            "import httpx; httpx.request('GET', url='http://169.254.169.254/')",
+        ],
+    )
+    def test_request_method_then_kw_url_blocked(self, code):
+        assert _is_blocked(code), f"method+kw bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests; requests.request('GET', url='https://huggingface.co/x')",
+            "import requests; requests.request('POST', url='https://wikipedia.org/')",
+        ],
+    )
+    def test_request_method_then_kw_trusted_url_allowed(self, code):
+        assert not _is_blocked(code), (
+            f"trusted method+kw blocked: {code!r}"
+        )
