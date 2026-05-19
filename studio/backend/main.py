@@ -16,7 +16,6 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
 if sys.platform == "win32":
-
     # Retained at module scope -- os.add_dll_directory returns a handle that
     # removes the search-path entry when garbage collected.
     _ROCM_DLL_HANDLES: list = []
@@ -66,6 +65,7 @@ if sys.platform == "win32":
     if os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"):
         try:
             import torch as _torch_probe
+
             _is_rocm_host = bool(getattr(_torch_probe.version, "hip", None))
             del _torch_probe
         except Exception:
