@@ -1179,7 +1179,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # in install.ps1. -File reads the BOM and decodes correctly. The
         # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
         ps1_fd, ps1_path = tempfile.mkstemp(
-            prefix = "unsloth-studio-refresh-", suffix = ".ps1",
+            prefix = "unsloth-studio-refresh-",
+            suffix = ".ps1",
         )
         try:
             with os.fdopen(ps1_fd, "wb") as fh:
