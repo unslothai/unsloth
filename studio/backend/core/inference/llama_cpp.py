@@ -3311,10 +3311,7 @@ class LlamaCppBackend:
                 )
                 return False
             draft_n_max = _resolved_draft_n_max()
-            n_max_flag = (
-                caps.get("spec_draft_n_max_flag")
-                or "--spec-draft-n-max"
-            )
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
             if chain_ngram:
                 ngram_knobs = _build_ngram_mod_flags(caps)
                 if ngram_knobs:
