@@ -351,6 +351,67 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
     )
 
 
+def test_already_in_target_state_vision_mtp_match():
+    # llama.cpp #22673: MTP is compatible with mmproj. A vision MTP load
+    # with auto/default spec must match a backend already running draft-mtp.
+    backend = _mtp_backend(_is_vision = True)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = True,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_vision_mtp_default_matches():
+    backend = _mtp_backend(_is_vision = True)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "default",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = True,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_vision_non_mtp_unaffected():
+    # Vision non-MTP repo (no -MTP marker) must still mismatch req=None
+    # against a backend running draft-mtp.
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
+        _is_vision = True,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = True,
+        )
+        is False
+    )
+
+
 # GGUF-metadata-based detection (nextn_predict_layers).
 
 
