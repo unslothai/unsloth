@@ -351,7 +351,7 @@ jobs:
           echo "OK: Studio prebuilt llama.cpp on Mac M1 + GGUF /completion works"
 
       # Real MLX training + inference smoke test. Trains
-      # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
+      # unsloth/gemma-3-270m-it for 30 deterministic LoRA steps
       # (batch_size=2, gradient_accumulation_steps=3) on a single
       # repeated row ("<<HELLO!!>> My name is Unsloth!"), then saves
       # the trained model in 3 export formats. The `train` subcommand
