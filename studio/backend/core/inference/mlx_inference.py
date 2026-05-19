@@ -157,9 +157,58 @@ class MLXInferenceBackend:
             "audio_type": None,
             "has_audio_input": False,
         }
+        # Capture chat_template_info so the worker IPC reply can ship
+        # it back to the parent and the route layer classifies
+        # capabilities the same way as the transformers / GGUF paths.
+        self._populate_chat_template_info(model_name)
 
         logger.info("Model %s loaded successfully", model_name)
         return True
+
+    def _populate_chat_template_info(self, model_name: str) -> None:
+        """Mirror InferenceBackend._load_chat_template_info for MLX.
+
+        Stores ``chat_template_info`` on ``self.models[model_name]``
+        with the resolved ``tokenizer.chat_template`` so
+        ``_detect_safetensors_features`` (route layer) sees the same
+        template the model actually uses."""
+        entry = self.models.get(model_name)
+        if not entry:
+            return
+        tok = entry.get("tokenizer")
+        if tok is None:
+            proc = entry.get("processor")
+            tok = getattr(proc, "tokenizer", None) if proc else None
+        info = {
+            "has_template": False,
+            "template": None,
+            "format_type": "generic",
+            "special_tokens": {},
+            "template_name": None,
+        }
+        try:
+            tpl = getattr(tok, "chat_template", None)
+            if tpl:
+                info["has_template"] = True
+                info["template"] = tpl
+                lower = tpl.lower()
+                if "start_header_id" in lower and "end_header_id" in lower:
+                    info["format_type"] = "llama3"
+                elif "[inst]" in lower and "[/inst]" in lower:
+                    info["format_type"] = "mistral"
+                elif "<|im_start|>" in lower and "<|im_end|>" in lower:
+                    info["format_type"] = "chatml"
+                else:
+                    info["format_type"] = "custom"
+                special = {}
+                for attr in ("bos_token", "eos_token", "pad_token"):
+                    val = getattr(tok, attr, None)
+                    if val:
+                        special[attr] = val
+                info["special_tokens"] = special
+        except Exception as exc:
+            logger.warning("MLX chat_template_info capture failed: %s", exc)
+        entry["chat_template_info"] = info
 
     def unload_model(self, model_name: str) -> bool:
         import mlx.core as mx
