@@ -5,7 +5,6 @@
 Chat history API routes backed by studio.db.
 """
 
-import logging
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from storage.studio_db import (
-    ChatMessageThreadMismatch,
     clear_chat_history,
     count_chat_threads,
     delete_chat_threads,
@@ -29,8 +27,6 @@ from storage.studio_db import (
     upsert_chat_settings_merge,
     upsert_chat_thread,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -84,16 +80,6 @@ class ChatMessageSyncRequest(BaseModel):
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
-
-
-class ChatMessagesBatchRequest(BaseModel):
-    thread_ids: list[str] = Field(default_factory = list)
-
-
-class ChatMessagesBatchResponse(BaseModel):
-    """{thread_id -> messages[]} for many threads in one HTTP call."""
-
-    threads: dict[str, list[ChatMessage]]
 
 
 class ChatCountResponse(BaseModel):
@@ -153,6 +139,14 @@ class ChatSettingsResponse(BaseModel):
     settings: dict[str, Any]
 
 
+class ChatMessagesBatchRequest(BaseModel):
+    threadIds: list[str]
+
+
+class ChatMessagesBatchResponse(BaseModel):
+    messagesByThreadId: dict[str, list[ChatMessage]]
+
+
 @router.get("/threads", response_model = ChatThreadListResponse)
 async def list_threads(
     model_type: Optional[str] = Query(None),
@@ -161,7 +155,6 @@ async def list_threads(
     current_subject: str = Depends(get_current_subject),
 ):
     threads = list_chat_threads(
-        subject = current_subject,
         model_type = model_type,
         pair_id = pair_id,
         include_archived = include_archived,
@@ -174,9 +167,7 @@ async def save_thread(
     payload: ChatThread,
     current_subject: str = Depends(get_current_subject),
 ):
-    return ChatThread(
-        **upsert_chat_thread(payload.model_dump(), subject = current_subject)
-    )
+    return ChatThread(**upsert_chat_thread(payload.model_dump()))
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
@@ -184,7 +175,7 @@ async def get_thread(
     thread_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    thread = get_chat_thread(thread_id, subject = current_subject)
+    thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatThread(**thread)
@@ -203,7 +194,6 @@ async def patch_thread(
     thread = update_chat_thread(
         thread_id,
         patch,
-        subject = current_subject,
     )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
@@ -215,8 +205,8 @@ async def delete_threads(
     payload: ChatDeleteRequest,
     current_subject: str = Depends(get_current_subject),
 ):
-    deleted = delete_chat_threads(payload.ids, subject = current_subject)
-    return {"status": "deleted", "count": deleted}
+    delete_chat_threads(payload.ids)
+    return {"status": "deleted"}
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -224,14 +214,26 @@ async def get_thread_messages(
     thread_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    if get_chat_thread(thread_id, subject = current_subject) is None:
+    if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
-        messages = [
-            ChatMessage(**m)
-            for m in list_chat_messages(thread_id, subject = current_subject)
-        ]
+        messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
     )
+
+
+@router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
+async def batch_thread_messages(
+    payload: ChatMessagesBatchRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """One round-trip per sidebar/search rebuild instead of N. Unknown thread
+    ids are returned as empty lists so callers don't need a pre-flight."""
+    by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
+    for m in list_chat_messages_for_threads(payload.threadIds):
+        tid = m["threadId"]
+        if tid in by_thread:
+            by_thread[tid].append(ChatMessage(**m))
+    return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
 
 
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
@@ -240,9 +242,9 @@ async def get_thread_message(
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    if get_chat_thread(thread_id, subject = current_subject) is None:
+    if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    message = get_chat_message(thread_id, message_id, subject = current_subject)
+    message = get_chat_message(thread_id, message_id)
     if message is None:
         raise HTTPException(status_code = 404, detail = f"Message {message_id} not found")
     return ChatMessage(**message)
@@ -257,13 +259,9 @@ async def save_thread_message(
 ):
     if thread_id != payload.threadId or message_id != payload.id:
         raise HTTPException(status_code = 400, detail = "Message id mismatch")
-    if get_chat_thread(thread_id, subject = current_subject) is None:
+    if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    try:
-        message = upsert_chat_message(payload.model_dump(), subject = current_subject)
-    except ChatMessageThreadMismatch as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    return ChatMessage(**message)
+    return ChatMessage(**upsert_chat_message(payload.model_dump()))
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -272,79 +270,39 @@ async def replace_thread_messages(
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
 ):
-    if get_chat_thread(thread_id, subject = current_subject) is None:
+    if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    # Reject mismatched body threadId instead of silently rewriting.
+    messages = []
     for message in payload.messages:
-        if message.threadId != thread_id:
-            raise HTTPException(
-                status_code = 400,
-                detail = (
-                    f"message {message.id!r} threadId={message.threadId!r} "
-                    f"does not match URL thread {thread_id!r}"
-                ),
+        data = message.model_dump()
+        data["threadId"] = thread_id
+        messages.append(data)
+    return ChatMessageListResponse(
+        messages = [
+            ChatMessage(**m)
+            for m in sync_chat_messages(
+                thread_id,
+                messages,
+                prune_missing = payload.pruneMissing,
             )
-    messages = [message.model_dump() for message in payload.messages]
-    try:
-        rows = sync_chat_messages(
-            thread_id,
-            messages,
-            subject = current_subject,
-            prune_missing = payload.pruneMissing,
-        )
-    except ChatMessageThreadMismatch as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in rows])
-
-
-@router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
-async def batch_get_messages(
-    payload: ChatMessagesBatchRequest,
-    current_subject: str = Depends(get_current_subject),
-):
-    """Batched message fetch: many threads in one HTTP call.
-
-    Subject-scoped. Unknown ids return an empty list (not 404) so the
-    sidebar/search caller can rebuild atomically.
-    """
-    if not payload.thread_ids:
-        return ChatMessagesBatchResponse(threads = {})
-    rows = list_chat_messages_for_threads(payload.thread_ids, subject = current_subject)
-    bucket: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.thread_ids}
-    for row in rows:
-        thread_id = row["threadId"]
-        if thread_id in bucket:
-            bucket[thread_id].append(ChatMessage(**row))
-    return ChatMessagesBatchResponse(threads = bucket)
+        ]
+    )
 
 
 @router.get("/count", response_model = ChatCountResponse)
 async def count_threads(current_subject: str = Depends(get_current_subject)):
-    return ChatCountResponse(count = count_chat_threads(subject = current_subject))
+    return ChatCountResponse(count = count_chat_threads())
 
 
 @router.delete("")
-async def clear_history(
-    confirm: bool = Query(
-        False,
-        description = "Must be set to true to confirm the destructive clear.",
-    ),
-    current_subject: str = Depends(get_current_subject),
-):
-    """Require ?confirm=true so a misclick or stray request cannot wipe history."""
-    if not confirm:
-        raise HTTPException(
-            status_code = 400,
-            detail = "DELETE /api/chat requires ?confirm=true",
-        )
-    deleted = clear_chat_history(subject = current_subject)
-    logger.warning("cleared %d chat threads for subject=%s", deleted, current_subject)
-    return {"status": "deleted", "count": deleted}
+async def clear_history(current_subject: str = Depends(get_current_subject)):
+    clear_chat_history()
+    return {"status": "deleted"}
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)
 async def get_settings(current_subject: str = Depends(get_current_subject)):
-    return ChatSettingsResponse(settings = list_chat_settings(subject = current_subject))
+    return ChatSettingsResponse(settings = list_chat_settings())
 
 
 @router.put("/settings", response_model = ChatSettingsResponse)
@@ -352,28 +310,23 @@ async def put_settings(
     payload: dict[str, Any],
     current_subject: str = Depends(get_current_subject),
 ):
-    """Deep-merge in storage under BEGIN IMMEDIATE; concurrent writers
-    no longer drop one another's updates."""
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
         raise HTTPException(status_code = 400, detail = exc.errors()) from exc
-    merged = upsert_chat_settings_merge(
-        parsed.model_dump(exclude_unset = True),
-        subject = current_subject,
+    # Atomic read + deep-merge + write inside one BEGIN IMMEDIATE so two
+    # concurrent slider drags can't drop each other's updates.
+    return ChatSettingsResponse(
+        settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
     )
-    return ChatSettingsResponse(settings = merged)
 
 
 @router.get("/export", response_model = ChatExportResponse)
 async def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
 
-    threads = list_chat_threads(subject = current_subject, include_archived = True)
-    messages = list_chat_messages_for_threads(
-        [thread["id"] for thread in threads],
-        subject = current_subject,
-    )
+    threads = list_chat_threads(include_archived = True)
+    messages = list_chat_messages_for_threads([thread["id"] for thread in threads])
     return ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,

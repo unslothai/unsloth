@@ -377,7 +377,7 @@ export async function batchListChatMessages(
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ thread_ids: threadIds }),
+    body: JSON.stringify({ threadIds }),
   });
   if (response.status === 404 || response.status === 405) {
     // Older server: fall back to per-thread fetches.
@@ -388,10 +388,10 @@ export async function batchListChatMessages(
     return out;
   }
   const data = await parseJsonOrThrow<{
-    threads: Record<string, MessageRecord[]>;
+    messagesByThreadId: Record<string, MessageRecord[]>;
   }>(response);
   for (const id of threadIds) {
-    out.set(id, data.threads[id] ?? []);
+    out.set(id, data.messagesByThreadId[id] ?? []);
   }
   return out;
 }
