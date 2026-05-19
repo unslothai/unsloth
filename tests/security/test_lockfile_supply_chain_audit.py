@@ -27,9 +27,12 @@ def _run_auditor(
     root: Path,
     npm_lockfiles: list[Path] | None = None,
     cargo_lockfiles: list[Path] | None = None,
+    strict: bool = False,
     timeout: int = 30,
 ) -> subprocess.CompletedProcess:
     cmd = [sys.executable, str(SCRIPT), "--root", str(root)]
+    if strict:
+        cmd.append("--strict")
     for p in npm_lockfiles or []:
         cmd.extend(["--npm-lockfile", str(p)])
     for p in cargo_lockfiles or []:
@@ -170,6 +173,32 @@ checksum = "0000000000000000000000000000000000000000000000000000000000000000"
 def test_malicious_cargo_lockfile_refused(tmp_path):
     """Inline Cargo.lock with `source = "git+https://example.com/..."`
     must trip the `non-registry-cargo-source` check.
+
+    `non-registry-cargo-source` is an advisory finding kind in the
+    auditor's default mode (per the audit script's BLOCKING_KINDS
+    set). To exercise the historical "refuse to install" behavior we
+    pass --strict here; that promotes every finding to blocking and
+    keeps the test honest about its intent (detection + refusal).
+    """
+    lockfile = tmp_path / "Cargo.lock"
+    lockfile.write_text(_MALICIOUS_CARGO_LOCK)
+    proc = _run_auditor(
+        root = tmp_path,
+        npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
+        cargo_lockfiles = [lockfile],
+        strict = True,
+    )
+    assert proc.returncode == 1
+    combined = proc.stdout + proc.stderr
+    assert "non-registry-cargo-source" in combined
+    assert "git+https://example.com" in combined
+
+
+def test_malicious_cargo_lockfile_default_mode_advisory(tmp_path):
+    """Default (non-strict) mode classifies `non-registry-cargo-source`
+    as advisory: the finding is still emitted as a `::warning::`
+    annotation but the process exits 0 so the build is not gated.
+    Regression test for the advisory/strict split.
     """
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
@@ -178,10 +207,13 @@ def test_malicious_cargo_lockfile_refused(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    assert proc.returncode == 1
+    assert proc.returncode == 0, (
+        f"expected exit 0 (advisory), got {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
     combined = proc.stdout + proc.stderr
     assert "non-registry-cargo-source" in combined
-    assert "git+https://example.com" in combined
+    assert "advisory finding" in combined
 
 
 def test_audit_cargo_lockfile_direct_call(tmp_path):
