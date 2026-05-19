@@ -68,7 +68,6 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools
@@ -97,6 +96,140 @@ from ..device_type import (
 __all__ = [
     "FastBaseModel",
 ]
+
+
+# bnb-quantized Linear class names (see unslothai/unsloth#5344 guardrail).
+_BNB_QUANT_CLASS_NAMES = ("Linear4bit", "Linear8bitLt", "LinearNF4", "LinearFP4")
+
+# Substrings the guardrail treats as intentionally-not-quantized: embeddings,
+# norms, biases, routers/gates that need fp16/fp32 precision, vision/audio
+# towers, classification heads, rotary tables.
+_GUARDRAIL_SKIP_PATTERNS = (
+    "embed",
+    "embedding",
+    "norm",
+    "ln_",
+    "rms",
+    ".bias",
+    "lm_head",
+    "multi_modal_projector",
+    "merger",
+    "modality_projection",
+    "router",
+    "block_sparse_moe.gate",
+    "mamba",
+    "audio_tower",
+    "vision_tower",
+    "score",
+    "classifier",
+    "qa_outputs",
+    "rotary",
+)
+
+# A floating Parameter larger than this, found outside the skip list, counts
+# as bulk weight that should have been 4-bit. Tuned so head dims and small
+# projections do not false-fire but MoE fused expert tensors do.
+_GUARDRAIL_BULK_WEIGHT_NUMEL = 8 * 1024 * 1024
+
+
+def _warn_if_quantization_silently_dropped(
+    model,
+    load_in_4bit,
+    load_in_8bit,
+    full_finetuning,
+    quantization_config = None,
+):
+    """Guardrail for unslothai/unsloth#5344.
+
+    Two failure modes covered:
+
+    1. TOTAL bypass: load_in_4bit was requested but the model contains zero
+       bnb Linear4bit / Linear8bitLt modules. transformers / bnb / a backend
+       incompatibility dropped kwargs.quantization_config.
+
+    2. PARTIAL bypass: bnb quantized the nn.Linear modules but a large fraction
+       of weight bytes live in non-nn.Linear Parameters (e.g. Gemma-4 MoE fused
+       3D expert tensors, custom Linear-like wrappers). bnb only swaps nn.Linear
+       instances; fused expert weights stay in BF16, defeating QLoRA savings
+       even though some Linear4bit modules exist.
+
+    Warns rather than raises so non-bnb backends (CPU / MLX / AMD-without-bnb)
+    with legitimately no Linear4bit are not broken.
+    """
+    if full_finetuning:
+        return
+    if quantization_config is not None:
+        if isinstance(quantization_config, dict):
+            load_in_4bit = load_in_4bit or bool(quantization_config.get("load_in_4bit"))
+            load_in_8bit = load_in_8bit or bool(quantization_config.get("load_in_8bit"))
+        else:
+            load_in_4bit = load_in_4bit or bool(
+                getattr(quantization_config, "load_in_4bit", False)
+            )
+            load_in_8bit = load_in_8bit or bool(
+                getattr(quantization_config, "load_in_8bit", False)
+            )
+    if not (load_in_4bit or load_in_8bit):
+        return
+
+    has_bnb = any(type(m).__name__ in _BNB_QUANT_CLASS_NAMES for m in model.modules())
+
+    # Failure mode 1: total bypass.
+    if not has_bnb:
+        kind = "4bit" if load_in_4bit else "8bit"
+        bnb_class_name = "Linear4bit" if load_in_4bit else "Linear8bitLt"
+        warnings.warn(
+            f"Unsloth: load_in_{kind}=True was requested but no bitsandbytes "
+            f"{bnb_class_name} modules were produced. The runtime quantization "
+            f"config was silently dropped and the model is in full precision. "
+            f"See https://github.com/unslothai/unsloth/issues/5344 for known "
+            f"triggers (transformers/bnb version mismatch, MoE checkpoints "
+            f"without a -bnb-4bit sibling, multi-GPU dispatch). Workaround: "
+            f'pass device_map="cuda:0" and pin transformers/bitsandbytes to '
+            f"a version known to work.",
+            stacklevel = 3,
+        )
+        return
+
+    # Failure mode 2: partial bypass. Walk named_parameters and find large
+    # floating tensors outside the skip list. If they aggregate to >= 2x the
+    # quantized payload, partial quant is essentially negating 4-bit savings.
+    quantized_bytes = 0
+    suspect_bytes = 0
+    suspect_samples = []
+    for name, p in model.named_parameters():
+        if p is None:
+            continue
+        nbytes = p.numel() * p.element_size()
+        if p.dtype in (torch.uint8, torch.int8):
+            # bnb stores 4-bit payloads as uint8 and 8-bit payloads (Int8Params) as int8.
+            quantized_bytes += nbytes
+            continue
+        if p.dtype not in (torch.bfloat16, torch.float16, torch.float32):
+            continue
+        if p.numel() < _GUARDRAIL_BULK_WEIGHT_NUMEL:
+            continue
+        lname = name.lower()
+        if any(pat in lname for pat in _GUARDRAIL_SKIP_PATTERNS):
+            continue
+        suspect_bytes += nbytes
+        if len(suspect_samples) < 3:
+            suspect_samples.append((name, str(p.dtype), tuple(p.shape)))
+
+    if quantized_bytes > 0 and suspect_bytes >= 2 * quantized_bytes:
+        kind = "4bit" if load_in_4bit else "8bit"
+        suspect_human = ", ".join(f"{n} ({d}, {s})" for n, d, s in suspect_samples)
+        warnings.warn(
+            f"Unsloth: load_in_{kind}=True is partially applied. "
+            f"bitsandbytes quantized ~{quantized_bytes/1024**3:.2f} GB of "
+            f"nn.Linear weights, but ~{suspect_bytes/1024**3:.2f} GB of "
+            f"non-nn.Linear floating Parameters were left unquantized (e.g. "
+            f"fused MoE expert tensors, custom Linear-like wrappers). "
+            f"Examples: {suspect_human}. The model's effective VRAM "
+            f"footprint is close to its full-precision size. See "
+            f"https://github.com/unslothai/unsloth/issues/5344.",
+            stacklevel = 3,
+        )
 
 
 def _infer_device_map_from_loaded_model(model):
@@ -963,6 +1096,14 @@ class FastBaseModel:
                 trust_remote_code = trust_remote_code,
                 # attn_implementation   = attn_implementation,
                 **kwargs,
+            )
+            # Guardrail: see _warn_if_quantization_silently_dropped + #5344.
+            _warn_if_quantization_silently_dropped(
+                model,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                full_finetuning = full_finetuning,
+                quantization_config = kwargs.get("quantization_config"),
             )
             # Attach dispatch hooks for bnb multi-device loads.
             _attach_bnb_multidevice_hooks(
