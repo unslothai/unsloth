@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from core.inference.api_monitor import ApiMonitor
+from core.inference.api_monitor import ApiMonitor, _trim
 
 
 def test_api_monitor_tracks_reply_usage_and_context():
@@ -59,3 +59,60 @@ def test_api_monitor_keeps_bounded_recent_history():
     assert [entry["prompt"] for entry in entries] == ["third", "second"]
     assert first not in ids
     assert monitor.active_count() == 2
+
+
+def test_api_monitor_finish_is_idempotent():
+    monitor = ApiMonitor(max_entries = 2)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.finish(entry_id)
+    first = monitor.snapshot()[0]
+    monitor.finish(entry_id)
+    second = monitor.snapshot()[0]
+    assert first["finished_at"] == second["finished_at"]
+    assert first["duration_ms"] == second["duration_ms"]
+
+
+def test_api_monitor_preserves_authoritative_total_tokens():
+    monitor = ApiMonitor(max_entries = 2)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.set_usage(
+        entry_id,
+        prompt_tokens = 10,
+        completion_tokens = 20,
+        total_tokens = 33,
+    )
+    # A later partial chunk omitting `total_tokens` must not clobber 33.
+    monitor.set_usage(entry_id, prompt_tokens = 11)
+    assert monitor.snapshot()[0]["total_tokens"] == 33
+
+
+def test_api_monitor_duration_non_negative_under_clock_step(monkeypatch):
+    import core.inference.api_monitor as m
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(m.time, "time", lambda: fake_now[0])
+    monitor = ApiMonitor(max_entries = 1)
+    entry_id = monitor.start(
+        endpoint = "/x", method = "POST", model = "m", prompt = "hi",
+    )
+    fake_now[0] = 500.0
+    monitor.finish(entry_id)
+    assert monitor.snapshot()[0]["duration_ms"] >= 0
+
+
+def test_api_monitor_trim_guards_tiny_limit():
+    assert _trim("abcdefgh", 2) == ".."
+    assert _trim("abcdefgh", 0) == ""
+    assert _trim("abcdefgh", 3) == "..."
+    assert _trim("abcdefgh", 4) == "a..."
+    assert _trim("abcdefgh", 100) == "abcdefgh"

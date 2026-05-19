@@ -23,6 +23,9 @@ def _trim(text: Optional[str], limit: int) -> str:
         return ""
     if len(text) <= limit:
         return text
+    # Guard against limit < 3 (slice would underflow).
+    if limit <= 3:
+        return "..."[:limit]
     return text[: limit - 3] + "..."
 
 
@@ -36,6 +39,9 @@ class ApiMonitorEntry:
     status: str
     started_at: float
     updated_at: float
+    # Monotonic anchors so duration math survives wall-clock steps (NTP).
+    started_monotonic: float = 0.0
+    finished_monotonic: Optional[float] = None
     reply: str = ""
     finished_at: Optional[float] = None
     context_length: Optional[int] = None
@@ -46,8 +52,13 @@ class ApiMonitorEntry:
 
     def snapshot(self) -> dict[str, Any]:
         duration_ms = None
-        if self.finished_at is not None:
-            duration_ms = int((self.finished_at - self.started_at) * 1000)
+        if self.finished_monotonic is not None:
+            duration_ms = max(
+                0,
+                int((self.finished_monotonic - self.started_monotonic) * 1000),
+            )
+        elif self.finished_at is not None:
+            duration_ms = max(0, int((self.finished_at - self.started_at) * 1000))
         context_usage = None
         if self.total_tokens is not None and self.context_length:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
@@ -96,6 +107,7 @@ class ApiMonitor:
             status = "running",
             started_at = now,
             updated_at = now,
+            started_monotonic = time.monotonic(),
             context_length = context_length,
         )
         with self._lock:
@@ -143,7 +155,12 @@ class ApiMonitor:
                 entry.completion_tokens = completion_tokens
             if total_tokens is not None:
                 entry.total_tokens = total_tokens
-            elif prompt_tokens is not None or completion_tokens is not None:
+            elif (
+                entry.total_tokens is None
+                and (prompt_tokens is not None or completion_tokens is not None)
+            ):
+                # Derive only when no authoritative total has been set;
+                # a later partial chunk must not clobber a provider total.
                 entry.total_tokens = (entry.prompt_tokens or 0) + (
                     entry.completion_tokens or 0
                 )
@@ -158,10 +175,15 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            # Idempotent: second call (e.g. [DONE] after the finally block
+            # already ran) must not move finished_*.
+            if entry.finished_at is not None:
+                return
             now = time.time()
             entry.status = status
             entry.updated_at = now
             entry.finished_at = now
+            entry.finished_monotonic = time.monotonic()
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
@@ -170,11 +192,17 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            if entry.finished_at is not None:
+                # Already terminal; refresh error text only.
+                if error:
+                    entry.error = _trim(error, 1000)
+                return
             now = time.time()
             entry.status = "error"
             entry.error = _trim(error, 1000)
             entry.updated_at = now
             entry.finished_at = now
+            entry.finished_monotonic = time.monotonic()
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:

@@ -448,13 +448,17 @@ def _monitor_openai_chunk(monitor_id: Optional[str], data: dict, context_length 
     if not monitor_id:
         return
     _monitor_usage(monitor_id, data.get("usage"), context_length)
-    choices = data.get("choices") or []
-    if not choices:
+    # Defensive: ignore malformed shapes so the helper never raises into the
+    # streaming generator and aborts the user's response.
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
         return
-    choice = choices[0] or {}
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return
     delta = choice.get("delta") or {}
     message = choice.get("message") or {}
-    content = delta.get("content")
+    content = delta.get("content") if isinstance(delta, dict) else None
     if content:
         api_monitor.append_reply(monitor_id, content)
     elif isinstance(choice.get("text"), str):
@@ -470,9 +474,12 @@ def _monitor_openai_sse_line(
     raw_line: str,
     context_length = None,
 ) -> bool:
-    if not monitor_id or not raw_line.startswith("data: "):
+    if not monitor_id:
         return False
-    data_str = raw_line[6:].strip()
+    # SSE spec allows `data:value` and `data: value`; accept both.
+    if not raw_line.startswith("data:"):
+        return False
+    data_str = raw_line[5:].lstrip()
     if data_str == "[DONE]":
         api_monitor.finish(monitor_id)
         return True
@@ -2342,6 +2349,12 @@ async def openai_chat_completions(
             context_length = llama_backend.context_length if using_gguf else None,
         )
 
+    # Finalize the monitor entry on validation rejection before raising.
+    def _reject(status_code: int, detail: str) -> "HTTPException":
+        if monitor_id is not None:
+            api_monitor.fail(monitor_id, detail)
+        return HTTPException(status_code = status_code, detail = detail)
+
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
     # Continue / ...) sends standard OpenAI `tools` without Studio's
@@ -2370,9 +2383,8 @@ async def openai_chat_completions(
         and (_tools_passthrough or _has_response_format)
     ):
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
+            raise _reject(
+                400, "Audio input is not supported for GGUF chat models yet."
             )
 
         # Preserve the vision guard that would otherwise run in the
@@ -2387,9 +2399,9 @@ async def openai_chat_completions(
                 for m in payload.messages
             )
         ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+            raise _reject(
+                400,
+                "Image provided but current GGUF model does not support vision.",
             )
 
         cancel_event = threading.Event()
@@ -2420,25 +2432,21 @@ async def openai_chat_completions(
     )
 
     if not chat_messages:
-        raise HTTPException(
-            status_code = 400,
-            detail = "At least one non-system message is required.",
-        )
+        raise _reject(400, "At least one non-system message is required.")
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
+            raise _reject(
+                400, "Audio input is not supported for GGUF chat models yet."
             )
 
         # Reject images if this GGUF model doesn't support vision
         image_b64 = extracted_image_b64 or payload.image_base64
         if image_b64 and not llama_backend.is_vision:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+            raise _reject(
+                400,
+                "Image provided but current GGUF model does not support vision.",
             )
 
         # Convert image to PNG for llama-server (stb_image has limited format support)
@@ -2458,15 +2466,9 @@ async def openai_chat_completions(
                 img.save(buf, format = "PNG")
                 image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
             except _UIE:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unsupported or corrupt image format.",
-                )
+                raise _reject(400, "Unsupported or corrupt image format.")
             except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Failed to process image.",
-                )
+                raise _reject(400, "Failed to process image.")
 
         # Build message list with system prompt prepended
         gguf_messages = []
@@ -2969,9 +2971,9 @@ async def openai_chat_completions(
 
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Image provided but current model is text-only. Load a vision model.",
+                raise _reject(
+                    400,
+                    "Image provided but current model is text-only. Load a vision model.",
                 )
 
             image_data = base64.b64decode(image_b64)
@@ -2981,7 +2983,7 @@ async def openai_chat_completions(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
+            raise _reject(400, f"Failed to decode image: {e}")
 
     # Shared generation kwargs
     gen_kwargs = dict(
@@ -3341,18 +3343,29 @@ async def openai_completions(
             client = httpx.AsyncClient(timeout = 600)
             resp = None
             bytes_iter = None
+            # Residual buffer for SSE lines split across TCP chunk boundaries.
+            sse_residual = ""
             try:
                 req = client.build_request("POST", target_url, json = body)
                 resp = await client.send(req, stream = True)
                 bytes_iter = resp.aiter_bytes()
                 async for chunk in bytes_iter:
-                    for raw_line in chunk.decode("utf-8", errors = "ignore").splitlines():
+                    sse_residual += chunk.decode("utf-8", errors = "ignore")
+                    *complete, sse_residual = sse_residual.split("\n")
+                    for raw_line in complete:
                         _monitor_openai_sse_line(
                             monitor_id,
                             raw_line.strip(),
                             llama_backend.context_length,
                         )
                     yield chunk
+                # Flush any final line not terminated by a newline.
+                if sse_residual.strip():
+                    _monitor_openai_sse_line(
+                        monitor_id,
+                        sse_residual.strip(),
+                        llama_backend.context_length,
+                    )
                 api_monitor.finish(monitor_id)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
