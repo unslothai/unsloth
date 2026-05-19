@@ -527,7 +527,19 @@ export function SharedComposer({
       handlesRef.current["model1"] || handlesRef.current["model2"],
     );
     const isGeneralizedCompare =
-      hasCompareHandles && Boolean(model1?.id || model2?.id);
+      hasCompareHandles && Boolean(model1?.id && model2?.id);
+
+    // Generalized compare requires both panes to have a model. A
+    // half-selected send either races to an empty bubble with bogus
+    // tok/s (#5569) or leaves the empty pane with a dangling prompt.
+    // hasCompareHandles is true only in GeneralCompareContent, so
+    // LoraCompare and single-pane chats are unaffected.
+    if (hasCompareHandles && !isGeneralizedCompare) {
+      toast.error("Pick a model in each pane to compare", {
+        description: "Use the model dropdown above each pane, then send your prompt.",
+      });
+      return;
+    }
 
     if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
       // Single mode: the loaded model's runtime capability is known
