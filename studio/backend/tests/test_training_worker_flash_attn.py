@@ -86,7 +86,9 @@ def test_runtime_flash_attn_reports_shared_installer_failure(monkeypatch):
         "_send_status",
         lambda queue, message: statuses.append(message),
     )
-    monkeypatch.setattr(worker, "install_optional_kernel", mock.Mock(return_value = False))
+    monkeypatch.setattr(
+        worker, "install_optional_kernel", mock.Mock(return_value = False)
+    )
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 16385)
 
