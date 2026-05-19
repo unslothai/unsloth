@@ -52,6 +52,7 @@ import pytest
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _backfill_usage_from_timings,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
 )
@@ -647,3 +648,119 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
         )
         is True
     )
+
+
+# Sub-2B MTP gate -- tiny dense models regress with MTP, so the
+# reload-skip mirror must match a clean (spec-off) backend on a
+# sub-2B MTP GGUF request, mirroring load_model's skip path.
+
+
+def test_already_in_target_state_sub_2b_mtp_request_matches_off_backend():
+    # 0.8B MTP request must NOT trigger a reload against a clean
+    # (spec=off) backend running the same 0.8B model.
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
+        _speculative_type = None,
+        _spec_draft_n_max = None,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_4b_mtp_request_promotes_as_before():
+    # 4B is above the 2B threshold -> auto-promote still applies.
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+        _speculative_type = "draft-mtp",
+        _spec_draft_n_max = None,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_2b_threshold_exact_promotes():
+    # 2.0B is the boundary; <2.0 skips auto-promote, >=2.0 still
+    # promotes.  Use Qwen3.5-2B (size_b == 2.0).
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
+        _speculative_type = "draft-mtp",
+        _spec_draft_n_max = None,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+# usage backfill from timings (Studio UI t/s widget fix).
+
+
+def test_backfill_usage_from_timings_fills_when_completion_tokens_zero():
+    out = _backfill_usage_from_timings(
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        {"prompt_n": 42, "predicted_n": 128, "predicted_per_second": 100.0},
+    )
+    assert out["completion_tokens"] == 128
+    assert out["prompt_tokens"] == 42
+    assert out["total_tokens"] == 170
+
+
+def test_backfill_usage_from_timings_fills_when_usage_missing():
+    out = _backfill_usage_from_timings(
+        None,
+        {"prompt_n": 42, "predicted_n": 128, "predicted_per_second": 100.0},
+    )
+    assert out["completion_tokens"] == 128
+    assert out["prompt_tokens"] == 42
+    assert out["total_tokens"] == 170
+
+
+def test_backfill_usage_from_timings_preserves_real_usage():
+    # Non-zero completion_tokens means llama-server reported correctly;
+    # do not overwrite.
+    real = {"prompt_tokens": 50, "completion_tokens": 200, "total_tokens": 250}
+    out = _backfill_usage_from_timings(real, {"predicted_n": 999, "prompt_n": 999})
+    assert out is real
+    assert out["completion_tokens"] == 200
+
+
+def test_backfill_usage_from_timings_passthrough_when_timings_empty():
+    assert _backfill_usage_from_timings(None, None) is None
+    assert _backfill_usage_from_timings(None, {}) is None
+    usage = {"completion_tokens": 0}
+    # No timings.predicted_n -> nothing to fill, return as-is.
+    assert _backfill_usage_from_timings(usage, {"prompt_ms": 5.0}) is usage
