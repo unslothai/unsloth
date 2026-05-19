@@ -549,12 +549,7 @@ def _construct_vlm_processor_fallback(
 
 def _get_total_transformer_layers(model):
     """Best-effort total transformer block count across HF model shapes.
-
-    Used to translate `finetune_last_n_layers` (the mlx-lm CLI-style
-    knob) into a `layers_to_transform` list for PEFT. Returns None when
-    the count cannot be determined; the caller must treat None as
-    "skip the conversion and leave layers_to_transform alone".
-    """
+    Returns None if not determinable; caller should skip the conversion."""
     cfg = getattr(model, "config", None)
     if cfg is None:
         return None
@@ -1452,15 +1447,6 @@ class FastBaseModel:
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
 
-        # finetune_last_n_layers: opt-in convenience knob for matching
-        # mlx-lm CLI semantics where LoRA is applied to the LAST N
-        # transformer blocks. mlx-lm/lora.py CONFIG_DEFAULTS sets
-        # num_layers=16. The CUDA path here exposes the same knob so
-        # users can keep the GPU run in sync with their MLX run on
-        # the same fixture. Defaults to None (= all layers, current
-        # behavior). Only fills layers_to_transform when the user
-        # didn't already pass one; ignored on models whose backbone
-        # doesn't expose num_hidden_layers.
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
             if _total_layers is not None and _total_layers > 0:

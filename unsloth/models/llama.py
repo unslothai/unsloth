@@ -3162,14 +3162,6 @@ class FastLlamaModel:
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
 
-        # finetune_last_n_layers: opt-in convenience knob for matching
-        # mlx-lm CLI semantics where LoRA is applied to the LAST N
-        # transformer blocks (mlx_lm/lora.py CONFIG_DEFAULTS num_layers
-        # defaults to 16). Default None = all layers (current behavior).
-        # When set, fills layers_to_transform if the user didn't already
-        # provide one. Mirrors unsloth_zoo.mlx.loader.FastMLXModel
-        # get_peft_model so a single config value controls both CUDA
-        # and MLX paths consistently.
         if finetune_last_n_layers is not None and layers_to_transform is None:
             from .vision import _get_total_transformer_layers
 
