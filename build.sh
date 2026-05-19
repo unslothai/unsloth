@@ -33,18 +33,24 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Use bun for install if available (faster), fall back to npm.
+# Lockfile-pinned install. Prefer bun when a bun.lock is checked in AND
+# bun is on PATH; otherwise use `npm ci`, which is non-mutating and
+# refuses to run unless the committed package-lock.json matches the
+# dependency tree byte-for-byte. The `[ -f bun.lock ]` gate keeps bun
+# off the path until a bun.lock is also committed -- without it,
+# `bun install --frozen-lockfile` would fail and the script would
+# still fall through to npm ci, so the gate just skips the noise.
 _install_ok=false
-if command -v bun &>/dev/null; then
-    if bun install; then
+if [ -f bun.lock ] && command -v bun &>/dev/null; then
+    if bun install --frozen-lockfile --no-progress; then
         _install_ok=true
     else
-        echo "⚠ bun install failed, falling back to npm"
+        echo "⚠ bun install --frozen-lockfile failed, falling back to npm ci"
         rm -rf node_modules
     fi
 fi
 if [ "$_install_ok" != "true" ]; then
-    if ! npm install; then
+    if ! npm ci --no-fund --no-audit; then
         echo "❌ ERROR: package install failed" >&2
         exit 1
     fi

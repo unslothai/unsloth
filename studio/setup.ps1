@@ -1321,13 +1321,19 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $WalkDir = Split-Path $WalkDir -Parent
     }
 
-    # Use bun if available (faster install), fall back to npm.
-    # Bun is used only as package manager; Node runs the actual build (Vite 8).
+    # Lockfile-pinned install. Prefer bun ONLY when a bun.lock is checked
+    # in AND bun is on PATH; otherwise use `npm ci`, which is non-mutating
+    # and refuses to run unless the committed package-lock.json matches
+    # the dependency tree byte-for-byte. The `Test-Path "bun.lock"` gate
+    # keeps bun off the path until a bun.lock is also committed -- the
+    # bun-fallback wiring (cache-clear retry + critical-binary
+    # verification) is kept intact so this script auto-upgrades when
+    # bun.lock eventually lands.
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
-    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+    $UseBun = (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
 
     # bun's package cache can become corrupt -- packages get stored with only
     # metadata but no actual content (bin/, lib/). When this happens bun install
@@ -1335,7 +1341,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     # the cache + retry once before falling back to npm.
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install }
+        $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile --no-progress }
         # On Windows, .bin/ entries vary by package manager:
         #   npm  → tsc, tsc.cmd, tsc.ps1
         #   bun  → tsc.exe, tsc.bunx
@@ -1349,18 +1355,18 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install }
+            $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile --no-progress }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
-                Write-Host "   bun retry failed, falling back to npm" -ForegroundColor Yellow
+                Write-Host "   bun retry failed, falling back to npm ci" -ForegroundColor Yellow
                 if (Test-Path "node_modules") {
                     Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
                 }
                 $UseBun = $false
             }
         } else {
-            substep "bun install failed (exit $bunExit), falling back to npm" "Yellow"
+            substep "bun install --frozen-lockfile failed (exit $bunExit), falling back to npm ci" "Yellow"
             if (Test-Path "node_modules") {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -1368,13 +1374,13 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install }
+        $npmExit = Invoke-SetupCommand { npm ci --no-fund --no-audit }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-            Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
-            Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Write-Host "[ERROR] npm ci failed (exit code $npmExit)" -ForegroundColor Red
+            Write-Host "   Try running 'npm ci' manually in frontend/ to see errors" -ForegroundColor Yellow
             exit 1
         }
     }
@@ -1411,12 +1417,31 @@ if (Test-Path $OxcValidatorDir) {
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install }
-    if ($oxcInstallExit -ne 0) {
-        Pop-Location
-        $ErrorActionPreference = $prevEAP_oxc
-        Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        exit 1
+
+    # Same lockfile-pinned shape as the frontend block above: bun only
+    # when a bun.lock is checked in next to package.json (currently not
+    # the case), otherwise `npm ci` against the committed
+    # package-lock.json (shipped in #5604).
+    $UseOxcBun = (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
+    $oxcInstallOk = $false
+    if ($UseOxcBun) {
+        $oxcBunExit = Invoke-SetupCommand { bun install --frozen-lockfile --no-progress }
+        if ($oxcBunExit -eq 0) {
+            $oxcInstallOk = $true
+        } else {
+            if (Test-Path "node_modules") {
+                Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    if (-not $oxcInstallOk) {
+        $oxcInstallExit = Invoke-SetupCommand { npm ci --no-fund --no-audit }
+        if ($oxcInstallExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_oxc
+            Write-Host "[ERROR] OXC validator npm ci failed (exit code $oxcInstallExit)" -ForegroundColor Red
+            exit 1
+        }
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
