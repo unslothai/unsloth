@@ -245,7 +245,7 @@ def test_hook_3d_abs_before_sequence_mean():
         model.mlp.fc.bias.zero_()
 
     x = torch.zeros(1, 2, 16)
-    x[0, 0, :] = 1.0   # token 0: all neurons = +1
+    x[0, 0, :] = 1.0  # token 0: all neurons = +1
     x[0, 1, :] = -1.0  # token 1: all neurons = -1
 
     _ = model(x)
