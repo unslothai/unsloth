@@ -469,27 +469,43 @@ def _monitor_openai_chunk(monitor_id: Optional[str], data: dict, context_length 
             api_monitor.set_reply(monitor_id, text)
 
 
+def _monitor_openai_error_message(data: dict) -> Optional[str]:
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+        return json.dumps(error)
+    if isinstance(error, str) and error:
+        return error
+    return None
+
+
 def _monitor_openai_sse_line(
     monitor_id: Optional[str],
     raw_line: str,
     context_length = None,
-) -> bool:
+) -> Optional[str]:
     if not monitor_id:
-        return False
+        return None
     # SSE spec allows `data:value` and `data: value`; accept both.
     if not raw_line.startswith("data:"):
-        return False
+        return None
     data_str = raw_line[5:].lstrip()
     if data_str == "[DONE]":
         api_monitor.finish(monitor_id)
-        return True
+        return "done"
     try:
         data = json.loads(data_str)
     except json.JSONDecodeError:
-        return False
+        return None
     if isinstance(data, dict):
+        error_message = _monitor_openai_error_message(data)
+        if error_message:
+            api_monitor.fail(monitor_id, error_message)
+            return "error"
         _monitor_openai_chunk(monitor_id, data, context_length)
-    return False
+    return None
 
 
 def _monitor_context_length() -> Optional[int]:
@@ -1932,13 +1948,17 @@ async def _proxy_to_external_provider(
         )
         try:
             sent_done = False
+            stream_failed = False
             async for line in gen:
-                _monitor_openai_sse_line(monitor_id, line)
+                monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 yield f"{line}\n\n"
-                if "[DONE]" in line:
+                if monitor_event == "done" or "[DONE]" in line:
                     sent_done = True
+                elif monitor_event == "error":
+                    stream_failed = True
             if not sent_done:
-                api_monitor.finish(monitor_id)
+                if not stream_failed:
+                    api_monitor.finish(monitor_id)
                 yield "data: [DONE]\n\n"
         except Exception as exc:
             api_monitor.fail(monitor_id, str(exc))
@@ -3341,6 +3361,7 @@ async def openai_completions(
             bytes_iter = None
             # Residual buffer for SSE lines split across TCP chunk boundaries.
             sse_residual = ""
+            stream_failed = False
             try:
                 req = client.build_request("POST", target_url, json = body)
                 resp = await client.send(req, stream = True)
@@ -3349,20 +3370,25 @@ async def openai_completions(
                     sse_residual += chunk.decode("utf-8", errors = "ignore")
                     *complete, sse_residual = sse_residual.split("\n")
                     for raw_line in complete:
-                        _monitor_openai_sse_line(
+                        monitor_event = _monitor_openai_sse_line(
                             monitor_id,
                             raw_line.strip(),
                             llama_backend.context_length,
                         )
+                        if monitor_event == "error":
+                            stream_failed = True
                     yield chunk
                 # Flush any final line not terminated by a newline.
                 if sse_residual.strip():
-                    _monitor_openai_sse_line(
+                    monitor_event = _monitor_openai_sse_line(
                         monitor_id,
                         sse_residual.strip(),
                         llama_backend.context_length,
                     )
-                api_monitor.finish(monitor_id)
+                    if monitor_event == "error":
+                        stream_failed = True
+                if not stream_failed:
+                    api_monitor.finish(monitor_id)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 logger.error("openai_completions stream error: %s", e)
@@ -5262,18 +5288,22 @@ async def _openai_passthrough_stream(
                         continue
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
-                    done = _monitor_openai_sse_line(
+                    monitor_event = _monitor_openai_sse_line(
                         monitor_id,
                         raw_line,
                         llama_backend.context_length,
                     )
+                    if monitor_event == "error":
+                        stream_failed = True
                     yield raw_line + "\n\n"
-                    if done:
+                    if monitor_event:
                         break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 # Watcher closed resp on cancel. Emit nothing extra; the
                 # client either initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
+                    stream_failed = True
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
             except Exception as e:
                 # 200 headers are already flushed; errors must be in the SSE body.

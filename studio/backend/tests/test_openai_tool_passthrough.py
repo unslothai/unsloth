@@ -18,8 +18,10 @@ Covers:
 No running server or GPU required.
 """
 
+import asyncio
 import os
 import sys
+from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -28,6 +30,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatCompletionRequest,
     ChatMessage,
@@ -35,6 +38,7 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
+from routes import inference as inference_routes
 from routes.inference import _build_passthrough_payload, _friendly_error
 
 
@@ -528,6 +532,147 @@ class TestFriendlyErrorHttpx:
         assert (
             _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
         )
+
+
+class TestApiMonitorStreamingFailures:
+    def test_external_provider_error_sse_remains_failed(self, monkeypatch):
+        async def _run():
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+
+            class DummyExternalProviderClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def stream_chat_completion(self, **_kwargs):
+                    async def _gen():
+                        yield (
+                            'data: {"error": {"message": "bad API key", '
+                            '"type": "provider_error"}}'
+                        )
+
+                    return _gen()
+
+                async def close(self):
+                    pass
+
+            monkeypatch.setattr(
+                inference_routes,
+                "ExternalProviderClient",
+                DummyExternalProviderClient,
+            )
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                external_model = "external-model",
+                provider_type = "openai",
+                provider_base_url = "https://provider.example/v1",
+                messages = [ChatMessage(role = "user", content = "hello")],
+                stream = True,
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            response = await inference_routes._proxy_to_external_provider(
+                payload,
+                request,
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert entry["error"] == "bad API key"
+            assert chunks[-1] == "data: [DONE]\n\n"
+
+        asyncio.run(_run())
+
+    def test_passthrough_transport_error_marks_monitor_failed(self, monkeypatch):
+        async def _run():
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "local-model",
+                prompt = "user: hello",
+                context_length = 4096,
+            )
+
+            class BrokenLines:
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    raise httpx.RemoteProtocolError("peer closed")
+
+                async def aclose(self):
+                    pass
+
+            class DummyResponse:
+                status_code = 200
+
+                def aiter_lines(self):
+                    return BrokenLines()
+
+                async def aclose(self):
+                    pass
+
+            class DummyAsyncClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def build_request(self, method, url, json):
+                    return httpx.Request(method, url, json = json)
+
+                async def send(self, _req, stream):
+                    assert stream is True
+                    return DummyResponse()
+
+                async def aclose(self):
+                    pass
+
+            monkeypatch.setattr(
+                inference_routes.httpx,
+                "AsyncClient",
+                DummyAsyncClient,
+            )
+
+            payload = ChatCompletionRequest(
+                model = "local-model",
+                messages = [ChatMessage(role = "user", content = "hello")],
+                stream = True,
+            )
+            request = SimpleNamespace(
+                is_disconnected = lambda: asyncio.sleep(0, result = False),
+            )
+            llama_backend = SimpleNamespace(
+                base_url = "http://127.0.0.1:8080",
+                context_length = 4096,
+            )
+            response = await inference_routes._openai_passthrough_stream(
+                request,
+                asyncio.Event(),
+                llama_backend,
+                payload,
+                "local-model",
+                "cmpl_test",
+                monitor_id = monitor_id,
+            )
+
+            with pytest.raises(httpx.RemoteProtocolError):
+                async for _chunk in response.body_iterator:
+                    pass
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "Lost connection" in entry["error"]
+
+        asyncio.run(_run())
 
 
 from routes.inference import (  # noqa: E402
