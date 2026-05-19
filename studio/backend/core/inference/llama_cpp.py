@@ -62,7 +62,7 @@ _MAX_REPROMPTS = 3
 # not a plan signal -- excluded via negative lookahead.
 _TRAILING_PLAN_INTENT = re.compile(
     r"(?i)("
-    r"let me(?!\s+know\b)|now let me|i['’]ll now|next,?\s*i['’]ll|"
+    r"(?:now\s+)?let me(?!\s+know\b)|i['’]ll now|next,?\s*i['’]ll|"
     r"i['’]m going to|i will now|let['’]s now"
     r")[^.!?\n]*[.!?]?\s*$"
 )

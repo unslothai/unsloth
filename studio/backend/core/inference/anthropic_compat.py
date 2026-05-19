@@ -263,11 +263,15 @@ class AnthropicStreamEmitter:
         return []
 
     def _handle_boundary(self) -> list[str]:
+        # Close the current text block + reset the cumulative cursor.
+        # Do NOT pre-open a new text block here -- if the next event is
+        # a tool_start (not text), the eager-open would emit a zero-length
+        # text content block between intent text and the tool_use.
+        # _handle_content lazy-opens when real text arrives.
         events = []
         if self._text_block_open:
             events.append(self._close_block())
             self.block_index += 1
-            events.extend(self._open_text_block())
         self._prev_text = ""
         return events
 
