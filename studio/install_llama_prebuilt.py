@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -100,6 +101,38 @@ DEFAULT_PUBLISHED_SHA256_ASSET = os.environ.get(
 )
 UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
+
+LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
+LEMONADE_ROCM_RELEASES_API = (
+    f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
+)
+
+
+def _lemonade_release_api_for(llama_tag: str) -> str:
+    """Return the GitHub API URL for the lemonade release that matches a
+    requested llama.cpp tag.
+
+    When llama_tag is unset or "latest", point at /releases/latest. When the
+    caller has pinned a specific tag (e.g. "b1260"), point at the same tag in
+    lemonade. Lemonade tags match `ggml-org/llama.cpp` upstream tags 1:1
+    (NOT `unslothai/llama.cpp` which has its own fork-specific tag namespace),
+    so passing an unsloth-fork tag to this helper will produce a 404 and the
+    caller will fall through to the upstream tarball. That is intentional:
+    pinned installs stay reproducible instead of silently drifting to whatever
+    lemonade ships as latest.
+
+    The tag is URL-encoded with `safe=""` so an unexpected slash / hash / query
+    character cannot reshape the URL.
+    """
+    normalized = (llama_tag or "").strip()
+    if not normalized or normalized.lower() == "latest":
+        return LEMONADE_ROCM_RELEASES_API
+    return (
+        f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/"
+        f"{urllib.parse.quote(normalized, safe = '')}"
+    )
+
+
 TEST_MODEL_URL = (
     "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 )
@@ -196,6 +229,7 @@ class HostInfo:
     has_physical_nvidia: bool
     has_usable_nvidia: bool
     has_rocm: bool = False
+    rocm_gfx_target: str | None = None
 
 
 @dataclass
@@ -1268,6 +1302,20 @@ def direct_linux_release_plan(
         selection = linux_cuda_choice_from_release(host, bundle)
         if selection is not None:
             attempts.extend(selection.attempts)
+    if host.has_rocm and not host.has_usable_nvidia:
+        # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
+        # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
+        # Strix Halo) that the upstream combined-ROCm tarball doesn't cover.
+        # The "ubuntu" label is lemonade's asset naming convention only --
+        # the binary is a manylinux-style glibc build that runs on Arch,
+        # Fedora, openSUSE, etc. as long as the host glibc is recent enough.
+        # If the host glibc is too old, validate_prebuilt_attempts will fail
+        # the lemonade attempt and we fall through to the source build.
+        lemonade_choice = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+        )
+        if lemonade_choice is not None:
+            attempts.append(lemonade_choice)
     cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
     if cpu_choice is not None:
         attempts.append(cpu_choice)
@@ -1336,6 +1384,25 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+        if host.has_rocm and not host.has_usable_nvidia:
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "windows", "windows-hip", llama_tag = requested_tag
+            )
+            if lemonade_choice is not None:
+                attempts.append(lemonade_choice)
+            hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
+            hip_url = assets.get(hip_asset)
+            if hip_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = hip_asset,
+                        url = hip_url,
+                        source_label = "upstream",
+                        install_kind = "windows-hip",
+                    )
+                )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:
@@ -2567,6 +2634,46 @@ def run_capture(
     return result
 
 
+def _pick_rocm_gfx_target(out: str) -> str | None:
+    """Choose the gfx target rocminfo / hipinfo report for the active GPU.
+
+    A bare first-match picked the wrong device on mixed APU + dGPU hosts
+    (e.g. Strix Halo gfx1151 + discrete RX 7900 gfx1100). Respect
+    HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the asset matches what HIP
+    actually runs on. Falls back to the first GPU when no env var is set.
+
+    rocminfo / hipinfo print the same gfx token multiple times per GPU
+    (Name, ISA, marketing-name), so we de-duplicate consecutive-or-repeated
+    matches before indexing -- otherwise HIP_VISIBLE_DEVICES=1 picks the
+    second occurrence of GPU 0 instead of GPU 1. Empty / "-1" env values
+    mean no AMD GPU is visible to HIP and yield None.
+    """
+    raw = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
+    if not raw:
+        return None
+    # Dict preserves insertion order on Python 3.7+; collapses duplicates.
+    _tokens = list(dict.fromkeys(raw))
+    _vis_raw = None
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        _val = os.environ.get(_env)
+        if _val is not None:
+            _vis_raw = _val
+            break
+    if _vis_raw is not None:
+        _vis = _vis_raw.strip()
+        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Studio).
+        if _vis == "" or _vis == "-1":
+            return None
+        _first = _vis.split(",")[0].strip()
+        try:
+            _idx = int(_first)
+            if 0 <= _idx < len(_tokens):
+                return _tokens[_idx]
+        except ValueError:
+            pass
+    return _tokens[0]
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -2664,6 +2771,7 @@ def detect_host() -> HostInfo:
         return bool(re.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
 
     has_rocm = False
+    rocm_gfx_target: str | None = None
     if is_linux:
         for _cmd, _check in (
             # rocminfo: look for a real gfx GPU id (3-4 chars, nonzero first digit).
@@ -2686,14 +2794,31 @@ def detect_host() -> HostInfo:
             if _result.returncode == 0 and _result.stdout.strip():
                 if _check(_result.stdout):
                     has_rocm = True
+                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
     elif is_windows:
-        # Windows: prefer active probes that validate GPU presence
+        # Windows: prefer active probes that validate GPU presence.
+        # AMD HIP SDK sets HIP_PATH / ROCM_PATH but does not always add
+        # %HIP_PATH%\bin to system PATH, so fall back to the env-var bin dir
+        # before giving up. Matches the PowerShell installer + the install
+        # python stack helper.
+        def _resolve_amd_exe(name: str) -> "str | None":
+            _hit = shutil.which(name)
+            if _hit:
+                return _hit
+            for _env in ("HIP_PATH", "ROCM_PATH"):
+                _root = os.environ.get(_env)
+                if _root:
+                    _cand = os.path.join(_root, "bin", f"{name}.exe")
+                    if os.path.isfile(_cand):
+                        return _cand
+            return None
+
         for _cmd, _check in (
             (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
-            _exe = shutil.which(_cmd[0])
+            _exe = _resolve_amd_exe(_cmd[0])
             if not _exe:
                 continue
             try:
@@ -2703,6 +2828,8 @@ def detect_host() -> HostInfo:
             if _result.returncode == 0 and _result.stdout.strip():
                 if _check(_result.stdout):
                     has_rocm = True
+                    # hipinfo reports "gcnArchName: gfx1100" -- extract if present
+                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
@@ -2722,6 +2849,7 @@ def detect_host() -> HostInfo:
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
+        rocm_gfx_target = rocm_gfx_target,
     )
 
 
@@ -3220,6 +3348,181 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     return None
 
 
+# Map detected gfx IDs to lemonade-sdk asset family suffixes.
+# More-specific prefixes must come before shorter ones (e.g. gfx1151 before gfx110).
+_LEMONADE_GFX_FAMILIES: list[tuple[str, str]] = [
+    ("gfx1151", "gfx1151"),
+    ("gfx1150", "gfx1150"),
+    ("gfx120", "gfx120X"),
+    ("gfx110", "gfx110X"),
+    ("gfx103", "gfx103X"),
+]
+
+
+def _lemonade_gfx_family(gfx_id: str) -> str | None:
+    gfx_id = gfx_id.lower().strip()
+    for prefix, family in _LEMONADE_GFX_FAMILIES:
+        if gfx_id.startswith(prefix):
+            return family
+    return None
+
+
+def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
+    """Validate a release asset URL points at GitHub's expected hosts.
+
+    Accepts:
+      https://github.com/{expected_repo}/releases/download/...
+      https://objects.githubusercontent.com/...   (GitHub's release CDN)
+    Anything else (including http://, raw.githubusercontent.com, gist, etc.)
+    is rejected so a malicious API response cannot redirect downloads to an
+    attacker-chosen host.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.netloc or "").lower()
+    if host == "objects.githubusercontent.com":
+        return True
+    if host == "github.com":
+        return parsed.path.startswith(f"/{expected_repo}/releases/download/")
+    return False
+
+
+@functools.lru_cache(maxsize = 8)
+def _fetch_lemonade_release_cached(api_url: str, llama_tag: str) -> "dict | None":
+    """Cached wrapper around fetch_json for lemonade release lookups.
+
+    resolve_lemonade_rocm_choice() is called twice per install (once from the
+    direct planner, once from resolve_upstream_asset_choice) with identical
+    arguments. Without memoisation, each install hits api.github.com twice,
+    doubling the rate-limit failure surface on busy CI runners. Cache is
+    process-scoped; tests that need to vary fetch_json's return value across
+    invocations should call cache_clear().
+    """
+    try:
+        return fetch_json(api_url)
+    except Exception as exc:
+        normalized = (llama_tag or "").strip().lower()
+        if normalized and normalized != "latest":
+            log(
+                f"Could not fetch {LEMONADE_ROCM_REPO} release for "
+                f"llama_tag={llama_tag!r} ({exc}); skipping lemonade prebuilt"
+            )
+        else:
+            log(f"Could not fetch {LEMONADE_ROCM_REPO} latest release: {exc}")
+        return None
+
+
+def resolve_lemonade_rocm_choice(
+    host: HostInfo,
+    os_prefix: str,
+    install_kind: str,
+    llama_tag: str = "latest",
+) -> "AssetChoice | None":
+    """Return an AssetChoice from lemonade-sdk/llamacpp-rocm for the detected GPU, or None.
+
+    os_prefix:   lemonade's asset filename label, NOT a host-distro filter.
+                 Pass "ubuntu" for any Linux host (Arch, Fedora, openSUSE,
+                 Debian, ...) -- lemonade only publishes one Linux variant
+                 and it is a manylinux-style glibc build that runs on any
+                 distro with a recent-enough glibc. Pass "windows" for
+                 Windows hosts.
+    install_kind: "linux-rocm" or "windows-hip"
+    llama_tag:   the requested upstream llama.cpp tag ("latest" or a pinned
+                 release like "b1260"). When pinned, the resolver fetches
+                 the matching lemonade release. When the pinned tag is not
+                 published by lemonade we skip silently (and the caller
+                 falls through to upstream) rather than drift to whatever
+                 lemonade ships as latest.
+    """
+    if not host.rocm_gfx_target:
+        return None
+    # Opt-out for users who want the upstream HIP build path only -- lemonade
+    # binaries are downloaded without entries in the approved-hash manifest, so
+    # the integrity gate is functional validation only.
+    if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        log("UNSLOTH_DISABLE_LEMONADE_ROCM is set; skipping lemonade-sdk prebuilt")
+        return None
+    gfx_family = _lemonade_gfx_family(host.rocm_gfx_target)
+    if gfx_family is None:
+        log(
+            f"AMD GPU {host.rocm_gfx_target!r} is not covered by lemonade-sdk ROCm prebuilts; "
+            "skipping lemonade prebuilt"
+        )
+        return None
+    api_url = _lemonade_release_api_for(llama_tag)
+    release = _fetch_lemonade_release_cached(api_url, llama_tag)
+    if release is None:
+        return None
+    release_tag = release.get("tag_name") if isinstance(release, dict) else None
+    if not isinstance(release_tag, str) or not release_tag:
+        log(
+            f"Unexpected {LEMONADE_ROCM_REPO} release payload; skipping lemonade prebuilt"
+        )
+        return None
+    assets = release_asset_map(release)
+    asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx_family}-x64.zip"
+    if asset_name not in assets:
+        log(
+            f"{LEMONADE_ROCM_REPO}@{release_tag} has no asset {asset_name!r}; "
+            "skipping lemonade prebuilt"
+        )
+        return None
+    asset_url = assets[asset_name]
+    if not asset_url:
+        # release_asset_map defaults to "" when an asset row is missing
+        # browser_download_url; skip cleanly instead of letting
+        # download_file("") raise a less obvious error downstream.
+        log(
+            f"{LEMONADE_ROCM_REPO}@{release_tag} asset {asset_name!r} has no "
+            "browser_download_url; skipping lemonade prebuilt"
+        )
+        return None
+    # Defence in depth: lemonade browser_download_url should be on github.com
+    # or githubusercontent.com. A compromised GitHub API response that
+    # redirects to an attacker-chosen host would otherwise be honoured
+    # silently (lemonade assets are not in the approved-hash manifest).
+    if not _is_trusted_github_release_url(asset_url, LEMONADE_ROCM_REPO):
+        log(
+            f"{LEMONADE_ROCM_REPO}@{release_tag} asset {asset_name!r} points "
+            f"to an unexpected host ({asset_url!r}); refusing to download "
+            "lemonade prebuilt"
+        )
+        return None
+    # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
+    # generic glibc build that runs on any distro (Arch, Fedora, ...), so
+    # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
+    log(
+        f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
+        f"trying lemonade-sdk ROCm prebuilt {asset_name} "
+        f"(works on any glibc Linux, not just Ubuntu)"
+    )
+    log(
+        f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
+        f"Unsloth approved-hash manifest; download integrity relies on "
+        f"functional validation (llama-bench / llama-server smoke tests) "
+        f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
+        f"lemonade and fall back to the upstream HIP build path."
+    )
+    return AssetChoice(
+        repo = LEMONADE_ROCM_REPO,
+        tag = release_tag,
+        name = asset_name,
+        url = asset_url,
+        source_label = "lemonade",
+        install_kind = install_kind,
+    )
+
+
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
@@ -3228,6 +3531,15 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # the exact GPU target via rocminfo, which is more reliable for consumer
         # GPUs (e.g. gfx1151) that may not be in the prebuilt.
         if host.has_rocm and not host.has_usable_nvidia:
+            # Try lemonade-sdk per-GPU prebuilt first: these are built against
+            # specific gfx targets and bundle all required ROCm runtime libs.
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "ubuntu", "linux-rocm", llama_tag = llama_tag
+            )
+            if lemonade_choice is not None:
+                return lemonade_choice
+
+            # Fall back to upstream combined ROCm tarball.
             # Scan upstream assets for any rocm-<version> prebuilt. When the
             # host ROCm runtime version is known, pick the newest candidate
             # whose major.minor is <= host version -- otherwise a ROCm 6.4
@@ -3307,8 +3619,14 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 return attempts[0]
             raise PrebuiltFallback("no compatible Windows CUDA asset was found")
 
-        # AMD ROCm on Windows: try HIP prebuilt
+        # AMD ROCm on Windows: try lemonade per-GPU prebuilt first, then upstream HIP
         if host.has_rocm:
+            lemonade_choice = resolve_lemonade_rocm_choice(
+                host, "windows", "windows-hip", llama_tag = llama_tag
+            )
+            if lemonade_choice is not None:
+                return lemonade_choice
+
             hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
             if hip_name in upstream_assets:
                 log(
@@ -3828,7 +4146,7 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
 
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm"}:
-        return [
+        patterns = [
             "llama-server",
             "llama-quantize",
             "libllama-common.so*",
@@ -3836,11 +4154,33 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "libggml.so*",
             "libggml-base.so*",
             "libmtmd.so*",
-            "libggml-cpu-*.so*",
+            "libggml-cpu*.so*",
             "libggml-cuda.so*",
             "libggml-hip.so*",
             "libggml-rpc.so*",
         ]
+        if choice.install_kind == "linux-rocm":
+            # Lemonade ROCm ZIPs bundle the full HIP / ROCm runtime so the
+            # install does not require system /opt/rocm. The upstream
+            # tarball links against system /opt/rocm and ships none of these
+            # globs (empty matches = no-op). Both paths therefore stay
+            # correct; lemonade users get the bundled runtime overlaid into
+            # ~/.unsloth/llama.cpp where llama-server's RPATH can find it.
+            patterns.extend(
+                [
+                    "libamdhip64.so*",
+                    "libhsa-runtime64.so*",
+                    "libhipblas.so*",
+                    "libhipblaslt.so*",
+                    "librocblas.so*",
+                    "librocsolver.so*",
+                    "librocsparse.so*",
+                    "librocrand.so*",
+                    "libMIOpen.so*",
+                    "libmagma.so*",
+                ]
+            )
+        return patterns
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
     if choice.install_kind in {"windows-cpu", "windows-cuda", "windows-hip"}:
@@ -5200,7 +5540,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
         ]
     if choice.install_kind == "linux-cuda":
@@ -5209,7 +5549,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-cuda.so*"],
         ]
@@ -5225,7 +5565,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
