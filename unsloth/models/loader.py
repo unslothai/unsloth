@@ -32,6 +32,7 @@ from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
+from ..tokenizer_utils import add_new_tokens
 from .loader_utils import (
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
@@ -744,6 +745,16 @@ class FastLanguageModel(FastLlamaModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
+
+        # PEFT checkpoints can carry tokenizer-added tokens that are not yet
+        # reflected in the base model vocab. Resize before merge/load so the
+        # adapter and base model stay shape-compatible.
+        if is_peft and model_config.vocab_size < len(tokenizer.vocab):
+            logger.warning_once(
+                "Unsloth: Your model's vocab size is less than the tokenizer's vocab size.\n"
+                "We shall add the new tokens to the model's vocab."
+            )
+            add_new_tokens(model, tokenizer, resize_tokenizer = False)
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
