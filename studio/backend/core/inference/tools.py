@@ -156,10 +156,18 @@ _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # ``~/.bashrc``, ``~/.ssh/config``, ``~/.ssh/known_hosts``, ``/etc/hosts``,
 # ``~/.npm/`` cache, project-local rc files, ``~/.bash_history``,
 # ``~/.cache/``) MUST stay out of this list — those still flow through.
+# SSH private-key alternatives require a filename-end boundary so that
+# the matching public key ``~/.ssh/id_rsa.pub`` (legitimate developer
+# action) is NOT blocked. Non-key entries deliberately omit the end
+# anchor: ``.aws/credentials.bak`` etc. are still credentials.
+_SSH_KEY_END = r"(?=$|[\s'\";&|)<])"
 _HOME_RELATIVE_SENSITIVE = (
-    # SSH private keys (config / known_hosts intentionally allowed)
-    r"\.ssh/id_rsa", r"\.ssh/id_ed25519", r"\.ssh/id_ecdsa",
-    r"\.ssh/id_dsa", r"\.ssh/identity",
+    # SSH private keys (config / known_hosts / *.pub intentionally allowed)
+    rf"\.ssh/id_rsa{_SSH_KEY_END}",
+    rf"\.ssh/id_ed25519{_SSH_KEY_END}",
+    rf"\.ssh/id_ecdsa{_SSH_KEY_END}",
+    rf"\.ssh/id_dsa{_SSH_KEY_END}",
+    rf"\.ssh/identity{_SSH_KEY_END}",
     # Cloud provider credentials
     r"\.aws/credentials",
     r"\.docker/config\.json",
@@ -187,24 +195,43 @@ _ABSOLUTE_SENSITIVE = (
 )
 
 # Home-equivalent prefix the path must be preceded by for HOME_RELATIVE
-# entries to fire. Covers tilde, $HOME / ${HOME}, /home/<user>, /root,
-# /Users/<user>. Each prefix consumes its own trailing slash.
+# entries to fire. Covers POSIX tilde / $HOME / ${HOME}, POSIX absolute
+# homes (/home/<u>, /root, /Users/<u>), and Windows env-var / drive-letter
+# homes (%USERPROFILE%, %HOMEDRIVE%%HOMEPATH%, $env:USERPROFILE,
+# C:/Users/<u>). Backslashes get normalized to forward slashes in
+# _find_sensitive_paths before matching, so Windows-style C:\Users\...
+# input is covered by the C:/Users/... branch here.
 _HOME_PREFIX_RE = (
     r"(?:"
     r"~"
     r"|\$\{?HOME\}?"
+    r"|%USERPROFILE%"
+    r"|%HOMEDRIVE%%HOMEPATH%"
+    r"|\$env:USERPROFILE"
+    r"|\$\{?env:USERPROFILE\}?"
     r"|/home/[^/\s'\"]+"
     r"|/root"
     r"|/Users/[^/\s'\"]+"
+    r"|[A-Za-z]:/Users/[^/\s'\"]+"
     r")/"
 )
 
+# Path-token start anchor: refuse to match inside a longer path like
+# ``./workspace/home/u/.aws/credentials`` or ``/tmp/home/u/.npmrc`` --
+# those are project-local lookalikes, not host credentials. The negative
+# lookbehind keeps matches anchored to a real shell token boundary.
+_PATH_TOKEN_START = r"(?<![A-Za-z0-9_./~$%-])"
+
 _HOME_SENSITIVE_RE = re.compile(
-    _HOME_PREFIX_RE + r"(?:" + "|".join(_HOME_RELATIVE_SENSITIVE) + r")",
+    _PATH_TOKEN_START
+    + _HOME_PREFIX_RE
+    + r"(?:"
+    + "|".join(_HOME_RELATIVE_SENSITIVE)
+    + r")",
     re.IGNORECASE,
 )
 _ABSOLUTE_SENSITIVE_RE = re.compile(
-    r"(?:" + "|".join(_ABSOLUTE_SENSITIVE) + r")",
+    _PATH_TOKEN_START + r"(?:" + "|".join(_ABSOLUTE_SENSITIVE) + r")",
     re.IGNORECASE,
 )
 
@@ -216,10 +243,19 @@ def _find_sensitive_paths(command: str) -> set[str]:
       * Home-relative paths (``.ssh/id_rsa``, ``.aws/credentials``,
         ``.npmrc``, …) match only when prefixed by a home-equivalent
         token (``~/``, ``$HOME/``, ``/home/<user>/``, ``/root/``,
-        ``/Users/<user>/``). This keeps project-local files like
-        ``./project/.npmrc`` readable.
+        ``/Users/<user>/``, ``%USERPROFILE%/``, ``C:/Users/<user>/``).
+        This keeps project-local files like ``./project/.npmrc``
+        readable.
       * Absolute system paths (``/etc/shadow``, ``/proc/<pid>/environ``,
         …) match anywhere they appear.
+
+    To resist shell-quote splicing (``cat /etc/sha''dow``,
+    ``cat ~/'.ssh/id_rsa'``) we scan three projections of the command:
+    the raw text, a backslash-normalized copy (so Windows
+    ``C:\\Users\\alice\\.ssh\\id_rsa`` is checked under the
+    ``C:/Users/…`` branch), and a shlex-dequoted token reconstruction.
+    Nested ``bash -c '…'`` / ``cmd /c '…'`` payloads are then recursed
+    into so the bypass surface mirrors ``_find_blocked_commands``.
 
     Used by both ``_bash_exec`` (gates the raw command) and the Python
     AST gate (via ``_check_args_for_blocked``, so
@@ -228,17 +264,70 @@ def _find_sensitive_paths(command: str) -> set[str]:
 
     The allow-list intentionally excludes common LLM-developer-tool
     paths (``~/.gitconfig``, ``~/.bashrc``, ``~/.ssh/config``,
-    ``~/.ssh/known_hosts``, ``/etc/hosts``, ``~/.cache/``, project-local
-    rc files) so legitimate tool calls like ``cat ~/.gitconfig`` or
-    ``find src/ -name '*.py'`` are not blocked.
+    ``~/.ssh/known_hosts``, ``/etc/hosts``, ``~/.cache/``, ``*.pub``
+    SSH public keys, project-local rc files) so legitimate tool calls
+    like ``cat ~/.gitconfig`` or ``find src/ -name '*.py'`` still work.
     """
     if not command:
         return set()
+
+    # Tokenize once: powers both the dequoted scan target and the
+    # nested-shell recursion below. shlex matches the platform default.
+    try:
+        if sys.platform == "win32":
+            tokens = shlex.split(command, posix = False)
+        else:
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+
+    scan_targets = [command]
+    # Windows path normalisation: regex uses forward slashes so
+    # ``C:\Users\alice\.ssh\id_rsa`` and ``%USERPROFILE%\.aws\credentials``
+    # have to be presented in normalized form to match.
+    if "\\" in command:
+        scan_targets.append(command.replace("\\", "/"))
+    # Shlex-dequoted reconstruction: collapses ``cat /etc/sha''dow`` into
+    # ``cat /etc/shadow`` so quote splicing cannot hide a sensitive token.
+    if tokens:
+        scan_targets.append(" ".join(tokens))
+
     found: set[str] = set()
-    for m in _HOME_SENSITIVE_RE.finditer(command):
-        found.add(m.group(0))
-    for m in _ABSOLUTE_SENSITIVE_RE.finditer(command):
-        found.add(m.group(0))
+    for text in scan_targets:
+        for m in _HOME_SENSITIVE_RE.finditer(text):
+            found.add(m.group(0))
+        for m in _ABSOLUTE_SENSITIVE_RE.finditer(text):
+            found.add(m.group(0))
+
+    # Recurse into nested shells. Mirrors the structure in
+    # _find_blocked_commands so ``bash -c "cat ~/.ssh/id_rsa"`` and
+    # ``cmd /c type %USERPROFILE%\.aws\credentials`` both surface.
+    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    _SHELLS_WIN = {"cmd", "cmd.exe"}
+    for i, token in enumerate(tokens):
+        tok_lower = token.lower()
+        is_unix_c = tok_lower == "-c" or (
+            tok_lower.startswith("-")
+            and tok_lower.endswith("c")
+            and not tok_lower.startswith("--")
+        )
+        is_win_c = tok_lower == "/c"
+        if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
+            continue
+        for j in range(i - 1, -1, -1):
+            prev = tokens[j]
+            if prev.startswith("-"):
+                continue
+            if is_win_c and prev.startswith("/") and len(prev) <= 3:
+                continue
+            prev_base = os.path.basename(prev).lower()
+            if is_unix_c and prev_base in _SHELLS:
+                found |= _find_sensitive_paths(tokens[i + 1])
+            elif is_win_c and prev_base in _SHELLS_WIN:
+                found |= _find_sensitive_paths(tokens[i + 1])
+            break
     return found
 
 
@@ -977,10 +1066,13 @@ def _check_signal_escape_patterns(code: str):
             are themselves resolvable. Closes ``open(f'/etc/{"shadow"}')``.
 
         Resolution is depth-capped so adversarial deeply-nested
-        ``'a' + ('b' + ('c' + ...))`` cannot blow the stack.
+        ``'a' + ('b' + ('c' + ...))`` cannot blow the stack. The cap
+        (64) sits well below CPython's default recursion limit and
+        comfortably above any realistic credential-path concatenation
+        (the longest sensitive path is roughly 30 chars).
         Returns ``None`` whenever any subpart fails to resolve.
         """
-        if _depth > 6:
+        if _depth > 64:
             return None
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
@@ -1116,18 +1208,8 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
                 if node.args:
                     payload = _extract_string_from_node(node.args[0])
-                    if payload is not None and self._eval_depth < 3:
-                        try:
-                            inner_tree = ast.parse(payload, mode = "exec")
-                        except SyntaxError:
-                            inner_tree = None
-                        if inner_tree is not None:
-                            self._eval_depth += 1
-                            try:
-                                self.visit(inner_tree)
-                            finally:
-                                self._eval_depth -= 1
-                    elif payload is None:
+                    if payload is None:
+                        # Dynamic payload: classic injection vector.
                         shell_escapes.append(
                             {
                                 "type": "shell_escape_dynamic",
@@ -1138,6 +1220,31 @@ def _check_signal_escape_patterns(code: str):
                                 ),
                             }
                         )
+                    elif self._eval_depth >= 3:
+                        # Fail-closed at the recursion cap so an attacker
+                        # cannot bypass inspection by wrapping the payload
+                        # in four-plus nested literal eval/exec layers.
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape_dynamic",
+                                "line": node.lineno,
+                                "description": (
+                                    f"{func.id}() literal payload nesting "
+                                    "exceeds sandbox inspection depth"
+                                ),
+                            }
+                        )
+                    else:
+                        try:
+                            inner_tree = ast.parse(payload, mode = "exec")
+                        except SyntaxError:
+                            inner_tree = None
+                        if inner_tree is not None:
+                            self._eval_depth += 1
+                            try:
+                                self.visit(inner_tree)
+                            finally:
+                                self._eval_depth -= 1
 
             func_name = None
             if isinstance(func, ast.Attribute):
@@ -1818,17 +1925,32 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
                 if node.args:
                     payload = _extract_string_from_node(node.args[0])
-                    if payload is not None and self._eval_depth < 3:
-                        try:
-                            inner_tree = ast.parse(payload, mode = "exec")
-                        except SyntaxError:
-                            inner_tree = None
-                        if inner_tree is not None:
-                            self._eval_depth += 1
+                    if payload is not None:
+                        if self._eval_depth >= 3:
+                            # Fail-closed at the depth cap so nested literal
+                            # ``exec(exec(exec(exec("open('/etc/shadow')"))))``
+                            # cannot tunnel past inspection.
+                            sensitive_file_reads.append(
+                                {
+                                    "type": "sensitive_file_read",
+                                    "line": getattr(node, "lineno", -1),
+                                    "description": (
+                                        f"{func.id}() literal payload nesting "
+                                        "exceeds sandbox inspection depth"
+                                    ),
+                                }
+                            )
+                        else:
                             try:
-                                self.visit(inner_tree)
-                            finally:
-                                self._eval_depth -= 1
+                                inner_tree = ast.parse(payload, mode = "exec")
+                            except SyntaxError:
+                                inner_tree = None
+                            if inner_tree is not None:
+                                self._eval_depth += 1
+                                try:
+                                    self.visit(inner_tree)
+                                finally:
+                                    self._eval_depth -= 1
 
             parts: list[str] = []
             cur = node.func
@@ -1858,13 +1980,13 @@ def _check_signal_escape_patterns(code: str):
                 and node.args
             ):
                 a0 = node.args[0]
-                host_lit = None
+                # Use the static-string resolver so a concatenated /
+                # f-string host literal (e.g. ``'169.254.' + '169.254'``)
+                # is recognised the same as a bare ast.Constant.
                 if isinstance(a0, ast.Tuple) and a0.elts:
-                    e0 = a0.elts[0]
-                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                        host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                    host_lit = _extract_string_from_node(a0.elts[0])
+                else:
+                    host_lit = _extract_string_from_node(a0)
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -1900,16 +2022,17 @@ def _check_signal_escape_patterns(code: str):
                     )
 
                 # 2) Extract literal host (URL string or (host, port) tuple).
+                # Same static-string resolver as elsewhere so ``'http://' +
+                # '169.254.169.254'`` and ``f'http://{"169.254.169.254"}/'``
+                # are resolvable the same as a bare constant.
                 host_arg = None
                 url_arg = None
                 if node.args:
                     a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
+                    if isinstance(a0, ast.Tuple) and a0.elts:
+                        host_arg = _extract_string_from_node(a0.elts[0])
+                    else:
+                        url_arg = _extract_string_from_node(a0)
                 if url_arg and host_arg is None:
                     m = re.match(r"^\w+://([^/?#]+)", url_arg)
                     if m:
@@ -1936,23 +2059,68 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
+            # ``fq`` resolves only when the attribute chain ends in a Name.
+            # ``Path('/etc/shadow').open()`` has a Call in the chain, which
+            # short-circuits fq to ``"open"`` -- so treat any Attribute call
+            # whose attr is ``open`` as a candidate too, then resolve the
+            # actual path from the receiver below.
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
                 or fq in ("io.open", "pathlib.Path.open")
                 or fq.endswith(".open")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "open"
+                )
             )
-            if is_open_call and node.args:
-                # Use the static-string resolver so BinOp.Add of constants
-                # and JoinedStr (f-string) of constants are caught — not just
-                # bare ast.Constant. Closes ``open('/etc/' + 'shadow')``
-                # and ``open(f'/etc/{"shadow"}')``.
-                path_lit = _extract_string_from_node(node.args[0])
+            if is_open_call:
+                # Resolve the open target. The literal path can live in
+                # ``open(arg)`` or in the receiver constructor for the
+                # ``Path('/etc/shadow').open()`` form (Fix #8).
+                path_lit = None
+                if node.args:
+                    path_lit = _extract_string_from_node(node.args[0])
+                if path_lit is None and isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+                    receiver = node.func.value
+                    if isinstance(receiver, ast.Call) and receiver.args:
+                        ctor_parts: list[str] = []
+                        cur = receiver.func
+                        while isinstance(cur, ast.Attribute):
+                            ctor_parts.insert(0, cur.attr)
+                            cur = cur.value
+                        if isinstance(cur, ast.Name):
+                            ctor_parts.insert(0, cur.id)
+                        ctor_fq = ".".join(ctor_parts) if ctor_parts else ""
+                        if ctor_fq in ("Path", "pathlib.Path") or ctor_fq.endswith(".Path"):
+                            path_lit = _extract_string_from_node(receiver.args[0])
+
                 if path_lit:
+                    # Match both the original literal and a backslash-
+                    # normalized projection so Windows-style paths
+                    # ``C:\Users\alice\.aws\credentials`` reach the
+                    # /Users/<u>/ home prefix.
+                    candidates = {path_lit}
+                    if "\\" in path_lit:
+                        candidates.add(path_lit.replace("\\", "/"))
+
                     flagged = False
-                    if any(path_lit.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
-                        flagged = True
-                    elif _SENSITIVE_FILE_RE.match(path_lit):
-                        flagged = True
+                    for cand in candidates:
+                        if any(cand.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
+                            flagged = True
+                            break
+                        if _SENSITIVE_FILE_RE.match(cand):
+                            flagged = True
+                            break
+                        # The credential / process-state allow-list lives
+                        # in ``_find_sensitive_paths`` (Patch B). Reuse it
+                        # so ``open('/home/u/.aws/credentials')`` is
+                        # blocked the same as the bash equivalent --
+                        # otherwise the new home/credential guard would
+                        # only cover shell command flows and leave the
+                        # direct Python open() path open.
+                        if _find_sensitive_paths(cand):
+                            flagged = True
+                            break
                     if flagged:
                         sensitive_file_reads.append(
                             {

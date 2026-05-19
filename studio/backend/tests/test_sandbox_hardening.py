@@ -322,16 +322,299 @@ class TestPatchD_EvalExecDynamicPayload:
 
 
 class TestPatchD_NestedDepthCap:
+    """Fail-closed once recursion exceeds the inspection cap. The previous
+    silently-drop behaviour let four-or-more nested literal exec layers
+    smuggle ``sudo whoami`` or ``open('/etc/shadow')`` past the gate."""
+
     def test_nested_depth_does_not_crash(self):
-        # 10 levels of nested exec(exec(...)) — depth cap at 3 means the
-        # recursion stops early. Must not crash, must not false-positive on
-        # the innocuous innermost payload.
+        # 10 levels of exec nesting; must not blow the stack regardless of
+        # whether the verdict is "blocked" or "allowed".
         payload = "print(1)"
         for _ in range(10):
             payload = f"exec({payload!r})"
-        # Outer payload is now exec("exec(\"exec(...))\")") with no
-        # blocked/sensitive content. Must remain ALLOWED.
-        assert not _is_blocked(payload), payload[:80] + "..."
+        # Just exercises the code path; the assertion is "did not raise".
+        _is_blocked(payload)
+
+    @pytest.mark.parametrize(
+        "inner",
+        [
+            f"import os; os.system('{SUDO} whoami')",
+            "open('/etc/shadow').read()",
+            "import requests; requests.get('http://169.254.169.254/')",
+        ],
+    )
+    @pytest.mark.parametrize("depth", [4, 5, 6])
+    def test_deep_nested_payload_fails_closed(self, inner, depth):
+        payload = inner
+        for _ in range(depth):
+            payload = f"exec({payload!r})"
+        assert _is_blocked(payload), (
+            f"depth={depth} bypass: {payload[:80]}..."
+        )
+
+    @pytest.mark.parametrize("inner", ["print(1)", "x = 1 + 2"])
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    def test_shallow_innocuous_payload_still_allowed(self, inner, depth):
+        payload = inner
+        for _ in range(depth):
+            payload = f"exec({payload!r})"
+        assert not _is_blocked(payload), (
+            f"shallow innocuous depth={depth} now blocked: {payload!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Review-round 2 regressions: fixes for findings surfaced by reviewer.py.
+# Every test here corresponds to a specific finding number from the
+# 20-reviewer aggregated review.
+# ---------------------------------------------------------------------------
+
+
+class TestFinding1_DirectOpenSensitivePaths:
+    """Finding #1 [15/20]: ``open()`` was missing the new home /
+    credential / process-state path guard. ``cat ~/.ssh/id_rsa`` was
+    blocked but ``open('~/.ssh/id_rsa').read()`` was not."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/home/u/.aws/credentials').read()",
+            "open('/Users/alice/.aws/credentials').read()",
+            "open('/root/.docker/config.json').read()",
+            "open('/home/u/.ssh/id_rsa').read()",
+            "open('/proc/self/environ').read()",
+            "open('/proc/self/maps').read()",
+            "open('/proc/self/auxv', 'rb').read()",
+            # Wrapped in literal exec — Patch D recursion plus the new
+            # open() wiring must combine.
+            "exec(\"open('/home/u/.aws/credentials').read()\")",
+            "exec(\"open('/proc/self/environ').read()\")",
+        ],
+    )
+    def test_direct_open_credential_blocked(self, code):
+        assert _is_blocked(code), f"expected to block: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Project-local lookalikes must remain allowed.
+            "open('./fixtures/etc/shadow.txt')",
+            "open('/tmp/project/etc/shadow')",
+            "open('/tmp/home/u/.npmrc')",
+            "open('./workspace/home/u/.aws/credentials')",
+            # Real common paths the AI tools touch.
+            "open('README.md')",
+            "open('src/main.py')",
+            "open('logs/today.log', 'w')",
+        ],
+    )
+    def test_project_local_open_still_allowed(self, code):
+        assert not _is_blocked(code), (
+            f"regression: project-local open() now blocked: {code!r}"
+        )
+
+
+class TestFinding4_ShellQuoteSplicing:
+    """Finding #4 [4/20]: raw-text regex saw past shell quote tricks.
+    ``cat /etc/sha''dow`` is executed by the shell as ``cat /etc/shadow``
+    but the regex returned no match."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/sha''dow",
+            "cat ~/'.ssh/id_rsa'",
+            "cat $HOME/.ssh/id_''rsa",
+            "cat /proc/self/env''iron",
+            "cat /'etc'/shadow",
+            "bash -c \"cat ~/'.ssh/id_rsa'\"",
+            "bash -c 'cat /etc/sha\"\"dow'",
+        ],
+    )
+    def test_quote_spliced_sensitive_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"missed splice: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Quote-spliced project-local lookalikes must still pass.
+            "cat ./fixtures/etc/sha''dow.txt",
+            "cat ./logs/'today.log'",
+        ],
+    )
+    def test_quote_spliced_project_local_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"regression: spliced project-local blocked: {cmd!r}"
+        )
+
+
+class TestFinding5_WindowsHomePrefixes:
+    """Finding #5 [3/20]: ``_HOME_PREFIX_RE`` only knew POSIX homes.
+    Windows ``%USERPROFILE%\\.aws\\credentials`` was not detected."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            r"type %USERPROFILE%\.aws\credentials",
+            r"type %USERPROFILE%\.ssh\id_rsa",
+            r"type %HOMEDRIVE%%HOMEPATH%\.docker\config.json",
+            r"type C:\Users\alice\.aws\credentials",
+            r"type C:\Users\alice\.ssh\id_ed25519",
+            r"type $env:USERPROFILE\.aws\credentials",
+        ],
+    )
+    def test_windows_home_paths_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"missed Windows path: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            r"type C:\Users\alice\projects\app\config.json",
+            r"type %USERPROFILE%\Documents\readme.txt",
+            r"dir C:\Users\alice\Downloads",
+        ],
+    )
+    def test_legitimate_windows_paths_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"regression: legit Windows path blocked: {cmd!r}"
+        )
+
+
+class TestFinding6_DeepLiteralConcat:
+    """Finding #6 [2/20]: the static-string resolver bailed past depth 6,
+    so ``open('/'+'e'+'t'+'c'+'/'+'s'+'h'+'a'+'d'+'o'+'w')`` was
+    silently allowed."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/'+'e'+'t'+'c'+'/'+'s'+'h'+'a'+'d'+'o'+'w').read()",
+            "open('/'+'e'+'t'+'c'+'/'+'p'+'a'+'s'+'s'+'w'+'d').read()",
+            "open('/'+'p'+'r'+'o'+'c'+'/'+'s'+'e'+'l'+'f'+'/'+'e'+'n'+'v'+'i'+'r'+'o'+'n').read()",
+        ],
+    )
+    def test_deep_literal_concat_blocked(self, code):
+        assert _is_blocked(code), f"depth bypass: {code!r}"
+
+
+class TestFinding7_NetworkHostStaticResolver:
+    """Finding #7 [1/20]: network host validation only handled
+    ``ast.Constant``; concat / f-string hosts bypassed."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests; requests.get('http://' + '169.254.169.254/')",
+            "import requests; requests.get(f'http://{\"169.254.169.254\"}/')",
+            "import socket; s=socket.socket(); s.connect(('169.254.' + '169.254', 80))",
+            "exec(\"import requests; requests.get('http://' + '169.254.169.254/')\")",
+        ],
+    )
+    def test_dynamic_metadata_host_blocked(self, code):
+        assert _is_blocked(code), f"metadata bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests; requests.get('https://' + 'wikipedia.org/')",
+            "import requests; requests.get(f'https://{\"huggingface.co\"}/x')",
+        ],
+    )
+    def test_dynamic_trusted_host_allowed(self, code):
+        assert not _is_blocked(code), (
+            f"regression: trusted host with dynamic literal blocked: {code!r}"
+        )
+
+
+class TestFinding8_PathlibPathOpen:
+    """Finding #8 [1/20]: when the open target lives in the receiver
+    constructor (``Path('/etc/shadow').open()``) rather than in
+    ``open(arg)``, the gate skipped inspection."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('/etc/shadow').open().read()",
+            "from pathlib import Path\nPath('/etc/' + 'shadow').open().read()",
+            "import pathlib\npathlib.Path('/etc/passwd').open().read()",
+            "from pathlib import Path\nPath('/home/u/.aws/credentials').open().read()",
+        ],
+    )
+    def test_pathlib_path_open_blocked(self, code):
+        assert _is_blocked(code), f"pathlib bypass: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('data.csv').open()",
+            "from pathlib import Path\nPath('logs/today.log').open('w')",
+            "from pathlib import Path\nPath('README.md').open()",
+        ],
+    )
+    def test_pathlib_legit_path_allowed(self, code):
+        assert not _is_blocked(code), (
+            f"regression: legit Path.open() blocked: {code!r}"
+        )
+
+
+class TestFinding9_ProjectLocalFalsePositives:
+    """Finding #9 [3/20]: regex without a path-token start anchor
+    blocked project-local lookalikes like ``./workspace/home/u/.aws/...``
+    which are project paths, not host credentials."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ./workspace/home/u/.aws/credentials",
+            "cat /tmp/home/u/.npmrc",
+            "cat ./fixtures/etc/shadow.txt",
+            "cat /tmp/project/etc/shadow",
+            "cat project/Users/alice/.aws/credentials",
+            "ls /opt/Users/svc/.kube/config",
+            "find /tmp/root/.gnupg -type f",
+        ],
+    )
+    def test_project_local_lookalikes_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"false-positive (tool calling dumber): {cmd!r}"
+        )
+
+
+class TestFinding10_PublicSshKeyAllowed:
+    """Finding #10 [1/20]: SSH private-key alternatives matched without
+    a filename boundary, so ``cat ~/.ssh/id_rsa.pub`` was blocked even
+    though reading a public key is a legitimate developer action."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat ~/.ssh/id_rsa.pub",
+            "cat ~/.ssh/id_ed25519.pub",
+            "cat ~/.ssh/id_ecdsa.pub",
+            "cat /home/u/.ssh/id_rsa.pub",
+            "cat /Users/alice/.ssh/id_rsa.pub",
+            "ssh-keygen -lf ~/.ssh/id_rsa.pub",
+        ],
+    )
+    def test_public_ssh_keys_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), (
+            f"regression: public key read blocked: {cmd!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Negative cross-check — the .pub end anchor must not relax
+            # the actual private-key block.
+            "cat ~/.ssh/id_rsa",
+            "cat ~/.ssh/id_ed25519",
+            "cat /home/u/.ssh/id_ecdsa",
+        ],
+    )
+    def test_private_ssh_keys_still_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), (
+            f"regression: private key now allowed: {cmd!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
