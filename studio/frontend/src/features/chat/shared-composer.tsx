@@ -932,7 +932,7 @@ export function SharedComposer({
                       // Mutual exclusion: turning thinking on for a
                       // Kimi model forces the web_search builtin off.
                       if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false);
+                        setToolsEnabled(false, { persist: false });
                       }
                     }}
                   >
@@ -961,7 +961,7 @@ export function SharedComposer({
                 // requires thinking off, so turning thinking on flips
                 // the Search pill off (and vice versa).
                 if (isKimiExternal && next && toolsEnabled) {
-                  setToolsEnabled(false);
+                  setToolsEnabled(false, { persist: false });
                 }
               }}
               className={cn(
@@ -1029,7 +1029,7 @@ export function SharedComposer({
               // back on when Search goes off — mutual exclusion that
               // mirrors what the backend enforces.
               if (isKimiExternal) {
-                setReasoningEnabled(!next);
+                setReasoningEnabled(!next, { persist: false });
                 applyQwenThinkingParams(!next);
               }
             }}

@@ -302,12 +302,18 @@ type ChatRuntimeStore = {
   setActiveThreadId: (threadId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
-  setReasoningEnabled: (enabled: boolean) => void;
+  setReasoningEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
   setLastOpenRouterChosenModel: (chosen: string | null) => void;
   setReasoningStyle: (style: ReasoningStyle) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
-  setToolsEnabled: (enabled: boolean) => void;
+  setToolsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -481,9 +487,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
     })),
-  setReasoningEnabled: (reasoningEnabled) =>
+  setReasoningEnabled: (reasoningEnabled, options) =>
     set(() => {
-      saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      if (options?.persist !== false) {
+        saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      }
       return { reasoningEnabled };
     }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
@@ -505,9 +513,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       saveBool(PRESERVE_THINKING_KEY, preserveThinking);
       return { preserveThinking };
     }),
-  setToolsEnabled: (toolsEnabled) =>
+  setToolsEnabled: (toolsEnabled, options) =>
     set(() => {
-      saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      if (options?.persist !== false) {
+        saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      }
       return { toolsEnabled };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
