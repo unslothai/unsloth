@@ -249,9 +249,14 @@ export function AppSidebar() {
 
   async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
     await deleteChatItem(item, activeThreadId, (view) => {
+      // Clear `thread`/`compare` explicitly: TanStack Router merges
+      // search params by default, so passing only `{new}` leaves the
+      // deleted thread id in the URL. The recovery useEffect in
+      // chat-page only fires on hard reload, which means the in-tab
+      // address bar stays stale until then.
       navigate({
         to: "/chat",
-        search: { new: view.newThreadNonce },
+        search: { new: view.newThreadNonce, thread: undefined, compare: undefined },
       });
     });
   }
@@ -362,7 +367,7 @@ export function AppSidebar() {
               closeMobileIfOpen();
               void navigate({
                 to: "/chat",
-                search: { new: createNavigationNonce() },
+                search: { new: createNavigationNonce(), thread: undefined, compare: undefined },
               });
             }}
             className="flex items-center gap-[6px] select-none"
@@ -440,7 +445,10 @@ export function AppSidebar() {
               onClick={() => {
                 if (chatDisabled) return;
                 setActiveThreadId(null);
-                navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+                navigate({
+                  to: "/chat",
+                  search: { new: createNavigationNonce(), thread: undefined, compare: undefined },
+                });
                 closeMobileIfOpen();
               }}
             />
