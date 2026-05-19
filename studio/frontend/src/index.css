@@ -1196,6 +1196,12 @@
  * slide-ins, and continuous shimmers to a single frame without removing the
  * end state. Hover colour changes become instant rather than fading, which is
  * the documented WCAG outcome (motion is "minimised, not removed").
+ *
+ * .animate-spin is the exception: loading spinners are essential progress
+ * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * startup / update screens, the <Spinner /> primitive). Freezing them
+ * removes the only visual signal that work is in flight, so they keep
+ * animating but at a slower, less aggressive 1.5s cadence.
  */
 @media (prefers-reduced-motion: reduce) {
 	*,
@@ -1205,5 +1211,10 @@
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
+	}
+
+	.animate-spin {
+		animation-duration: 1.5s !important;
+		animation-iteration-count: infinite !important;
 	}
 }
