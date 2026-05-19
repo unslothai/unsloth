@@ -795,7 +795,7 @@ def _patch_probe(monkeypatch, ngram_supported):
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary=None: fake),
+        classmethod(lambda cls, binary = None: fake),
     )
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -804,10 +804,12 @@ def _patch_probe(monkeypatch, ngram_supported):
     )
 
 
-def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(monkeypatch):
+def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(
+    monkeypatch,
+):
     # 0.8B MTP request -- load_model would have promoted to ngram-mod
     # (no MTP head); reload check must match a ngram-mod backend.
-    _patch_probe(monkeypatch, ngram_supported=True)
+    _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
         _speculative_type = "ngram-mod",
@@ -831,7 +833,7 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
 
 def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypatch):
     # 0.8B + binary lacks ngram-mod -> fall back to off.
-    _patch_probe(monkeypatch, ngram_supported=False)
+    _patch_probe(monkeypatch, ngram_supported = False)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
         _speculative_type = None,
@@ -855,7 +857,7 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
 
 def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
     # 4B is above the 3B threshold -> auto-promote still applies.
-    _patch_probe(monkeypatch, ngram_supported=True)
+    _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
         _speculative_type = "draft-mtp",
@@ -880,7 +882,7 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
 def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypatch):
     # 2.0B is below the 3B threshold -> ngram-mod fallback, not
     # draft-mtp. Clean-bench shows 2B regresses with draft-mtp.
-    _patch_probe(monkeypatch, ngram_supported=True)
+    _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
         _speculative_type = "ngram-mod",
