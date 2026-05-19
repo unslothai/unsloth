@@ -361,6 +361,7 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
         {
             "repo_id": "Org/MmprojAux",
             "size_bytes": 15_000,
+            "update_available": False,
         }
     ]
 

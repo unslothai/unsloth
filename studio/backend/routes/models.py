@@ -6,6 +6,7 @@ Model Management API routes
 """
 
 import hashlib
+import asyncio
 import json
 import os
 import shutil
@@ -128,6 +129,8 @@ from models.models import (
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
+    UpdateRequest,
+    UpdateResponse,
 )
 from models.responses import (
     LoRABaseModelResponse,
@@ -2160,6 +2163,7 @@ async def get_gguf_variants(
                         quant = v.quant,
                         size_bytes = v.size_bytes,
                         downloaded = True,  # all local variants are downloaded
+                        update_available = False,  # only HF models can be updated for now
                     )
                     for v in variants
                 ],
@@ -2182,8 +2186,9 @@ async def get_gguf_variants(
         # which may differ from the canonical HF repo_id, so do a
         # case-insensitive match.
         cached_bytes_by_quant: dict[str, int] = {}
+        cached_revision_ids: list[str] = []
+        cached_blob_ids: list[str] = []
         try:
-            import re as _re
             from huggingface_hub import constants as hf_constants
 
             # Sanitize repo_id: must be "owner/name" with safe chars only
@@ -2202,16 +2207,55 @@ async def get_gguf_variants(
                                 cached_bytes_by_quant[q] = (
                                     cached_bytes_by_quant.get(q, 0) + f.stat().st_size
                                 )
+                            cached_revision_ids.append(str(snap.relative_to(snapshots)))
+                    blobs = entry / "blobs"
+                    if blobs.is_dir():
+                        cached_blob_ids = [
+                            str(blob.relative_to(blobs)) for blob in blobs.iterdir()
+                        ]
                     break
         except Exception:
             pass
 
         def _is_fully_downloaded(variant) -> bool:
+            from huggingface_hub import try_to_load_from_cache
+
+            for revision in cached_revision_ids:
+                cache_exists = try_to_load_from_cache(
+                    repo_id = repo_id, filename = variant.filename, revision = revision
+                )
+                if isinstance(cache_exists, str):
+                    # Return True if an older revision of a variant exists
+                    return True
             cached = cached_bytes_by_quant.get(variant.quant, 0)
             if cached == 0 or variant.size_bytes == 0:
                 return False
             # Allow small rounding tolerance (symlinks vs real sizes)
             return cached >= variant.size_bytes * 0.99
+
+        def _check_available_updates() -> dict[str, bool]:
+            from huggingface_hub import get_paths_info
+
+            updates_dict: dict[str, bool] = {}
+            downloaded_filenames = [
+                v.filename for v in variants if _is_fully_downloaded(v)
+            ]
+            if downloaded_filenames != []:
+                remote_path_infos = get_paths_info(
+                    repo_id = repo_id, paths = downloaded_filenames, token = hf_token
+                )
+                for path_info in remote_path_infos:
+                    remote_blob_id = (
+                        path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
+                    )
+                    updates_dict[path_info.path] = (
+                        True if remote_blob_id not in cached_blob_ids else False
+                    )
+            return updates_dict
+
+        updates_dict: dict[str, bool] = await asyncio.to_thread(
+            _check_available_updates
+        )
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -2221,6 +2265,7 @@ async def get_gguf_variants(
                     quant = v.quant,
                     size_bytes = v.size_bytes,
                     downloaded = _is_fully_downloaded(v),
+                    update_available = updates_dict.get(v.filename, False),
                 )
                 for v in variants
             ],
@@ -2543,6 +2588,8 @@ async def list_cached_models(
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
     try:
+        from huggingface_hub import list_repo_commits
+
         cache_scans = _all_hf_cache_scans()
 
         seen_lower: dict[str, dict] = {}
@@ -2574,7 +2621,23 @@ async def list_cached_models(
                         seen_lower[key] = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
+                            "update_available": False,
                         }
+                        try:
+                            commits = await asyncio.to_thread(
+                                list_repo_commits, repo_id
+                            )
+                            latest_remote_commit = commits[0].commit_id
+                            local_commit_list = [
+                                i.commit_hash for i in repo_info.revisions
+                            ]
+                            seen_lower[key]["update_available"] = (
+                                True
+                                if latest_remote_commit not in local_commit_list
+                                else False
+                            )
+                        except Exception as e:
+                            pass
                 except Exception as e:
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
@@ -2584,6 +2647,86 @@ async def list_cached_models(
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
+
+
+@router.post("/update", response_model = UpdateResponse)
+async def update_hf_model(
+    request: UpdateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Update a cached model repo (or a specific GGUF variant) from the HF cache."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        config = ModelConfig.from_identifier(
+            model_id = request.repo_id,
+            hf_token = request.hf_token,
+            gguf_variant = request.gguf_variant,
+        )
+        if not config:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Invalid model identifier: {request.repo_id}",
+            )
+        if config.is_local:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Only Hugging Face models can be updated.",
+            )
+
+        if config.is_gguf:
+            if not config.gguf_hf_repo:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "GGUF update requires a Hugging Face repo.",
+                )
+            is_cancel_event_set_initially = llama_backend._cancel_event.is_set()
+            if is_cancel_event_set_initially:
+                llama_backend._cancel_event.clear()
+            model_path = await asyncio.to_thread(
+                llama_backend._download_gguf,
+                hf_repo = config.gguf_hf_repo,
+                hf_variant = config.gguf_variant,
+                hf_token = request.hf_token,
+            )
+            if config.is_vision:
+                await asyncio.to_thread(
+                    llama_backend._download_mmproj,
+                    hf_repo = config.gguf_hf_repo,
+                    hf_token = request.hf_token,
+                )
+            if is_cancel_event_set_initially:
+                llama_backend._cancel_event.set()
+        else:
+            from huggingface_hub import snapshot_download
+
+            if config.is_audio and config.audio_type == "bicodec":
+                hf_repo = (
+                    config.base_model
+                    if config.is_lora and config.base_model
+                    else config.path
+                )
+                local_path = hf_repo.split("/")[-1]
+                model_path = await asyncio.to_thread(
+                    snapshot_download,
+                    repo_id = hf_repo,
+                    local_path = local_path,
+                    token = request.hf_token,
+                )
+            else:
+                hf_repo = config.path
+                model_path = await asyncio.to_thread(
+                    snapshot_download,
+                    repo_id = hf_repo,
+                    token = request.hf_token,
+                )
+        return UpdateResponse(model_path = model_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating model '{request.repo_id}': {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to update model: {str(e)}")
 
 
 @router.delete("/delete-cached")

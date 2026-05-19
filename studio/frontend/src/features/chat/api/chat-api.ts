@@ -14,6 +14,8 @@ import type {
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   UnloadModelRequest,
+  UpdateModelRequest,
+  UpdateModelResponse,
   ValidateModelResponse,
 } from "../types/api";
 
@@ -197,12 +199,28 @@ export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
 export interface CachedModelRepo {
   repo_id: string;
   size_bytes: number;
+  update_available: boolean;
 }
 
 export async function listCachedModels(): Promise<CachedModelRepo[]> {
   const response = await authFetch("/api/models/cached-models");
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
+}
+
+export async function updateModel(
+  payload: UpdateModelRequest,
+): Promise<UpdateModelResponse> {
+  const response = await authFetch("/api/models/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repo_id: payload.repo_id,
+      hf_token: payload.hf_token ?? null,
+      gguf_variant: payload.gguf_variant ?? null,
+    }),
+  });
+  return parseJsonOrThrow<UpdateModelResponse>(response);
 }
 
 export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
