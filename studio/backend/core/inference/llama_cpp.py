@@ -3527,9 +3527,7 @@ class LlamaCppBackend:
                 )
                 return flags
             flags.extend(["--spec-type", effective_mode])
-            flags.extend(
-                _build_ngram_map_k_flags(map_caps, variant = effective_mode)
-            )
+            flags.extend(_build_ngram_map_k_flags(map_caps, variant = effective_mode))
             self._speculative_type = effective_mode
             logger.info(f"Spec decoding: {effective_mode}")
             return flags
