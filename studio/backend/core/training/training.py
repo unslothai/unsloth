@@ -17,7 +17,10 @@ Pattern follows core/data_recipe/jobs/manager.py.
 import json as _json
 import math
 import multiprocessing as mp
+import os
 import queue
+import re
+import shutil
 import threading
 import time
 import structlog
@@ -33,8 +36,55 @@ from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
     run_without_native_path_secret,
 )
+from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+
+_HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
+
+
+def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+    """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
+
+    Completed ``checkpoint-<int>/`` dirs and any non-numeric-suffix tmp dir
+    are user-owned and survive. Symlinked output_dir / children are skipped
+    so containment cannot be bypassed.
+    """
+    out = Path(output_dir)
+    if not out.exists() or not out.is_dir() or out.is_symlink():
+        return
+    try:
+        out_real = out.resolve()
+        out_root_real = Path(outputs_root()).resolve()
+    except OSError:
+        return
+    try:
+        out_real.relative_to(out_root_real)
+    except ValueError:
+        logger.warning(
+            "Skipping checkpoint cleanup - %s is not under outputs_root %s",
+            out_real,
+            out_root_real,
+        )
+        return
+    removed = 0
+    for entry in out.iterdir():
+        if not entry.is_dir() or entry.is_symlink():
+            continue
+        if not _HF_TMP_CHECKPOINT_RE.match(entry.name):
+            continue
+        try:
+            shutil.rmtree(entry, ignore_errors = False)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", entry, exc)
+    logger.info(
+        "Cancelled-run cleanup removed %d in-flight tmp-checkpoint dir(s) under %s",
+        removed,
+        out,
+    )
+
 
 _CTX = mp.get_context("spawn")
 
@@ -167,6 +217,7 @@ class TrainingBackend:
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),
+            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
@@ -316,6 +367,8 @@ class TrainingBackend:
                 )
                 self._proc.terminate()
             proc = self._proc
+            cancelled = self._cancel_requested
+            output_dir = self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -327,6 +380,15 @@ class TrainingBackend:
         # (8s covers SQLite's default 5s lock timeout plus execution overhead)
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
+
+        if cancelled and output_dir:
+            try:
+                _cleanup_cancelled_checkpoints(output_dir)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up cancelled-run checkpoints under %s",
+                    output_dir,
+                )
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""

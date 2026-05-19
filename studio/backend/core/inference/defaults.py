@@ -6,15 +6,16 @@
 import utils.hardware.hardware as hw
 
 DEFAULT_MODELS_GGUF = [
+    "unsloth/Qwen3.6-27B-MTP-GGUF",
+    "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
     "unsloth/gemma-4-26B-A4B-it-GGUF",
-    "unsloth/Qwen3.6-35B-A3B-GGUF",
-    "unsloth/Qwen3.5-4B-GGUF",
-    "unsloth/Qwen3.5-9B-GGUF",
-    "unsloth/Qwen3.5-35B-A3B-GGUF",
-    "unsloth/Qwen3.5-0.8B-GGUF",
+    "unsloth/Qwen3.5-4B-MTP-GGUF",
+    "unsloth/Qwen3.5-9B-MTP-GGUF",
+    "unsloth/Qwen3.5-35B-A3B-MTP-GGUF",
+    "unsloth/Qwen3.5-0.8B-MTP-GGUF",
     "unsloth/Llama-3.2-1B-Instruct-GGUF",
     "unsloth/Llama-3.2-3B-Instruct-GGUF",
     "unsloth/Llama-3.1-8B-Instruct-GGUF",
@@ -24,15 +25,16 @@ DEFAULT_MODELS_GGUF = [
 ]
 
 DEFAULT_MODELS_STANDARD = [
+    "unsloth/Qwen3.6-27B-MTP-GGUF",
+    "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
     "unsloth/gemma-4-26B-A4B-it-GGUF",
-    "unsloth/Qwen3.6-35B-A3B-GGUF",
-    "unsloth/Qwen3.5-4B-GGUF",
-    "unsloth/Qwen3.5-9B-GGUF",
-    "unsloth/Qwen3.5-35B-A3B-GGUF",
-    "unsloth/Qwen3.5-0.8B-GGUF",
+    "unsloth/Qwen3.5-4B-MTP-GGUF",
+    "unsloth/Qwen3.5-9B-MTP-GGUF",
+    "unsloth/Qwen3.5-35B-A3B-MTP-GGUF",
+    "unsloth/Qwen3.5-0.8B-MTP-GGUF",
     "unsloth/gemma-4-E2B-it",
     "unsloth/gemma-4-E4B-it",
     "unsloth/gemma-4-31B-it",

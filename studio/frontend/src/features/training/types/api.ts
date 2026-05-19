@@ -31,6 +31,7 @@ export interface TrainingStartRequest {
   save_steps: number;
   eval_steps: number;
   weight_decay: number;
+  max_grad_norm: number;
   random_seed: number;
   packing: boolean;
   optim: string;

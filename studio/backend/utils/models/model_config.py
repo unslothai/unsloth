@@ -19,6 +19,11 @@ from utils.paths import (
     resolve_export_dir,
 )
 from utils.utils import without_hf_auth
+from utils.models.gguf_metadata import (
+    is_mmproj_by_metadata,
+    pairing_score,
+    read_gguf_general_metadata,
+)
 import structlog
 from loggers import get_logger
 import os
@@ -38,6 +43,16 @@ from utils.subprocess_compat import (
 )
 
 logger = get_logger(__name__)
+
+
+def _env_offline() -> bool:
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+
 
 # ── Model size extraction ────────────────────────────────────
 import re as _re
@@ -801,12 +816,15 @@ _AUDIO_TOKEN_PATTERNS = {
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: "<|audio_start|>" in tokens
-    and "<|audio_end|>" in tokens
-    and "<|text_start|>" in tokens
-    and "<|text_end|>" in tokens,
-    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_"))
-    > 10000,
+    "dac": lambda tokens: (
+        "<|audio_start|>" in tokens
+        and "<|audio_end|>" in tokens
+        and "<|text_start|>" in tokens
+        and "<|text_end|>" in tokens
+    ),
+    "snac": lambda tokens: (
+        sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000
+    ),
 }
 
 
@@ -913,6 +931,85 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Family tokens for #5347's filename fallback. Lowercase. Order does not
+# matter (see ``_detect_family_token``).
+_MODEL_FAMILY_TOKENS: tuple[str, ...] = (
+    "qwen",
+    "gemma",
+    "llama",
+    "mistral",
+    "ministral",
+    "magistral",
+    "devstral",
+    "phi",
+    "deepseek",
+    "internvl",
+    "minicpm",
+    "llava",
+    "glm",
+    "yi",
+    "command-r",
+    "molmo",
+    "pixtral",
+    "smolvlm",
+    "moondream",
+    "granite",
+    "ovis",
+    "nemotron",
+    "kimi",
+    "nanonets",
+    "cosmos",
+    "mimo",
+    "apriel",
+    "lfm",
+)
+
+
+# Word-bounded match: any letter on either side disqualifies. Stops
+# ``phi`` matching ``sapphire``, ``yi`` matching ``tiny``, etc.
+_FAMILY_TOKEN_RE_CACHE: Dict[str, "_re.Pattern[str]"] = {}
+
+
+def _family_token_re(token: str) -> "_re.Pattern[str]":
+    pat = _FAMILY_TOKEN_RE_CACHE.get(token)
+    if pat is None:
+        pat = _re.compile(rf"(?:^|[^a-z])({_re.escape(token)})(?:[^a-z]|$)")
+        _FAMILY_TOKEN_RE_CACHE[token] = pat
+    return pat
+
+
+def _detect_family_token(filename: str) -> Optional[str]:
+    """Leftmost-position match; ties prefer the longer token."""
+    name = filename.lower()
+    best: Optional[tuple[int, int, str]] = None  # (start, -len, token)
+    for token in _MODEL_FAMILY_TOKENS:
+        m = _family_token_re(token).search(name)
+        if m is None:
+            continue
+        key = (m.start(1), -len(token), token)
+        if best is None or key < best:
+            best = key
+    return None if best is None else best[2]
+
+
+def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
+    """Defense-in-depth guard for the launcher: True unless both filenames
+    carry recognised family tokens that disagree."""
+    model_fam = _detect_family_token(Path(model_path).name)
+    mmproj_fam = _detect_family_token(Path(mmproj_path).name)
+    if model_fam is None or mmproj_fam is None:
+        return True
+    return model_fam == mmproj_fam
+
+
+def _shared_prefix_len(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
+
+
 def _is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
@@ -927,33 +1024,18 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
 
 
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """
-    Find the mmproj (vision projection) GGUF file for a given model.
+    """Find the mmproj GGUF for a model.
 
-    Args:
-        path: Directory to search — or a .gguf file (uses its parent dir
-            as the starting point).
-        search_root: Optional outer directory that should also be scanned
-            (and any directory between it and ``path``). This handles
-            local layouts where the model weights live in a quant-named
-            subdir (``snapshot/BF16/foo.gguf``) but the mmproj sits at
-            the snapshot root (``snapshot/mmproj-BF16.gguf``). When
-            ``None``, only the immediate parent dir is scanned, matching
-            the historical behavior.
-
-    Returns:
-        Full path to the mmproj .gguf file, or None if not found.
-    """
+    ``path``: directory or a .gguf file. ``search_root``: optional ancestor
+    to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
+    but the projector sits at ``snapshot/``). Returns the projector path or
+    ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
         return None
 
-    # Build the list of dirs to scan: immediate dir first, then walk up
-    # to (and including) ``search_root`` if it is an ancestor. We walk
-    # incrementally rather than recursing into ``search_root`` so we
-    # don't accidentally pick up an mmproj from a sibling subdir
-    # belonging to a different model variant.
+    # Walk incrementally so a sibling subdir's mmproj cannot leak in.
     seen: set[Path] = set()
     scan_order: list[Path] = []
 
@@ -969,12 +1051,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
 
     _add(start_dir)
 
-    # When ``path`` is a symlink (e.g. Ollama's ``.studio_links/...gguf``
-    # -> ``blobs/sha256-...``), the symlink's parent directory rarely
-    # contains the mmproj sibling; the real mmproj file lives next to
-    # the symlink target. Add the target's parent to the scan so vision
-    # GGUFs that are surfaced via symlinks are still recognised as
-    # vision models.
+    # Ollama's .studio_links/foo.gguf -> blobs/sha256-...: also scan target dir.
     try:
         if p.is_symlink() and p.is_file():
             target_parent = p.resolve().parent
@@ -986,14 +1063,12 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         try:
             root_resolved = Path(search_root).resolve()
             start_resolved = start_dir.resolve()
-            # Only walk if start_dir is inside (or equal to) search_root.
             if root_resolved == start_resolved or (
                 start_resolved.is_relative_to(root_resolved)
                 if hasattr(start_resolved, "is_relative_to")
                 else str(start_resolved).startswith(str(root_resolved) + "/")
             ):
                 cur = start_resolved
-                # Walk up from start_dir to (and including) root_resolved.
                 while cur != root_resolved and cur.parent != cur:
                     cur = cur.parent
                     _add(cur)
@@ -1002,11 +1077,66 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         except OSError:
             pass
 
+    candidates: list[Path] = []
+    seen_resolved: set[Path] = set()
     for d in scan_order:
         for f in _iter_gguf_files(d):
-            if _is_mmproj(f.name):
-                return str(f.resolve())
-    return None
+            try:
+                resolved = f.resolve()
+            except OSError:
+                continue
+            if resolved in seen_resolved:
+                continue
+            # Prefer ``general.type=='mmproj'``; fall back to filename.
+            meta = read_gguf_general_metadata(str(resolved))
+            by_meta = is_mmproj_by_metadata(meta)
+            if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
+                seen_resolved.add(resolved)
+                candidates.append(resolved)
+
+    if not candidates:
+        return None
+
+    # Directory path: no model name to compare against; legacy behaviour.
+    if not p.is_file():
+        return str(candidates[0])
+
+    # Stage 1: GGUF metadata. Stage 2: filename family token (#5347).
+    model_stem = p.stem.lower()
+    model_family = _detect_family_token(p.name)
+    weight_meta = read_gguf_general_metadata(str(p))
+
+    scored: list[tuple[int, Path]] = []
+    for c in candidates:
+        cand_meta = read_gguf_general_metadata(str(c))
+        meta_score = pairing_score(weight_meta, cand_meta)
+        if meta_score == -1:
+            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch)")
+            continue
+        if meta_score == 0 and model_family is not None:
+            # Unrecognised candidate family is a wildcard (``mmproj-F16.gguf``).
+            cand_family = _detect_family_token(c.name)
+            if cand_family is not None and cand_family != model_family:
+                logger.info(
+                    f"detect_mmproj_file: dropped {c.name} "
+                    f"(filename family {cand_family!r} vs model {model_family!r})"
+                )
+                continue
+        scored.append((meta_score, c))
+
+    if not scored:
+        return None
+
+    # Score first, then longest shared prefix, then shorter stem.
+    best = max(
+        scored,
+        key = lambda sc: (
+            sc[0],
+            _shared_prefix_len(model_stem, sc[1].stem.lower()),
+            -len(sc[1].stem),
+        ),
+    )
+    return str(best[1])
 
 
 def detect_gguf_model(path: str) -> Optional[str]:
@@ -1139,12 +1269,10 @@ def _extract_quant_label(filename: str) -> str:
     """
     import re
 
-    # Use only the basename (rfilename may include directory)
     basename = filename.rsplit("/", 1)[-1]
     # Strip .gguf and any shard suffix (-00001-of-00010)
     stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
-    # Match known quantization patterns
-    match = re.search(
+    quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
         r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
@@ -1152,15 +1280,75 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
         r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
-        r"|BF16|F16|F32)",  # Full precision
-        stem,
-        re.IGNORECASE,
+        r"|BF16|F16|F32)"  # Full precision
     )
+    match = re.search(quant_re, stem, re.IGNORECASE)
+    # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
+    # not the basename. Look at the parent dirs too so the variant label
+    # matches the snapshot-relative path produced elsewhere.
+    if not match and "/" in filename:
+        parents = filename.rsplit("/", 1)[0]
+        for segment in reversed(parents.split("/")):
+            m = re.search(quant_re, segment, re.IGNORECASE)
+            if m:
+                match = m
+                break
     if match:
         prefix = match.group(1) or ""
         return f"{prefix}{match.group(2)}"
     # Fallback: last segment after hyphen
     return stem.split("-")[-1]
+
+
+def _iter_hf_cache_snapshots(repo_id: str):
+    """Yield HF cache snapshot dirs for *repo_id*, newest first.
+
+    Empty generator if HF_HUB_CACHE is missing, the repo isn't cached,
+    or has no snapshots. Repo name match is case-insensitive to handle
+    casing drift between download time and lookup.
+    """
+    try:
+        from huggingface_hub import constants as hf_constants
+    except Exception:
+        return
+
+    cache_dir = Path(hf_constants.HF_HUB_CACHE)
+    if not cache_dir.is_dir():
+        return
+
+    target = f"models--{repo_id.replace('/', '--')}".lower()
+    repo_dir: Optional[Path] = None
+    try:
+        for entry in cache_dir.iterdir():
+            if entry.is_dir() and entry.name.lower() == target:
+                repo_dir = entry
+                break
+    except OSError:
+        return
+    if repo_dir is None:
+        return
+
+    snapshots = repo_dir / "snapshots"
+    if not snapshots.is_dir():
+        return
+
+    try:
+        snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
+    except OSError:
+        return
+    snap_dirs.sort(key = lambda s: s.stat().st_mtime, reverse = True)
+    yield from snap_dirs
+
+
+def _list_gguf_variants_from_hf_cache(
+    repo_id: str,
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    """Variants from the local HF cache snapshot, or None if not cached."""
+    for snap in _iter_hf_cache_snapshots(repo_id):
+        variants, has_vision = list_local_gguf_variants(str(snap))
+        if variants or has_vision:
+            return variants, has_vision
+    return None
 
 
 def list_gguf_variants(
@@ -1178,7 +1366,35 @@ def list_gguf_variants(
     """
     from huggingface_hub import model_info as hf_model_info
 
-    info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    # Offline: skip the API and serve from cache.
+    if _env_offline():
+        cached = _list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            return cached
+
+    try:
+        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    except Exception as e:
+        # Permanent errors (deleted/gated/bad revision) must surface to
+        # the caller; serving stale cache here would mask the real cause.
+        # Matches the early-return in ``detect_gguf_model_remote``.
+        if type(e).__name__ in (
+            "RepositoryNotFoundError",
+            "GatedRepoError",
+            "RevisionNotFoundError",
+            "EntryNotFoundError",
+        ):
+            raise
+        # API failed transiently; fall back to local snapshot if fully downloaded.
+        cached = _list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            logger.warning(
+                "HF API unreachable for %s (%s); using local cache snapshot.",
+                repo_id,
+                e.__class__.__name__,
+            )
+            return cached
+        raise
     variants: list[GgufVariantInfo] = []
     has_vision = False
 
@@ -1272,16 +1488,13 @@ def list_local_gguf_variants(
             size = f.stat().st_size
         except OSError:
             size = 0
-        quant = _extract_quant_label(f.name)
+        # Pass the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
+        # produce distinct quant labels instead of collapsing on basename.
+        rel = f.relative_to(p).as_posix()
+        quant = _extract_quant_label(rel)
         quant_totals[quant] = quant_totals.get(quant, 0) + size
-        # Only compute the (potentially expensive) relative path when this
-        # is the first file we've seen for this quant -- after that we'd
-        # discard the result anyway. Use posix-style separators so the
-        # filename matches what ``list_gguf_variants`` (the remote HF
-        # API path) returns on every platform; otherwise Windows would
-        # emit ``BF16\foo.gguf`` here.
         if quant not in quant_first_file:
-            quant_first_file[quant] = f.relative_to(p).as_posix()
+            quant_first_file[quant] = rel
 
     variants = [
         GgufVariantInfo(
@@ -1309,13 +1522,33 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
 
     # Recurse into subdirectories so variants stored under a quant-named
     # subdir (e.g. ``BF16/foo-BF16-00001-of-00002.gguf``) are found.
+    # Match against the relative path so the quant label can come from
+    # the directory name when the basename omits it.
     matches = sorted(
         f
         for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name) and _extract_quant_label(f.name) == variant
+        if not _is_mmproj(f.name)
+        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
     )
     if matches:
         return str(matches[0].resolve())
+    return None
+
+
+def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
+    """Best GGUF filename for *repo_id* from the local HF cache, or None.
+
+    Excludes mmproj (vision projector) files so a partial cache that
+    only has the projector cannot route the projector as the main model.
+    """
+    for snap in _iter_hf_cache_snapshots(repo_id):
+        rel_files = [
+            f.relative_to(snap).as_posix()
+            for f in _iter_gguf_files(snap, recursive = True)
+            if not _is_mmproj(f.name)
+        ]
+        if rel_files:
+            return _pick_best_gguf(rel_files)
     return None
 
 
@@ -1327,16 +1560,61 @@ def detect_gguf_model_remote(
     Check if a HuggingFace repo contains GGUF files.
 
     Returns the filename of the best GGUF file in the repo, or None.
-    """
-    try:
-        from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(repo_id, token = hf_token)
-        repo_files = [s.rfilename for s in info.siblings]
-        return _pick_best_gguf(repo_files)
-    except Exception as e:
-        logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
-        return None
+    Retries on transient HF Hub failures (network hiccups, 5xx, slow
+    cold-start of the API). Without retry, a single transient failure
+    here returns None silently and the caller treats the repo as
+    non-GGUF -- which on Apple Silicon (Mac UI route) means falling
+    through to the MLX backend, which then fails opening a non-existent
+    config.json on the GGUF-only repo. Three attempts with 1s/2s/4s
+    backoff covers the typical free-runner HF Hub flakiness.
+
+    When offline, falls back to the local HF cache so a downloaded
+    repo is still routed to llama-server (not MLX/Unsloth).
+    """
+    import time
+    from huggingface_hub import model_info as hf_model_info
+
+    if _env_offline():
+        cached = _detect_gguf_from_hf_cache(repo_id)
+        if cached is not None:
+            return cached
+
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            info = hf_model_info(repo_id, token = hf_token)
+            repo_files = [s.rfilename for s in info.siblings]
+            return _pick_best_gguf(repo_files)
+        except Exception as e:
+            last_err = e
+            # 404 / RepoNotFound is permanent -- don't waste attempts.
+            err_name = type(e).__name__
+            if err_name in (
+                "RepositoryNotFoundError",
+                "GatedRepoError",
+                "RevisionNotFoundError",
+                "EntryNotFoundError",
+            ):
+                logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+                return None
+            if attempt < 2:
+                time.sleep(2**attempt)
+
+    # All attempts failed; fall back to local cache for offline users.
+    cached = _detect_gguf_from_hf_cache(repo_id)
+    if cached is not None:
+        logger.warning(
+            "HF API unreachable for '%s' (%s); using local cache to detect GGUF.",
+            repo_id,
+            type(last_err).__name__ if last_err else "unknown",
+        )
+        return cached
+
+    logger.warning(
+        f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
+    )
+    return None
 
 
 def download_gguf_file(
@@ -1670,20 +1948,21 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
                         )
                         return base_model
 
-        training_args_path = checkpoint_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        "Detected base model from training_args.bin: %s", base_model
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; re-enable via safe_globals or weights_only=False once threat model allows.
+        # training_args_path = checkpoint_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 "Detected base model from training_args.bin: %s", base_model
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         dir_name = checkpoint_path_obj.name
         if dir_name.startswith("unsloth_"):
@@ -1731,20 +2010,21 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
-        training_args_path = lora_path_obj / "training_args.bin"
-        if training_args_path.exists():
-            try:
-                import torch
-
-                training_args = torch.load(training_args_path)
-                if hasattr(training_args, "model_name_or_path"):
-                    base_model = training_args.model_name_or_path
-                    logger.info(
-                        f"Detected base model from training_args.bin: {base_model}"
-                    )
-                    return base_model
-            except Exception as e:
-                logger.warning(f"Could not load training_args.bin: {e}")
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; also an RCE sink for third-party LoRAs via this route, re-enable behind a trust check if needed.
+        # training_args_path = lora_path_obj / "training_args.bin"
+        # if training_args_path.exists():
+        #     try:
+        #         import torch
+        #
+        #         training_args = torch.load(training_args_path)
+        #         if hasattr(training_args, "model_name_or_path"):
+        #             base_model = training_args.model_name_or_path
+        #             logger.info(
+        #                 f"Detected base model from training_args.bin: {base_model}"
+        #             )
+        #             return base_model
+        #     except Exception as e:
+        #         logger.warning(f"Could not load training_args.bin: {e}")
 
         # Last resort: parse from directory name
         # Format: unsloth_Meta-Llama-3.1-8B-Instruct-bnb-4bit_timestamp
@@ -2109,7 +2389,8 @@ class ModelConfig:
                     f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
                 )
 
-        # Auto-detect LoRA for remote HF models (check repo file listing)
+        # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
+        # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
         if not is_lora and not is_local:
             try:
                 from huggingface_hub import model_info as hf_model_info
@@ -2123,6 +2404,16 @@ class ModelConfig:
                 logger.debug(
                     f"Could not check remote LoRA status for '{identifier}': {e}"
                 )
+
+            # API may have failed; adapter_config.json may still be cached.
+            if not is_lora:
+                for snap in _iter_hf_cache_snapshots(identifier):
+                    if (snap / "adapter_config.json").is_file():
+                        is_lora = True
+                        logger.info(
+                            f"Auto-detected cached LoRA adapter: '{identifier}'"
+                        )
+                        break
 
         # Handle LoRA adapters
         base_model = None
