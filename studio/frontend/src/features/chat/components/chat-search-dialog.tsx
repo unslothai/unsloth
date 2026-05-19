@@ -26,6 +26,20 @@ function formatRelative(createdAt: number): string {
   return "Older";
 }
 
+// Strict substring-token filter. cmdk's default fuzzy scorer matches
+// unrelated rows on shared characters; require every query token to be
+// a case-insensitive substring of the item.
+function strictFilter(value: string, search: string): number {
+  const query = search.trim().toLowerCase();
+  if (query.length === 0) return 1;
+  const haystack = value.toLowerCase();
+  const tokens = query.split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    if (!haystack.includes(token)) return 0;
+  }
+  return 1;
+}
+
 export function ChatSearchDialog() {
   const isOpen = useChatSearchStore((s) => s.isOpen);
   const setOpen = useChatSearchStore((s) => s.setOpen);
@@ -54,7 +68,7 @@ export function ChatSearchDialog() {
       className="shadow-border corner-squircle w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
-      <Command className="rounded-none p-0">
+      <Command className="rounded-none p-0" filter={strictFilter}>
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
             icon={SearchIcon}
