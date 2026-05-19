@@ -626,18 +626,24 @@ def test_probe_no_ngram_mod_on_minimal_binary(tmp_path):
 def test_build_ngram_mod_flags_new():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"})
     assert flags == [
-        "--spec-ngram-mod-n-match", "24",
-        "--spec-ngram-mod-n-min", "48",
-        "--spec-ngram-mod-n-max", "64",
+        "--spec-ngram-mod-n-match",
+        "24",
+        "--spec-ngram-mod-n-min",
+        "48",
+        "--spec-ngram-mod-n-max",
+        "64",
     ]
 
 
 def test_build_ngram_mod_flags_legacy():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"})
     assert flags == [
-        "--spec-ngram-size-n", "24",
-        "--draft-min", "48",
-        "--draft-max", "64",
+        "--spec-ngram-size-n",
+        "24",
+        "--draft-min",
+        "48",
+        "--draft-max",
+        "64",
     ]
 
 
@@ -649,12 +655,15 @@ def test_build_ngram_mod_flags_empty_when_unsupported():
 
 def test_build_ngram_mod_flags_respects_custom_values():
     flags = _build_ngram_mod_flags(
-        {"ngram_mod_flavor": "new"}, n_match=16, n_min=24, n_max=32
+        {"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32
     )
     assert flags == [
-        "--spec-ngram-mod-n-match", "16",
-        "--spec-ngram-mod-n-min", "24",
-        "--spec-ngram-mod-n-max", "32",
+        "--spec-ngram-mod-n-match",
+        "16",
+        "--spec-ngram-mod-n-min",
+        "24",
+        "--spec-ngram-mod-n-max",
+        "32",
     ]
 
 

@@ -504,18 +504,24 @@ def _build_ngram_mod_flags(
     flavor = caps.get("ngram_mod_flavor") if caps else None
     if flavor == "new":
         return [
-            "--spec-ngram-mod-n-match", str(n_match),
-            "--spec-ngram-mod-n-min", str(n_min),
-            "--spec-ngram-mod-n-max", str(n_max),
+            "--spec-ngram-mod-n-match",
+            str(n_match),
+            "--spec-ngram-mod-n-min",
+            str(n_min),
+            "--spec-ngram-mod-n-max",
+            str(n_max),
         ]
     if flavor == "legacy":
         # Legacy llama.cpp before the spec arg rename: same knobs lived
         # under --spec-ngram-size-n (lookup length) and the generic
         # --draft-min / --draft-max (ngram size N range).
         return [
-            "--spec-ngram-size-n", str(n_match),
-            "--draft-min", str(n_min),
-            "--draft-max", str(n_max),
+            "--spec-ngram-size-n",
+            str(n_match),
+            "--draft-min",
+            str(n_min),
+            "--draft-max",
+            str(n_max),
         ]
     return []
 
