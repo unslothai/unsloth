@@ -139,6 +139,109 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
+# Narrow allow-list of CLEAR credential / process-state targets.
+#
+# Two categories:
+#
+# * ``_HOME_RELATIVE_SENSITIVE`` — relative paths under the user's home that
+#   are dangerous ONLY when accessed via a home-equivalent prefix (``~``,
+#   ``$HOME``, ``${HOME}``, ``/home/<user>``, ``/Users/<user>``, ``/root``).
+#   This is what keeps project-local files like ``./project/.npmrc`` /
+#   ``./pkg/.pypirc`` readable while ``~/.npmrc`` is denied.
+#
+# * ``_ABSOLUTE_SENSITIVE`` — absolute paths that are dangerous wherever
+#   they appear (`/etc/shadow`, `/proc/<pid>/environ`, etc.).
+#
+# Anything with a legitimate LLM-tool-use case (``~/.gitconfig``,
+# ``~/.bashrc``, ``~/.ssh/config``, ``~/.ssh/known_hosts``, ``/etc/hosts``,
+# ``~/.npm/`` cache, project-local rc files, ``~/.bash_history``,
+# ``~/.cache/``) MUST stay out of this list — those still flow through.
+_HOME_RELATIVE_SENSITIVE = (
+    # SSH private keys (config / known_hosts intentionally allowed)
+    r"\.ssh/id_rsa", r"\.ssh/id_ed25519", r"\.ssh/id_ecdsa",
+    r"\.ssh/id_dsa", r"\.ssh/identity",
+    # Cloud provider credentials
+    r"\.aws/credentials",
+    r"\.docker/config\.json",
+    r"\.kube/config",
+    r"\.config/gcloud/application_default_credentials",
+    r"\.config/gcloud/access_tokens",
+    r"\.config/gcloud/credentials",
+    # Personal package-manager tokens (project-local rc stays readable)
+    r"\.pypirc",
+    r"\.npmrc",
+    r"\.cargo/credentials",
+    # Authentication / password stores
+    r"\.netrc",
+    r"\.password-store",
+    r"\.gnupg/private-keys-v1\.d",
+)
+_ABSOLUTE_SENSITIVE = (
+    r"/etc/shadow",
+    r"/etc/sudoers",
+    r"/etc/ssh/ssh_host_[^\s'\"]+",
+    r"/proc/(?:self|\d+)/(?:environ|mem|maps|auxv)",
+    r"/proc/kcore",
+    r"/proc/kallsyms",
+    r"/var/spool/cron/[^\s'\"]*",
+)
+
+# Home-equivalent prefix the path must be preceded by for HOME_RELATIVE
+# entries to fire. Covers tilde, $HOME / ${HOME}, /home/<user>, /root,
+# /Users/<user>. Each prefix consumes its own trailing slash.
+_HOME_PREFIX_RE = (
+    r"(?:"
+    r"~"
+    r"|\$\{?HOME\}?"
+    r"|/home/[^/\s'\"]+"
+    r"|/root"
+    r"|/Users/[^/\s'\"]+"
+    r")/"
+)
+
+_HOME_SENSITIVE_RE = re.compile(
+    _HOME_PREFIX_RE + r"(?:" + "|".join(_HOME_RELATIVE_SENSITIVE) + r")",
+    re.IGNORECASE,
+)
+_ABSOLUTE_SENSITIVE_RE = re.compile(
+    r"(?:" + "|".join(_ABSOLUTE_SENSITIVE) + r")",
+    re.IGNORECASE,
+)
+
+
+def _find_sensitive_paths(command: str) -> set[str]:
+    """Return any sensitive credential / process-state paths in *command*.
+
+    Two-class matching:
+      * Home-relative paths (``.ssh/id_rsa``, ``.aws/credentials``,
+        ``.npmrc``, …) match only when prefixed by a home-equivalent
+        token (``~/``, ``$HOME/``, ``/home/<user>/``, ``/root/``,
+        ``/Users/<user>/``). This keeps project-local files like
+        ``./project/.npmrc`` readable.
+      * Absolute system paths (``/etc/shadow``, ``/proc/<pid>/environ``,
+        …) match anywhere they appear.
+
+    Used by both ``_bash_exec`` (gates the raw command) and the Python
+    AST gate (via ``_check_args_for_blocked``, so
+    ``os.system('cat ~/.ssh/id_rsa')`` is caught the same way as the
+    bash equivalent).
+
+    The allow-list intentionally excludes common LLM-developer-tool
+    paths (``~/.gitconfig``, ``~/.bashrc``, ``~/.ssh/config``,
+    ``~/.ssh/known_hosts``, ``/etc/hosts``, ``~/.cache/``, project-local
+    rc files) so legitimate tool calls like ``cat ~/.gitconfig`` or
+    ``find src/ -name '*.py'`` are not blocked.
+    """
+    if not command:
+        return set()
+    found: set[str] = set()
+    for m in _HOME_SENSITIVE_RE.finditer(command):
+        found.add(m.group(0))
+    for m in _ABSOLUTE_SENSITIVE_RE.finditer(command):
+        found.add(m.group(0))
+    return found
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -918,15 +1021,23 @@ def _check_signal_escape_patterns(code: str):
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 
     def _check_args_for_blocked(args_nodes):
-        """Check if any call arguments contain blocked commands."""
+        """Check if any call arguments contain blocked commands or
+        clear-cut credential / process-state paths.
+
+        Mirrors the bash side's combined ``_find_blocked_commands`` +
+        ``_find_sensitive_paths`` so e.g. ``os.system('cat ~/.ssh/id_rsa')``
+        is caught by the same gate as ``bash $ cat ~/.ssh/id_rsa``.
+        """
         found = set()
         for arg in args_nodes:
             s = _extract_string_from_node(arg)
             if s is not None:
                 found |= _find_blocked_commands(s)
+                found |= _find_sensitive_paths(s)
             strs = _extract_strings_from_list(arg)
             for s in strs:
                 found |= _find_blocked_commands(s)
+                found |= _find_sensitive_paths(s)
         return found
 
     class SignalEscapeVisitor(ast.NodeVisitor):
@@ -2015,6 +2126,18 @@ def _bash_exec(
     blocked = _find_blocked_commands(command)
     if blocked:
         return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+
+    # Block direct references to clear-cut credential / process-state
+    # paths. Allow-list excludes ~/.gitconfig, ~/.bashrc, ~/.ssh/config,
+    # /etc/hosts, ~/.npm/, project-local rc files, etc. so legitimate
+    # tool calls (`cat ~/.gitconfig`, `find src/`, `grep -r foo src/`)
+    # still work.
+    sensitive = _find_sensitive_paths(command)
+    if sensitive:
+        return (
+            f"Blocked: command references credential / process-state paths "
+            f"({', '.join(sorted(sensitive))})"
+        )
 
     try:
         workdir = _get_workdir(session_id)
