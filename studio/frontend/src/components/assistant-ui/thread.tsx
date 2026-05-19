@@ -1020,6 +1020,11 @@ const CancelledIndicator: FC = () => {
 // doesn't look frozen during the gap between "model wrote intent" and
 // "tool actually invoked", or between back-to-back tool calls.
 //
+// Scope: only fires for tool-using responses. Plain text-only answers
+// keep using GeneratingIndicator (while content is empty) and then
+// nothing -- otherwise every text streaming response would get a
+// misleading "Working..." row.
+//
 // Return value is a string ("tool:<name>" | "working" | "") rather than
 // an object so useAuiState's referential-equality memoization holds
 // across renders -- returning a fresh object each render would invalidate
@@ -1028,19 +1033,24 @@ const RunningToolIndicator: FC = () => {
   const signal = useAuiState(({ message }) => {
     if (message.status?.type !== "running") return "";
     const parts = message.parts;
+    let sawToolCall = false;
+    let runningTool: string | null = null;
+    // Single pass: find any tool-call part (signals tools-are-in-play)
+    // and the most-recent running one (drives the specific indicator).
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       const p = parts[i] as
         | { type?: string; toolName?: string; status?: { type?: string } }
         | undefined;
-      if (p?.type === "tool-call" && p.status?.type === "running") {
-        return `tool:${p.toolName ?? "tool"}`;
+      if (p?.type !== "tool-call") continue;
+      sawToolCall = true;
+      if (!runningTool && p.status?.type === "running") {
+        runningTool = p.toolName ?? "tool";
       }
     }
-    // No tool currently running, but message is still streaming.
-    // GeneratingIndicator hides once content.length > 0, so once any
-    // text has rendered we lose its dots. Surface a generic "Working..."
-    // so the chat doesn't go silent between phases.
-    if (parts.length > 0) return "working";
+    if (runningTool) return `tool:${runningTool}`;
+    // Only fall back to "Working..." if tools have been in play. A pure
+    // text-only response (no tool-call part ever) skips the fallback.
+    if (sawToolCall) return "working";
     return "";
   });
   if (!signal) return null;
