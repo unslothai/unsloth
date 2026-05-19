@@ -361,14 +361,21 @@ jobs:
         with:
           node-version: 24
 
+      - name: Lockfile supply-chain audit (pre-install scan)
+        shell: bash
+        # Runs BEFORE any `npm ci` so the structural audit
+        # (lockfile_supply_chain_audit.py) catches an injection-pattern
+        # lockfile before any tarball-side lifecycle script runs. The
+        # `npm ci` invocations below consume committed lockfiles
+        # (shipped in #5604) so they refuse to deviate from the
+        # audited shape.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Install pinned Tauri CLI
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+        # `npm ci --prefix studio` consumes the committed
+        # studio/package-lock.json (shipped in #5604) and refuses to
+        # install if the resolved tree drifts from that lockfile.
+        run: npm ci --prefix studio --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI
         shell: bash
@@ -443,13 +450,11 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: studio/frontend
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
-        run: npm install --no-fund --no-audit
+        # `npm ci` consumes the committed studio/frontend/package-lock.json
+        # and refuses to install if the resolved tree drifts from that
+        # lockfile. The pre-install audit step above already verified the
+        # lockfile shape before any lifecycle script runs.
+        run: npm ci --no-fund --no-audit
 
       # ── Rust ──
       - name: Install Rust stable

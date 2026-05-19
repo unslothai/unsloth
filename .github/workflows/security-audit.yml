@@ -53,6 +53,10 @@ on:
       - 'studio/backend/requirements/**'
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
       - 'studio/src-tauri/Cargo.toml'
       - 'studio/src-tauri/Cargo.lock'
       - 'pyproject.toml'
@@ -278,7 +282,7 @@ jobs:
           {
             echo "## Lockfile supply-chain audit"
             echo
-            echo "Scanned: studio/frontend/package-lock.json + studio/src-tauri/Cargo.lock"
+            echo "Scanned: studio/frontend/package-lock.json + studio/backend/core/data_recipe/oxc-validator/package-lock.json + studio/package-lock.json + studio/src-tauri/Cargo.lock"
             echo
             echo "No structural anomalies or known IOC strings."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -304,6 +308,42 @@ jobs:
             echo
             echo '```'
             tail -200 ../../logs-npm-audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─────────────────────────────────────────────────────────────
+      # npm: oxc-validator runtime (data_recipe parser sandbox)
+      # ─────────────────────────────────────────────────────────────
+      - name: npm audit (oxc-validator runtime)
+        continue-on-error: true
+        working-directory: studio/backend/core/data_recipe/oxc-validator
+        run: |
+          set +e
+          npm audit --audit-level=high | tee ../../../../../logs-npm-audit-oxc.txt
+          npm audit --json > ../../../../../logs-npm-audit-oxc.json || true
+          {
+            echo "## npm audit (oxc-validator runtime)"
+            echo
+            echo '```'
+            tail -200 ../../../../../logs-npm-audit-oxc.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─────────────────────────────────────────────────────────────
+      # npm: Studio Tauri CLI holder
+      # ─────────────────────────────────────────────────────────────
+      - name: npm audit (Studio Tauri CLI holder)
+        continue-on-error: true
+        working-directory: studio
+        run: |
+          set +e
+          npm audit --audit-level=high | tee ../logs-npm-audit-tauri-cli.txt
+          npm audit --json > ../logs-npm-audit-tauri-cli.json || true
+          {
+            echo "## npm audit (Studio Tauri CLI holder)"
+            echo
+            echo '```'
+            tail -200 ../logs-npm-audit-tauri-cli.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -348,6 +388,8 @@ jobs:
           /tmp/osv-scanner --version
           /tmp/osv-scanner scan source \
             --lockfile=studio/frontend/package-lock.json \
+            --lockfile=studio/backend/core/data_recipe/oxc-validator/package-lock.json \
+            --lockfile=studio/package-lock.json \
             --lockfile=studio/src-tauri/Cargo.lock \
             --lockfile=requirements.txt:audit-reqs/unsloth-deps.txt \
             --lockfile=requirements.txt:audit-reqs/studio.txt \
@@ -639,6 +681,10 @@ jobs:
             logs-pip-audit.txt
             logs-npm-audit.txt
             logs-npm-audit.json
+            logs-npm-audit-oxc.txt
+            logs-npm-audit-oxc.json
+            logs-npm-audit-tauri-cli.txt
+            logs-npm-audit-tauri-cli.json
             logs-cargo-audit.txt
             logs-osv-scanner.txt
             logs-semgrep.txt
@@ -1077,7 +1123,15 @@ jobs:
         working-directory: studio/frontend
         run: npm ci --ignore-scripts
 
-      - name: npm audit signatures (informational)
+      - name: Install oxc-validator deps (--ignore-scripts)
+        working-directory: studio/backend/core/data_recipe/oxc-validator
+        run: npm ci --ignore-scripts
+
+      - name: Install Studio Tauri CLI holder deps (--ignore-scripts)
+        working-directory: studio
+        run: npm ci --ignore-scripts
+
+      - name: npm audit signatures (Studio frontend, informational)
         # Surfaces unsigned / mis-signed packages from the npm
         # transparency log. continue-on-error during baseline-build
         # phase; promote to hard gate once the lockfile is fully
@@ -1089,7 +1143,37 @@ jobs:
           LOG=logs-audit-signatures.txt
           npm audit signatures 2>&1 | tee "$LOG"
           {
-            echo "## npm audit signatures"
+            echo "## npm audit signatures (Studio frontend)"
+            echo
+            echo '```'
+            tail -200 "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: npm audit signatures (oxc-validator, informational)
+        working-directory: studio/backend/core/data_recipe/oxc-validator
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          LOG=logs-audit-signatures-oxc.txt
+          npm audit signatures 2>&1 | tee "$LOG"
+          {
+            echo "## npm audit signatures (oxc-validator)"
+            echo
+            echo '```'
+            tail -200 "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: npm audit signatures (Studio Tauri CLI holder, informational)
+        working-directory: studio
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          LOG=logs-audit-signatures-tauri-cli.txt
+          npm audit signatures 2>&1 | tee "$LOG"
+          {
+            echo "## npm audit signatures (Studio Tauri CLI holder)"
             echo
             echo '```'
             tail -200 "$LOG"
@@ -1101,15 +1185,39 @@ jobs:
         run: |
           set -e
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          git show "$BASE_SHA:studio/frontend/package-lock.json" \
-            > /tmp/base-package-lock.json
+          # `|| echo '{}'` fallback covers PRs whose base predates the
+          # new lockfiles (they only landed in #5604); without it the
+          # diff step would crash trying to read a non-existent blob.
+          git show "$BASE_SHA:studio/frontend/package-lock.json" 2>/dev/null \
+            > /tmp/base-package-lock.json \
+            || echo '{}' > /tmp/base-package-lock.json
+          git show "$BASE_SHA:studio/backend/core/data_recipe/oxc-validator/package-lock.json" 2>/dev/null \
+            > /tmp/base-package-lock-oxc.json \
+            || echo '{}' > /tmp/base-package-lock-oxc.json
+          git show "$BASE_SHA:studio/package-lock.json" 2>/dev/null \
+            > /tmp/base-package-lock-tauri-cli.json \
+            || echo '{}' > /tmp/base-package-lock-tauri-cli.json
 
-      - name: Diff for newly-added install-script deps
+      - name: Diff for newly-added install-script deps (Studio frontend)
         if: github.event_name == 'pull_request'
         run: |
           python3 scripts/check_new_install_scripts.py \
             --base /tmp/base-package-lock.json \
             --head studio/frontend/package-lock.json
+
+      - name: Diff for newly-added install-script deps (oxc-validator)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/check_new_install_scripts.py \
+            --base /tmp/base-package-lock-oxc.json \
+            --head studio/backend/core/data_recipe/oxc-validator/package-lock.json
+
+      - name: Diff for newly-added install-script deps (Studio Tauri CLI holder)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/check_new_install_scripts.py \
+            --base /tmp/base-package-lock-tauri-cli.json \
+            --head studio/package-lock.json
 
       - name: Skip install-script diff (non-PR trigger)
         if: github.event_name != 'pull_request'
@@ -1121,6 +1229,9 @@ jobs:
         if: always()
         with:
           name: npm-audit-signatures-log
-          path: studio/frontend/logs-audit-signatures.txt
+          path: |
+            studio/frontend/logs-audit-signatures.txt
+            studio/backend/core/data_recipe/oxc-validator/logs-audit-signatures-oxc.txt
+            studio/logs-audit-signatures-tauri-cli.txt
           if-no-files-found: ignore
           retention-days: 30

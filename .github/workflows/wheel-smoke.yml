@@ -87,6 +87,7 @@ jobs:
               n = z.namelist()
               checks = {
                 "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                "oxc lockfile shipped":  any(s.endswith("oxc-validator/package-lock.json")   for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
                 "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
                 "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
