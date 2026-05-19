@@ -874,10 +874,7 @@ class InferenceBackend:
         from core.inference.tools import execute_tool
 
         def _single_turn(conv: list):
-            # ``conv`` already includes the system message because the
-            # tool loop appends to a copy that started with the
-            # system-prepended list. Pass an empty system_prompt so
-            # ``_generate_chat_response_inner`` does not double-prepend.
+            # conv already has the system message -- avoid double-prepend.
             yield from self._generate_chat_response_inner(
                 messages = conv,
                 system_prompt = "",

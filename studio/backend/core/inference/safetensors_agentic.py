@@ -39,9 +39,7 @@ from core.inference.tool_call_parser import (
 logger = get_logger(__name__)
 
 
-# Maximum prefix length we will buffer while waiting to decide whether
-# the model is about to emit ``<tool_call>`` or ``<function=``. Set just
-# above the longest signal prefix to give a small safety margin.
+# Buffer cap while waiting to disambiguate a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
 
 
@@ -146,8 +144,7 @@ def run_safetensors_tool_loop(
     next_call_id = 0
 
     if max_tool_iterations <= 0:
-        # why safe: documented 0 = disabled; mirror the GGUF loop which
-        # produces no iterations under the same setting.
+        # 0 = disabled (same contract as the GGUF loop).
         yield {"type": "status", "text": ""}
         return
 
@@ -173,9 +170,7 @@ def run_safetensors_tool_loop(
                 return
 
             if not isinstance(cumulative, str):
-                # The worker pipeline only yields strings; defensive
-                # skip in case a future change starts yielding dicts.
-                continue
+                continue  # defensive: pipeline only yields strings
 
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
@@ -209,8 +204,7 @@ def run_safetensors_tool_loop(
                     yield {"type": "content", "text": cleaned}
                 continue
 
-            # BUFFERING: hold leading content until we know it is not a
-            # tool call.
+            # BUFFERING: hold until we know it is not a tool call.
             content_buffer += delta
             stripped = content_buffer.lstrip()
             if not stripped:
@@ -238,13 +232,12 @@ def run_safetensors_tool_loop(
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
 
-        # Stream finished. Decide what to do with what we collected.
+        # Stream finished -- resolve what we collected.
         if cancel_event is not None and cancel_event.is_set():
             return
 
         if detect_state == _state_buffering:
-            # Buffer never resolved. Treat any leaked tool XML as a
-            # tool call, otherwise emit the buffer as plain content.
+            # Buffer never resolved -- tool XML or plain content.
             stripped = content_buffer.lstrip()
             if stripped and has_tool_signal(stripped):
                 detect_state = _state_draining
@@ -259,8 +252,7 @@ def run_safetensors_tool_loop(
                 return
 
         if detect_state == _state_streaming:
-            # No tool detected this iteration. Either we are done or
-            # we caught a tool-call XML late in the stream.
+            # No tool detected mid-stream -- check for late tool XML.
             safety_tc = None
             if has_tool_signal(content_accum):
                 safety_tc = parse_tool_calls_from_text(
@@ -268,12 +260,9 @@ def run_safetensors_tool_loop(
                     id_offset = next_call_id,
                 )
             if not safety_tc:
-                # Final answer arrived. Streaming already emitted the
-                # cleaned cumulative content via partial strips, so we
-                # don't re-yield here -- doing so with ``final=True``
-                # would also drop assistant prose that legitimately
-                # mentions ``<tool_call>`` as a literal string when no
-                # real tool call parsed out.
+                # Final answer: streaming already emitted content.
+                # Skip a final=True re-strip so literal "<tool_call>"
+                # in prose survives when no real tool call parsed.
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
@@ -283,15 +272,14 @@ def run_safetensors_tool_loop(
                 len(tool_calls),
             )
         else:
-            # DRAINING: parse the tool calls out of the full content.
+            # DRAINING: parse tool calls out of full content.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
             )
             if not tool_calls and auto_heal_tool_calls:
-                # Drained but parser found nothing. Surface the raw
-                # content (no ``final=True`` strip) so any literal
-                # ``<tool_call>`` text in the prose is preserved.
+                # Parser found nothing -- surface raw content so any
+                # literal "<tool_call>" prose is preserved.
                 if content_accum:
                     yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}
@@ -299,8 +287,7 @@ def run_safetensors_tool_loop(
             content_text = strip_tool_markup(content_accum, final = True)
 
         if final_attempt_done:
-            # We already asked the model for a final answer and it tried
-            # to call another tool. Stop here so we do not loop forever.
+            # Final-answer turn re-called a tool -- stop the loop.
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
@@ -370,11 +357,9 @@ def run_safetensors_tool_loop(
             )
             tool_call_history.append((tc_key, is_error))
 
-            # Strip frontend image sentinel before feeding the result
-            # back to the model so it does not see UI plumbing.
-            # Split on the sentinel itself (no leading newline) so that
-            # a leading sentinel and multiple sentinels are both peeled
-            # off in one cut.
+            # Strip frontend image sentinel from the model's view.
+            # Cut at the first occurrence so leading and consecutive
+            # sentinels are both removed.
             result_for_model = result
             if isinstance(result_for_model, str) and "__IMAGES__:" in result_for_model:
                 result_for_model = result_for_model.split("__IMAGES__:", 1)[0].rstrip()
@@ -391,12 +376,11 @@ def run_safetensors_tool_loop(
                 tool_msg["tool_call_id"] = tool_call_id
             conversation.append(tool_msg)
 
-        # Clear the status badge before the next generation turn.
+        # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
 
         if iteration + 1 >= max_tool_iterations and not final_attempt_done:
-            # Budget exhausted; nudge the model for a final plain
-            # answer on the next iteration.
+            # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
             conversation.append(
                 {

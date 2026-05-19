@@ -2,10 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Backend-neutral helpers around ``tokenizer.apply_chat_template``.
-
-Kept dependency-light so the unit tests can exercise the kwarg fallback
-without pulling unsloth/torch/transformers into a minimal sandbox.
+Dependency-light wrapper around tokenizer.apply_chat_template with a
+kwarg fallback for templates that reject reasoning/tools args.
 """
 
 from typing import Optional
@@ -20,14 +18,9 @@ def apply_chat_template_for_generation(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
 ) -> str:
-    """Render the chat prompt, peeling kwargs the template does not
-    understand.
-
-    Tries the richest call first (tools + reasoning kwargs), then
-    drops them one group at a time until a call succeeds. Real
-    template failures (Jinja errors, missing variables, etc.)
-    propagate so callers can see real bugs.
-    """
+    """Render the chat prompt. Try richest kwargs first; drop one
+    group at a time on TypeError. Jinja / missing-variable errors
+    propagate."""
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking

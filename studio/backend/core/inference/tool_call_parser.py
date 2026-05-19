@@ -2,26 +2,17 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Backend-neutral tool-call XML parser.
-
-Extracts OpenAI-format ``tool_calls`` from model text emitted in either
-``<tool_call>{json}</tool_call>`` or ``<function=name><parameter=k>v...``
-shape. Closing tags are tolerated when missing because models frequently
-omit them.
-
-Used by both the GGUF (llama-server) path and the safetensors path. The
-shared helpers keep parsing behaviour identical across backends so the
-frontend renders tool calls the same way regardless of where the model
-runs.
+Backend-neutral tool-call XML parser shared by GGUF and safetensors.
+Tolerates missing closing tags in either ``<tool_call>{json}</tool_call>``
+or ``<function=name><parameter=k>v...`` shape.
 """
 
 import json
 import re
 
 
-# Tool XML strip patterns. ``_TOOL_CLOSED_PATS`` removes only closed
-# pairs. ``_TOOL_ALL_PATS`` also removes a trailing unclosed run so a
-# truncated stream tail does not leak markup into the UI.
+# _TOOL_CLOSED_PATS: closed pairs only. _TOOL_ALL_PATS: also trailing
+# unclosed runs so truncated tails don't leak markup.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
@@ -32,15 +23,11 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 ]
 
 
-# Prefixes streamed content can start with when the model is about to
-# emit a tool call. The streaming buffer uses these to decide whether
-# to hold or yield in-progress text.
+# Prefixes the streaming buffer watches for to gate in-progress text.
 TOOL_XML_SIGNALS = ("<tool_call>", "<function=")
 
 
-# Shared nudge strings + error-result prefixes used by both the GGUF
-# (llama_cpp) and safetensors agentic tool loops. Centralised here so
-# the two backends stay in lockstep when the wording changes.
+# Nudges + error prefixes shared by the GGUF and safetensors loops.
 TOOL_ERROR_PREFIXES = (
     "Error",
     "Search failed",
@@ -112,9 +99,8 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     """
     tool_calls: list[dict] = []
 
-    # Pattern 1: JSON inside <tool_call> tags. Use balanced-brace
-    # extraction that skips braces inside JSON strings so embedded
-    # ``"{"`` characters don't confuse the depth counter.
+    # Pattern 1: <tool_call>{json}. Balanced-brace scan that skips
+    # braces inside JSON strings.
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1  # position of the opening {
         depth, i = 0, brace_start
@@ -156,9 +142,9 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
             except (json.JSONDecodeError, ValueError):
                 pass
 
-    # Pattern 2: XML-style <function=name><parameter=key>value...
-    # All closing tags optional. Avoid </function> as a body boundary
-    # because code parameter values can contain that literal string.
+    # Pattern 2: <function=name><parameter=k>v... -- closing tags
+    # optional; don't use </function> as body boundary because code
+    # values can contain that literal.
     if not tool_calls:
         func_starts = list(_TC_FUNC_START_RE.finditer(content))
         for idx, fm in enumerate(func_starts):
@@ -181,9 +167,8 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
             arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
             if len(param_starts) == 1:
-                # Single parameter: take everything from after the tag
-                # to the end of the body so embedded </parameter> inside
-                # code strings does not truncate the value.
+                # Single param: take everything to body end so
+                # embedded </parameter> in code strings is preserved.
                 pm = param_starts[0]
                 val = body[pm.end() :]
                 val = _TC_PARAM_CLOSE_RE.sub("", val)

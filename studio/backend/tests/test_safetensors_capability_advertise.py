@@ -2,26 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Regression tests for the safetensors capability-advertisement bug.
-
-Before this fix the orchestrator/worker IPC bridge never marshalled
-``chat_template_info`` back from the subprocess, so every safetensors
-model surfaced as ``supports_tools=False`` and the Studio frontend
-disabled the Web Search / Code Execution / Think pills regardless of
-whether the underlying tokenizer template accepted tools.
-
-These tests pin three contracts:
-
-1. ``_detect_safetensors_features`` honestly classifies a real Qwen3
-   chat template, an empty template, and the gpt-oss override.
-2. The worker's IPC reply for ``loaded`` carries the resolved
-   ``chat_template_info`` dict.
-3. The orchestrator mirrors that dict into ``self.models[name]`` so
-   route handlers can see it without re-entering the subprocess.
-
-The tests stay free of torch / transformers / unsloth imports by
-exercising the helper functions and constructing fake backend / worker
-state in-memory.
+Capability advertisement contract: classifier honesty, worker→
+orchestrator IPC hop, and route-layer end-to-end. Pure helpers + fakes;
+no torch / transformers import.
 """
 
 from __future__ import annotations
@@ -31,20 +14,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-# conftest already inserts the backend root, but keep this defensive
-# so the file can be exercised in isolation.
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# ── Realistic template fragments ─────────────────────────────────────
-
-
-# Trimmed Qwen3 template snippet that exercises every classifier branch
-# the safetensors path cares about. It accepts a ``tools`` list, has the
-# ``enable_thinking`` switch, and supports ``preserve_thinking`` in
-# historical assistant turns.
+# Qwen3 snippet covering tools, enable_thinking, preserve_thinking.
 QWEN3_TEMPLATE = """
 {%- if tools %}
   {{- '<|im_start|>system\\n' }}
@@ -116,9 +91,7 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
 
 
 def test_detect_safetensors_features_passes_template_through_to_classifier():
-    """Routes wrap detect_reasoning_flags in _detect_safetensors_features
-    so the gpt-oss override and the None-template short-circuit live in
-    one place. Confirm both branches behave."""
+    """Route wrapper forwards a real template to the inner classifier."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
@@ -142,9 +115,7 @@ def test_detect_safetensors_features_none_template_returns_all_false():
 
 
 def test_detect_safetensors_features_gptoss_disables_tools():
-    """gpt-oss uses Harmony, not the safetensors tool-loop, so the
-    Web Search / Code Execution pills are intentionally disabled even
-    when the template would otherwise mark supports_tools=True."""
+    """gpt-oss Harmony: tools intentionally off even if template marks it."""
     from routes.inference import _detect_safetensors_features
 
     backend = MagicMock()
@@ -161,12 +132,7 @@ def test_detect_safetensors_features_gptoss_disables_tools():
 
 
 def test_orchestrator_mirrors_chat_template_info_into_models_dict():
-    """After a successful subprocess load_model reply, the orchestrator
-    must copy chat_template_info into self.models[name] verbatim.
-    Without this the route layer reads {} and emits supports_tools=False.
-
-    We exercise just the mirroring snippet so the test is independent
-    of mp.Queue plumbing."""
+    """Worker → orchestrator must copy chat_template_info verbatim."""
     from core.inference.orchestrator import InferenceOrchestrator
 
     orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -192,9 +158,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
         },
     }
 
-    # Replicate the post-success mirror block from
-    # orchestrator.load_model verbatim so a refactor of that helper
-    # method still surfaces the regression here.
+    # Replay orchestrator.load_model's mirror block verbatim.
     orch.active_model_name = model_info["identifier"]
     orch.models[orch.active_model_name] = {
         "is_vision": model_info.get("is_vision", False),
@@ -208,12 +172,10 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
     if isinstance(_tpl_info, dict):
         orch.models[orch.active_model_name]["chat_template_info"] = _tpl_info
 
-    # Route layer reads it like this:
     entry = orch.models[orch.active_model_name]
     tpl = entry.get("chat_template_info", {}).get("template")
     assert tpl == QWEN3_TEMPLATE
 
-    # And the capability detector should now flip on.
     from routes.inference import _detect_safetensors_features
 
     flags = _detect_safetensors_features(
@@ -224,9 +186,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
 
 
 def test_orchestrator_missing_chat_template_info_falls_back_to_all_false():
-    """Older worker code (or a malformed reply) won't include
-    chat_template_info. The orchestrator must not crash, and the route
-    layer must degrade to the historic all-False advertisement."""
+    """Old / malformed worker reply: no crash, all flags False."""
     from core.inference.orchestrator import InferenceOrchestrator
     from routes.inference import _detect_safetensors_features
 
@@ -259,9 +219,7 @@ def test_orchestrator_missing_chat_template_info_falls_back_to_all_false():
 
 
 def test_worker_load_reply_payload_includes_chat_template_info():
-    """The worker pulls chat_template_info off backend.models[identifier]
-    after backend.load_model returns success. Verify the extraction
-    snippet produces the right shape against a stub backend."""
+    """Worker IPC reply carries chat_template_info dict."""
 
     class _StubBackend:
         def __init__(self, identifier, template):
@@ -286,7 +244,7 @@ def test_worker_load_reply_payload_includes_chat_template_info():
         is_lora = False,
     )
 
-    # Mirror the worker's payload-build block exactly.
+    # Replay the worker's payload-build block.
     model_info = {
         "identifier": mc.identifier,
         "display_name": mc.display_name,
@@ -316,9 +274,7 @@ def test_worker_load_reply_payload_includes_chat_template_info():
 
 
 def test_worker_load_reply_payload_survives_missing_template():
-    """A model without a chat_template (e.g. legacy GPT-2) must still
-    produce a valid IPC reply -- chat_template_info should either be
-    absent or carry has_template=False."""
+    """Tokenizer with no chat_template still produces a valid reply."""
 
     class _StubBackend:
         def __init__(self):
@@ -353,9 +309,7 @@ def test_worker_load_reply_payload_survives_missing_template():
 
 
 def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
-    """The smoking gun: simulate a freshly loaded safetensors Qwen3-0.6B
-    in the orchestrator and exercise the same lookup the LoadResponse
-    builder uses. Before the IPC fix this returned False."""
+    """End-to-end: Qwen3 safetensors flips supports_tools=True."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(

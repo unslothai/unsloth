@@ -234,13 +234,10 @@ studio_router = APIRouter()
 
 
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
-    """Surface reasoning/tool capabilities for a loaded safetensors model.
-
-    Uses the same ``detect_reasoning_flags`` classifier as GGUF so flags
-    match across backends. The gpt-oss harmony case is layered on top
-    because that path provides reasoning via tokenizer channels rather
-    than chat-template markup.
-    """
+    """Classify reasoning/tool capabilities via the GGUF classifier so
+    flags match across backends. gpt-oss is overridden because Harmony
+    routes reasoning and tools through tokenizer channels, not template
+    markup."""
     model_id = getattr(backend, "active_model_name", None)
     flags = (
         detect_reasoning_flags(
@@ -257,23 +254,15 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # gpt-oss surfaces reasoning via harmony channels (HarmonyTextStreamer);
-    # the chat template does not advertise reasoning kwargs but we still
-    # want the UI to enable the reasoning toggle. Tool calling for gpt-oss
-    # over safetensors is not yet implemented (harmony uses a dedicated
-    # channel for tool calls rather than the <tool_call> XML this loop
-    # parses), so suppress the supports_tools flag to avoid offering a
-    # toggle that would silently no-op.
+    # gpt-oss: keep reasoning on, drop tools (Harmony uses a separate
+    # channel, not <tool_call> XML this loop parses).
     try:
         if hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model():
             flags["supports_reasoning"] = True
             flags["reasoning_style"] = "reasoning_effort"
             flags["supports_tools"] = False
     except Exception:
-        logger.debug(
-            "safetensors_features.gpt_oss_check_failed",
-            exc_info = True,
-        )
+        logger.debug("gpt_oss_check_failed", exc_info = True)
     return flags
 
 
@@ -649,12 +638,7 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
-                # Inspect the loaded tokenizer's chat template the same
-                # way the GGUF sniffer does. Native generation now
-                # forwards ``enable_thinking`` / ``reasoning_effort`` /
-                # ``preserve_thinking`` / ``tools`` into
-                # ``apply_chat_template``, so we can honestly advertise
-                # whatever the template supports.
+                # Classify via the same path as GGUF.
                 _sf_flags = _detect_safetensors_features(backend, _chat_template)
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
@@ -1007,9 +991,7 @@ async def load_model(
         except Exception:
             pass
 
-        # Inspect the loaded tokenizer's chat template the same way the
-        # GGUF sniffer does so reasoning/tool flags come from the
-        # template instead of being hardcoded off.
+        # Classify reasoning/tool flags via the GGUF sniffer.
         _sf_flags = _detect_safetensors_features(backend, _chat_template)
 
         return LoadResponse(
@@ -1403,9 +1385,7 @@ async def get_status(
             else None
         )
 
-        # Non-GGUF: only gpt-oss Harmony is wired through the transformers
-        # generation path. Other template-level reasoning / tool kwargs
-        # are now forwarded too, so we surface flags from the template.
+        # Non-GGUF: classify from the loaded template.
         _sf_flags = _detect_safetensors_features(backend, chat_template)
         inference_config = (
             load_inference_config(backend.active_model_name)
@@ -2791,9 +2771,7 @@ async def openai_chat_completions(
         except Exception as e:
             raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
 
-    # Compute safetensors feature flags from the loaded tokenizer's
-    # chat template so the tool/reasoning toggles match what the
-    # template actually supports.
+    # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     _sf_features = _detect_safetensors_features(backend, _sf_tpl)
@@ -2803,14 +2781,10 @@ async def openai_chat_completions(
     created = int(time.time())
 
     # ── Safetensors tool-calling path ─────────────────────────
-    # Mirrors the GGUF agentic loop: yields the same status /
-    # tool_start / tool_end / content event stream. Disabled in
-    # vision turns because tool-call XML and image inputs share the
-    # same render slot in most templates and the combination is
-    # currently untested. Also disabled for gpt-oss because Harmony
-    # emits tool calls through dedicated channels (not <tool_call>
-    # XML) and the parser would otherwise silently drop them; tool
-    # use for gpt-oss still works through the GGUF path.
+    # Mirrors the GGUF agentic loop's event shape. Disabled for
+    # vision turns (untested overlap with image render slot) and
+    # for gpt-oss (Harmony uses dedicated channels, not <tool_call>
+    # XML -- gpt-oss tools still work via the GGUF path).
     _sf_is_gptoss = False
     try:
         _sf_is_gptoss = bool(
@@ -2898,8 +2872,7 @@ async def openai_chat_completions(
             else:
                 _sf_system_prompt = _sf_nudge
 
-        # Strip stale tool-call XML from prior assistant turns so the
-        # model doesn't see fragments from earlier conversations.
+        # Strip stale tool-call XML from prior assistant turns.
         _sf_chat_messages = []
         for _msg in chat_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
@@ -2991,9 +2964,7 @@ async def openai_chat_completions(
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
-                    # content: cumulative text. Diff against the last
-                    # emitted cleaned snapshot so cross-chunk markup
-                    # is handled correctly.
+                    # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
                     clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
                     new_text = clean_cumulative[len(prev_text) :]
@@ -3033,18 +3004,9 @@ async def openai_chat_completions(
                 raise
             except Exception:
                 backend.reset_generation_state()
-                # Log the full exception with traceback server-side, but
-                # only emit a constant string over the SSE wire to avoid
-                # CWE-209 stack-trace exposure (CodeQL py/stack-trace-
-                # exposure). The classification helper is intentionally
-                # not invoked here -- the GGUF tool stream above exposes
-                # a friendlier message because its upstream is a managed
-                # llama-server with a known error surface, but the
-                # safetensors path can raise arbitrary transformers /
-                # torch errors that may carry sensitive paths.
-                logger.exception(
-                    "Error during safetensors tool streaming",
-                )
+                # Generic wire message; full trace stays in the log
+                # (CWE-209: transformers/torch errors may leak paths).
+                logger.exception("safetensors tool stream error")
                 error_chunk = {
                     "error": {
                         "message": "An internal error occurred.",
@@ -3066,10 +3028,7 @@ async def openai_chat_completions(
                 },
             )
 
-        # Non-streaming JSON: drain the agentic loop in a worker thread
-        # and assemble a single ChatCompletion, matching how the GGUF
-        # server-tool path returns synchronous JSON to OpenAI clients
-        # that did not request streaming.
+        # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
 
             def _drain_to_text():
@@ -3097,12 +3056,8 @@ async def openai_chat_completions(
             return JSONResponse(content = response.model_dump())
         except Exception:
             backend.reset_generation_state()
-            # Same CWE-209 hygiene as the streaming sibling above:
-            # log the full exception, expose only a constant to the
-            # client.
-            logger.exception(
-                "Error during safetensors tool completion",
-            )
+            # CWE-209: generic detail; full trace in log.
+            logger.exception("safetensors tool completion error")
             raise HTTPException(
                 status_code = 500,
                 detail = "An internal error occurred.",
@@ -3122,10 +3077,8 @@ async def openai_chat_completions(
         max_new_tokens = payload.max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
     )
-    # Forward the reasoning kwargs into the template if the template
-    # supports them. The orchestrator drops any kwarg the worker does
-    # not accept, and the safe template wrapper inside the worker
-    # peels them off if the chat template itself does not accept them.
+    # Forward reasoning kwargs; the worker/template wrapper peels off
+    # any the template doesn't accept.
     if payload.enable_thinking is not None:
         gen_kwargs["enable_thinking"] = payload.enable_thinking
     if payload.reasoning_effort is not None:

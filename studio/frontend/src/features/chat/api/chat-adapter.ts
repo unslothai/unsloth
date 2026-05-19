@@ -593,9 +593,7 @@ async function autoLoadSmallestModel(): Promise<{
             reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
             supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
-            // Match the GGUF auto-load branch above so the Web Search /
-            // Code Execution pills default to active when the model's
-            // template accepts tools.
+            // Parity with the GGUF branch above.
             toolsEnabled: sfLoadResp.supports_tools ?? false,
             codeToolsEnabled: sfLoadResp.supports_tools ?? false,
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
