@@ -941,18 +941,37 @@ if (-not $vsResult) {
 }
 
 if ($vsResult -and $vsResult.MsbuildToolsetVersion -eq 'v180') {
-    # "Visual Studio 18 2026" generator needs CMake 4.2+. Try winget upgrade,
+    # "Visual Studio 18 2026" generator needs CMake 4.2+. Try winget upgrade
+    # then winget install (covers portable / non-winget-managed CMake on PATH),
     # else fall back to VS 2022, else hard exit with guidance.
     $cmakeVersion = Get-CMakeVersion
     if ($null -eq $cmakeVersion -or $cmakeVersion -lt [version]'4.2.0') {
         substep "Visual Studio 2026 needs CMake 4.2+ (current: $cmakeVersion)" "Yellow"
         if (Get-Command winget -ErrorAction SilentlyContinue) {
+            # 1. upgrade: works only when the existing CMake is winget-managed.
             substep "Attempting 'winget upgrade Kitware.CMake'..." "Gray"
             try {
-                winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
-                Refresh-Environment
+                winget upgrade --id Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
             } catch {}
+            Refresh-Environment
             $cmakeVersion = Get-CMakeVersion
+            # 2. install: covers portable / manually installed CMake on PATH
+            # that winget does not see in its registry.
+            if ($null -eq $cmakeVersion -or $cmakeVersion -lt [version]'4.2.0') {
+                substep "Attempting 'winget install Kitware.CMake'..." "Gray"
+                try {
+                    winget install --id Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
+                } catch {}
+                # Prepend the winget install bin dir so the new CMake wins
+                # over any pre-existing portable CMake on PATH.
+                $wingetCmakeBin = "$env:ProgramFiles\CMake\bin"
+                if (Test-Path (Join-Path $wingetCmakeBin 'cmake.exe')) {
+                    $env:Path = "$wingetCmakeBin;$env:Path"
+                    Add-ToUserPath -Directory $wingetCmakeBin -Position 'Prepend' | Out-Null
+                }
+                Refresh-Environment
+                $cmakeVersion = Get-CMakeVersion
+            }
         }
         if ($null -eq $cmakeVersion -or $cmakeVersion -lt [version]'4.2.0') {
             $fallback = Find-VsBuildTools2022
@@ -961,7 +980,7 @@ if ($vsResult -and $vsResult.MsbuildToolsetVersion -eq 'v180') {
                 $vsResult = $fallback
             } else {
                 Write-Host "[ERROR] VS 2026 detected but CMake < 4.2 and no VS 2022 fallback available." -ForegroundColor Red
-                Write-Host "        Upgrade CMake (>= 4.2) from https://cmake.org/download/ and re-run." -ForegroundColor Red
+                Write-Host "        Install CMake (>= 4.2) from https://cmake.org/download/ and re-run." -ForegroundColor Red
                 exit 1
             }
         }
