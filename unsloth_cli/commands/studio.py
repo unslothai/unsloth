@@ -1234,6 +1234,9 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
+    # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
+    # subprocess resolves the same install root the user originally chose.
+    _ensure_studio_env_exported()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package

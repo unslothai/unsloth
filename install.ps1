@@ -879,7 +879,8 @@ shell.Run cmd, 0, False
         $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
         if (-not (Test-Path -LiteralPath $UnslothExe)) {
             Write-Host "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
-            return (Exit-InstallFailure "unsloth.exe missing")
+            # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
+            throw "unsloth.exe missing"
         }
         New-StudioShortcuts -UnslothExePath $UnslothExe
         return
