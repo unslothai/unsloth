@@ -342,6 +342,28 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
     )
+    llama_cpp_supports_mtp: bool = Field(
+        True,
+        description = (
+            "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
+            "False -> recommend `unsloth studio update`."
+        ),
+    )
+    llama_cpp_prebuilt_stale: bool = Field(
+        False,
+        description = (
+            "Installed llama.cpp prebuilt is >=3 days behind the latest "
+            "release. True -> show `unsloth studio update` banner."
+        ),
+    )
+    llama_cpp_installed_tag: Optional[str] = Field(
+        None,
+        description = "Installed llama.cpp tag, or None if unknown.",
+    )
+    llama_cpp_latest_tag: Optional[str] = Field(
+        None,
+        description = "Latest published llama.cpp tag, or None if GitHub unreachable.",
+    )
 
 
 # =====================================================================
@@ -393,15 +415,12 @@ ContentPart = Annotated[
 
 
 class ChatMessage(BaseModel):
-    """
-    A single message in the conversation.
+    """Single message in a chat conversation.
 
-    ``content`` may be a plain string (text-only) or a list of
-    content parts for multimodal messages (OpenAI vision format).
-    Assistant messages that only contain tool calls may set ``content``
-    to ``None`` with ``tool_calls`` populated. ``role="tool"`` messages
-    carry the result of a client-executed tool call and require
-    ``tool_call_id`` per the OpenAI spec.
+    ``content`` is a string or a list of multimodal content parts. Assistant
+    messages with only ``tool_calls`` populated may set ``content=None``.
+    Missing ``tool_call_id`` on ``role="tool"`` is resolved at the
+    ``ChatCompletionRequest`` layer by walking back to the preceding assistant.
     """
 
     role: Literal["system", "user", "assistant", "tool"] = Field(
@@ -433,17 +452,11 @@ class ChatMessage(BaseModel):
             raise ValueError('"name" is only valid on role="tool" messages.')
 
         if self.role == "tool":
-            if not self.tool_call_id:
-                # Frontend's second-round POST drops the streamed id;
-                # synthesise one so the request round-trips.
-                import secrets as _secrets
-
-                self.tool_call_id = f"call_{_secrets.token_hex(8)}"
+            # tool_call_id resolution happens at ChatCompletionRequest scope.
             if not self.content:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":
-            # Tolerate the post-Stop empty-assistant sentinel by
-            # collapsing content="" to None.
+            # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
                 self.content = None
         else:  # "user" | "system"
@@ -630,6 +643,76 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
+
+    @model_validator(mode = "after")
+    def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":
+        """Fill missing tool_call_id by walking back to the preceding assistant.
+
+        OpenAI / Anthropic passthrough require the result id to match the
+        assistant's tool_calls[].id. Prefer function.name match, else first
+        unconsumed tool_call; synth random id only if no candidate exists.
+        Crossing a user turn breaks the lookup.
+        """
+        # Pre-mark explicit ids first so a sibling missing-id result does not
+        # steal one already claimed by name.
+        consumed: set[tuple[int, int]] = set()
+
+        def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
+            for asst_idx in range(start_idx - 1, -1, -1):
+                prev = self.messages[asst_idx]
+                if prev.role == "user":
+                    break
+                if prev.role != "assistant" or not prev.tool_calls:
+                    continue
+                for tc_idx, tc in enumerate(prev.tool_calls):
+                    if isinstance(tc, dict) and tc.get("id") == tool_call_id:
+                        consumed.add((asst_idx, tc_idx))
+                        return
+
+        for tool_idx, msg in enumerate(self.messages):
+            if msg.role == "tool" and msg.tool_call_id:
+                _mark_consumed(tool_idx, msg.tool_call_id)
+
+        for tool_idx, msg in enumerate(self.messages):
+            if msg.role != "tool" or msg.tool_call_id:
+                continue
+            picked: str | None = None
+            for asst_idx in range(tool_idx - 1, -1, -1):
+                prev = self.messages[asst_idx]
+                if prev.role != "assistant" or not prev.tool_calls:
+                    if prev.role == "user":
+                        break
+                    continue
+                name_match = None
+                fallback = None
+                for tc_idx, tc in enumerate(prev.tool_calls):
+                    if (asst_idx, tc_idx) in consumed:
+                        continue
+                    if not isinstance(tc, dict):
+                        continue
+                    tc_id = tc.get("id")
+                    if not tc_id:
+                        continue
+                    function = tc.get("function")
+                    function_name = (
+                        function.get("name") if isinstance(function, dict) else None
+                    )
+                    if msg.name and function_name == msg.name:
+                        name_match = (tc_id, asst_idx, tc_idx)
+                        break
+                    if fallback is None:
+                        fallback = (tc_id, asst_idx, tc_idx)
+                chosen = name_match or fallback
+                if chosen is not None:
+                    picked, a, t = chosen
+                    consumed.add((a, t))
+                    break
+            if picked is None:
+                import secrets as _secrets
+
+                picked = f"call_{_secrets.token_hex(8)}"
+            msg.tool_call_id = picked
+        return self
 
 
 # ── OpenAI shell-tool container management ─────────────────────

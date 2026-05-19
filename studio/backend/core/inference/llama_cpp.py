@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Generator, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -99,6 +99,51 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
 # list[bool] mask. Lazy-loaded.
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
+
+
+def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
+    """Quick DNS check. Runs on a daemon thread so concurrent sockets
+    in the same process are not affected by socket.setdefaulttimeout."""
+    result: list[Optional[bool]] = [None]
+
+    def _probe() -> None:
+        try:
+            socket.gethostbyname(host)
+            result[0] = False
+        except Exception:
+            result[0] = True
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout)
+    # Thread still running -> resolver wedged -> treat as dead.
+    return True if result[0] is None else result[0]
+
+
+@contextlib.contextmanager
+def _hf_offline_if_dns_dead():
+    """Set HF_HUB_OFFLINE for the body of this block only when DNS to
+    huggingface.co fails. Restores the env on exit so a transient
+    resolver hiccup at the start of one load can't quarantine the whole
+    process. Respects an explicit user setting (no-op if already set)."""
+    if "HF_HUB_OFFLINE" in os.environ:
+        yield False
+        return
+    if not _probe_dns_dead():
+        yield False
+        return
+
+    transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    if not transformers_was_set:
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+    try:
+        yield True
+    finally:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        if not transformers_was_set:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
 
 def _swa_cache_path() -> Path:
@@ -414,6 +459,32 @@ def detect_reasoning_flags(
     return flags
 
 
+def _is_mtp_model_name(
+    model_identifier: Optional[str],
+    gguf_path: Optional[str] = None,
+) -> bool:
+    """Name-based MTP detector. Fallback for the metadata signal."""
+    for cand in (model_identifier, Path(gguf_path).name if gguf_path else None):
+        if cand and "-mtp" in cand.lower():
+            return True
+    return False
+
+
+def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
+    """User passed --spec-type / --spec-default? llama-server accumulates
+    repeated --spec-type, so we suppress auto-emit when this is true."""
+    if not extra_args:
+        return False
+    for raw in extra_args:
+        tok = str(raw)
+        if not tok.startswith("--"):
+            continue
+        flag = tok.split("=", 1)[0]
+        if flag in ("--spec-type", "--spec-default"):
+            return True
+    return False
+
+
 class LlamaCppBackend:
     """
     Manages a llama-server subprocess for GGUF model inference.
@@ -469,6 +540,8 @@ class LlamaCppBackend:
         # Last N layers reuse KV from earlier layers and don't allocate
         # their own cache (Gemma 3n / Gemma 4: <arch>.attention.shared_kv_layers).
         self._shared_kv_layers: Optional[int] = None
+        # MTP head count (llama.cpp #22673); >0 enables --spec-type draft-mtp.
+        self._nextn_predict_layers: Optional[int] = None
         self._lock = threading.Lock()
         # Wraps load_model() end-to-end so concurrent loads serialise
         # and never coexist as two llama-server processes (#5401).
@@ -483,6 +556,9 @@ class LlamaCppBackend:
         self._requested_n_ctx: int = 0
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        # llama-server tee log (see _drain_stdout / _kill_process).
+        self._llama_log_fh = None
+        self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
 
@@ -839,6 +915,61 @@ class LlamaCppBackend:
 
         return None
 
+    # ── llama-server capability probe ─────────────────────────────
+
+    # Cached on (path, mtime); `unsloth studio update` bumps mtime.
+    _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
+
+    @classmethod
+    def probe_server_capabilities(
+        cls, binary: Optional[str] = None
+    ) -> dict[str, object]:
+        """Parse `llama-server --help` for feature flags. Returns
+        {found, mtp_token, supports_mtp}. mtp_token is "draft-mtp"
+        (older) or "mtp" (renamed upstream), or None."""
+        bin_path = binary or cls._find_llama_server_binary()
+        if not bin_path or not Path(bin_path).is_file():
+            return {"found": False, "mtp_token": None, "supports_mtp": False}
+        try:
+            mtime = int(Path(bin_path).stat().st_mtime)
+        except OSError:
+            mtime = 0
+        cache_key = (bin_path, mtime)
+        cached = cls._capability_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        mtp_token: Optional[str] = None
+        try:
+            result = subprocess.run(
+                [bin_path, "--help"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                check = False,
+            )
+            help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            spec_line = ""
+            for line in help_text.splitlines():
+                if "--spec-type" in line:
+                    spec_line = line
+                    break
+            # PR #22673 used draft-mtp; later renamed to mtp.
+            if "draft-mtp" in spec_line:
+                mtp_token = "draft-mtp"
+            elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
+                mtp_token = "mtp"
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug(f"llama-server --help probe failed: {exc}")
+
+        info = {
+            "found": True,
+            "mtp_token": mtp_token,
+            "supports_mtp": mtp_token is not None,
+        }
+        cls._capability_cache[cache_key] = info
+        return info
+
     # ── GPU allocation ────────────────────────────────────────────
 
     @staticmethod
@@ -1054,6 +1185,26 @@ class LlamaCppBackend:
                     _add(sub)
         _add(site_packages / "torch" / "lib")
         return out
+
+    @staticmethod
+    def _build_windows_path_dirs(
+        binary_dir: str, prefix: str, cuda_path: str
+    ) -> list[str]:
+        """Ordered PATH entries the win32 branch of start_llama_server
+        prepends so llama-server.exe resolves cudart / cublas DLLs:
+        binary_dir, pip nvidia wheels, CUDA_PATH/bin, CUDA_PATH/bin/x64.
+        Extracted so test_windows_gpu_detection_mock asserts against
+        production logic, not a hand-copy. #5106."""
+        path_dirs = [binary_dir]
+        path_dirs.extend(LlamaCppBackend._windows_pip_nvidia_dll_dirs(prefix))
+        if cuda_path:
+            cuda_bin = os.path.join(cuda_path, "bin")
+            if os.path.isdir(cuda_bin):
+                path_dirs.append(cuda_bin)
+            cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+            if os.path.isdir(cuda_bin_x64):
+                path_dirs.append(cuda_bin_x64)
+        return path_dirs
 
     @staticmethod
     def _select_gpus(
@@ -1462,6 +1613,11 @@ class LlamaCppBackend:
         This prevents a pipe-buffer deadlock on Windows where the default
         pipe buffer is only ~4 KB.  Without draining, llama-server blocks
         on writes and never becomes healthy.
+
+        Each line is also teed to ``self._llama_log_fh`` when set so a
+        post-mortem (especially in CI) has the full subprocess output
+        even if the crash predates the drain-thread join in
+        ``_wait_for_health``.
         """
         try:
             for line in self._process.stdout:
@@ -1469,6 +1625,14 @@ class LlamaCppBackend:
                 if line:
                     self._stdout_lines.append(line)
                     logger.debug(f"[llama-server] {line}")
+                    fh = getattr(self, "_llama_log_fh", None)
+                    if fh is not None:
+                        try:
+                            fh.write(line + "\n")
+                            fh.flush()
+                        except (ValueError, OSError):
+                            # Log file closed under us; tee silently.
+                            pass
         except (ValueError, OSError):
             # Pipe closed — process is terminating
             pass
@@ -1557,6 +1721,7 @@ class LlamaCppBackend:
         self._ssm_inner_size = None
         self._ssm_state_size = None
         self._shared_kv_layers = None
+        self._nextn_predict_layers = None
 
         try:
             WANTED = {
@@ -1639,6 +1804,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
+                                        f"{arch}.nextn_predict_layers": "nextn_predict_layers",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -1804,6 +1970,55 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
+            # Offline: resolve variant -> filename from the local HF cache.
+            # The heuristic below assumes filenames echo the repo name,
+            # which breaks for e.g. Qwen3.6-27B-MTP-GGUF (no "MTP" in file).
+            # Match against the rel path (not just basename) so subdir
+            # layouts like ``BF16/foo.gguf`` are findable.
+            if not gguf_filename:
+                try:
+                    from utils.models.model_config import _iter_hf_cache_snapshots
+
+                    boundary = re.compile(
+                        r"(?<![a-zA-Z0-9])"
+                        + re.escape(hf_variant.lower())
+                        + r"(?![a-zA-Z0-9])"
+                    )
+                    for snap in _iter_hf_cache_snapshots(hf_repo):
+                        matches = sorted(
+                            p.relative_to(snap).as_posix()
+                            for p in snap.rglob("*.gguf")
+                            if "mmproj" not in p.name.lower()
+                            and boundary.search(p.relative_to(snap).as_posix().lower())
+                        )
+                        if not matches:
+                            continue
+                        gguf_filename = matches[0]
+                        m = _SHARD_FULL_RE.match(Path(gguf_filename).name)
+                        if m:
+                            prefix = m.group(1)
+                            total = m.group(3)
+                            sibling_pat = re.compile(
+                                r"^"
+                                + re.escape(prefix)
+                                + r"-\d{5}-of-"
+                                + re.escape(total)
+                                + r"\.gguf$"
+                            )
+                            gguf_extra_shards = [
+                                f
+                                for f in matches[1:]
+                                if sibling_pat.match(Path(f).name)
+                            ]
+                        logger.info(
+                            "Resolved variant %s -> %s from local HF cache",
+                            hf_variant,
+                            gguf_filename,
+                        )
+                        break
+                except Exception as e:
+                    logger.debug(f"Offline cache lookup for variant failed: {e}")
+
             if not gguf_filename:
                 repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                 gguf_filename = f"{repo_name}-{hf_variant}.gguf"
@@ -1811,8 +2026,6 @@ class LlamaCppBackend:
         # Check disk space and fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
         try:
-            import os
-
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
@@ -1946,24 +2159,50 @@ class LlamaCppBackend:
         Prefers mmproj-F16.gguf, falls back to any mmproj*.gguf file.
         Returns the local path, or None if no mmproj file exists.
         """
-        try:
-            from huggingface_hub import hf_hub_download, list_repo_files
 
-            files = list_repo_files(hf_repo, token = hf_token)
+        def _pick_mmproj(candidates: list[str]) -> Optional[str]:
             mmproj_files = sorted(
-                f for f in files if f.endswith(".gguf") and "mmproj" in f.lower()
+                f
+                for f in candidates
+                if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
             )
             if not mmproj_files:
                 return None
-
-            # Prefer F16 variant
-            target = None
             for f in mmproj_files:
                 if f.lower().endswith("-f16.gguf"):
-                    target = f
-                    break
-            if target is None:
-                target = mmproj_files[0]
+                    return f
+            return mmproj_files[0]
+
+        target: Optional[str] = None
+        try:
+            from huggingface_hub import list_repo_files
+
+            target = _pick_mmproj(list_repo_files(hf_repo, token = hf_token))
+        except Exception as e:
+            logger.debug(f"Could not list repo files for mmproj: {e}")
+
+        # Offline: resolve mmproj from the local HF cache snapshot, same
+        # shape as _download_gguf's offline fallback above.
+        if target is None:
+            try:
+                from utils.models.model_config import _iter_hf_cache_snapshots
+
+                for snap in _iter_hf_cache_snapshots(hf_repo):
+                    rel_files = [
+                        p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")
+                    ]
+                    target = _pick_mmproj(rel_files)
+                    if target is not None:
+                        logger.info("Resolved mmproj %s from local HF cache", target)
+                        break
+            except Exception as e:
+                logger.debug(f"Offline cache lookup for mmproj failed: {e}")
+
+        if target is None:
+            return None
+
+        try:
+            from huggingface_hub import hf_hub_download
 
             logger.info(f"Downloading mmproj: {hf_repo}/{target}")
             local_path = hf_hub_download(
@@ -1975,6 +2214,35 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Could not download mmproj: {e}")
             return None
+
+    def _resolve_launch_mmproj_path(
+        self,
+        *,
+        model_path: str,
+        mmproj_path: Optional[str],
+    ) -> Optional[str]:
+        """Return mmproj_path iff it exists on disk AND matches the model family.
+
+        Returns None if mmproj_path is None, missing on disk, or family-mismatched.
+        """
+        if not mmproj_path:
+            return None
+
+        mmproj = Path(mmproj_path)
+        if not mmproj.is_file():
+            logger.warning(f"mmproj file not found: {mmproj_path}")
+            return None
+
+        from utils.models.model_config import mmproj_matches_model_family
+
+        if not mmproj_matches_model_family(model_path, str(mmproj)):
+            logger.warning(
+                f"mmproj does not match model family: model={Path(model_path).name} "
+                f"mmproj={mmproj.name}"
+            )
+            return None
+
+        return str(mmproj)
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -2052,18 +2320,22 @@ class LlamaCppBackend:
                 )
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
+            # Scope HF_HUB_OFFLINE to the download block only when DNS is
+            # dead; cleanup runs even on exception so a transient hiccup
+            # at the start of one load cannot quarantine future loads.
             if hf_repo:
-                model_path = self._download_gguf(
-                    hf_repo = hf_repo,
-                    hf_variant = hf_variant,
-                    hf_token = hf_token,
-                )
-                # Auto-download mmproj for vision models
-                if is_vision and not mmproj_path:
-                    mmproj_path = self._download_mmproj(
+                with _hf_offline_if_dns_dead():
+                    model_path = self._download_gguf(
                         hf_repo = hf_repo,
+                        hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
+                    # Auto-download mmproj for vision models
+                    if is_vision and not mmproj_path:
+                        mmproj_path = self._download_mmproj(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
+                        )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -2275,6 +2547,20 @@ class LlamaCppBackend:
                     gpu_indices, use_fit = None, True
                     effective_ctx = n_ctx  # fall back to original
 
+                launch_mmproj_path = self._resolve_launch_mmproj_path(
+                    model_path = model_path,
+                    mmproj_path = mmproj_path,
+                )
+                # Need both a resolved mmproj AND the config vision flag; a stray
+                # mmproj passing the family-name heuristic must not flip a non-VLM
+                # GGUF into vision mode.
+                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                if is_vision and not effective_is_vision:
+                    logger.warning(
+                        "Vision-capable GGUF loaded without a usable mmproj; "
+                        "image input will be disabled for this session"
+                    )
+
                 cmd = [
                     binary,
                     "-m",
@@ -2352,18 +2638,80 @@ class LlamaCppBackend:
                 # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
                 # ref: https://github.com/ggml-org/llama.cpp/pull/19164
                 # ref: https://github.com/ggml-org/llama.cpp/pull/18471
-                # ``"default"`` -> let llama-server pick a sensible spec
-                # config via ``--spec-default``. Explicit type names are
-                # passed through with the manual draft tuning we've shipped
-                # historically so power users keep their overrides.
-                _valid_spec_types = {"ngram-simple", "ngram-mod"}
+                # draft-mtp: MTP heads on Unsloth's *-MTP GGUFs
+                # (llama.cpp #22673). Auto-enabled via nextn_predict_layers,
+                # fallback to -MTP in name. GPU: MTP-only. CPU/Mac: chain
+                # with ngram-mod. See unsloth.ai/docs/models/qwen3.6#mtp-guide.
+                _valid_spec_types = {"ngram-simple", "ngram-mod", "draft-mtp"}
                 normalized_spec = (
                     speculative_type.lower().strip() if speculative_type else None
                 )
-                if normalized_spec and normalized_spec != "off" and not is_vision:
+                is_mtp_model = bool(self._nextn_predict_layers) or (
+                    _is_mtp_model_name(model_identifier, model_path)
+                )
+                user_owns_spec_type = _extra_args_set_spec_type(extra_args)
+                # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
+                # llama.cpp #22673: MTP is compatible with mmproj, so the
+                # vision gate previously here was wrong.
+                if (
+                    is_mtp_model
+                    and not user_owns_spec_type
+                    and normalized_spec in (None, "", "default")
+                ):
+                    normalized_spec = "draft-mtp"
+                if user_owns_spec_type:
+                    # User --spec-type wins (it accumulates if repeated).
+                    normalized_spec = None
+                    self._speculative_type = None
+                if normalized_spec and normalized_spec != "off":
                     if normalized_spec == "default":
                         cmd.append("--spec-default")
                         self._speculative_type = "default"
+                    elif normalized_spec == "draft-mtp":
+                        # Probe binary; fail gracefully on outdated prebuilts.
+                        # Use whichever token the binary advertises
+                        # (older: draft-mtp; renamed upstream: mtp).
+                        caps = self.probe_server_capabilities(binary)
+                        mtp_token = caps.get("mtp_token") if caps else None
+                        if not mtp_token:
+                            logger.warning(
+                                "MTP GGUF detected but llama-server lacks "
+                                "--spec-type mtp/draft-mtp; run "
+                                "`unsloth studio update`. Loading without "
+                                "speculative decoding."
+                            )
+                            self._speculative_type = None
+                        else:
+                            if gpus:
+                                cmd.extend(
+                                    [
+                                        "--spec-type",
+                                        mtp_token,
+                                        "--spec-draft-n-max",
+                                        "6",
+                                    ]
+                                )
+                            else:
+                                cmd.extend(
+                                    [
+                                        "--spec-type",
+                                        mtp_token,
+                                        "--spec-draft-n-max",
+                                        "3",
+                                        "--spec-type",
+                                        "ngram-mod",
+                                        "--spec-ngram-mod-n-match",
+                                        "24",
+                                        "--spec-ngram-mod-n-min",
+                                        "48",
+                                        "--spec-ngram-mod-n-max",
+                                        "6",
+                                    ]
+                                )
+                            self._speculative_type = "draft-mtp"
+                            logger.info(
+                                f"Spec decoding: {mtp_token} ({'GPU' if gpus else 'CPU/Mac'})"
+                            )
                     elif normalized_spec in _valid_spec_types:
                         cmd.extend(["--spec-type", normalized_spec])
                         if normalized_spec == "ngram-mod":
@@ -2435,24 +2783,9 @@ class LlamaCppBackend:
                     )
                     logger.info(f"Reasoning model: {reasoning_kw} by default")
 
-                if mmproj_path:
-                    if not Path(mmproj_path).is_file():
-                        logger.warning(f"mmproj file not found: {mmproj_path}")
-                    else:
-                        # #5347 guard for paths that bypass detect_mmproj_file.
-                        from utils.models.model_config import (
-                            mmproj_matches_model_family,
-                        )
-
-                        if not mmproj_matches_model_family(model_path, mmproj_path):
-                            logger.warning(
-                                f"Skipping mmproj with mismatched family: "
-                                f"model={Path(model_path).name}, "
-                                f"mmproj={Path(mmproj_path).name}"
-                            )
-                        else:
-                            cmd.extend(["--mmproj", mmproj_path])
-                            logger.info(f"Using mmproj for vision: {mmproj_path}")
+                if launch_mmproj_path and effective_is_vision:
+                    cmd.extend(["--mmproj", launch_mmproj_path])
+                    logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
 
                 # Option C: add --api-key for direct client access when enabled
                 import os as _os
@@ -2493,23 +2826,12 @@ class LlamaCppBackend:
                 binary_dir = str(Path(binary).parent)
 
                 if sys.platform == "win32":
-                    # CUDA DLLs (cudart64_X.dll, cublas64_X.dll, etc.) must
-                    # be on PATH. Order: binary_dir, torch's pip-installed
-                    # nvidia wheels, then a system CUDA toolkit. Pip wheels
-                    # are the canonical source per Studio's install design
-                    # (mirrors the Linux LD_LIBRARY_PATH block below) and
-                    # CUDA_PATH covers users with a system toolkit. #5106.
-                    path_dirs = [binary_dir]
-                    path_dirs.extend(self._windows_pip_nvidia_dll_dirs(sys.prefix))
-                    cuda_path = os.environ.get("CUDA_PATH", "")
-                    if cuda_path:
-                        cuda_bin = os.path.join(cuda_path, "bin")
-                        if os.path.isdir(cuda_bin):
-                            path_dirs.append(cuda_bin)
-                        # Some CUDA installs put DLLs in bin\x64
-                        cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
-                        if os.path.isdir(cuda_bin_x64):
-                            path_dirs.append(cuda_bin_x64)
+                    # See _build_windows_path_dirs for ordering. #5106.
+                    path_dirs = self._build_windows_path_dirs(
+                        binary_dir,
+                        sys.prefix,
+                        os.environ.get("CUDA_PATH", ""),
+                    )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
                 else:
@@ -2603,6 +2925,30 @@ class LlamaCppBackend:
                 self._kill_process()
 
                 self._stdout_lines = []
+                # Tee llama-server output to a dedicated log file so a
+                # post-mortem in CI (or after a remote-debug session)
+                # has the full subprocess trail even when the parent
+                # only stored the last 50 lines. Path lives under the
+                # studio home so it ships in the same place all other
+                # Studio logs live.
+                self._llama_log_fh = None
+                try:
+                    log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                    log_dir.mkdir(parents = True, exist_ok = True)
+                    self._llama_log_path = (
+                        log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
+                    )
+                    self._llama_log_fh = open(
+                        self._llama_log_path,
+                        "w",
+                        encoding = "utf-8",
+                        buffering = 1,
+                    )
+                    logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
+                except OSError as e:
+                    # Best-effort; never block the load on logging.
+                    logger.debug(f"Could not open llama-server log file: {e}")
+                    self._llama_log_path = None
                 self._process = subprocess.Popen(
                     cmd,
                     stdout = subprocess.PIPE,
@@ -2637,7 +2983,7 @@ class LlamaCppBackend:
                         self._hf_variant = None
                 else:
                     self._hf_variant = None
-                self._is_vision = is_vision
+                self._is_vision = effective_is_vision
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately.
@@ -2763,14 +3109,16 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        # Vision GGUFs silently drop speculative decoding in
-        # load_model (the spec gate is "not is_vision"); treat the
-        # request's value as "off" so a vision load with
-        # speculative_type="default" still matches.
-        if self._is_vision or is_vision:
-            req_spec = "off"
-        else:
-            req_spec = _norm(speculative_type) or "off"
+        # Mirror load_model's auto-promotion. Vision is no longer a
+        # spec blocker (llama.cpp #22673: MTP is compatible with mmproj).
+        raw_spec = _norm(speculative_type)
+        req_spec = raw_spec or "off"
+        if (
+            raw_spec in (None, "default")
+            and _is_mtp_model_name(model_identifier, gguf_path)
+            and not _extra_args_set_spec_type(extra_args)
+        ):
+            req_spec = "draft-mtp"
         backend_spec = _norm(self._speculative_type) or "off"
         if req_spec != backend_spec:
             return False
@@ -2858,6 +3206,7 @@ class LlamaCppBackend:
             self._ssm_inner_size = None
             self._ssm_state_size = None
             self._shared_kv_layers = None
+            self._nextn_predict_layers = None
             # Clean up temp chat template file
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
@@ -2899,6 +3248,13 @@ class LlamaCppBackend:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
+            fh = getattr(self, "_llama_log_fh", None)
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+                self._llama_log_fh = None
 
     @staticmethod
     def _kill_orphaned_servers():
@@ -3110,7 +3466,17 @@ class LlamaCppBackend:
                 resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except (
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                # ReadError covers TCP RST mid-read while llama-server is
+                # still binding the port (Windows: WinError 10054). The
+                # crash-detection branch above catches a real exit; this
+                # one keeps a transient socket close from masking it.
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+            ):
                 pass
 
             time.sleep(interval)
