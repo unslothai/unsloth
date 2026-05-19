@@ -158,8 +158,11 @@ _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # ``~/.cache/``) MUST stay out of this list — those still flow through.
 _HOME_RELATIVE_SENSITIVE = (
     # SSH private keys (config / known_hosts intentionally allowed)
-    r"\.ssh/id_rsa", r"\.ssh/id_ed25519", r"\.ssh/id_ecdsa",
-    r"\.ssh/id_dsa", r"\.ssh/identity",
+    r"\.ssh/id_rsa",
+    r"\.ssh/id_ed25519",
+    r"\.ssh/id_ecdsa",
+    r"\.ssh/id_dsa",
+    r"\.ssh/identity",
     # Cloud provider credentials
     r"\.aws/credentials",
     r"\.docker/config\.json",
