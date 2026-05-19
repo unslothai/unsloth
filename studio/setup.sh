@@ -315,15 +315,37 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# npm ci: install exactly what package-lock.json pins, fail on drift.
-# There is no committed bun.lock so we don't dispatch to bun; a bun
-# branch here would always miss and silently regenerate (or fail under
-# --frozen-lockfile). Keep this single path until/unless a real
-# bun.lock lands.
-run_quiet_no_exit "npm ci" npm ci --no-fund --no-audit --loglevel=error
-_npm_install_rc=$?
-if [ "$_npm_install_rc" -ne 0 ]; then
-    exit "$_npm_install_rc"
+# Frontend install: Bun --frozen-lockfile first (faster, typically 5-10x)
+# when a committed bun.lock is present, npm ci as the always-available
+# fallback. Both run in lockfile-strict mode so the install is
+# byte-reproducible from whichever lockfile the chosen package manager
+# understands. The build always runs through Node (npm run build) --
+# avoids bun runtime quirks on some platforms.
+#
+# Bun's package cache can occasionally store metadata-only entries that
+# pass exit 0 but leave binaries (tsc, vite) missing. We verify both
+# binaries after install; on failure we clear the cache and let npm ci
+# take over rather than retrying bun, since npm ci is the more
+# defensive path under cache corruption.
+_bun_install_ok=false
+if [ -f bun.lock ] && command -v bun &>/dev/null; then
+    substep "using bun --frozen-lockfile (faster)"
+    if run_quiet_no_exit "bun install --frozen-lockfile" bun install --frozen-lockfile --no-progress \
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
+        _bun_install_ok=true
+    else
+        substep "bun --frozen-lockfile failed or left binaries missing; clearing cache + falling back to npm ci" "$C_WARN"
+        rm -rf node_modules
+        run_maybe_quiet bun pm cache rm || true
+    fi
+fi
+if [ "$_bun_install_ok" = false ]; then
+    run_quiet_no_exit "npm ci" npm ci --no-fund --no-audit --loglevel=error
+    _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ]; then
+        exit "$_npm_install_rc"
+    fi
 fi
 run_quiet "npm run build" npm run build
 
@@ -344,13 +366,25 @@ cd "$SCRIPT_DIR"
 fi  # end frontend build check
 
 # ── oxc-validator runtime ──
+# Same Bun-first / npm-fallback pattern as the frontend install above;
+# both lockfile-strict.
 if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
     cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    # npm ci: lockfile-strict (see frontend install above).
-    run_quiet_no_exit "npm ci (oxc validator runtime)" npm ci --no-fund --no-audit --loglevel=error
-    _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        exit "$_oxc_install_rc"
+    _oxc_bun_ok=false
+    if [ -f bun.lock ] && command -v bun &>/dev/null; then
+        if run_quiet_no_exit "bun install --frozen-lockfile (oxc validator)" bun install --frozen-lockfile --no-progress \
+            && [ -d node_modules/oxc-parser ]; then
+            _oxc_bun_ok=true
+        else
+            rm -rf node_modules
+        fi
+    fi
+    if [ "$_oxc_bun_ok" = false ]; then
+        run_quiet_no_exit "npm ci (oxc validator runtime)" npm ci --no-fund --no-audit --loglevel=error
+        _oxc_install_rc=$?
+        if [ "$_oxc_install_rc" -ne 0 ]; then
+            exit "$_oxc_install_rc"
+        fi
     fi
     cd "$SCRIPT_DIR"
 fi

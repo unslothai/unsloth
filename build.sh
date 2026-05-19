@@ -33,14 +33,29 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Frontend installs always use npm ci against the committed lockfile.
-# There is no bun.lock anywhere in the repo, so a bun-first branch
-# would always miss and silently regenerate (or fail under
-# --frozen-lockfile). Keep this single path until/unless a real
-# bun.lock lands.
-if ! npm ci --no-fund --no-audit; then
-    echo "❌ ERROR: npm ci failed" >&2
-    exit 1
+# Frontend install: Bun first (faster) if a committed bun.lock is
+# present, npm ci as the always-available fallback. Both run in
+# frozen-lockfile mode so the install is byte-reproducible from
+# whichever lockfile the chosen package manager understands. Build
+# always runs through npm (Node) -- avoids bun runtime quirks on
+# some platforms.
+_install_ok=false
+if [ -f bun.lock ] && command -v bun &>/dev/null; then
+    if bun install --frozen-lockfile --no-progress \
+        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ]; } \
+        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ]; }; then
+        _install_ok=true
+    else
+        echo "⚠ bun --frozen-lockfile failed or left binaries missing; clearing cache + falling back to npm ci"
+        rm -rf node_modules
+        bun pm cache rm >/dev/null 2>&1 || true
+    fi
+fi
+if [ "$_install_ok" != "true" ]; then
+    if ! npm ci --no-fund --no-audit; then
+        echo "❌ ERROR: npm ci failed" >&2
+        exit 1
+    fi
 fi
 npm run build       # outputs to studio/frontend/dist/
 
