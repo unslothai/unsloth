@@ -638,7 +638,6 @@ export function ChatPage(): ReactElement {
       prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
       clearCheckpoint();
-      void ejectModel();
       if (turnedOff) {
         toast.info("Connections disabled", {
           description: "Switched away from the hosted model.",
@@ -649,7 +648,6 @@ export function ChatPage(): ReactElement {
   }, [
     clearCheckpoint,
     connectionsEnabled,
-    ejectModel,
     inferenceParams.checkpoint,
   ]);
   const pendingNativeModelIntent = useNativeIntentStore(
