@@ -147,16 +147,15 @@ class ActivationNoveltyCallback(TrainerCallback):
             if not _module.training:
                 return
             out = output[0] if isinstance(output, tuple) else output
-            out = out.detach().float()
-            # For transformer MLP outputs (batch, seq, hidden): average over
-            # the sequence axis so the per-batch summary is always (hidden,).
-            # This keeps shapes consistent across variable-length batches and
-            # avoids unbounded memory growth from buffering full tensors.
+            out = out.detach().float().abs()
+            # Apply abs() first so opposite-sign token activations cannot cancel
+            # when we reduce over the sequence axis — a neuron firing with +5 on
+            # one token and -5 on another is active, not silent.
             if out.dim() == 3:
                 out = out.mean(dim = 1)  # (batch, hidden)
             elif out.dim() > 3:
                 out = out.flatten(2).mean(dim = 1)
-            batch_mean_abs = out.abs().mean(dim = 0)  # (hidden,)
+            batch_mean_abs = out.mean(dim = 0)  # (hidden,) — already abs
             # Welford-style incremental mean — O(hidden) memory at all times.
             self._running_count += 1
             if self._running_mean_abs is None:
@@ -216,14 +215,19 @@ class ActivationNoveltyCallback(TrainerCallback):
         model: Optional[nn.Module] = None,
         **kwargs,
     ) -> TrainerControl:
-        novelty = self._compute_novelty()
-        self._reset_running_stats()
-        self._last_novelty = novelty
-        self._history.append(novelty)
+        # on_log fires before on_evaluate in the HF Trainer eval cycle, so novelty
+        # may already have been computed and stats cleared there.  Fall back to
+        # computing here only when stats are still present (e.g. when on_log was
+        # never called with eval_ metrics).
+        if self._running_mean_abs is not None:
+            novelty = self._compute_novelty()
+            self._last_novelty = novelty
+            self._history.append(novelty)
+            self._reset_running_stats()
 
         print(
             f"Unsloth (ActivationNoveltyCallback): "
-            f"step {state.global_step} | {self.log_key} = {novelty:.4f}"
+            f"step {state.global_step} | {self.log_key} = {self._last_novelty:.4f}"
         )
 
         if (
@@ -249,6 +253,17 @@ class ActivationNoveltyCallback(TrainerCallback):
         **kwargs,
     ) -> None:
         if logs is not None:
+            # HF Trainer calls on_log *before* on_evaluate during the eval cycle.
+            # When fresh stats are available and the log row carries eval_ metrics,
+            # compute novelty now so the correct value lands in the same row that
+            # WandB / TensorBoard will ingest.
+            if self._running_mean_abs is not None and any(
+                k.startswith("eval_") for k in logs
+            ):
+                novelty = self._compute_novelty()
+                self._last_novelty = novelty
+                self._history.append(novelty)
+                self._reset_running_stats()
             logs[self.log_key] = self._last_novelty
 
     def on_train_end(

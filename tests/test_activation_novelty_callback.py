@@ -58,6 +58,28 @@ class _TinyModel(nn.Module):
         return self.mlp(x)
 
 
+class _TinySeqMLP(nn.Module):
+    """MLP that accepts (batch, seq, hidden) and returns the same shape."""
+
+    def __init__(self, d: int = 16) -> None:
+        super().__init__()
+        self.fc = nn.Linear(d, d)
+
+    def forward(self, x):  # x: (batch, seq, d)
+        return self.fc(x)  # (batch, seq, d)
+
+
+class _TinySeqModel(nn.Module):
+    """Model whose MLP outputs 3-D tensors (batch, seq, hidden)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mlp = _TinySeqMLP(16)
+
+    def forward(self, x):
+        return self.mlp(x)
+
+
 # ---------------------------------------------------------------------------
 # Instantiation
 # ---------------------------------------------------------------------------
@@ -202,6 +224,35 @@ def test_hook_ignores_eval_mode_activations():
     model.train()
     _ = model(torch.randn(4, 16))
     assert cb._running_mean_abs is not None
+    cb.on_train_end(args, state, control)
+
+
+def test_hook_3d_abs_before_sequence_mean():
+    """For 3-D MLP outputs, abs() must be applied before seq-axis mean.
+
+    A neuron that fires +1 on token 0 and -1 on token 1 is active; the signed
+    mean is 0 which would make it look silent.  The hook must take abs first.
+    """
+    cb = _import_callback()(layer_getter = lambda m: m.mlp)
+    model = _TinySeqModel()
+    args, state, control = _make_state_control()
+    cb.on_train_begin(args, state, control, model = model)
+
+    # Zero-weight model so output == input; craft input where token-level
+    # signed values cancel: token 0 = +1, token 1 = -1 for every neuron.
+    with torch.no_grad():
+        model.mlp.fc.weight.copy_(torch.eye(16))
+        model.mlp.fc.bias.zero_()
+
+    x = torch.zeros(1, 2, 16)
+    x[0, 0, :] = 1.0   # token 0: all neurons = +1
+    x[0, 1, :] = -1.0  # token 1: all neurons = -1
+
+    _ = model(x)
+    # Signed mean over seq would be 0 for every neuron → _running_mean_abs all zeros.
+    # Abs-first mean should be 1.0 for every neuron.
+    assert cb._running_mean_abs is not None
+    assert cb._running_mean_abs.min().item() > 0.5
     cb.on_train_end(args, state, control)
 
 
@@ -362,3 +413,31 @@ def test_on_log_no_crash_when_logs_none():
     cb = _import_callback()()
     args, state, control = _make_state_control()
     cb.on_log(args, state, control, logs = None)  # must not raise
+
+
+def test_on_log_injects_fresh_novelty_when_eval_metrics_present():
+    """on_log must compute current novelty (not stale _last_novelty) when the
+    log row contains eval_ keys — matching the HF Trainer call order where
+    on_log fires before on_evaluate.
+    """
+    cb = _import_callback()(layer_getter = lambda m: m.mlp)
+    model = _TinyModel()
+    args, state, control = _make_state_control()
+    cb.on_train_begin(args, state, control, model = model)
+
+    # Stale value left over from a previous eval
+    cb._last_novelty = 0.99
+
+    # Inject spike stats -> fresh novelty would be near 0
+    x = torch.zeros(4, 16)
+    x[:, 0] = 1.0
+    _inject_mean_abs(cb, x)
+
+    logs = {"eval_loss": 0.5, "eval_runtime": 1.0}
+    cb.on_log(args, state, control, logs = logs)
+
+    # Should inject fresh (low) novelty, not the stale 0.99
+    assert logs[cb.log_key] < 0.05
+    # Stats must be cleared so on_evaluate does not double-count
+    assert cb._running_mean_abs is None
+    assert cb._running_count == 0
