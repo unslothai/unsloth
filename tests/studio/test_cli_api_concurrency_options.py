@@ -63,9 +63,7 @@ def test_studio_run_derives_concurrency_from_passthrough_parallel():
     assert '"-np"' in source or "'-np'" in source
 
 
-_BACKEND_MAIN = (
-    Path(__file__).resolve().parents[2] / "studio" / "backend" / "main.py"
-)
+_BACKEND_MAIN = Path(__file__).resolve().parents[2] / "studio" / "backend" / "main.py"
 
 
 def test_body_protected_prefixes_cover_every_v1_generation_route():
@@ -83,9 +81,7 @@ def test_body_protected_prefixes_cover_every_v1_generation_route():
         assert f'"{prefix}"' in src, f"_BODY_PROTECTED_PREFIXES missing {prefix}"
 
 
-_BACKEND_RUN = (
-    Path(__file__).resolve().parents[2] / "studio" / "backend" / "run.py"
-)
+_BACKEND_RUN = Path(__file__).resolve().parents[2] / "studio" / "backend" / "run.py"
 
 
 def test_run_server_derives_llama_parallel_slots_from_api_max_concurrency():

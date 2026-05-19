@@ -609,7 +609,9 @@ async def test_413_short_circuits_for_every_gated_v1_prefix(main_module, path):
         inner, max_concurrency = 1, queue_policy = "reject"
     )
     app = main_module.MaxBodyMiddleware(
-        gate, max_bytes = 16, protected_prefixes = main_module._BODY_PROTECTED_PREFIXES,
+        gate,
+        max_bytes = 16,
+        protected_prefixes = main_module._BODY_PROTECTED_PREFIXES,
     )
 
     body_done = asyncio.Event()

@@ -567,7 +567,9 @@ def run_server(
     # Derive llama_parallel_slots from API concurrency when not given explicitly
     # so the backend and gate cannot mismatch.
     if llama_parallel_slots is None:
-        llama_parallel_slots = effective_api_max_concurrency if api_concurrency_configured else 1
+        llama_parallel_slots = (
+            effective_api_max_concurrency if api_concurrency_configured else 1
+        )
 
     # Set env vars BEFORE importing main so middleware/CORS read them at import time.
     if api_only:
