@@ -104,7 +104,7 @@ if sys.platform == "win32":
                     _km = _re_bnb.search(r"rocm(\d+)", os.path.basename(p))
                     return int(_km.group(1)) if _km else -1
 
-                for _dll in sorted(_dlls, key=_bnb_ver_key, reverse=True):
+                for _dll in sorted(_dlls, key = _bnb_ver_key, reverse = True):
                     _m = _re_bnb.search(
                         r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
                     )
