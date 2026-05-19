@@ -92,6 +92,7 @@ function Install-UnslothStudio {
     $RepoRoot = ""
     $TauriMode = $false
     $SkipTorch = $false
+    $ShortcutsOnly = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
@@ -100,6 +101,7 @@ function Install-UnslothStudio {
             "--no-torch" { $SkipTorch = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
+            "--shortcuts-only" { $ShortcutsOnly = $true }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -869,6 +871,19 @@ shell.Run cmd, 0, False
         } catch {
             substep "shortcut setup failed; skipping shortcuts: $($_.Exception.Message)" "Yellow"
         }
+    }
+
+    # Regen .lnk + launcher only; used by `unsloth studio update`.
+    if ($ShortcutsOnly) {
+        if ($TauriMode) { return }
+        $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+        if (-not (Test-Path -LiteralPath $UnslothExe)) {
+            Write-Host "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
+            # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
+            throw "unsloth.exe missing"
+        }
+        New-StudioShortcuts -UnslothExePath $UnslothExe
+        return
     }
 
     # ── Check winget ──

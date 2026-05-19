@@ -117,6 +117,7 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -143,6 +144,7 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -492,12 +494,17 @@ def _request_matches_loaded_settings(
     # spec on ``not is_vision``), so treat the request as ``off`` against
     # the backend's ``None`` to avoid forcing a redundant reload.
     if llama_backend.is_vision:
-        req_spec = "off"
+        req_mode = "off"
     else:
-        req_spec = _normalise_settings_str(request.speculative_type) or "off"
-    backend_spec = _normalise_settings_str(llama_backend.speculative_type) or "off"
-    if req_spec != backend_spec:
+        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    backend_mode = llama_backend.requested_spec_mode or "auto"
+    if req_mode != backend_mode:
         return False
+    # spec_draft_n_max only matters when an MTP variant is engaged; None
+    # means "platform default" and matches whatever the backend chose.
+    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
+        if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
+            return False
     if (request.chat_template_override or None) != (
         llama_backend.chat_template_override or None
     ):
@@ -636,7 +643,8 @@ async def load_model(
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
-                    speculative_type = llama_backend.speculative_type,
+                    speculative_type = llama_backend.requested_spec_mode,
+                    spec_draft_n_max = llama_backend.spec_draft_n_max,
                 )
         else:
             if (
@@ -765,7 +773,10 @@ async def load_model(
                         llama_backend.extra_args,
                         strip_context = "max_seq_length" in fields_set,
                         strip_cache = "cache_type_kv" in fields_set,
-                        strip_spec = "speculative_type" in fields_set,
+                        strip_spec = (
+                            "speculative_type" in fields_set
+                            or "spec_draft_n_max" in fields_set
+                        ),
                         strip_template = "chat_template_override" in fields_set,
                     )
                     try:
@@ -806,6 +817,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -829,6 +841,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -887,7 +900,8 @@ async def load_model(
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -1375,7 +1389,8 @@ async def get_status(
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
@@ -2274,46 +2289,11 @@ async def openai_chat_completions(
                 detail = "Audio input is not supported for GGUF chat models yet.",
             )
 
-        # Reject images if this GGUF model doesn't support vision
-        image_b64 = extracted_image_b64 or payload.image_base64
-        if image_b64 and not llama_backend.is_vision:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
-            )
-
-        # Convert image to PNG for llama-server (stb_image has limited format support)
-        if image_b64:
-            try:
-                import base64 as _b64
-                from io import BytesIO as _BytesIO
-                from PIL import Image as _Image, UnidentifiedImageError as _UIE
-
-                raw = _b64.b64decode(image_b64)
-                # Normalize to RGB so PNG encoding succeeds regardless of
-                # source mode (RGBA, P, L, CMYK, I, F, ...). Previously
-                # we only converted RGBA, which left CMYK/I/F to raise at
-                # img.save(PNG).
-                img = _Image.open(_BytesIO(raw)).convert("RGB")
-                buf = _BytesIO()
-                img.save(buf, format = "PNG")
-                image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except _UIE:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unsupported or corrupt image format.",
-                )
-            except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Failed to process image.",
-                )
-
-        # Build message list with system prompt prepended
-        gguf_messages = []
-        if system_prompt:
-            gguf_messages.append({"role": "system", "content": system_prompt})
-        gguf_messages.extend(chat_messages)
+        gguf_messages, has_gguf_image = _openai_messages_for_gguf_chat(
+            payload,
+            llama_backend.is_vision,
+        )
+        image_b64 = None
 
         cancel_event = threading.Event()
 
@@ -2327,7 +2307,7 @@ async def openai_chat_completions(
         use_tools = (
             _effective_enable_tools(payload)
             and llama_backend.supports_tools
-            and not image_b64
+            and not has_gguf_image
         )
 
         if use_tools:
@@ -5118,6 +5098,47 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         messages.append({"role": "user", "content": [image_part]})
 
     return messages
+
+
+def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:
+    """Build llama-server messages for the standard GGUF chat path.
+
+    llama-server accepts OpenAI multimodal content parts directly. Preserve
+    all per-turn ``image_url`` parts so multi-image chat history keeps each
+    image attached to its original turn.
+    """
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
+    has_message_image = any(
+        isinstance(msg.get("content"), list)
+        and any(part.get("type") == "image_url" for part in msg["content"])
+        for msg in messages
+    )
+    if payload.image_base64 and not has_message_image:
+        # Legacy bytes can be any format; the normalizer below sniffs and
+        # re-encodes to PNG, so the declared mime is rewritten anyway.
+        image_part = {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{payload.image_base64}",
+            },
+        }
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            existing = msg.get("content")
+            if isinstance(existing, str):
+                msg["content"] = [{"type": "text", "text": existing}, image_part]
+            elif isinstance(existing, list):
+                existing.append(image_part)
+            else:
+                msg["content"] = [image_part]
+            break
+        else:
+            messages.append({"role": "user", "content": [image_part]})
+    has_image = _normalize_anthropic_openai_images(messages, is_vision)
+    return messages, has_image
 
 
 def _extract_response_format(payload):
