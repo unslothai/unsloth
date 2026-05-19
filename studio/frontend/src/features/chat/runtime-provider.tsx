@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import {
   AssistantRuntimeProvider,
   type AttachmentAdapter,
@@ -8,9 +9,9 @@ import {
   CompositeAttachmentAdapter,
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
+  type LocalRuntimeOptions,
   type PendingAttachment,
   Suggestions,
-  type LocalRuntimeOptions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -33,9 +34,7 @@ import {
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
-import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
-import { db } from "./db";
 import {
   loadExternalProviders,
   parseExternalModelId,
@@ -49,12 +48,22 @@ import {
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import type { MessageRecord, ModelType } from "./types";
+import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import {
+  deleteStoredChatThreads,
+  ensureStoredChatThread,
+  getStoredChatThread,
+  getStoredChatMessage,
+  isExpectedBackgroundChatStorageError,
+  listStoredChatMessages,
+  listStoredChatThreads,
+  saveStoredChatMessage,
+  updateStoredChatThread,
+} from "./utils/chat-history-storage";
 import {
   isChatThreadDeleted,
-  markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
-import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
+import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 const DEFAULT_SUGGESTIONS = [
@@ -64,9 +73,11 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "How do you fine-tune an audio model with Unsloth?",
   },
   {
-    title: "Create a live weather dashboard in HTML using no API key. Show me the code",
+    title:
+      "Create a live weather dashboard in HTML using no API key. Show me the code",
     label: "Weather dashboard",
-    prompt: "Create a live weather dashboard in HTML using no API key. Show me the code",
+    prompt:
+      "Create a live weather dashboard in HTML using no API key. Show me the code",
   },
   {
     title: "Solve the integral of x·sin(x), and verify it",
@@ -223,7 +234,10 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       name: attachment.name,
       contentType: attachment.contentType,
       content: [
-        { type: "text", text: `<attachment name=${attachment.name}>\n${text}\n</attachment>` },
+        {
+          type: "text",
+          text: `<attachment name=${attachment.name}>\n${text}\n</attachment>`,
+        },
       ],
       status: { type: "complete" },
     };
@@ -260,9 +274,7 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [
-        { type: "text", text: `[HTML: ${attachment.name}]\n${text}` },
-      ],
+      content: [{ type: "text", text: `[HTML: ${attachment.name}]\n${text}` }],
       status: { type: "complete" },
     };
   }
@@ -460,7 +472,9 @@ async function generateTitleWithModel(payload: {
     }),
   });
 
-  const body = (await response.json().catch(() => null)) as TitleResponse | null;
+  const body = (await response
+    .json()
+    .catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
   const raw: string | undefined = body?.choices?.[0]?.message?.content;
   if (!raw) return null;
@@ -477,13 +491,13 @@ function fallbackTitleFromUserText(userText: string): string {
   return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
 }
 
-function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+function cloneContent(
+  content: ThreadMessage["content"],
+): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
-  return Array.isArray(content)
-    ? JSON.parse(JSON.stringify(content))
-    : [];
+  return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
 }
 
 function cloneAttachments(
@@ -512,12 +526,17 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     };
   }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
-  const savedTiming = custom.timing as import("@assistant-ui/react").MessageTiming | undefined;
+  const savedTiming = custom.timing as
+    | import("@assistant-ui/react").MessageTiming
+    | undefined;
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
     role: "assistant" as const,
-    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: content as Extract<
+      ThreadMessage,
+      { role: "assistant" }
+    >["content"],
     status: { type: "complete" as const, reason: "unknown" as const },
     metadata: {
       custom,
@@ -542,14 +561,13 @@ export async function ensureThreadRecord({
   if (isChatThreadDeleted(threadId)) {
     return;
   }
-  const existing = await db.threads.get(threadId);
+  const existing = await ensureStoredChatThread(threadId);
   if (existing) {
     return;
   }
 
-  const currentModelId =
-    useChatRuntimeStore.getState().params.checkpoint ?? "";
-  const record = {
+  const currentModelId = useChatRuntimeStore.getState().params.checkpoint ?? "";
+  const record: ThreadRecord = {
     id: threadId,
     title: "New Chat",
     modelType,
@@ -560,32 +578,25 @@ export async function ensureThreadRecord({
   };
 
   try {
-    await db.threads.add(record);
+    await ensureStoredChatThread(threadId, record);
   } catch (error) {
     // assistant-ui can issue overlapping first-message persistence calls.
     // If another call created the same thread while this one was waiting,
     // treat initialization as successful and let the message write continue.
-    if (await db.threads.get(threadId)) {
+    if (await getStoredChatThread(threadId)) {
       return;
     }
     throw error;
   }
 }
 
-async function deleteThreadRows(threadId: string): Promise<void> {
-  await db.transaction("rw", db.threads, db.messages, async () => {
-    await db.messages.where("threadId").equals(threadId).delete();
-    await db.threads.delete(threadId);
-  });
-}
-
-function createDexieAdapter(
+function createStudioDbAdapter(
   modelType: ModelType,
   pairId?: string,
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
-      const thread = await db.threads.get(remoteId);
+      const thread = await getStoredChatThread(remoteId);
       if (!thread) {
         throw new Error(`Thread ${remoteId} not found`);
       }
@@ -597,11 +608,15 @@ function createDexieAdapter(
     },
 
     async list() {
-      const threads = await db.threads
-        .where("modelType")
-        .equals(modelType)
-        .reverse()
-        .sortBy("createdAt");
+      let threads: ThreadRecord[];
+      try {
+        threads = await listStoredChatThreads({ modelType });
+      } catch (error) {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+        threads = [];
+      }
       return {
         threads: threads.map((t) => ({
           status: (t.archived ? "archived" : "regular") as
@@ -619,25 +634,27 @@ function createDexieAdapter(
     },
 
     async rename(remoteId: string, newTitle: string) {
-      await db.threads.update(remoteId, { title: newTitle });
+      await ensureStoredChatThread(remoteId);
+      await updateStoredChatThread(remoteId, { title: newTitle });
     },
 
     async archive(remoteId: string) {
-      await db.threads.update(remoteId, { archived: true });
+      await ensureStoredChatThread(remoteId);
+      await updateStoredChatThread(remoteId, { archived: true });
     },
 
     async unarchive(remoteId: string) {
-      await db.threads.update(remoteId, { archived: false });
+      await ensureStoredChatThread(remoteId);
+      await updateStoredChatThread(remoteId, { archived: false });
     },
 
     async delete(remoteId: string) {
-      markChatThreadDeleted(remoteId);
-      await deleteThreadRows(remoteId);
+      await deleteStoredChatThreads([remoteId]);
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
       const autoTitle = useChatRuntimeStore.getState().autoTitle;
-      const thread = await db.threads.get(remoteId);
+      const thread = await getStoredChatThread(remoteId);
       const defaultTitle = "New Chat";
 
       function streamTitle(title: string) {
@@ -648,14 +665,16 @@ function createDexieAdapter(
       }
 
       async function persistTitle(title: string): Promise<void> {
-        await db.threads.update(remoteId, { title });
+        await ensureStoredChatThread(remoteId, thread);
+        await updateStoredChatThread(remoteId, { title });
         if (!pairId) return;
-        const paired = await db.threads
-          .where("pairId")
-          .equals(pairId)
-          .filter((t) => t.id !== remoteId)
-          .first();
-        if (paired) await db.threads.update(paired.id, { title });
+        const paired = (await listStoredChatThreads({ pairId })).find(
+          (t) => t.id !== remoteId,
+        );
+        if (paired) {
+          await ensureStoredChatThread(paired.id, paired);
+          await updateStoredChatThread(paired.id, { title });
+        }
       }
 
       if (!thread) {
@@ -683,17 +702,18 @@ function createDexieAdapter(
 
       // Compare: wait until both threads done.
       if (pairId) {
-        const paired = await db.threads
-          .where("pairId")
-          .equals(pairId)
-          .filter((t) => t.id !== remoteId)
-          .first();
+        const paired = (await listStoredChatThreads({ pairId })).find(
+          (t) => t.id !== remoteId,
+        );
 
         if (paired) {
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createDexieAdapter(modelType, pairId).generateTitle(remoteId, messages);
+              void createStudioDbAdapter(modelType, pairId).generateTitle(
+                remoteId,
+                messages,
+              );
             }, 600);
             return streamTitle(thread.title || defaultTitle);
           }
@@ -705,8 +725,7 @@ function createDexieAdapter(
         const title =
           (await generateTitleWithModel({
             userText,
-          })) ||
-          fallbackTitleFromUserText(userText);
+          })) || fallbackTitleFromUserText(userText);
 
         await persistTitle(title);
         return streamTitle(title);
@@ -734,7 +753,15 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
           user: 1,
           assistant: 2,
         };
-        const msgs = await db.messages.where("threadId").equals(remoteId).toArray();
+        let msgs: MessageRecord[];
+        try {
+          msgs = await listStoredChatMessages(remoteId);
+        } catch (error) {
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            throw error;
+          }
+          msgs = [];
+        }
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;
@@ -744,16 +771,26 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         });
 
         // Restore context usage from last assistant message if model matches
-        const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
-        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)?.contextUsage as
-          | { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number; modelId?: string }
+        const lastAssistant = [...msgs]
+          .reverse()
+          .find((m) => m.role === "assistant");
+        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
+          ?.contextUsage as
+          | {
+              promptTokens: number;
+              completionTokens: number;
+              totalTokens: number;
+              cachedTokens: number;
+              modelId?: string;
+            }
           | undefined;
         const store = useChatRuntimeStore.getState();
         if (
           savedUsage &&
           store.ggufContextLength &&
           savedUsage.totalTokens <= store.ggufContextLength &&
-          (!savedUsage.modelId || savedUsage.modelId === store.params.checkpoint)
+          (!savedUsage.modelId ||
+            savedUsage.modelId === store.params.checkpoint)
         ) {
           store.setContextUsage(savedUsage);
         }
@@ -764,14 +801,12 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         // (old messages without parentId + new messages with), infer
         // sequential parents for old messages to preserve the chain.
         // Fall back to fromArray for fully legacy threads.
-        const hasParentIds = msgs.some((m) => "parentId" in m);
+        const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
           return {
             messages: msgs.map((m) => {
-              const parentId = "parentId" in m
-                ? (m.parentId ?? null)
-                : previousId;
+              const parentId = m.parentId != null ? m.parentId : previousId;
               previousId = m.id;
               return {
                 parentId,
@@ -786,12 +821,15 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
         if (isChatThreadDeleted(remoteId)) {
-          await deleteThreadRows(remoteId);
+          await deleteStoredChatThreads([remoteId]);
           return;
         }
         // Keep single-chat runtime state in sync once a new chat is first
         // persisted. Compare panes intentionally do not write global activeThreadId.
-        const thread = await db.threads.get(remoteId);
+        const thread = await getStoredChatThread(remoteId);
+        if (thread) {
+          await ensureStoredChatThread(remoteId, thread);
+        }
         if (thread?.modelType === "base" && !thread.pairId) {
           const store = useChatRuntimeStore.getState();
           if (store.activeThreadId !== remoteId) {
@@ -802,12 +840,10 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const attachments =
           message.role === "user" ? cloneAttachments(message.attachments) : [];
         const custom = message.metadata?.custom;
-        const existing = await db.messages.get(message.id);
+        const existing = await getStoredChatMessage(remoteId, message.id);
         const createdAt =
-          existing?.createdAt ??
-          message.createdAt?.getTime?.() ??
-          Date.now();
-        await db.messages.put({
+          existing?.createdAt ?? message.createdAt?.getTime?.() ?? Date.now();
+        await saveStoredChatMessage({
           id: message.id,
           threadId: remoteId,
           parentId: parentId ?? null,
@@ -870,7 +906,10 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
-      if (switchResult && typeof (switchResult as Promise<void>).catch === "function") {
+      if (
+        switchResult &&
+        typeof (switchResult as Promise<void>).catch === "function"
+      ) {
         void (switchResult as Promise<void>).catch(() => {
           if (syncActiveThreadId) {
             useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -913,7 +952,9 @@ function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const setActiveThreadId = useChatRuntimeStore((state) => state.setActiveThreadId);
+  const setActiveThreadId = useChatRuntimeStore(
+    (state) => state.setActiveThreadId,
+  );
 
   useEffect(() => {
     if (!enabled) {
@@ -953,7 +994,7 @@ function CancelRegistrar(): ReactElement | null {
   return null;
 }
 
-function ThreadDexieAutosave({
+function ThreadBackendAutosave({
   modelType,
   pairId,
 }: {
@@ -963,44 +1004,55 @@ function ThreadDexieAutosave({
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
 
-  const saveThread = useCallback(async (threadId: string): Promise<void> => {
-    const runtime = aui.threads().__internal_getAssistantRuntime?.();
-    if (!runtime) {
-      return;
-    }
-    const exported = runtime.threads.getById(threadId).export();
-    if (exported.messages.length === 0) {
-      return;
-    }
-
-    const { remoteId } = await runtime.threads.getItemById(threadId).initialize();
-    if (isChatThreadDeleted(remoteId)) {
-      await deleteThreadRows(remoteId);
-      return;
-    }
-    await syncExportedRepositoryToDexie(remoteId, exported);
-    if (isChatThreadDeleted(remoteId)) {
-      await deleteThreadRows(remoteId);
-      return;
-    }
-
-    if (modelType === "base" && !pairId) {
-      const store = useChatRuntimeStore.getState();
-      const activeThreadId = runtime.threads.getState().mainThreadId;
-      if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
-        store.setActiveThreadId(remoteId);
+  const saveThread = useCallback(
+    async (threadId: string): Promise<void> => {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return;
       }
-    }
-  }, [aui, modelType, pairId]);
+      const exported = runtime.threads.getById(threadId).export();
+      if (exported.messages.length === 0) {
+        return;
+      }
 
-  const queueSave = useCallback((threadId: string): void => {
-    saveChainRef.current = saveChainRef.current
-      .catch(() => {})
-      .then(() => saveThread(threadId))
-      .catch((error) => {
-        console.error("Failed to autosave chat thread", error);
-      });
-  }, [saveThread]);
+      const { remoteId } = await runtime.threads
+        .getItemById(threadId)
+        .initialize();
+      if (isChatThreadDeleted(remoteId)) {
+        await deleteStoredChatThreads([remoteId]);
+        return;
+      }
+      await ensureStoredChatThread(remoteId);
+      await syncExportedRepositoryToBackend(remoteId, exported);
+      if (isChatThreadDeleted(remoteId)) {
+        await deleteStoredChatThreads([remoteId]);
+        return;
+      }
+
+      if (modelType === "base" && !pairId) {
+        const store = useChatRuntimeStore.getState();
+        const activeThreadId = runtime.threads.getState().mainThreadId;
+        if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
+          store.setActiveThreadId(remoteId);
+        }
+      }
+    },
+    [aui, modelType, pairId],
+  );
+
+  const queueSave = useCallback(
+    (threadId: string): void => {
+      saveChainRef.current = saveChainRef.current
+        .catch(() => {})
+        .then(() => saveThread(threadId))
+        .catch((error) => {
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            console.error("Failed to autosave chat thread", error);
+          }
+        });
+    },
+    [saveThread],
+  );
 
   useAuiEvent("thread.runEnd", ({ threadId }) => {
     queueSave(threadId);
@@ -1030,7 +1082,7 @@ export function ChatRuntimeProvider({
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: createDexieAdapter(modelType, pairId),
+    adapter: createStudioDbAdapter(modelType, pairId),
   });
 
   const aui = useAui({
@@ -1040,9 +1092,11 @@ export function ChatRuntimeProvider({
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
       <ActiveThreadSync
-        enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
+        enabled={
+          modelType === "base" && !pairId && !newThreadNonce && !initialThreadId
+        }
       />
-      <ThreadDexieAutosave modelType={modelType} pairId={pairId} />
+      <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
       <CancelRegistrar />
       {initialThreadId && (
         <ThreadAutoSwitch

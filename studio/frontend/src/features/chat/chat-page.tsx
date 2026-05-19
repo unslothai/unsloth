@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ChatSearch } from "@/app/routes/chat";
 import {
   type DeletedModelRef,
   type ExternalModelOption,
@@ -9,22 +10,22 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
+import { useSidebar } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
 import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
+import { useNativeIntentStore } from "@/features/native-intents/store";
+import type { NativeIntent } from "@/features/native-intents/types";
 import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
 import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
 import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { useSidebar } from "@/components/ui/sidebar";
 import { CustomizeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type ReactElement,
   memo,
@@ -35,18 +36,21 @@ import {
   useState,
 } from "react";
 import { toast } from "@/lib/toast";
-import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
-import { db } from "./db";
 import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import {
+  clearTrainingCompareHandoff,
+  getTrainingCompareHandoff,
+} from "./lib/training-compare-handoff";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -54,11 +58,6 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
-import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
-import {
-  clearTrainingCompareHandoff,
-  getTrainingCompareHandoff,
-} from "./lib/training-compare-handoff";
 import { ChatRuntimeProvider } from "./runtime-provider";
 import {
   type CompareHandle,
@@ -71,6 +70,12 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import {
+  getStoredChatThread,
+  isExpectedBackgroundChatStorageError,
+  listStoredChatMessages,
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
 
 type LoraCandidate = {
   id: string;
@@ -308,15 +313,15 @@ const LoraCompareContent = memo(function LoraCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    db.threads
-      .where("pairId")
-      .equals(pairId)
-      .toArray()
-      .then((threads) => {
-        if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
-      });
+    listStoredChatThreads({ pairId }).then((threads) => {
+      if (!isActive) return;
+      setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
+      setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+    }).catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
+    });
     return () => {
       isActive = false;
     };
@@ -457,23 +462,21 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    db.threads
-      .where("pairId")
-      .equals(pairId)
-      .toArray()
-      .then((threads) => {
-        if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
-      });
+    listStoredChatThreads({ pairId }).then((threads) => {
+      if (!isActive) return;
+      setModel1ThreadId(
+        threads.find((t) => t.modelType === "model1" || t.modelType === "base")
+          ?.id,
+      );
+      setModel2ThreadId(
+        threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
+          ?.id,
+      );
+    }).catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
+    });
     return () => {
       isActive = false;
     };
@@ -551,16 +554,22 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (s) => s.hydratePersistedSettings,
+  );
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
+
+  useEffect(() => {
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   useEffect(() => {
     const threadId = search.thread;
     if (!threadId) return;
 
     let canceled = false;
-    void db.threads
-      .get(threadId)
+    void getStoredChatThread(threadId)
       .then((thread) => {
         if (canceled || thread) return;
         useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -980,12 +989,9 @@ export function ChatPage(): ReactElement {
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
-          const thread = await db.threads.get(activeThreadId);
+          const thread = await getStoredChatThread(activeThreadId);
           if (thread?.modelId && thread.modelId !== value) {
-            const messages = await db.messages
-              .where("threadId")
-              .equals(activeThreadId)
-              .toArray();
+            const messages = await listStoredChatMessages(activeThreadId);
             if (messages.length > 0) {
               const hasImage = messages.some(messageHasImage);
               const targetModel = modelsFromStore.find(
@@ -1070,17 +1076,22 @@ export function ChatPage(): ReactElement {
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
-      void db.messages
-        .where("threadId")
-        .equals(threadId)
-        .reverse()
-        .first()
+      void listStoredChatMessages(threadId)
+        .then(
+          (messages) =>
+            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
+        )
         .then((msg) => {
           const metadata = msg?.metadata as Record<string, unknown> | undefined;
           const usage = metadata?.contextUsage as ReturnType<
             typeof useChatRuntimeStore.getState
           >["contextUsage"];
           if (usage) useChatRuntimeStore.getState().setContextUsage(usage);
+        })
+        .catch((error) => {
+          if (!isExpectedBackgroundChatStorageError(error)) {
+            throw error;
+          }
         });
     }
   }, [navigate]);
@@ -1397,7 +1408,7 @@ export function ChatPage(): ReactElement {
             ) : null}
             {!settingsOpen && (
               <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
+                <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}

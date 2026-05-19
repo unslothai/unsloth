@@ -282,6 +282,7 @@ export function SharedComposer({
 }): ReactElement {
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
+  const [sending, setSending] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
@@ -289,6 +290,7 @@ export function SharedComposer({
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const sendingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -515,7 +517,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) return;
+    if (composingRef.current || sendingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
 
@@ -534,28 +536,44 @@ export function SharedComposer({
       return;
     }
 
-    const content: CompareMessagePart[] = [];
-    for (const { file } of pendingImages) {
-      try {
-        const image = await fileToBase64DataURL(file);
-        content.push({ type: "image", image });
-      } catch {
-        // skip failed image
-      }
-    }
-    if (pendingAudio) {
-      content.push({ type: "audio", audio: pendingAudio.base64 });
-    }
-    if (msg) {
-      content.push({ type: "text", text: msg });
-    }
-    if (content.length === 0) return;
+    const releaseSending = () => {
+      sendingRef.current = false;
+      setSending(false);
+    };
+    sendingRef.current = true;
+    setSending(true);
 
-    setText("");
-    setPendingImages([]);
-    setPendingAudio(null);
-    clearPendingAudioStore();
-    textareaRef.current?.focus();
+    let content: CompareMessagePart[] = [];
+    let ready = false;
+    try {
+      content = [];
+      for (const { file } of pendingImages) {
+        try {
+          const image = await fileToBase64DataURL(file);
+          content.push({ type: "image", image });
+        } catch {
+          // skip failed image
+        }
+      }
+      if (pendingAudio) {
+        content.push({ type: "audio", audio: pendingAudio.base64 });
+      }
+      if (msg) {
+        content.push({ type: "text", text: msg });
+      }
+      if (content.length === 0) return;
+
+      setText("");
+      setPendingImages([]);
+      setPendingAudio(null);
+      clearPendingAudioStore();
+      textareaRef.current?.focus();
+
+      await useChatRuntimeStore.getState().hydratePersistedSettings();
+      ready = true;
+    } finally {
+      if (!ready) releaseSending();
+    }
 
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
@@ -704,6 +722,7 @@ export function SharedComposer({
         handle.append(content);
       }
     }
+    releaseSending();
   }
 
   function stop() {
@@ -713,7 +732,7 @@ export function SharedComposer({
     }
   }
 
-  const busy = running || comparing;
+  const busy = running || sending || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
     // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
