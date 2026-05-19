@@ -1197,7 +1197,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         try:
             if script.is_file():
                 result = subprocess.run(
-                    ["bash", str(script), *args], env = env, check = False,
+                    ["bash", str(script), *args],
+                    env = env,
+                    check = False,
                 )
                 if result.returncode != 0:
                     typer.echo(
