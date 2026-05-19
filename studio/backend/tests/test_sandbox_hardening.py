@@ -56,6 +56,7 @@ SUDO = "s" + "u" + "do"
 # Patch A — concatenated + f-string path resolution in open()
 # ---------------------------------------------------------------------------
 
+
 class TestPatchA_DynamicPaths:
     @pytest.mark.parametrize(
         "code",
@@ -68,7 +69,7 @@ class TestPatchA_DynamicPaths:
             "open('/etc' + '/' + 'shadow')",
             # F-string with a literal interpolation
             "open(f'/etc/{\"shadow\"}')",
-            "open(f'/{\"etc\"}/{\"shadow\"}')",
+            'open(f\'/{"etc"}/{"shadow"}\')',
             # Same surface via io.open / pathlib.Path.open
             "import io; io.open('/etc/' + 'shadow')",
         ],
@@ -113,6 +114,7 @@ class TestPatchA_DynamicPaths:
 # ---------------------------------------------------------------------------
 # Patch B — sensitive paths in bash (direct helper API)
 # ---------------------------------------------------------------------------
+
 
 class TestPatchB_FindSensitivePathsHomeAnchored:
     @pytest.mark.parametrize(
@@ -173,9 +175,9 @@ class TestPatchB_FindSensitivePathsHomeAnchored:
         ],
     )
     def test_legitimate_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"expected to allow (would dumbify tool calling): {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
 
 
 class TestPatchB_FindSensitivePathsAbsolute:
@@ -220,9 +222,9 @@ class TestPatchB_FindSensitivePathsAbsolute:
         ],
     )
     def test_legitimate_absolute_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"expected to allow (would dumbify tool calling): {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
 
 
 class TestPatchB_PythonShellExec:
@@ -261,14 +263,15 @@ class TestPatchB_PythonShellExec:
         ],
     )
     def test_legitimate_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"expected to allow (would dumbify tool calling): {code!r}"
-        )
+        assert not _is_blocked(
+            code
+        ), f"expected to allow (would dumbify tool calling): {code!r}"
 
 
 # ---------------------------------------------------------------------------
 # Patch D — eval / exec body recursion
 # ---------------------------------------------------------------------------
+
 
 class TestPatchD_EvalExecLiteralPayload:
     @pytest.mark.parametrize(
@@ -276,12 +279,12 @@ class TestPatchD_EvalExecLiteralPayload:
         [
             # Shell-escape inside an exec payload
             f"exec(\"import os; os.system('{SUDO} whoami')\")",
-            f"exec('import subprocess; subprocess.run([\"{SUDO}\", \"id\"])')",
+            f'exec(\'import subprocess; subprocess.run(["{SUDO}", "id"])\')',
             # Sensitive-file open inside exec payload
             "exec(\"open('/etc/shadow').read()\")",
             "exec(\"with open('/etc/passwd') as f: print(f.read())\")",
             # Nested
-            f"exec(\"exec(\\\"import os; os.system('{SUDO} id')\\\")\")",
+            f'exec("exec(\\"import os; os.system(\'{SUDO} id\')\\")")',
         ],
     )
     def test_literal_attack_payload_blocked(self, code):
@@ -301,9 +304,9 @@ class TestPatchD_EvalExecLiteralPayload:
         ],
     )
     def test_legitimate_eval_exec_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"expected to allow (would dumbify tool calling): {code!r}"
-        )
+        assert not _is_blocked(
+            code
+        ), f"expected to allow (would dumbify tool calling): {code!r}"
 
 
 class TestPatchD_EvalExecDynamicPayload:
@@ -623,6 +626,7 @@ class TestFinding10_PublicSshKeyAllowed:
 # blocks.
 # ---------------------------------------------------------------------------
 
+
 class TestCrossCuttingNoRegression:
     @pytest.mark.parametrize(
         "code",
@@ -657,6 +661,6 @@ class TestCrossCuttingNoRegression:
         ],
     )
     def test_preexisting_allowed_still_pass(self, code):
-        assert not _is_blocked(code), (
-            f"REGRESSION: pre-existing pass-through now blocked: {code!r}"
-        )
+        assert not _is_blocked(
+            code
+        ), f"REGRESSION: pre-existing pass-through now blocked: {code!r}"
