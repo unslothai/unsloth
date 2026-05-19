@@ -113,6 +113,23 @@ def fail(m):
     raise AssertionError(f"[ui] FAIL: {m}")
 
 
+def expected_default_model():
+    override = os.environ.get("EXPECTED_DEFAULT_MODEL")
+    if override:
+        return override
+
+    studio_backend = Path(__file__).resolve().parents[2] / "studio" / "backend"
+    if str(studio_backend) not in sys.path:
+        sys.path.insert(0, str(studio_backend))
+    try:
+        from core.inference.defaults import DEFAULT_MODELS_GGUF
+    except Exception as exc:
+        fail(f"could not import DEFAULT_MODELS_GGUF: {exc}")
+    if not DEFAULT_MODELS_GGUF:
+        fail("DEFAULT_MODELS_GGUF is empty")
+    return DEFAULT_MODELS_GGUF[0]
+
+
 def soft_fail(m):
     """Hard fail in STRICT mode, info-warn otherwise.
 
@@ -475,10 +492,7 @@ with sync_playwright() as p:
     # list or hides the default would break the first-launch UX,
     # which is what this assertion guards.
     step("default_models[0] matches DEFAULT_MODELS_GGUF[0]")
-    EXPECTED_DEFAULT = os.environ.get(
-        "EXPECTED_DEFAULT_MODEL",
-        "unsloth/gemma-4-E2B-it-GGUF",
-    )
+    EXPECTED_DEFAULT = expected_default_model()
     defaults_resp = evaluate_fetch(
         page,
         f"{BASE}/api/models/list",
