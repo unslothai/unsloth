@@ -1016,23 +1016,37 @@ const CancelledIndicator: FC = () => {
   );
 };
 
-// Pins the running tool's name to the bottom of the assistant bubble
-// so activity stays visible after the tool group scrolls off-screen.
+// Pins activity to the bottom of the assistant bubble so the chat
+// doesn't look frozen during the gap between "model wrote intent" and
+// "tool actually invoked", or between back-to-back tool calls.
+// - When a tool-call part is currently `running`, shows the tool name.
+// - When the message is still streaming but no tool is mid-execution
+//   (e.g. model is generating the tool-call decision tokens, or has
+//   just rendered the lead-in text "Let me build it:"), falls back to
+//   a neutral "Working..." so the user sees that work is still happening.
 const RunningToolIndicator: FC = () => {
-  const running = useAuiState(({ message }) => {
+  const state = useAuiState(({ message }) => {
     if (message.status?.type !== "running") return null;
     const parts = message.parts;
+    // Most recent running tool wins, if any.
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       const p = parts[i] as
         | { type?: string; toolName?: string; status?: { type?: string } }
         | undefined;
       if (p?.type === "tool-call" && p.status?.type === "running") {
-        return p.toolName ?? "tool";
+        return { kind: "tool" as const, name: p.toolName ?? "tool" };
       }
+    }
+    // No tool currently running, but message itself is still streaming.
+    // GeneratingIndicator only shows while content.length === 0, so once
+    // any text has rendered we lose its dots. Surface a generic "Working..."
+    // so the chat doesn't go silent between phases.
+    if (parts.length > 0) {
+      return { kind: "working" as const };
     }
     return null;
   });
-  if (!running) return null;
+  if (!state) return null;
   return (
     <div
       data-slot="running-tool-indicator"
@@ -1043,9 +1057,13 @@ const RunningToolIndicator: FC = () => {
         aria-hidden
         className="aui-running-tool-indicator-dot inline-block size-2 animate-pulse rounded-full bg-muted-foreground/60"
       />
-      <span>
-        Running <span className="font-mono text-xs">{running}</span>...
-      </span>
+      {state.kind === "tool" ? (
+        <span>
+          Running <span className="font-mono text-xs">{state.name}</span>...
+        </span>
+      ) : (
+        <span>Working...</span>
+      )}
     </div>
   );
 };
