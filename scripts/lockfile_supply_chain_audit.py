@@ -576,6 +576,171 @@ def _first_line_containing(text: str, needle: str) -> int | None:
 _PACKAGE_HEADER = re.compile(r"^\[\[package\]\]\s*$")
 
 
+# Bun's text lockfile (bun.lock, Bun >= 1.2) is JSONC -- valid JSON with
+# trailing commas allowed. Strip them before json.loads.
+_BUN_LOCK_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _parse_bun_lockfile_text(raw: str) -> dict:
+    """Parse bun.lock JSONC text by stripping trailing commas."""
+    cleaned = _BUN_LOCK_TRAILING_COMMA_RE.sub(r"\1", raw)
+    return json.loads(cleaned)
+
+
+def audit_bun_lockfile(path: Path) -> list[Finding]:
+    """Pre-install audit for Bun's text lockfile (bun.lock, version 1).
+
+    Each package entry is a JSON array shaped like:
+      "pkg-name": [
+        "pkg-name@version",
+        "<registry-url-or-empty>",
+        {"optionalDependencies": ..., "bin": ..., "os": ..., ...},
+        "sha512-<base64>"            # integrity, registry-resolved only
+      ]
+    git/file/tarball-resolved entries carry the source URL in element 1
+    and lack the sha512 tail. We flag any non-default-registry source
+    and any registry entry without a sha512 tail.
+    """
+    findings: list[Finding] = []
+    if not path.exists():
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
+                    "expected lockfile not found; refusing to silently "
+                    "report a clean audit for a path that was not scanned"
+                ),
+            )
+        )
+        return findings
+
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
+
+    try:
+        lock = _parse_bun_lockfile_text(raw)
+    except json.JSONDecodeError as exc:
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "malformed-lockfile",
+                detail = f"could not parse bun.lock as JSONC: {exc}",
+            )
+        )
+        return findings
+
+    lockfile_version = lock.get("lockfileVersion")
+    if lockfile_version != 1:
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unsupported-lockfile-version",
+                detail = f"only bun lockfileVersion 1 audited; got {lockfile_version}",
+            )
+        )
+
+    packages = lock.get("packages") or {}
+    for pkg_name, entry in packages.items():
+        if not isinstance(entry, list) or len(entry) < 2:
+            continue
+
+        # entry[0] is "name@version"; entry[1] is the source URL when
+        # non-default-registry (e.g. "git+https://..." or "file:./..."),
+        # or "" when resolved against the default npm registry.
+        nv = entry[0] if isinstance(entry[0], str) else ""
+        # version is everything after the LAST '@' (handles scoped names
+        # like "@scope/name@1.2.3").
+        version = nv.rsplit("@", 1)[-1] if "@" in nv else ""
+
+        source = entry[1] if len(entry) > 1 and isinstance(entry[1], str) else ""
+
+        # 1. Source origin: empty string means default registry. Anything
+        # else (git+, file:, http://github.com/, tarball URL) is flagged
+        # the same way audit_npm_lockfile flags non-registry resolved URLs.
+        if source and not any(
+            source.startswith(p) for p in NPM_REGISTRY_PREFIXES_ALLOWED
+        ):
+            findings.append(
+                Finding(
+                    path = str(path),
+                    package = pkg_name,
+                    kind = "non-registry-resolved-url",
+                    detail = (
+                        f"source={source!r}; only {NPM_REGISTRY_PREFIX} "
+                        "is permitted. Direct GitHub / git / file references "
+                        "are the Shai-Hulud injection vector."
+                    ),
+                )
+            )
+
+        # 2. Integrity hash: registry-resolved entries carry a sha-prefixed
+        # tail element. Missing tail on a registry entry is a finding.
+        has_sha_tail = (
+            isinstance(entry[-1], str)
+            and (entry[-1].startswith("sha512-") or entry[-1].startswith("sha256-") or entry[-1].startswith("sha1-"))
+        )
+        if not source and not has_sha_tail:
+            findings.append(
+                Finding(
+                    path = str(path),
+                    package = pkg_name,
+                    kind = "missing-integrity-hash",
+                    detail = (
+                        "no sha-prefixed integrity tail in bun.lock entry; "
+                        "bun cannot verify the tarball SHA against the "
+                        "registry-published hash"
+                    ),
+                )
+            )
+
+        # 3. Blocked-malicious-version list.
+        blocked = BLOCKED_NPM_VERSIONS.get(pkg_name, set())
+        if version and version in blocked:
+            findings.append(
+                Finding(
+                    path = str(path),
+                    package = pkg_name,
+                    kind = "blocked-known-malicious",
+                    detail = (
+                        f"{pkg_name}@{version} is on the BLOCKED_NPM_VERSIONS list"
+                    ),
+                )
+            )
+
+    # 4. IOC string scan against the raw file body (mirrors audit_npm_lockfile).
+    for ioc in NPM_IOC_STRINGS:
+        if ioc in raw:
+            line_no = _first_line_containing(raw, ioc)
+            findings.append(
+                Finding(
+                    path = f"{path}:{line_no}" if line_no else str(path),
+                    package = "<ioc-match>",
+                    kind = "known-ioc-string",
+                    detail = (
+                        f"matched known IOC substring {ioc!r}; this is "
+                        "a public indicator of a recent supply-chain "
+                        "compromise. Refuse to install."
+                    ),
+                )
+            )
+
+    return findings
+
+
 def audit_cargo_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
@@ -706,6 +871,11 @@ DEFAULT_NPM_LOCKFILES = (
     "studio/backend/core/data_recipe/oxc-validator/package-lock.json",
     "studio/package-lock.json",
 )
+DEFAULT_BUN_LOCKFILES = (
+    "studio/frontend/bun.lock",
+    "studio/backend/core/data_recipe/oxc-validator/bun.lock",
+    "studio/bun.lock",
+)
 DEFAULT_CARGO_LOCKFILES = ("studio/src-tauri/Cargo.lock",)
 
 
@@ -727,6 +897,17 @@ def main(argv: list[str] | None = None) -> int:
             "Default: studio/frontend/package-lock.json, "
             "studio/backend/core/data_recipe/oxc-validator/package-lock.json, "
             "and studio/package-lock.json (Tauri CLI for desktop release)."
+        ),
+    )
+    parser.add_argument(
+        "--bun-lockfile",
+        action = "append",
+        default = None,
+        help = (
+            "Path to a bun.lock (repeatable). "
+            "Default: studio/frontend/bun.lock, "
+            "studio/backend/core/data_recipe/oxc-validator/bun.lock, "
+            "and studio/bun.lock (Tauri CLI for desktop release)."
         ),
     )
     parser.add_argument(
@@ -770,20 +951,29 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     root = Path(args.root).resolve()
-    # Explicit --npm-lockfile/--cargo-lockfile scopes the scan to those
-    # paths; defaults apply only to the no-args CI invocation.
-    _user_explicit = args.npm_lockfile is not None or args.cargo_lockfile is not None
+    # Explicit --npm-lockfile/--bun-lockfile/--cargo-lockfile scopes the
+    # scan to those paths; defaults apply only to the no-args CI invocation.
+    _user_explicit = (
+        args.npm_lockfile is not None
+        or args.bun_lockfile is not None
+        or args.cargo_lockfile is not None
+    )
     if _user_explicit:
         npm_paths = [root / p for p in (args.npm_lockfile or ())]
+        bun_paths = [root / p for p in (args.bun_lockfile or ())]
         cargo_paths = [root / p for p in (args.cargo_lockfile or ())]
     else:
         npm_paths = [root / p for p in DEFAULT_NPM_LOCKFILES]
+        bun_paths = [root / p for p in DEFAULT_BUN_LOCKFILES]
         cargo_paths = [root / p for p in DEFAULT_CARGO_LOCKFILES]
 
     all_findings: list[Finding] = []
     for p in npm_paths:
         print(f"[lockfile-audit] npm: {p}", flush = True)
         all_findings.extend(audit_npm_lockfile(p))
+    for p in bun_paths:
+        print(f"[lockfile-audit] bun: {p}", flush = True)
+        all_findings.extend(audit_bun_lockfile(p))
     for p in cargo_paths:
         print(f"[lockfile-audit] cargo: {p}", flush = True)
         all_findings.extend(audit_cargo_lockfile(p))
@@ -791,7 +981,8 @@ def main(argv: list[str] | None = None) -> int:
     if not all_findings:
         print(
             f"[lockfile-audit] OK: 0 findings across "
-            f"{len(npm_paths)} npm + {len(cargo_paths)} cargo lockfile(s)",
+            f"{len(npm_paths)} npm + {len(bun_paths)} bun + "
+            f"{len(cargo_paths)} cargo lockfile(s)",
             flush = True,
         )
         return 0
