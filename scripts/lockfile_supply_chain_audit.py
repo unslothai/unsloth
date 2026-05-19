@@ -389,6 +389,18 @@ class Finding:
         )
 
 
+def _gha_escape(text: str) -> str:
+    """Escape a string for use in a GitHub Actions `::warning::` /
+    `::error::` workflow command message. GH Actions truncates
+    annotation messages at the first newline unless `\\n` is
+    escaped as `%0A`; carriage returns and the percent sign need
+    matching escapes per the workflow-commands spec. Order matters:
+    `%` must be replaced first so the subsequent `%0A` / `%0D`
+    sequences are not double-encoded.
+    """
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 # ─────────────────────────────────────────────────────────────────────
 # package-lock.json audit.
 # ─────────────────────────────────────────────────────────────────────
@@ -848,8 +860,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         for f in advisory:
             # Surface in GitHub Actions UI as a warning annotation when run
-            # under Actions; harmless prefix elsewhere.
-            print(f"::warning::{f}", file = sys.stderr)
+            # under Actions; harmless prefix elsewhere. GH Actions
+            # truncates annotation messages at the first newline unless
+            # newlines are escaped as `%0A`, so the full multi-line
+            # Finding (kind + path + package + detail) only renders in
+            # the UI after _gha_escape collapses it onto one line.
+            print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
             print(file = sys.stderr)
 
     if not blocking:
@@ -865,7 +881,10 @@ def main(argv: list[str] | None = None) -> int:
         file = sys.stderr,
     )
     for f in blocking:
-        print(f"::error::{f}", file = sys.stderr)
+        # Same %-encoding rationale as the advisory branch above: the
+        # GH Actions annotation is truncated at the first newline
+        # unless the message is escaped.
+        print(f"::error::{_gha_escape(str(f))}", file = sys.stderr)
         print(file = sys.stderr)
     print(
         "[lockfile-audit] Refusing to proceed. Each blocking finding "
