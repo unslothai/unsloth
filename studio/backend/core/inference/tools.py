@@ -1050,6 +1050,9 @@ def _check_signal_escape_patterns(code: str):
             # for from-import tracking (e.g. "system" -> "os.system")
             self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
+            # Cap recursion into nested eval/exec literals; an adversarial
+            # ``eval("eval('eval(...)')")`` should not blow the stack.
+            self._eval_depth = 0
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -1102,6 +1105,40 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Call(self, node):
             func = node.func
+
+            # --- eval / exec body inspection --------------------------
+            # If a payload is a statically-resolvable string we parse it
+            # and recurse so the inner code is checked by all the same
+            # detectors (signal tampering, shell escape, sensitive files,
+            # network policy). If the payload is not statically resolvable
+            # we flag it as a dynamic shell-escape candidate — eval/exec
+            # of runtime data is the classic injection vector.
+            if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
+                if node.args:
+                    payload = _extract_string_from_node(node.args[0])
+                    if payload is not None and self._eval_depth < 3:
+                        try:
+                            inner_tree = ast.parse(payload, mode = "exec")
+                        except SyntaxError:
+                            inner_tree = None
+                        if inner_tree is not None:
+                            self._eval_depth += 1
+                            try:
+                                self.visit(inner_tree)
+                            finally:
+                                self._eval_depth -= 1
+                    elif payload is None:
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape_dynamic",
+                                "line": node.lineno,
+                                "description": (
+                                    f"{func.id}() called with non-literal "
+                                    "argument (potential code-injection escape)"
+                                ),
+                            }
+                        )
+
             func_name = None
             if isinstance(func, ast.Attribute):
                 if isinstance(func.value, ast.Name):
@@ -1768,7 +1805,31 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def __init__(self):
+            super().__init__()
+            self._eval_depth = 0
+
         def visit_Call(self, node):
+            func = node.func
+            # eval/exec payload recursion — see SignalEscapeVisitor for
+            # the dual gate. Catches ``exec("open('/etc/shadow').read()")``
+            # by parsing the literal payload and walking it through the
+            # same sensitive-file / network / upload checks.
+            if isinstance(func, ast.Name) and func.id in ("eval", "exec"):
+                if node.args:
+                    payload = _extract_string_from_node(node.args[0])
+                    if payload is not None and self._eval_depth < 3:
+                        try:
+                            inner_tree = ast.parse(payload, mode = "exec")
+                        except SyntaxError:
+                            inner_tree = None
+                        if inner_tree is not None:
+                            self._eval_depth += 1
+                            try:
+                                self.visit(inner_tree)
+                            finally:
+                                self._eval_depth -= 1
+
             parts: list[str] = []
             cur = node.func
             while isinstance(cur, ast.Attribute):
