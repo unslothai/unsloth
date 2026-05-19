@@ -25,6 +25,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(1, str(_BACKEND_DIR))
 
+from backend.utils.native_path_leases import child_env_without_native_path_secret
 from backend.utils.wheel_utils import (
     FLASH_ATTN_SPEC,
     flash_attn_package_version,
@@ -580,6 +581,7 @@ def run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
+        env = child_env_without_native_path_secret(),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -641,7 +643,7 @@ def _ensure_flash_attn() -> None:
             return
         _step("warning", message, _cyan)
 
-    install_optional_kernel(
+    installed = install_optional_kernel(
         FLASH_ATTN_SPEC,
         python_executable = sys.executable,
         use_uv = USE_UV,
@@ -649,6 +651,8 @@ def _ensure_flash_attn() -> None:
         allow_pypi_fallback = False,
         status = _status,
     )
+    if not installed:
+        _step("warning", "Continuing without flash-attn", _cyan)
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -778,6 +782,7 @@ def pip_install_try(
         cmd,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
+        env = child_env_without_native_path_secret(),
     )
     if result.returncode == 0:
         return True
@@ -822,6 +827,7 @@ def pip_install(
                 uv_cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:

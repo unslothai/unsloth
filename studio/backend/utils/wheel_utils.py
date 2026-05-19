@@ -272,9 +272,20 @@ def install_wheel(
 
 
 def _package_is_importable(import_name: str) -> bool:
+    # An installed-but-broken native package (e.g. flash-attn after a torch
+    # ABI bump) raises OSError/RuntimeError on `import`, not ImportError.
+    # Treat any failure to import as "missing" so the helper falls through
+    # to wheel install / fallback instead of crashing the caller.
     try:
         __import__(import_name)
     except ImportError:
+        return False
+    except Exception as exc:
+        _logger.warning(
+            "%s is installed but not importable; treating as missing: %s",
+            import_name,
+            exc,
+        )
         return False
     return True
 
@@ -402,9 +413,15 @@ def install_optional_kernel(
                 result.stdout,
             )
             if status is not None and not allow_pypi_fallback:
+                # Tail the installer stdout so setup users can see what
+                # actually went wrong (resolver / network / cache / ABI).
+                output = (result.stdout or "").strip()
+                tail = "\n".join(output.splitlines()[-20:]) if output else ""
+                detail = f"\n{tail}" if tail else ""
                 status(
                     f"Installing {spec.display_name} prebuilt wheel with "
                     f"{installer} failed (exit code {result.returncode})"
+                    f"{detail}"
                 )
     else:
         _logger.info("No published %s wheel found: %s", spec.display_name, wheel_url)

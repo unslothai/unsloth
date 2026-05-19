@@ -488,6 +488,23 @@ def test_rocm_with_hipcc_injects_gcc_install_dir_into_subprocess_env(monkeypatch
     )
 
 
+def test_broken_native_import_is_treated_as_missing(monkeypatch):
+    # ABI-broken installs (e.g. flash_attn after a torch bump) raise
+    # OSError/RuntimeError on import. The helper must treat that as
+    # "missing" and continue to wheel install / fallback, not crash.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "definitely_broken_native_pkg":
+            raise OSError("libfake.so: undefined symbol: fake_abi_mismatch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert wheel_utils._package_is_importable("definitely_broken_native_pkg") is False
+
+
 def test_install_subprocess_env_strips_native_path_lease_secret(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _env())
