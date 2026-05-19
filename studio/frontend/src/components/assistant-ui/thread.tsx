@@ -994,9 +994,7 @@ const GeneratingIndicator: FC = () => {
   return <span className="text-sm text-muted-foreground">Generating...</span>;
 };
 
-// Stop-before-visible-content terminal state. Without this, cancelling
-// while the model is still inside its think block leaves the bubble
-// empty except for the floating action row.
+// Placeholder when stop fires before any visible content (e.g. mid-think).
 const CancelledIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
