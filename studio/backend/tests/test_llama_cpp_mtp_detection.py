@@ -774,14 +774,64 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     )
 
 
-# Sub-2B MTP gate -- tiny dense models regress with MTP, so the
-# reload-skip mirror must match a clean (spec-off) backend on a
-# sub-2B MTP GGUF request, mirroring load_model's skip path.
+# Sub-3B MTP gate -- tiny dense models regress with the MTP draft
+# head, so load_model falls back to ngram-mod (when the binary supports
+# it) instead of draft-mtp. The reload-skip mirror must follow the
+# same fallback so a sub-3B reload-with-default does not bounce a
+# correctly-configured ngram-mod / off backend.
 
 
-def test_already_in_target_state_sub_2b_mtp_request_matches_off_backend():
-    # 0.8B MTP request must NOT trigger a reload against a clean
-    # (spec=off) backend running the same 0.8B model.
+def _patch_probe(monkeypatch, ngram_supported):
+    """Force probe_server_capabilities to a deterministic result so
+    tests don't depend on whatever llama-server happens to be on PATH."""
+    fake = {
+        "found": True,
+        "mtp_token": "draft-mtp",
+        "supports_mtp": True,
+        "ngram_mod_flavor": "new" if ngram_supported else None,
+        "supports_ngram_mod": bool(ngram_supported),
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary=None: fake),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        classmethod(lambda cls: "/fake/llama-server"),
+    )
+
+
+def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(monkeypatch):
+    # 0.8B MTP request -- load_model would have promoted to ngram-mod
+    # (no MTP head); reload check must match a ngram-mod backend.
+    _patch_probe(monkeypatch, ngram_supported=True)
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
+        _speculative_type = "ngram-mod",
+        _spec_draft_n_max = None,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypatch):
+    # 0.8B + binary lacks ngram-mod -> fall back to off.
+    _patch_probe(monkeypatch, ngram_supported=False)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
         _speculative_type = None,
@@ -803,8 +853,9 @@ def test_already_in_target_state_sub_2b_mtp_request_matches_off_backend():
     )
 
 
-def test_already_in_target_state_4b_mtp_request_promotes_as_before():
-    # 4B is above the 2B threshold -> auto-promote still applies.
+def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
+    # 4B is above the 3B threshold -> auto-promote still applies.
+    _patch_probe(monkeypatch, ngram_supported=True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
         _speculative_type = "draft-mtp",
@@ -826,12 +877,13 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before():
     )
 
 
-def test_already_in_target_state_2b_threshold_exact_promotes():
-    # 2.0B is the boundary; <2.0 skips auto-promote, >=2.0 still
-    # promotes.  Use Qwen3.5-2B (size_b == 2.0).
+def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypatch):
+    # 2.0B is below the 3B threshold -> ngram-mod fallback, not
+    # draft-mtp. Clean-bench shows 2B regresses with draft-mtp.
+    _patch_probe(monkeypatch, ngram_supported=True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
-        _speculative_type = "draft-mtp",
+        _speculative_type = "ngram-mod",
         _spec_draft_n_max = None,
     )
     assert (

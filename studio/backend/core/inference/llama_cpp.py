@@ -2827,12 +2827,19 @@ class LlamaCppBackend:
                     _is_mtp_model_name(model_identifier, model_path)
                 )
                 user_owns_spec_type = _extra_args_set_spec_type(extra_args)
-                # Sub-2B dense MTP regresses vs spec-off (draft cost > savings).
-                # Bench on Q4_K_XL B200: Qwen3.5-0.8B 452 -> 283 t/s (0.63x),
-                # CPU 0.8B 84.5 -> 64.9 t/s. >=2B is the inflection point;
-                # 4B is +1.07x, 9B +1.14x, 27B +1.44x.
+                # Sub-3B dense MTP regresses vs spec-off because the draft
+                # head's per-token cost exceeds the acceptance savings at
+                # this scale. Q4_K_XL clean bench (each prompt once after
+                # an unrelated warmup) on B200 and x86 CPU:
+                #   0.8B GPU: draft-mtp n=2 = 0.58x vs OFF; ngram-only = 1.10x
+                #   2B   GPU: draft-mtp n=2 = 0.82x vs OFF; OFF or ngram = 1.00x
+                #   0.8B CPU: chained n=2   = 0.86x vs OFF; ngram-only = 1.19x
+                #   2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
+                #   4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
+                # Fall back to ngram-mod (zero-VRAM, near-zero idle cost on
+                # diverse content) instead of disabling spec entirely.
                 _mtp_size_b = _extract_model_size_b(model_identifier)
-                _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 2.0
+                _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 3.0
                 # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
                 # llama.cpp #22673: MTP is compatible with mmproj, so the
                 # vision gate previously here was wrong.
@@ -2849,14 +2856,26 @@ class LlamaCppBackend:
                     and not user_owns_spec_type
                     and normalized_spec in (None, "", "default")
                 ):
-                    # Bench confirms tiny dense MTP is a net loss.
-                    # User can still force via --spec-type or the UI toggle.
-                    logger.info(
-                        f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
-                        "is below the 2B speedup threshold; auto-disabling "
-                        "speculative decoding. Override via --spec-type or "
-                        "the Studio Speculative Decoding toggle."
-                    )
+                    # Sub-3B: drop the MTP draft head, keep ngram-mod when
+                    # the binary supports it. User can still force MTP via
+                    # --spec-type or the Studio toggle.
+                    _small_caps = self.probe_server_capabilities(binary)
+                    if _small_caps.get("supports_ngram_mod"):
+                        normalized_spec = "ngram-mod"
+                        logger.info(
+                            f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
+                            "is below the 3B speedup threshold; using "
+                            "ngram-mod only (zero-VRAM, no draft head). "
+                            "Override via --spec-type or the Studio "
+                            "Speculative Decoding toggle."
+                        )
+                    else:
+                        logger.info(
+                            f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
+                            "is below the 3B speedup threshold and the bundled "
+                            "llama-server does not advertise ngram-mod; "
+                            "auto-disabling speculative decoding."
+                        )
                 if user_owns_spec_type:
                     # User --spec-type wins; suppress auto-emit so we
                     # don't emit a duplicate (single-flag, comma-chained).
@@ -3348,18 +3367,27 @@ class LlamaCppBackend:
 
         # Mirror load_model's auto-promotion. Vision is no longer a
         # spec blocker (llama.cpp #22673: MTP is compatible with mmproj).
-        # Skip auto-promote on sub-2B models (MTP regresses below 2B params).
+        # Sub-3B MTP models fall back to ngram-mod (or off if the binary
+        # has no ngram support).
         raw_spec = _norm(speculative_type)
         req_spec = raw_spec or "off"
         _reload_size_b = _extract_model_size_b(model_identifier)
-        _reload_too_small = _reload_size_b is not None and _reload_size_b < 2.0
+        _reload_too_small = _reload_size_b is not None and _reload_size_b < 3.0
         if (
             raw_spec in (None, "default")
             and _is_mtp_model_name(model_identifier, gguf_path)
-            and not _reload_too_small
             and not _extra_args_set_spec_type(extra_args)
         ):
-            req_spec = "draft-mtp"
+            if not _reload_too_small:
+                req_spec = "draft-mtp"
+            else:
+                # Sub-3B reload would have come up under load_model's
+                # fallback policy (ngram-mod if supported, else off).
+                _binary = self._find_llama_server_binary()
+                _caps = self.probe_server_capabilities(_binary) if _binary else None
+                if _caps and _caps.get("supports_ngram_mod"):
+                    req_spec = "ngram-mod"
+                # else: leave req_spec as "off"
         backend_spec = _norm(self._speculative_type) or "off"
         if req_spec != backend_spec:
             return False
