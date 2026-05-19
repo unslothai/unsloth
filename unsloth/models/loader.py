@@ -308,6 +308,16 @@ class FastLanguageModel(FastLlamaModel):
             if is_dist:
                 device_map = distributed_device_map
 
+        # Honour offline env vars BEFORE FastModel delegation so 8bit /
+        # full-finetuning / qat paths also receive local_files_only.
+        if not kwargs.get("local_files_only", False):
+            _offline = {"1", "true", "yes", "on"}
+            if (
+                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+            ):
+                kwargs["local_files_only"] = True
+
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -440,17 +450,6 @@ class FastLanguageModel(FastLlamaModel):
         model_config = None
         peft_config = None
         local_files_only = kwargs.get("local_files_only", False)
-        # Honour HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE so offline mode is
-        # respected even when local_files_only is not explicitly passed.
-        if not local_files_only:
-            _offline_vals = {"1", "true", "yes", "on"}
-            if (
-                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower()
-                in _offline_vals
-                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
-            ):
-                local_files_only = True
-                kwargs["local_files_only"] = True
 
         try:
             model_config = AutoConfig.from_pretrained(
@@ -1066,6 +1065,15 @@ class FastModel(FastBaseModel):
         model_config = None
         peft_config = None
         local_files_only = kwargs.get("local_files_only", False)
+        # Mirror env-var fallback for direct callers (FastVisionModel / FastTextModel).
+        if not local_files_only:
+            _offline = {"1", "true", "yes", "on"}
+            if (
+                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+            ):
+                local_files_only = True
+                kwargs["local_files_only"] = True
 
         try:
             model_config = AutoConfig.from_pretrained(
