@@ -144,6 +144,7 @@ class TestParserMultiFormat:
     def test_llama3_python_tag_dot_call(self):
         # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
         import json
+
         text = '<|python_tag|>brave_search.call(query="weather in Tokyo")'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -153,8 +154,9 @@ class TestParserMultiFormat:
 
     def test_llama3_python_tag_dot_call_multi_arg(self):
         import json
+
         text = (
-            '<|python_tag|>get_weather.call('
+            "<|python_tag|>get_weather.call("
             'location="Tokyo", units="celsius", days=5)'
         )
         result = parse_tool_calls_from_text(text)
@@ -164,9 +166,9 @@ class TestParserMultiFormat:
 
     def test_llama3_python_tag_json_form(self):
         import json
+
         text = (
-            '<|python_tag|>{"name":"web_search",'
-            '"parameters":{"query":"hi","n":5}}'
+            '<|python_tag|>{"name":"web_search",' '"parameters":{"query":"hi","n":5}}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -177,6 +179,7 @@ class TestParserMultiFormat:
     def test_llama3_python_tag_json_form_with_eom(self):
         # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
         import json
+
         text = (
             '<|python_tag|>{"name":"python",'
             '"parameters":{"code":"print(2+2)"}}<|eom_id|>'
@@ -196,6 +199,7 @@ class TestParserMultiFormat:
         # Llama-3.2-Instruct emits bare JSON directly as content; no
         # <|python_tag|> prefix per its training template.
         import json
+
         text = '{"name":"web_search","parameters":{"query":"Tokyo weather"}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -205,6 +209,7 @@ class TestParserMultiFormat:
 
     def test_llama3_2_bare_json_arguments_key(self):
         import json
+
         text = '{"name":"add","arguments":{"a":1,"b":2}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -213,10 +218,7 @@ class TestParserMultiFormat:
 
     def test_llama3_2_bare_json_multi_call(self):
         # Llama-3 may chain calls with ``; `` per training template.
-        text = (
-            '{"name":"a","parameters":{}}; '
-            '{"name":"b","parameters":{}}'
-        )
+        text = '{"name":"a","parameters":{}}; ' '{"name":"b","parameters":{}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 2
         assert result[0]["function"]["name"] == "a"
@@ -262,6 +264,7 @@ class TestParserMultiFormat:
 
     def test_mistral_pre_v11_array(self):
         import json
+
         text = (
             '[TOOL_CALLS] [{"name":"web_search",'
             '"arguments":{"query":"hello"},"id":"abc"}]'
@@ -285,9 +288,7 @@ class TestParserMultiFormat:
 
     def test_mistral_pre_v11_unclosed_array(self):
         # Closing ``]`` truncated -- parser must heal off individual objects.
-        text = (
-            '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}'
-        )
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
@@ -297,6 +298,7 @@ class TestParserMultiFormat:
     def test_mistral_v11_single(self):
         # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
         import json
+
         text = '[TOOL_CALLS]add{"a":3.5,"b":4}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -314,6 +316,7 @@ class TestParserMultiFormat:
     def test_mistral_v11_with_args_marker(self):
         # Ministral / Mistral Large 3: ``[TOOL_CALLS]name[ARGS]{json}``.
         import json
+
         text = '[TOOL_CALLS]add[ARGS]{"a":1,"b":2}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -328,8 +331,9 @@ class TestParserMultiFormat:
 
     def test_gemma4_simple_call(self):
         import json
+
         text = (
-            '<|tool_call>call:get_weather{'
+            "<|tool_call>call:get_weather{"
             'location:<|"|>Tokyo<|"|>,units:<|"|>celsius<|"|>}<tool_call|>'
         )
         result = parse_tool_calls_from_text(text)
@@ -340,9 +344,10 @@ class TestParserMultiFormat:
 
     def test_gemma4_with_primitives(self):
         import json
+
         text = (
-            '<|tool_call>call:set_pref{'
-            'enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>'
+            "<|tool_call>call:set_pref{"
+            "enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>"
         )
         result = parse_tool_calls_from_text(text)
         args = json.loads(result[0]["function"]["arguments"])
@@ -356,8 +361,9 @@ class TestParserMultiFormat:
     def test_gemma4_nested_args(self):
         # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
         import json
+
         text = (
-            '<|tool_call>call:search{'
+            "<|tool_call>call:search{"
             'query:<|"|>foo<|"|>,filters:{site:<|"|>example.com<|"|>,recent:true},'
             'tags:[<|"|>a<|"|>,<|"|>b<|"|>]}<tool_call|>'
         )
@@ -369,8 +375,7 @@ class TestParserMultiFormat:
 
     def test_gemma4_multi_call(self):
         text = (
-            '<|tool_call>call:a{x:1}<tool_call|>'
-            '<|tool_call>call:b{y:2}<tool_call|>'
+            "<|tool_call>call:a{x:1}<tool_call|>" "<|tool_call>call:b{y:2}<tool_call|>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 2
@@ -384,7 +389,7 @@ class TestParserMultiFormat:
         assert isinstance(result, list)
 
     def test_gemma4_strip_markup_final(self):
-        text = '<|tool_call>call:foo{x:1}<tool_call|>'
+        text = "<|tool_call>call:foo{x:1}<tool_call|>"
         assert strip_tool_markup(text, final = True) == ""
 
     # ── Cross-format sentinels ────────────────────────────────────
@@ -392,6 +397,7 @@ class TestParserMultiFormat:
     def test_all_markers_in_tool_xml_signals(self):
         # Streaming buffer wakes up on every emission marker.
         from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+
         for marker in (
             "<tool_call>",
             "<function=",
@@ -399,15 +405,15 @@ class TestParserMultiFormat:
             "[TOOL_CALLS]",
             "<|tool_call>",
         ):
-            assert marker in TOOL_XML_SIGNALS, (
-                f"streaming loop would not wake on {marker!r}"
-            )
+            assert (
+                marker in TOOL_XML_SIGNALS
+            ), f"streaming loop would not wake on {marker!r}"
 
     def test_has_tool_signal_for_all_formats(self):
         assert has_tool_signal('<|python_tag|>brave_search.call(q="x")')
         assert has_tool_signal('[TOOL_CALLS] [{"name":"x"}]')
         assert has_tool_signal('[TOOL_CALLS]add{"a":1}')
-        assert has_tool_signal('<|tool_call>call:foo{}<tool_call|>')
+        assert has_tool_signal("<|tool_call>call:foo{}<tool_call|>")
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -566,9 +572,9 @@ class TestLoopBasic:
         loop, exec_fn = _make_loop(
             turns = [
                 [
-                    '<|python_tag|>web_search.call(',
+                    "<|python_tag|>web_search.call(",
                     'query="weather in Tokyo"',
-                    ')',
+                    ")",
                 ],
                 ["The weather is sunny."],
             ],
@@ -614,9 +620,9 @@ class TestLoopBasic:
         loop, exec_fn = _make_loop(
             turns = [
                 [
-                    '<|tool_call>call:web_search{',
+                    "<|tool_call>call:web_search{",
                     'query:<|"|>weather<|"|>',
-                    '}<tool_call|>',
+                    "}<tool_call|>",
                 ],
                 ["sunny"],
             ],

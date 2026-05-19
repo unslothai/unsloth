@@ -164,27 +164,27 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     we never double-count.
     """
     # Qwen / Hermes <tool_call>{json}
-    calls = _parse_tool_call_json(content, id_offset=id_offset)
+    calls = _parse_tool_call_json(content, id_offset = id_offset)
     if calls:
         return calls
 
     # Qwen3.5 / Hermes <function=name><parameter=k>v
-    calls = _parse_function_xml(content, id_offset=id_offset)
+    calls = _parse_function_xml(content, id_offset = id_offset)
     if calls:
         return calls
 
     # Llama-3 <|python_tag|>...
-    calls = _parse_llama3_python_tag(content, id_offset=id_offset)
+    calls = _parse_llama3_python_tag(content, id_offset = id_offset)
     if calls:
         return calls
 
     # Mistral [TOOL_CALLS]...
-    calls = _parse_mistral_tool_calls(content, id_offset=id_offset)
+    calls = _parse_mistral_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
     # Gemma 4 <|tool_call>...<tool_call|>
-    calls = _parse_gemma_tool_calls(content, id_offset=id_offset)
+    calls = _parse_gemma_tool_calls(content, id_offset = id_offset)
     if calls:
         return calls
 
@@ -192,7 +192,7 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     # Strict: only fires when stripped content STARTS with ``{`` and
     # parses as ``{name: str, parameters|arguments: dict}``. Keeps
     # plain assistant prose unaffected.
-    return _parse_llama3_bare_json(content, id_offset=id_offset)
+    return _parse_llama3_bare_json(content, id_offset = id_offset)
 
 
 # ── Per-format parsers ──────────────────────────────────────────────
@@ -206,7 +206,7 @@ def _parse_tool_call_json(content: str, *, id_offset: int) -> list[dict]:
         if end is None:
             continue
         try:
-            obj = json.loads(content[brace_start:end + 1])
+            obj = json.loads(content[brace_start : end + 1])
         except (json.JSONDecodeError, ValueError):
             continue
         name = obj.get("name", "")
@@ -219,11 +219,13 @@ def _parse_tool_call_json(content: str, *, id_offset: int) -> list[dict]:
             args_str = json.dumps({"value": args})
         if not name:
             continue
-        out.append({
-            "id": f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {"name": name, "arguments": args_str},
-        })
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": name, "arguments": args_str},
+            }
+        )
     return out
 
 
@@ -234,9 +236,7 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
         func_name = fm.group(1)
         body_start = fm.end()
         next_func = (
-            func_starts[idx + 1].start()
-            if idx + 1 < len(func_starts)
-            else len(content)
+            func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
         )
         end_tag = _TC_END_TAG_RE.search(content[body_start:])
         if end_tag:
@@ -250,7 +250,7 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
         param_starts = list(_TC_PARAM_START_RE.finditer(body))
         if len(param_starts) == 1:
             pm = param_starts[0]
-            val = _TC_PARAM_CLOSE_RE.sub("", body[pm.end():])
+            val = _TC_PARAM_CLOSE_RE.sub("", body[pm.end() :])
             args[pm.group(1)] = val.strip()
         else:
             for pidx, pm in enumerate(param_starts):
@@ -263,11 +263,13 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
                 val = _TC_PARAM_CLOSE_RE.sub("", body[val_start:next_param])
                 args[pm.group(1)] = val.strip()
 
-        out.append({
-            "id": f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {"name": func_name, "arguments": json.dumps(args)},
-        })
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": func_name, "arguments": json.dumps(args)},
+            }
+        )
     return out
 
 
@@ -308,7 +310,7 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
                     if depth == 0:
                         break
             i += 1
-        body = content[m.end():i]
+        body = content[m.end() : i]
         args: dict[str, Any] = {}
         for kv in _LLAMA3_KV_RE.finditer(body):
             k = kv.group(1)
@@ -322,11 +324,13 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
                 args[k] = float(v) if "." in v else int(v)
             elif kv.group(4) is not None:
                 args[k] = {"true": True, "false": False, "null": None}[kv.group(4)]
-        out.append({
-            "id": f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {"name": name, "arguments": json.dumps(args)},
-        })
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+        )
 
     # 2. <|python_tag|>{"name":..., "parameters":...} JSON form. Use a
     #    streaming JSON decoder (raw_decode) so we can peel multiple
@@ -370,11 +374,13 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
                 else:
                     args_str = json.dumps({"value": args})
                 if name:
-                    out.append({
-                        "id": f"call_{id_offset + len(out)}",
-                        "type": "function",
-                        "function": {"name": name, "arguments": args_str},
-                    })
+                    out.append(
+                        {
+                            "id": f"call_{id_offset + len(out)}",
+                            "type": "function",
+                            "function": {"name": name, "arguments": args_str},
+                        }
+                    )
                 cursor = brace + end_offset
             idx = content.find(_LLAMA3_PYTHON_TAG, cursor)
     return out
@@ -405,7 +411,7 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
     ):
         stripped = stripped.lstrip()
         if stripped.startswith(sentinel):
-            stripped = stripped[len(sentinel):]
+            stripped = stripped[len(sentinel) :]
     stripped = stripped.lstrip()
     if not stripped.startswith("{"):
         return out
@@ -440,22 +446,24 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
             args_str = args
         else:
             break
-        out.append({
-            "id": f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {"name": name, "arguments": args_str},
-        })
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": name, "arguments": args_str},
+            }
+        )
         cursor += end_offset
     return out
 
 
 def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     """Mistral emissions covered:
-      Pre-v11 array:  ``[TOOL_CALLS] [{"name":..., "arguments":...}, ...]``
-      Pre-v11 single: ``[TOOL_CALLS]{"name":..., "arguments":...}``
-      v11+ single:    ``[TOOL_CALLS]name{json_args}``
-      v11+ parallel:  ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``
-      v11+ w/ [ARGS]: ``[TOOL_CALLS]name[ARGS]{json_args}`` (Ministral / Large 3)
+    Pre-v11 array:  ``[TOOL_CALLS] [{"name":..., "arguments":...}, ...]``
+    Pre-v11 single: ``[TOOL_CALLS]{"name":..., "arguments":...}``
+    v11+ single:    ``[TOOL_CALLS]name{json_args}``
+    v11+ parallel:  ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``
+    v11+ w/ [ARGS]: ``[TOOL_CALLS]name[ARGS]{json_args}`` (Ministral / Large 3)
     """
     out: list[dict] = []
     idx = content.find(_MISTRAL_TRIGGER)
@@ -482,9 +490,9 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         end = _balanced_brace_end(content, k)
         if end is not None:
             try:
-                obj = json.loads(content[k:end + 1])
+                obj = json.loads(content[k : end + 1])
                 if isinstance(obj, dict) and obj.get("name"):
-                    _consume_mistral_call(content[k:end + 1], out, id_offset)
+                    _consume_mistral_call(content[k : end + 1], out, id_offset)
                     return out
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -512,21 +520,23 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         if end is None:
             break
         try:
-            args = json.loads(content[after_name:end + 1])
+            args = json.loads(content[after_name : end + 1])
         except (json.JSONDecodeError, ValueError):
             pos = content.find(_MISTRAL_TRIGGER, end + 1)
             continue
         if not isinstance(args, dict):
             pos = content.find(_MISTRAL_TRIGGER, end + 1)
             continue
-        out.append({
-            "id": f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": json.dumps(args),
-            },
-        })
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args),
+                },
+            }
+        )
         pos = content.find(_MISTRAL_TRIGGER, end + 1)
     return out
 
@@ -557,7 +567,7 @@ def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]
                 if depth == 0:
                     break
         j += 1
-    body = content[start:j + 1] if depth == 0 else content[start:]
+    body = content[start : j + 1] if depth == 0 else content[start:]
 
     try:
         arr = json.loads(body)
@@ -574,7 +584,7 @@ def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]
         end = _balanced_brace_end(body, m.start())
         if end is None:
             continue
-        _consume_mistral_call(body[m.start():end + 1], out, id_offset)
+        _consume_mistral_call(body[m.start() : end + 1], out, id_offset)
     return out
 
 
@@ -594,11 +604,13 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
     else:
         args_str = json.dumps({"value": args})
     if name:
-        out.append({
-            "id": obj.get("id") or f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {"name": name, "arguments": args_str},
-        })
+        out.append(
+            {
+                "id": obj.get("id") or f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": name, "arguments": args_str},
+            }
+        )
 
 
 def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
@@ -612,16 +624,18 @@ def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         end = _gemma_balanced_brace_end(content, body_start, scan_end)
         if end is None:
             continue
-        body = content[body_start + 1:end]
+        body = content[body_start + 1 : end]
         try:
             args = _gemma_parse_mapping_body(body)
         except Exception:
             args = {}
-        out.append({
-            "id": f"call_{id_offset + len(out)}",
-            "type": "function",
-            "function": {"name": name, "arguments": json.dumps(args)},
-        })
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+        )
     return out
 
 
@@ -690,13 +704,13 @@ def _gemma_parse_value(text: str, i: int):
     if text.startswith(_GEMMA_STR_BEGIN, i):
         close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
         if close < 0:
-            return text[i + len(_GEMMA_STR_BEGIN):], len(text)
-        return text[i + len(_GEMMA_STR_BEGIN):close], close + len(_GEMMA_STR_END)
+            return text[i + len(_GEMMA_STR_BEGIN) :], len(text)
+        return text[i + len(_GEMMA_STR_BEGIN) : close], close + len(_GEMMA_STR_END)
     if text[i] == "{":
         end = _gemma_balanced_brace_end(text, i, len(text))
         if end is None:
             return {}, len(text)
-        return _gemma_parse_mapping_body(text[i + 1:end]), end + 1
+        return _gemma_parse_mapping_body(text[i + 1 : end]), end + 1
     if text[i] == "[":
         j, depth = i, 0
         while j < len(text):
@@ -715,7 +729,7 @@ def _gemma_parse_value(text: str, i: int):
                 if depth == 0:
                     break
             j += 1
-        body = text[i + 1:j]
+        body = text[i + 1 : j]
         items: list[Any] = []
         k = 0
         while k < len(body):
@@ -765,7 +779,7 @@ def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
             close = body.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
             if close < 0:
                 break
-            key = body[i + len(_GEMMA_STR_BEGIN):close]
+            key = body[i + len(_GEMMA_STR_BEGIN) : close]
             i = close + len(_GEMMA_STR_END)
         else:
             kstart = i
