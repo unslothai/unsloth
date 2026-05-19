@@ -117,6 +117,18 @@ class TestVisionCacheSubprocessPath:
         mock_subprocess.assert_called_once()
         assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
 
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    def test_subprocess_none_falls_back_to_raw_vision_config(
+        self, mock_needs_t5, mock_subprocess, mock_raw_config
+    ):
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is True
+        assert is_vision_model("unsloth/gemma-4-E4B-it") is True
+
+        mock_subprocess.assert_called_once()
+        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
+
 
 # ---------------------------------------------------------------------------
 # Exception handling — cache the False fallback
@@ -225,6 +237,48 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
+    def test_gemma4_model_type_detected_and_cached(
+        self, mock_load_config, mock_needs_t5
+    ):
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "gemma4"
+        cfg.architectures = ["Gemma4ForConditionalGeneration"]
+        mock_load_config.return_value = cfg
+
+        assert is_vision_model("google/gemma-4-E4B-it") is True
+        assert is_vision_model("google/gemma-4-E4B-it") is True
+        mock_load_config.assert_called_once()
+
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.models.model_config.load_model_config")
+    def test_gemma4_audio_subconfig_not_detected_as_vision(
+        self, mock_load_config, mock_needs_t5
+    ):
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "gemma4_audio"
+        cfg.architectures = ["Gemma4AudioModel"]
+        mock_load_config.return_value = cfg
+
+        assert is_vision_model("local/gemma4-audio-encoder") is False
+        assert is_vision_model("local/gemma4-audio-encoder") is False
+        mock_load_config.assert_called_once()
+
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.models.model_config.load_model_config")
+    def test_gemma4_text_subconfig_not_detected_as_vision(
+        self, mock_load_config, mock_needs_t5
+    ):
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "gemma4_text"
+        cfg.architectures = ["Gemma4ForCausalLM"]
+        mock_load_config.return_value = cfg
+
+        assert is_vision_model("local/gemma-4-text") is False
+        assert is_vision_model("local/gemma-4-text") is False
+        mock_load_config.assert_called_once()
+
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.models.model_config.load_model_config")
     def test_audio_model_excluded_and_cached(self, mock_load_config, mock_needs_t5):
         """Audio-only models (csm, whisper) with ForConditionalGeneration
         should be excluded from VLM detection and cached as False."""
@@ -263,3 +317,158 @@ class TestVisionCacheTokenHandling:
         assert is_vision_model("gated/model", hf_token = "token-a") is True
         assert is_vision_model("gated/model", hf_token = "token-a") is True
         mock_uncached.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Direct unit tests for _raw_config_has_vision_config
+# ---------------------------------------------------------------------------
+
+
+import json as _json
+
+from utils.models.model_config import (
+    _AUDIO_ONLY_MODEL_TYPES,
+    _VISION_CHECK_INLINE_HELPERS,
+    _VISION_CHECK_SCRIPT,
+    _is_vlm,
+    _raw_config_has_vision_config,
+)
+
+
+def _write_config(tmp_path, config):
+    (tmp_path / "config.json").write_text(_json.dumps(config))
+    return tmp_path
+
+
+class TestRawConfigVlmDetection:
+    """Direct coverage of _raw_config_has_vision_config across the same
+    indicator set used by _is_vlm. The cache integration tests above mock
+    this function; these exercise its real implementation."""
+
+    def test_truthy_vision_config(self, tmp_path):
+        p = _write_config(tmp_path, {"vision_config": {"hidden_size": 1024}})
+        assert _raw_config_has_vision_config(str(p)) is True
+
+    def test_arch_suffix_detection(self, tmp_path):
+        p = _write_config(
+            tmp_path,
+            {
+                "architectures": ["Gemma4ForConditionalGeneration"],
+                "model_type": "gemma4",
+            },
+        )
+        assert _raw_config_has_vision_config(str(p)) is True
+
+    def test_img_processor_key(self, tmp_path):
+        p = _write_config(tmp_path, {"img_processor": {"image_size": 336}})
+        assert _raw_config_has_vision_config(str(p)) is True
+
+    def test_image_token_index_key(self, tmp_path):
+        p = _write_config(tmp_path, {"image_token_index": 32000})
+        assert _raw_config_has_vision_config(str(p)) is True
+
+    def test_known_vlm_model_type(self, tmp_path):
+        p = _write_config(tmp_path, {"model_type": "gemma4"})
+        assert _raw_config_has_vision_config(str(p)) is True
+
+    def test_plain_text_model_returns_false(self, tmp_path):
+        p = _write_config(
+            tmp_path,
+            {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+        )
+        assert _raw_config_has_vision_config(str(p)) is False
+
+    def test_missing_config_returns_none(self, tmp_path):
+        assert _raw_config_has_vision_config(str(tmp_path)) is None
+
+
+# ---------------------------------------------------------------------------
+# Self-contained subprocess script (no parent backend imports)
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessScript:
+    def test_does_not_import_parent_module(self):
+        assert "from utils.models.model_config" not in _VISION_CHECK_SCRIPT
+
+    def test_inline_is_vlm_executes_correctly(self):
+        ns: dict = {}
+        exec(_VISION_CHECK_INLINE_HELPERS, ns)
+        inline_is_vlm = ns["_is_vlm"]
+
+        class _C:
+            def __init__(self, **kw):
+                for k, v in kw.items():
+                    setattr(self, k, v)
+
+        assert (
+            inline_is_vlm(
+                _C(
+                    model_type = "gemma4",
+                    architectures = ["Gemma4ForConditionalGeneration"],
+                )
+            )
+            is True
+        )
+        assert (
+            inline_is_vlm(
+                _C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"])
+            )
+            is False
+        )
+        assert (
+            inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"]))
+            is False
+        )
+
+
+# ---------------------------------------------------------------------------
+# Audio-only model exclusion must apply across every detection path
+# ---------------------------------------------------------------------------
+
+
+class TestVlmAudioExclusion:
+    """The {csm, whisper} guard previously lived only in the direct caller
+    branch. These tests assert it now applies inside _is_vlm, the raw
+    fallback, and the inlined subprocess helper too."""
+
+    def test_audio_only_set_canonical(self):
+        assert _AUDIO_ONLY_MODEL_TYPES == {"csm", "whisper"}
+
+    def test_is_vlm_excludes_whisper(self):
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "whisper"
+        cfg.architectures = ["WhisperForConditionalGeneration"]
+        assert _is_vlm(cfg) is False
+
+    def test_raw_fallback_excludes_whisper(self, tmp_path):
+        p = _write_config(
+            tmp_path,
+            {
+                "architectures": ["WhisperForConditionalGeneration"],
+                "model_type": "whisper",
+            },
+        )
+        assert _raw_config_has_vision_config(str(p)) is False
+
+    def test_inline_subprocess_helper_excludes_whisper(self):
+        ns: dict = {}
+        exec(_VISION_CHECK_INLINE_HELPERS, ns)
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "whisper"
+        cfg.architectures = ["WhisperForConditionalGeneration"]
+        assert ns["_is_vlm"](cfg) is False
+
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    def test_t5_subprocess_none_falls_back_through_raw_for_whisper(
+        self, mock_needs_t5, mock_subprocess, tmp_path
+    ):
+        _write_config(
+            tmp_path,
+            {
+                "architectures": ["WhisperForConditionalGeneration"],
+                "model_type": "whisper",
+            },
+        )
+        assert is_vision_model(str(tmp_path)) is False
