@@ -2258,46 +2258,11 @@ async def openai_chat_completions(
                 detail = "Audio input is not supported for GGUF chat models yet.",
             )
 
-        # Reject images if this GGUF model doesn't support vision
-        image_b64 = extracted_image_b64 or payload.image_base64
-        if image_b64 and not llama_backend.is_vision:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
-            )
-
-        # Convert image to PNG for llama-server (stb_image has limited format support)
-        if image_b64:
-            try:
-                import base64 as _b64
-                from io import BytesIO as _BytesIO
-                from PIL import Image as _Image, UnidentifiedImageError as _UIE
-
-                raw = _b64.b64decode(image_b64)
-                # Normalize to RGB so PNG encoding succeeds regardless of
-                # source mode (RGBA, P, L, CMYK, I, F, ...). Previously
-                # we only converted RGBA, which left CMYK/I/F to raise at
-                # img.save(PNG).
-                img = _Image.open(_BytesIO(raw)).convert("RGB")
-                buf = _BytesIO()
-                img.save(buf, format = "PNG")
-                image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except _UIE:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unsupported or corrupt image format.",
-                )
-            except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Failed to process image.",
-                )
-
-        # Build message list with system prompt prepended
-        gguf_messages = []
-        if system_prompt:
-            gguf_messages.append({"role": "system", "content": system_prompt})
-        gguf_messages.extend(chat_messages)
+        gguf_messages, has_gguf_image = _openai_messages_for_gguf_chat(
+            payload,
+            llama_backend.is_vision,
+        )
+        image_b64 = None
 
         cancel_event = threading.Event()
 
@@ -2311,7 +2276,7 @@ async def openai_chat_completions(
         use_tools = (
             _effective_enable_tools(payload)
             and llama_backend.supports_tools
-            and not image_b64
+            and not has_gguf_image
         )
 
         if use_tools:
@@ -4901,6 +4866,47 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         messages.append({"role": "user", "content": [image_part]})
 
     return messages
+
+
+def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:
+    """Build llama-server messages for the standard GGUF chat path.
+
+    llama-server accepts OpenAI multimodal content parts directly. Preserve
+    all per-turn ``image_url`` parts so multi-image chat history keeps each
+    image attached to its original turn.
+    """
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
+    has_message_image = any(
+        isinstance(msg.get("content"), list)
+        and any(part.get("type") == "image_url" for part in msg["content"])
+        for msg in messages
+    )
+    if payload.image_base64 and not has_message_image:
+        # Legacy bytes can be any format; the normalizer below sniffs and
+        # re-encodes to PNG, so the declared mime is rewritten anyway.
+        image_part = {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{payload.image_base64}",
+            },
+        }
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            existing = msg.get("content")
+            if isinstance(existing, str):
+                msg["content"] = [{"type": "text", "text": existing}, image_part]
+            elif isinstance(existing, list):
+                existing.append(image_part)
+            else:
+                msg["content"] = [image_part]
+            break
+        else:
+            messages.append({"role": "user", "content": [image_part]})
+    has_image = _normalize_anthropic_openai_images(messages, is_vision)
+    return messages, has_image
 
 
 def _extract_response_format(payload):
