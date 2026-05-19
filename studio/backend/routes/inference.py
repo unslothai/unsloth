@@ -117,6 +117,7 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -142,6 +143,7 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -679,13 +681,15 @@ async def load_model(
                     chat_template = _chat_template,
                 )
 
-        # Create config using clean factory method
-        # is_lora is auto-detected from adapter_config.json on disk/HF
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+        # is_lora auto-detected from adapter_config.json on disk/HF.
+        # DNS-probe wrap so offline loads skip 30-60s of soft-failed
+        # network checks before the worker starts.
+        with _hf_offline_if_dns_dead():
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
 
         if not config:
             raise HTTPException(
@@ -858,7 +862,7 @@ async def load_model(
                 display_name = model_log_label
                 if native_grant_backed
                 else config.display_name,
-                is_vision = config.is_vision,
+                is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
@@ -1309,6 +1313,24 @@ async def get_status(
     try:
         llama_backend = get_llama_cpp_backend()
 
+        # MTP probe + freshness check (both cached). Drive the UI banner.
+        try:
+            _bin = type(llama_backend)._find_llama_server_binary()
+            _caps = type(llama_backend).probe_server_capabilities(_bin)
+            _supports_mtp = bool(_caps.get("supports_mtp", False))
+        except Exception:
+            _bin = None
+            _supports_mtp = True  # fail open
+        try:
+            from utils.llama_cpp_freshness import check_prebuilt_freshness
+
+            _freshness = check_prebuilt_freshness(_bin)
+        except Exception:
+            _freshness = {}
+        _stale = bool(_freshness.get("stale"))
+        _installed_tag = _freshness.get("installed_tag")
+        _latest_tag = _freshness.get("latest_tag")
+
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
@@ -1351,6 +1373,10 @@ async def get_status(
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.speculative_type,
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
             )
 
         # Otherwise, report Unsloth backend status
@@ -1403,6 +1429,10 @@ async def get_status(
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
             chat_template = chat_template,
+            llama_cpp_supports_mtp = _supports_mtp,
+            llama_cpp_prebuilt_stale = _stale,
+            llama_cpp_installed_tag = _installed_tag,
+            llama_cpp_latest_tag = _latest_tag,
         )
 
     except Exception as e:
@@ -3872,6 +3902,17 @@ async def _responses_stream(
                 "llama-server. Use non-streaming /v1/responses, "
                 "/v1/chat/completions, or load a GGUF model."
             ),
+        )
+
+    # Direct pass-through bypasses the openai_chat_completions image gate.
+    if not llama_backend.is_vision and any(
+        isinstance(m.content, list)
+        and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image provided but current GGUF model does not support vision.",
         )
 
     body = _build_openai_passthrough_body(

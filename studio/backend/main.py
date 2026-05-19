@@ -198,6 +198,43 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
+    # llama.cpp probes: capability (MTP support) + freshness (release age).
+    # Both cached; freshness has a 24h disk TTL.
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        from utils.llama_cpp_freshness import (
+            check_prebuilt_freshness,
+            format_stale_warning,
+        )
+
+        _bin = LlamaCppBackend._find_llama_server_binary()
+        _caps = LlamaCppBackend.probe_server_capabilities(_bin)
+        app.state.llama_cpp_capabilities = _caps
+        _freshness = check_prebuilt_freshness(_bin)
+        app.state.llama_cpp_freshness = _freshness
+
+        import structlog as _structlog
+
+        _log = _structlog.get_logger(__name__)
+        if _caps.get("found") and not _caps.get("supports_mtp"):
+            _msg = (
+                "llama.cpp prebuilt lacks MTP support "
+                "(--spec-type mtp/draft-mtp). Run `unsloth studio update`. "
+                "MTP GGUFs will load without speculative decoding."
+            )
+            _log.warning(_msg)
+            print(f"WARNING: {_msg}", flush = True)
+        if _freshness.get("stale"):
+            _msg = format_stale_warning(_freshness)
+            _log.warning(_msg)
+            print(f"WARNING: {_msg}", flush = True)
+    except Exception as _probe_exc:
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).debug(
+            "llama.cpp startup probes failed: %s", _probe_exc
+        )
+
     from storage.studio_db import cleanup_orphaned_runs
 
     try:
@@ -267,7 +304,8 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
-# Web-search favicons load from *.gstatic.com; everything else is same-origin.
+# Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
+# kept for legacy web-search faviconV2 paths. Everything else is same-origin.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
@@ -283,7 +321,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
         "https://t1.gstatic.com https://t2.gstatic.com "
-        "https://t3.gstatic.com; "
+        "https://t3.gstatic.com https://www.google.com; "
         "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
