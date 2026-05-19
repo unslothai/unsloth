@@ -916,6 +916,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
               tooltip="Dictate"
+              aria-label="Dictate"
               variant="ghost"
               className="size-8 rounded-full text-muted-foreground"
             >
@@ -927,6 +928,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.StopDictation asChild={true}>
             <TooltipIconButton
               tooltip="Stop dictation"
+              aria-label="Stop dictation"
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
