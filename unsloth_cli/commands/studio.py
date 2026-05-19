@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -1083,7 +1084,7 @@ def _print_windows_exe_lock_hint_if_relevant() -> None:
     typer.echo("cannot replace it. Re-run the update via the venv python:")
     typer.echo(
         f'    {sys.executable} -c "from unsloth_cli import app; '
-        "app(['studio', 'update', '--local'])\""
+        "app(['studio', 'update'])\""
     )
 
 
@@ -1132,12 +1133,16 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                             f"& '{quoted}' {' '.join(args)} *>&1",
                         ]
                     )
-                    subprocess.run(
+                    result = subprocess.run(
                         argv,
                         env = env,
                         check = False,
                         **_windows_hidden_subprocess_kwargs(),
                     )
+                    if result.returncode != 0:
+                        typer.echo(
+                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
+                        )
                     return
             except OSError:
                 continue
@@ -1155,20 +1160,35 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             )
             return
 
+        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
+        # stdin `$args` is empty so that triggers the full installer flow
+        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
+        installer = re.sub(
+            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
+            "",
+            installer,
+        )
         # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
         marker_args = " ".join(args)
         wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
         argv = list(ps_argv)
         argv.extend(["-ExecutionPolicy", "Bypass", "-Command", "-"])
         try:
-            subprocess.run(
+            # encoding="utf-8" so box-drawing chars in the script body don't
+            # raise UnicodeEncodeError on CP1252-locale Windows boxes.
+            result = subprocess.run(
                 argv,
                 input = wrapper,
                 text = True,
+                encoding = "utf-8",
                 env = env,
                 check = False,
                 **_windows_hidden_subprocess_kwargs(),
             )
+            if result.returncode != 0:
+                typer.echo(
+                    f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
+                )
         except OSError as exc:
             typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
         return
@@ -1176,7 +1196,13 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     for script in candidates:
         try:
             if script.is_file():
-                subprocess.run(["bash", str(script), *args], env = env, check = False)
+                result = subprocess.run(
+                    ["bash", str(script), *args], env = env, check = False,
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  install.sh exited {result.returncode}"
+                    )
                 return
         except OSError:
             continue
@@ -1195,12 +1221,16 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         return
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["bash", "-s", "--", *args],
             input = installer,
             env = env,
             check = False,
         )
+        if result.returncode != 0:
+            typer.echo(
+                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
+            )
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
@@ -1250,7 +1280,13 @@ def update(
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     _release_self_exe_lock_windows()
-    _run_setup_script(verbose = verbose)
+    try:
+        _run_setup_script(verbose = verbose)
+    except BaseException:
+        # Restore unsloth.exe from .deleteme if setup failed before pip
+        # produced a replacement; otherwise the user has no CLI for recovery.
+        _restore_self_exe_lock_windows()
+        raise
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
@@ -1276,6 +1312,24 @@ def _release_self_exe_lock_windows() -> None:
     except OSError as e:
         # Not fatal; setup.ps1 retries from a sibling process.
         print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+
+
+def _restore_self_exe_lock_windows() -> None:
+    """If setup failed before pip wrote a new unsloth.exe, restore .deleteme."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    stale = exe.with_suffix(".exe.deleteme")
+    if exe.exists() or not stale.exists():
+        return
+    try:
+        stale.rename(exe)
+    except OSError as e:
+        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
 
 
 # ── unsloth studio reset-password ────────────────────────────────────

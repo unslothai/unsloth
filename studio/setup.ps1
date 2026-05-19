@@ -1866,6 +1866,16 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
+    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
+    if ((Test-Path -LiteralPath "$RunningUnslothExe.deleteme") -and
+        -not (Test-Path -LiteralPath $RunningUnslothExe)) {
+        try {
+            Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
+            substep "restored unsloth.exe after failed install"
+        } catch {
+            substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
+        }
+    }
     exit 1
 }
 

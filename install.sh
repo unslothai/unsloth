@@ -1241,7 +1241,7 @@ if [ "$_SHORTCUTS_ONLY" = true ]; then
     if [ "$TAURI_MODE" != true ]; then
         VENV_ABS_BIN="$VENV_DIR/bin"
         if [ ! -x "$VENV_ABS_BIN/unsloth" ]; then
-            echo "ERROR: unsloth binary missing at $VENV_ABS_BIN/unsloth; run install.sh first." >&2
+            echo "ERROR: unsloth binary missing at '$VENV_ABS_BIN/unsloth'; run install.sh first." >&2
             exit 1
         fi
         create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
