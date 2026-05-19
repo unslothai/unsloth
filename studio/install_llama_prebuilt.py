@@ -2633,16 +2633,29 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     (e.g. Strix Halo gfx1151 + discrete RX 7900 gfx1100). Respect
     HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the asset matches what HIP
     actually runs on. Falls back to the first GPU when no env var is set.
+
+    rocminfo / hipinfo print the same gfx token multiple times per GPU
+    (Name, ISA, marketing-name), so we de-duplicate consecutive-or-repeated
+    matches before indexing -- otherwise HIP_VISIBLE_DEVICES=1 picks the
+    second occurrence of GPU 0 instead of GPU 1. Empty / "-1" env values
+    mean no AMD GPU is visible to HIP and yield None.
     """
-    _tokens = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
-    if not _tokens:
+    raw = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
+    if not raw:
         return None
-    _vis = (
-        os.environ.get("HIP_VISIBLE_DEVICES")
-        or os.environ.get("ROCR_VISIBLE_DEVICES")
-        or ""
-    )
-    if _vis:
+    # Dict preserves insertion order on Python 3.7+; collapses duplicates.
+    _tokens = list(dict.fromkeys(raw))
+    _vis_raw = None
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        _val = os.environ.get(_env)
+        if _val is not None:
+            _vis_raw = _val
+            break
+    if _vis_raw is not None:
+        _vis = _vis_raw.strip()
+        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Studio).
+        if _vis == "" or _vis == "-1":
+            return None
         _first = _vis.split(",")[0].strip()
         try:
             _idx = int(_first)
