@@ -351,9 +351,7 @@ class TestPatchD_NestedDepthCap:
         payload = inner
         for _ in range(depth):
             payload = f"exec({payload!r})"
-        assert _is_blocked(payload), (
-            f"depth={depth} bypass: {payload[:80]}..."
-        )
+        assert _is_blocked(payload), f"depth={depth} bypass: {payload[:80]}..."
 
     @pytest.mark.parametrize("inner", ["print(1)", "x = 1 + 2"])
     @pytest.mark.parametrize("depth", [1, 2, 3])
@@ -361,9 +359,9 @@ class TestPatchD_NestedDepthCap:
         payload = inner
         for _ in range(depth):
             payload = f"exec({payload!r})"
-        assert not _is_blocked(payload), (
-            f"shallow innocuous depth={depth} now blocked: {payload!r}"
-        )
+        assert not _is_blocked(
+            payload
+        ), f"shallow innocuous depth={depth} now blocked: {payload!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +410,9 @@ class TestFinding1_DirectOpenSensitivePaths:
         ],
     )
     def test_project_local_open_still_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"regression: project-local open() now blocked: {code!r}"
-        )
+        assert not _is_blocked(
+            code
+        ), f"regression: project-local open() now blocked: {code!r}"
 
 
 class TestFinding4_ShellQuoteSplicing:
@@ -446,9 +444,9 @@ class TestFinding4_ShellQuoteSplicing:
         ],
     )
     def test_quote_spliced_project_local_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"regression: spliced project-local blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"regression: spliced project-local blocked: {cmd!r}"
 
 
 class TestFinding5_WindowsHomePrefixes:
@@ -478,9 +476,9 @@ class TestFinding5_WindowsHomePrefixes:
         ],
     )
     def test_legitimate_windows_paths_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"regression: legit Windows path blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"regression: legit Windows path blocked: {cmd!r}"
 
 
 class TestFinding6_DeepLiteralConcat:
@@ -524,9 +522,9 @@ class TestFinding7_NetworkHostStaticResolver:
         ],
     )
     def test_dynamic_trusted_host_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"regression: trusted host with dynamic literal blocked: {code!r}"
-        )
+        assert not _is_blocked(
+            code
+        ), f"regression: trusted host with dynamic literal blocked: {code!r}"
 
 
 class TestFinding8_PathlibPathOpen:
@@ -555,9 +553,7 @@ class TestFinding8_PathlibPathOpen:
         ],
     )
     def test_pathlib_legit_path_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"regression: legit Path.open() blocked: {code!r}"
-        )
+        assert not _is_blocked(code), f"regression: legit Path.open() blocked: {code!r}"
 
 
 class TestFinding9_ProjectLocalFalsePositives:
@@ -578,9 +574,9 @@ class TestFinding9_ProjectLocalFalsePositives:
         ],
     )
     def test_project_local_lookalikes_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"false-positive (tool calling dumber): {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"false-positive (tool calling dumber): {cmd!r}"
 
 
 class TestFinding10_PublicSshKeyAllowed:
@@ -600,9 +596,9 @@ class TestFinding10_PublicSshKeyAllowed:
         ],
     )
     def test_public_ssh_keys_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"regression: public key read blocked: {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"regression: public key read blocked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -615,9 +611,9 @@ class TestFinding10_PublicSshKeyAllowed:
         ],
     )
     def test_private_ssh_keys_still_blocked(self, cmd):
-        assert _find_sensitive_paths(cmd), (
-            f"regression: private key now allowed: {cmd!r}"
-        )
+        assert _find_sensitive_paths(
+            cmd
+        ), f"regression: private key now allowed: {cmd!r}"
 
 
 # ---------------------------------------------------------------------------

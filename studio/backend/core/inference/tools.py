@@ -2068,10 +2068,7 @@ def _check_signal_escape_patterns(code: str):
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
                 or fq in ("io.open", "pathlib.Path.open")
                 or fq.endswith(".open")
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "open"
-                )
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "open")
             )
             if is_open_call:
                 # Resolve the open target. The literal path can live in
@@ -2080,7 +2077,11 @@ def _check_signal_escape_patterns(code: str):
                 path_lit = None
                 if node.args:
                     path_lit = _extract_string_from_node(node.args[0])
-                if path_lit is None and isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+                if (
+                    path_lit is None
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "open"
+                ):
                     receiver = node.func.value
                     if isinstance(receiver, ast.Call) and receiver.args:
                         ctor_parts: list[str] = []
@@ -2091,7 +2092,9 @@ def _check_signal_escape_patterns(code: str):
                         if isinstance(cur, ast.Name):
                             ctor_parts.insert(0, cur.id)
                         ctor_fq = ".".join(ctor_parts) if ctor_parts else ""
-                        if ctor_fq in ("Path", "pathlib.Path") or ctor_fq.endswith(".Path"):
+                        if ctor_fq in ("Path", "pathlib.Path") or ctor_fq.endswith(
+                            ".Path"
+                        ):
                             path_lit = _extract_string_from_node(receiver.args[0])
 
                 if path_lit:
