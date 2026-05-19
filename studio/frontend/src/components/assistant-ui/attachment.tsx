@@ -158,9 +158,8 @@ const AttachmentUI: FC = () => {
         throw new Error(`Unknown attachment type: ${type as string}`);
     }
   });
-  // Fold the filename into the accessible name so screen-reader users
-  // can tell three identically-typed attachments apart. Visual users
-  // still get the filename via the Radix tooltip below.
+  // Include filename in accessible name so screen readers distinguish
+  // same-typed attachments. Sighted users get it via the tooltip.
   const accessibleName = name
     ? `${typeLabel} attachment: ${name}`
     : `${typeLabel} attachment`;
