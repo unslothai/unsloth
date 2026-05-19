@@ -1124,6 +1124,11 @@ export function useChatModelRuntime() {
       return;
     }
     setModelsError(null);
+    if (isExternalModelId(params.checkpoint)) {
+      clearCheckpoint();
+      await refresh();
+      return;
+    }
     try {
       async function performUnload(): Promise<void> {
         await unloadModel({ model_path: params.checkpoint });

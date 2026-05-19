@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -62,6 +63,7 @@ import {
   supportsProviderReasoningToggle,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
@@ -190,6 +192,12 @@ export function ChatProvidersSettings({
   const [customProviderName, setCustomProviderName] = useState("Custom");
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const setConnectionsEnabled = useExternalProvidersStore(
+    (s) => s.setConnectionsEnabled,
+  );
   const isCustomProvider = isCustomProviderType(providerType);
   // Ollama runs locally and does not require an API key. Hide the input
   // entirely rather than just marking it optional so users aren't prompted
@@ -1355,6 +1363,30 @@ export function ChatProvidersSettings({
           </p>
         </div>
       </header>
+
+      <div className="flex w-full max-w-[760px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
+        <div className="flex items-center gap-2">
+          <Label
+            htmlFor="chat-connections-enabled"
+            className="cursor-pointer text-xs text-muted-foreground"
+          >
+            Enable connections
+          </Label>
+          <Switch
+            id="chat-connections-enabled"
+            checked={connectionsEnabled}
+            onCheckedChange={setConnectionsEnabled}
+            aria-label="Enable connections"
+            aria-describedby="chat-connections-description"
+          />
+        </div>
+        <p
+          id="chat-connections-description"
+          className="max-w-md text-[11px] leading-snug text-muted-foreground/65 sm:text-right"
+        >
+          When off, all provider connections are disabled.
+        </p>
+      </div>
 
       <section className="flex max-w-[760px] flex-col gap-2">
         <div className="overflow-hidden rounded-[10px] border border-border/70 bg-muted/[0.12]">
