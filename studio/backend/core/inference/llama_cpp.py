@@ -522,11 +522,50 @@ def _build_ngram_mod_flags(
     return []
 
 
-# Canonical Speculative Decoding modes exposed by the Studio chat UI.
-# The dropdown renders five options (auto, mtp, ngram, mtp+ngram, off);
-# the load API also accepts legacy values that the original Switch and
-# external callers emit (default, draft-mtp, ngram-mod, ngram-simple).
-_CANONICAL_SPEC_MODES = {"auto", "mtp", "ngram", "mtp+ngram", "off", "ngram-simple"}
+def _build_ngram_map_k_flags(
+    caps: Optional[dict],
+    *,
+    variant: str,
+    size_n: int = 16,
+    size_m: int = 24,
+    min_hits: int = 1,
+) -> list[str]:
+    """Emit knob flags for ``ngram-map-k`` / ``ngram-map-k4v`` if the
+    bundled llama-server advertises them (added upstream in #23269 and
+    sibling commits). Returns ``[]`` when the binary doesn't.
+    """
+    cap_key = (
+        "supports_ngram_map_k4v"
+        if variant == "ngram-map-k4v"
+        else "supports_ngram_map_k"
+    )
+    if not (caps and caps.get(cap_key)):
+        return []
+    prefix = f"--spec-{variant}"
+    return [
+        f"{prefix}-size-n",
+        str(size_n),
+        f"{prefix}-size-m",
+        str(size_m),
+        f"{prefix}-min-hits",
+        str(min_hits),
+    ]
+
+
+# Canonical Speculative Decoding modes exposed by the Studio chat UI
+# (5-mode dropdown) plus power-user n-gram variants accepted via the
+# load API. ``ngram-map-k`` / ``ngram-map-k4v`` are not in the dropdown
+# but the resolver emits them correctly when sent via API.
+_CANONICAL_SPEC_MODES = {
+    "auto",
+    "mtp",
+    "ngram",
+    "mtp+ngram",
+    "off",
+    "ngram-simple",
+    "ngram-map-k",
+    "ngram-map-k4v",
+}
 _LEGACY_SPEC_MODE_MAP = {
     "default": "auto",
     "draft-mtp": "mtp",
@@ -538,9 +577,10 @@ def _canonicalize_spec_mode(value):
     """Map any accepted ``speculative_type`` input onto a canonical mode.
 
     Returns one of ``auto``, ``mtp``, ``ngram``, ``mtp+ngram``, ``off``,
-    ``ngram-simple``, or ``None`` (callers treat ``None`` as ``auto``).
-    Unknown strings collapse to ``auto`` so a stale UI value or typo
-    falls back to the safe platform-aware path.
+    ``ngram-simple``, ``ngram-map-k``, ``ngram-map-k4v``, or ``None``
+    (callers treat ``None`` as ``auto``). Unknown strings collapse to
+    ``auto`` so a stale UI value or typo falls back to the safe
+    platform-aware path.
     """
     if value is None:
         return None
@@ -641,6 +681,10 @@ class LlamaCppBackend:
         self._requested_spec_mode: Optional[str] = None
         # User-supplied --spec-draft-n-max override (None = platform default).
         self._spec_draft_n_max: Optional[int] = None
+        # User-supplied --spec-draft-p-min override (None = platform default).
+        # Only emitted for MTP / MTP+Ngram modes; the flag became functional
+        # in llama.cpp #23269 (default upstream dropped to 0.0).
+        self._spec_draft_p_min: Optional[float] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
@@ -932,6 +976,12 @@ class LlamaCppBackend:
         when the platform default (6 GPU / 3 CPU) is in effect."""
         return self._spec_draft_n_max
 
+    @property
+    def spec_draft_p_min(self) -> Optional[float]:
+        """User --spec-draft-p-min override on the load, or None when
+        the llama-server default (0.0 since #23269) is in effect."""
+        return self._spec_draft_p_min
+
     # ── Binary discovery ──────────────────────────────────────────
 
     @staticmethod
@@ -1059,7 +1109,8 @@ class LlamaCppBackend:
     ) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
         {found, mtp_token, supports_mtp, ngram_mod_flavor,
-        supports_ngram_mod, spec_draft_n_max_flag}.
+        supports_ngram_mod, spec_draft_n_max_flag, spec_draft_p_min_flag,
+        supports_ngram_map_k, supports_ngram_map_k4v}.
 
         ``ngram_mod_flavor`` is ``"new"`` when the binary exposes the
         post-rename ``--spec-ngram-mod-n-match / -n-min / -n-max`` as
@@ -1072,6 +1123,13 @@ class LlamaCppBackend:
         ``spec_draft_n_max_flag`` is the actual flag name the binary
         accepts: ``--spec-draft-n-max`` on post-rename builds, or
         ``--draft-max`` on legacy. ``None`` means n_max cannot be set.
+
+        ``spec_draft_p_min_flag`` is the flag name when the binary
+        advertises ``--spec-draft-p-min`` (functional from llama.cpp
+        #23269 onward; before that it was a knob with no effect on
+        MTP). ``supports_ngram_map_k`` / ``supports_ngram_map_k4v``
+        signal that the binary accepts these power-user spec types
+        with their own knob sets.
         """
         bin_path = binary or cls._find_llama_server_binary()
         if not bin_path or not Path(bin_path).is_file():
@@ -1082,6 +1140,9 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "spec_draft_p_min_flag": None,
+                "supports_ngram_map_k": False,
+                "supports_ngram_map_k4v": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1095,6 +1156,9 @@ class LlamaCppBackend:
         mtp_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        spec_draft_p_min_flag: Optional[str] = None
+        supports_ngram_map_k = False
+        supports_ngram_map_k4v = False
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
@@ -1184,6 +1248,24 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+
+            # p_min flag: present on builds that include the MTP cleanup
+            # (llama.cpp #23269) or earlier draft-model spec impls.
+            if _is_real("--spec-draft-p-min"):
+                spec_draft_p_min_flag = "--spec-draft-p-min"
+
+            # ngram-map-k / ngram-map-k4v: power-user spec types added
+            # alongside ngram-mod. Each carries its own knob triplet.
+            supports_ngram_map_k = (
+                _is_real("--spec-ngram-map-k-size-n")
+                and _is_real("--spec-ngram-map-k-size-m")
+                and _is_real("--spec-ngram-map-k-min-hits")
+            )
+            supports_ngram_map_k4v = (
+                _is_real("--spec-ngram-map-k4v-size-n")
+                and _is_real("--spec-ngram-map-k4v-size-m")
+                and _is_real("--spec-ngram-map-k4v-min-hits")
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1194,6 +1276,9 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "spec_draft_p_min_flag": spec_draft_p_min_flag,
+            "supports_ngram_map_k": supports_ngram_map_k,
+            "supports_ngram_map_k4v": supports_ngram_map_k4v,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -2502,6 +2587,7 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        spec_draft_p_min: Optional[float] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
         n_parallel: int = 1,
@@ -2534,6 +2620,7 @@ class LlamaCppBackend:
                 cache_type_kv = cache_type_kv,
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
+                spec_draft_p_min = spec_draft_p_min,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -2915,6 +3002,7 @@ class LlamaCppBackend:
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
+                    spec_draft_p_min = spec_draft_p_min,
                     extra_args = extra_args,
                     model_identifier = model_identifier,
                     model_path = model_path,
@@ -3258,6 +3346,7 @@ class LlamaCppBackend:
         *,
         speculative_type: Optional[str],
         spec_draft_n_max: Optional[int],
+        spec_draft_p_min: Optional[float] = None,
         extra_args: Optional[List[str]],
         model_identifier: str,
         model_path: Optional[str],
@@ -3299,6 +3388,7 @@ class LlamaCppBackend:
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
+        self._spec_draft_p_min = None
         self._speculative_type = None
 
         # Canonical UI-facing requested mode: auto / mtp / ngram /
@@ -3333,6 +3423,22 @@ class LlamaCppBackend:
                 self._spec_draft_n_max = n
                 return n
             return 2 if gpus else 3
+
+        def _maybe_emit_p_min(caps: Optional[dict]) -> None:
+            """Append --spec-draft-p-min if the user supplied a value AND
+            the binary advertises the flag (functional from #23269)."""
+            if spec_draft_p_min is None:
+                return
+            p_flag = (caps or {}).get("spec_draft_p_min_flag")
+            if not p_flag:
+                logger.warning(
+                    "llama-server lacks --spec-draft-p-min; ignoring "
+                    "spec_draft_p_min override. Run `unsloth studio update`."
+                )
+                return
+            p_min = float(spec_draft_p_min)
+            self._spec_draft_p_min = p_min
+            flags.extend([p_flag, f"{p_min:.4f}"])
 
         def _emit_mtp(*, chain_ngram: bool) -> bool:
             """Append --spec-type mtp[/draft-mtp][,ngram-mod] + n-max."""
@@ -3376,6 +3482,7 @@ class LlamaCppBackend:
                         str(draft_n_max),
                     ]
                 )
+            _maybe_emit_p_min(caps)
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
@@ -3404,6 +3511,25 @@ class LlamaCppBackend:
             return flags
         if effective_mode == "ngram":
             _emit_ngram_mod()
+            return flags
+        if effective_mode in ("ngram-map-k", "ngram-map-k4v"):
+            map_caps = self.probe_server_capabilities(binary)
+            supported = map_caps.get(
+                "supports_ngram_map_k4v"
+                if effective_mode == "ngram-map-k4v"
+                else "supports_ngram_map_k"
+            )
+            if not supported:
+                logger.warning(
+                    f"llama-server lacks --spec-type {effective_mode}; "
+                    "run `unsloth studio update`. Loading without "
+                    "speculative decoding."
+                )
+                return flags
+            flags.extend(["--spec-type", effective_mode])
+            flags.extend(_build_ngram_map_k_flags(map_caps, variant = effective_mode))
+            self._speculative_type = effective_mode
+            logger.info(f"Spec decoding: {effective_mode}")
             return flags
         if effective_mode == "mtp":
             if _mtp_too_small:
@@ -3480,6 +3606,7 @@ class LlamaCppBackend:
         is_vision: bool,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        spec_draft_p_min: Optional[float] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -3537,6 +3664,16 @@ class LlamaCppBackend:
             self._speculative_type == "draft-mtp"
             and spec_draft_n_max is not None
             and int(spec_draft_n_max) != (self._spec_draft_n_max or 0)
+        ):
+            return False
+
+        # Same treatment for spec_draft_p_min: only relevant when MTP is
+        # the resolved emit. None on either side means "default" (0.0
+        # since llama.cpp #23269) and matches anything.
+        if (
+            self._speculative_type == "draft-mtp"
+            and spec_draft_p_min is not None
+            and abs(float(spec_draft_p_min) - (self._spec_draft_p_min or 0.0)) > 1e-6
         ):
             return False
 
@@ -3608,6 +3745,7 @@ class LlamaCppBackend:
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
+            self._spec_draft_p_min = None
             self._n_layers = None
             self._n_kv_heads = None
             self._n_kv_heads_by_layer = None
