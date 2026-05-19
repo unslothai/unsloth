@@ -1015,9 +1015,9 @@ export function ChatSettingsPanel({
                       </span>
                       <InfoHint>
                         Max MTP draft tokens per step
-                        (--spec-draft-n-max). Lower = less VRAM at the
-                        cost of speedup; higher = bigger speedup when
-                        draft acceptance is high. Default: 6 on GPU,
+                        (--spec-draft-n-max). Lower = less wasted
+                        draft decode; higher = bigger speedup when
+                        acceptance stays high. Default: 2 on GPU,
                         3 on CPU/Mac.
                       </InfoHint>
                     </div>

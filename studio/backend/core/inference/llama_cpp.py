@@ -2696,12 +2696,21 @@ class LlamaCppBackend:
                             )
                             self._speculative_type = None
                         else:
-                            # User override > platform default (6 GPU / 3 CPU).
+                            # User override > platform default. Bench on
+                            # Qwen3.6-27B-MTP-GGUF UD-Q4_K_XL on B200 across
+                            # essay / code / story / math / science prompts
+                            # shows n_max=2 is the universal sweet spot
+                            # (1.18x-1.47x vs spec-off). At n_max=6 the essay
+                            # prompt fell BELOW spec-off (64.6 vs 79.1 t/s)
+                            # because wasted draft decode dominates once
+                            # acceptance rate drops past n=3 or so. Matches
+                            # the dataset README "n_max=2 is the sweet spot
+                            # for 36 of 42 quants".
                             if spec_draft_n_max is not None:
                                 draft_n_max = int(spec_draft_n_max)
                                 self._spec_draft_n_max = draft_n_max
                             else:
-                                draft_n_max = 6 if gpus else 3
+                                draft_n_max = 2 if gpus else 3
                             if gpus:
                                 cmd.extend(
                                     [

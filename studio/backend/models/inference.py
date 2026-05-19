@@ -78,9 +78,10 @@ class LoadRequest(BaseModel):
         le = 16,
         description = (
             "Max draft tokens per step for MTP speculative decoding "
-            "(--spec-draft-n-max). Defaults to 6 on GPU and 3 on CPU/Mac "
-            "when unset. Ignored when speculative_type resolves to off or "
-            "to a non-MTP mode."
+            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
+            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
+            "quants). Ignored when speculative_type resolves to off or to "
+            "a non-MTP mode."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(
