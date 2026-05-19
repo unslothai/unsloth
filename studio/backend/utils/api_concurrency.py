@@ -18,7 +18,10 @@ _ALLOWED_QUEUE_POLICIES = {"wait", "reject"}
 # Generation endpoints whose work should hold a concurrency slot until the
 # response body has been completely sent. Model load/unload/status/cancel
 # endpoints are intentionally excluded so operators can still manage a server
-# while generation requests are queued.
+# while generation requests are queued. Note: inference_router is mounted at
+# both /api/inference and /v1, so each generation route is reachable via two
+# paths and both must be listed here. Embeddings (/.../embeddings) are
+# intentionally not gated — they are typically much cheaper than generation.
 _INFERENCE_ENDPOINT_PREFIXES = (
     "/api/inference/generate/stream",
     "/api/inference/audio/generate",
@@ -26,6 +29,8 @@ _INFERENCE_ENDPOINT_PREFIXES = (
     "/api/inference/completions",
     "/api/inference/messages",
     "/api/inference/responses",
+    "/v1/generate/stream",
+    "/v1/audio/generate",
     "/v1/chat/completions",
     "/v1/completions",
     "/v1/messages",
