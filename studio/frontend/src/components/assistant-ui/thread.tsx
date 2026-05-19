@@ -1007,7 +1007,7 @@ const CancelledIndicator: FC = () => {
   }
   return (
     <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
-      Generation stopped.
+      Cancelled.
     </span>
   );
 };
