@@ -99,10 +99,12 @@ export function SettingsDialog() {
         showCloseButton={false}
         overlayClassName="bg-background/40"
         className={cn(
-          "!max-w-none h-[560px] w-[820px] p-0 overflow-hidden",
+          // Cap at 820px but shrink to the viewport so we don't clip
+          // on iPad-portrait widths (640-820px) where the fixed
+          // `w-[820px]` overflows by 26px on each side.
+          "!max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
           "shadow-border rounded-xl border-border",
-          "sm:h-[560px] sm:w-[820px]",
-          "max-sm:h-dvh max-sm:w-dvw max-sm:rounded-none",
+          "max-sm:h-dvh max-sm:w-dvw max-sm:max-w-none max-sm:rounded-none",
         )}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
