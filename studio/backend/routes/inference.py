@@ -117,6 +117,7 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -143,6 +144,7 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -441,12 +443,17 @@ def _request_matches_loaded_settings(
     # spec on ``not is_vision``), so treat the request as ``off`` against
     # the backend's ``None`` to avoid forcing a redundant reload.
     if llama_backend.is_vision:
-        req_spec = "off"
+        req_mode = "off"
     else:
-        req_spec = _normalise_settings_str(request.speculative_type) or "off"
-    backend_spec = _normalise_settings_str(llama_backend.speculative_type) or "off"
-    if req_spec != backend_spec:
+        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    backend_mode = llama_backend.requested_spec_mode or "auto"
+    if req_mode != backend_mode:
         return False
+    # spec_draft_n_max only matters when an MTP variant is engaged; None
+    # means "platform default" and matches whatever the backend chose.
+    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
+        if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
+            return False
     if (request.chat_template_override or None) != (
         llama_backend.chat_template_override or None
     ):
@@ -584,7 +591,8 @@ async def load_model(
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     chat_template = llama_backend.chat_template,
-                    speculative_type = llama_backend.speculative_type,
+                    speculative_type = llama_backend.requested_spec_mode,
+                    spec_draft_n_max = llama_backend.spec_draft_n_max,
                 )
         else:
             if (
@@ -724,7 +732,10 @@ async def load_model(
                         llama_backend.extra_args,
                         strip_context = "max_seq_length" in fields_set,
                         strip_cache = "cache_type_kv" in fields_set,
-                        strip_spec = "speculative_type" in fields_set,
+                        strip_spec = (
+                            "speculative_type" in fields_set
+                            or "spec_draft_n_max" in fields_set
+                        ),
                         strip_template = "chat_template_override" in fields_set,
                     )
                     try:
@@ -765,6 +776,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -788,6 +800,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -846,7 +859,8 @@ async def load_model(
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -1345,7 +1359,8 @@ async def get_status(
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
