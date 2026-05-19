@@ -2133,6 +2133,7 @@ def run_training_process(
             # to that string when version.hip is missing.
             def _hip_ver_at_least(major: int, minor: int) -> bool:
                 import re as _re_ver
+
                 _hip_str = getattr(
                     getattr(_torch_for_rocm, "version", None), "hip", None
                 )
