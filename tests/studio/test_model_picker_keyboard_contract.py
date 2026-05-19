@@ -53,5 +53,5 @@ def test_arrow_down_from_tab_enters_active_model_list():
     src = SELECTOR_TSX.read_text()
     assert "function handlePickerEntryKeyDown" in src
     assert 'event.key !== "ArrowDown"' in src
-    assert "[data-model-picker-option][tabindex=\"0\"]" in src
+    assert '[data-model-picker-option][tabindex="0"]' in src
     assert "focusActiveModelOption(event.currentTarget)" in src
