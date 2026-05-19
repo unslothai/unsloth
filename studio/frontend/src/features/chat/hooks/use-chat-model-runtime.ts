@@ -632,6 +632,11 @@ export function useChatModelRuntime() {
               existingReasoningEffort,
             );
             const ggufMaxContextLength = reportedMaxCtx;
+            const nextReasoningEnabled = reasoningAlwaysOn
+              ? true
+              : reloadingSameModel && supportsReasoning
+                ? stateBeforeUnload.reasoningEnabled
+                : reasoningDefault;
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
@@ -640,11 +645,7 @@ export function useChatModelRuntime() {
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,
               reasoningAlwaysOn,
-              reasoningEnabled: reasoningAlwaysOn
-                ? true
-                : reloadingSameModel && supportsReasoning
-                  ? stateBeforeUnload.reasoningEnabled
-                  : reasoningDefault,
+              reasoningEnabled: nextReasoningEnabled,
               reasoningStyle,
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
               reasoningEffortLevels,
@@ -680,7 +681,7 @@ export function useChatModelRuntime() {
                 const mid = modelId.toLowerCase();
                 const needsPresencePenalty =
                   mid.includes("qwen3.5") || mid.includes("qwen3.6");
-                const p = reasoningDefault
+                const p = nextReasoningEnabled
                   ? {
                       temperature: 0.6,
                       topP: 0.95,
