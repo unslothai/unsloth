@@ -2149,8 +2149,24 @@ def run_training_process(
                     return False
                 try:
                     _parts = [int(x) for x in str(_hip_str).split(".")[:2]]
+                    if len(_parts) < 2:
+                        logger.warning(
+                            "Windows ROCm: torch.version.hip %r has fewer than "
+                            "two components; cannot compare against %d.%d",
+                            _hip_str,
+                            major,
+                            minor,
+                        )
+                        return False
                     return (_parts[0], _parts[1]) >= (major, minor)
-                except (ValueError, IndexError):
+                except ValueError:
+                    logger.warning(
+                        "Windows ROCm: could not parse torch.version.hip %r as "
+                        "a version number; assuming HIP < %d.%d",
+                        _hip_str,
+                        major,
+                        minor,
+                    )
                     return False
 
             # _grouped_mm HIP kernel was null on gfx1200 in ROCm ≤ 7.12,

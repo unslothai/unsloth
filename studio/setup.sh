@@ -1043,15 +1043,16 @@ else
                 # runtime dir AND /usr/include/c++/<ver> headers, then pass it
                 # to clang via --gcc-install-dir so HIP builds succeed.
                 _GCC_INSTALL_DIR=""
+                _GCC_MULTIARCH="$(gcc -print-multiarch 2>/dev/null || uname -m)-linux-gnu"
                 for _gcc_ver in 14 13 12 11; do
-                    if [ -d "/usr/lib/gcc/x86_64-linux-gnu/$_gcc_ver/include" ] && \
+                    if [ -d "/usr/lib/gcc/$_GCC_MULTIARCH/$_gcc_ver/include" ] && \
                        [ -d "/usr/include/c++/$_gcc_ver" ]; then
-                        _GCC_INSTALL_DIR="/usr/lib/gcc/x86_64-linux-gnu/$_gcc_ver"
+                        _GCC_INSTALL_DIR="/usr/lib/gcc/$_GCC_MULTIARCH/$_gcc_ver"
                         break
                     fi
                 done
                 if [ -n "$_GCC_INSTALL_DIR" ]; then
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_HIP_FLAGS=--gcc-install-dir=$_GCC_INSTALL_DIR"
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_HIP_FLAGS=--gcc-install-dir=\"$_GCC_INSTALL_DIR\""
                     substep "ROCm HIP gcc install dir: $_GCC_INSTALL_DIR"
                 fi
 

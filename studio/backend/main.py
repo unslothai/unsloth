@@ -88,6 +88,7 @@ if sys.platform == "win32":
         pass
     if _is_rocm_host and "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
+        import logging as _logging
 
         _bnb_rocm_ver = None
         try:
@@ -99,14 +100,29 @@ if sys.platform == "win32":
                 _dlls = _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll"))
                 import re as _re_bnb
 
-                for _dll in sorted(_dlls):
-                    _m = _re_bnb.search(r"libbitsandbytes_rocm(\d+)\.dll", _dll)
+                def _bnb_ver_key(p: str) -> int:
+                    _km = _re_bnb.search(r"rocm(\d+)", os.path.basename(p))
+                    return int(_km.group(1)) if _km else -1
+
+                for _dll in sorted(_dlls, key=_bnb_ver_key, reverse=True):
+                    _m = _re_bnb.search(
+                        r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
+                    )
                     if _m:
                         _bnb_rocm_ver = _m.group(1)
                         break
-        except Exception:
-            pass
-        os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver or "72"
+        except Exception as _e:
+            _logging.getLogger(__name__).warning(
+                "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
+                _e,
+            )
+        _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
+        os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
+        _logging.getLogger(__name__).info(
+            "Windows ROCm: set BNB_ROCM_VERSION=%s "
+            "(detected from installed BNB wheel; overrides torch.version.hip auto-detection)",
+            _bnb_rocm_ver_final,
+        )
 
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).

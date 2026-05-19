@@ -1241,7 +1241,7 @@ shell.Run cmd, 0, False
                 if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
                     $HasROCm = $true
                     if ($hipOut -match "(?im)^\s*gcnArchName\s*:\s*(\S+)") {
-                        $ROCmGfxArch  = $Matches[1].Trim()
+                        $ROCmGfxArch  = ($Matches[1] -split ':')[0].Trim().ToLower()
                         $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                     } else {
                         $ROCmGpuLabel = "AMD ROCm"

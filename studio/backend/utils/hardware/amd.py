@@ -383,7 +383,7 @@ def get_visible_gpu_utilization(
         )
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
-            logger.debug(
+            logger.warning(
                 "amd-smi GPU id %r could not be parsed; falling back to "
                 "enumeration index %d",
                 raw_id,
@@ -391,7 +391,15 @@ def get_visible_gpu_utilization(
             )
             idx = fallback_idx
         else:
-            idx = int(parsed_id)
+            rounded = round(parsed_id)
+            if rounded != parsed_id:
+                logger.warning(
+                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
+                    raw_id,
+                    parsed_id,
+                    rounded,
+                )
+            idx = int(rounded)
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)

@@ -715,7 +715,7 @@ if (-not $HasNvidiaSmi) {
             if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
                 $HasROCm = $true
                 if ($hipOut -match "(?im)^\s*gcnArchName\s*:\s*(\S+)") {
-                    $script:ROCmGfxArch = $Matches[1].Trim()
+                    $script:ROCmGfxArch = ($Matches[1] -split ':')[0].Trim().ToLower()
                     $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"

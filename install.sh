@@ -1647,14 +1647,14 @@ get_torch_index_url() {
             # PyTorch publishes major.minor URLs only (no patch level), so
             # rocm7.2.1 / rocm6.0.2 / etc. must normalise to rocm7.2 / rocm6.0.
             case "$_rocm_tag" in
-                rocm6.0*) echo "$_base/rocm6.0" ;;
-                rocm6.1*) echo "$_base/rocm6.1" ;;
-                rocm6.2*) echo "$_base/rocm6.2" ;;
-                rocm6.3*) echo "$_base/rocm6.3" ;;
-                rocm6.4*) echo "$_base/rocm6.4" ;;
-                rocm7.0*) echo "$_base/rocm7.0" ;;
-                rocm7.1*) echo "$_base/rocm7.1" ;;
-                rocm7.2*) echo "$_base/rocm7.2" ;;
+                rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
+                rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
+                rocm6.2|rocm6.2.*) echo "$_base/rocm6.2" ;;
+                rocm6.3|rocm6.3.*) echo "$_base/rocm6.3" ;;
+                rocm6.4|rocm6.4.*) echo "$_base/rocm6.4" ;;
+                rocm7.0|rocm7.0.*) echo "$_base/rocm7.0" ;;
+                rocm7.1|rocm7.1.*) echo "$_base/rocm7.1" ;;
+                rocm7.2|rocm7.2.*) echo "$_base/rocm7.2" ;;
                 rocm6.*)
                     # ROCm 6.5+ (no published PyTorch wheels): clip down
                     # to the last supported 6.x wheel set.

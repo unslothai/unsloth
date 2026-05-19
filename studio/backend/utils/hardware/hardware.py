@@ -467,7 +467,7 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     try:
         func = getattr(_backend, func_name)
         result = func(*args, **kwargs)
-        if result.get("available"):
+        if isinstance(result, dict) and result.get("available"):
             return result
     except Exception as e:
         logger.warning("%s %s query failed: %s", backend_name, func_name, e)
