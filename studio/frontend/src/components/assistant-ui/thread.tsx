@@ -32,6 +32,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { PromptStorageDialog } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -59,6 +60,8 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BookmarkIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
@@ -81,12 +84,110 @@ import {
   type FC,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { toast } from "@/lib/toast";
+
+// ── Prompt queue context ─────────────────────────────────────────────────────
+// Lives above both Composer instances (ThreadWelcome + dock) so queue state
+// survives the Composer unmount/remount that happens when the thread goes from
+// empty → non-empty.
+type QueueContextType = {
+  isQueueRunning: boolean;
+  queueProgress: { current: number; total: number };
+  startQueue: (prompts: string[]) => void;
+  stopQueue: () => void;
+};
+
+const ThreadQueueContext = createContext<QueueContextType>({
+  isQueueRunning: false,
+  queueProgress: { current: 0, total: 0 },
+  startQueue: () => {},
+  stopQueue: () => {},
+});
+
+const ThreadQueueProvider: FC<{ children: ReactNode }> = ({ children }) => {
+  const aui = useAui();
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
+  const queueRef = useRef<string[]>([]);
+  const queueIndexRef = useRef(0);
+  const isQueueRunningRef = useRef(false);
+
+  const sendText = useCallback(
+    (text: string) => {
+      const composer = aui.composer();
+      flushResourcesSync(() => {
+        composer.setText(text);
+      });
+      requestAnimationFrame(() => {
+        aui.composer().send();
+      });
+    },
+    [aui],
+  );
+
+  const stopQueue = useCallback(() => {
+    isQueueRunningRef.current = false;
+    setIsQueueRunning(false);
+    queueRef.current = [];
+    queueIndexRef.current = 0;
+    setQueueProgress({ current: 0, total: 0 });
+  }, []);
+
+  const startQueue = useCallback(
+    (prompts: string[]) => {
+      const items = prompts.filter((p) => p.trim());
+      if (!items.length) return;
+      queueRef.current = items;
+      queueIndexRef.current = 0;
+      isQueueRunningRef.current = true;
+      setIsQueueRunning(true);
+      setQueueProgress({ current: 1, total: items.length });
+      toast(`Prompt 1 / ${items.length}`, {
+        description: items[0].length > 80 ? items[0].slice(0, 80) + "…" : items[0],
+      });
+      sendText(items[0]);
+    },
+    [sendText],
+  );
+
+  useAuiEvent("thread.runEnd", () => {
+    if (!isQueueRunningRef.current) return;
+    const nextIndex = queueIndexRef.current + 1;
+    if (nextIndex >= queueRef.current.length) {
+      stopQueue();
+      toast.success("Prompt queue complete");
+      return;
+    }
+    queueIndexRef.current = nextIndex;
+    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    const next = queueRef.current[nextIndex];
+    toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
+      description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+    });
+    sendText(next);
+  });
+
+  const value = useMemo(
+    () => ({ isQueueRunning, queueProgress, startQueue, stopQueue }),
+    [isQueueRunning, queueProgress, startQueue, stopQueue],
+  );
+
+  return (
+    <ThreadQueueContext.Provider value={value}>
+      {children}
+    </ThreadQueueContext.Provider>
+  );
+};
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -117,6 +218,7 @@ export const Thread: FC<{
           "calc(var(--thread-max-width) - 1.5rem)",
       }}
     >
+      <ThreadQueueProvider>
       <IntentAwareScrollProvider value={autoScrollContext}>
         <ThreadPrimitive.Viewport
           ref={viewportRef}
@@ -185,6 +287,7 @@ export const Thread: FC<{
           </AuiIf>
         )}
       </IntentAwareScrollProvider>
+      </ThreadQueueProvider>
     </ThreadPrimitive.Root>
   );
 };
@@ -289,11 +392,26 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const aui = useAui();
+  const { isQueueRunning, queueProgress, startQueue, stopQueue } =
+    useContext(ThreadQueueContext);
+
   const hasPendingAttachments = useAuiState(({ composer }) =>
     composer.attachments.some(
       (attachment) => attachment.status.type === "running",
     ),
   );
+
+  const handleUsePrompt = useCallback((text: string) => {
+    const composer = aui.composer();
+    flushResourcesSync(() => { composer.setText(text); });
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(".aui-composer-input")
+        ?.focus();
+    });
+  }, [aui]);
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -325,28 +443,46 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
       <ComposerAction
         disabled={disabled || isComposing || hasPendingAttachments}
         blockSend={() => isComposingRef.current || hasPendingAttachments}
+        onOpenPromptStorage={() => setPromptStorageOpen(true)}
+        isQueueRunning={isQueueRunning}
+        queueProgress={queueProgress}
+        onStopQueue={() => {
+          stopQueue();
+          if (aui.thread().getState().isRunning) aui.thread().cancelRun();
+        }}
       />
     </>
   );
 
   return (
-    <ComposerPrimitive.Root
-      className="aui-composer-root relative flex w-full flex-col"
-      aria-disabled={disabled}
-      onSubmit={handleSubmit}
-    >
-      {isTauri ? (
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser
-        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
-        <div className="aui-composer-attachment-dropzone chat-composer-surface">
-          {composerContent}
-        </div>
-      ) : (
-        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-          {composerContent}
-        </ComposerPrimitive.AttachmentDropzone>
-      )}
-    </ComposerPrimitive.Root>
+    <>
+      <PromptStorageDialog
+        open={promptStorageOpen}
+        onOpenChange={setPromptStorageOpen}
+        onUse={handleUsePrompt}
+        onRunList={(items) => {
+          setPromptStorageOpen(false);
+          startQueue(items);
+        }}
+      />
+      <ComposerPrimitive.Root
+        className="aui-composer-root relative flex w-full flex-col"
+        aria-disabled={disabled}
+        onSubmit={handleSubmit}
+      >
+        {isTauri ? (
+          // Phase 1 native model drops own Tauri local-path drops. Restore browser
+          // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+          <div className="aui-composer-attachment-dropzone chat-composer-surface">
+            {composerContent}
+          </div>
+        ) : (
+          <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+            {composerContent}
+          </ComposerPrimitive.AttachmentDropzone>
+        )}
+      </ComposerPrimitive.Root>
+    </>
   );
 };
 
@@ -897,10 +1033,14 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
-  disabled,
-  blockSend,
-}) => {
+const ComposerAction: FC<{
+  disabled?: boolean;
+  blockSend?: () => boolean;
+  onOpenPromptStorage?: () => void;
+  isQueueRunning?: boolean;
+  queueProgress?: { current: number; total: number };
+  onStopQueue?: () => void;
+}> = ({ disabled, blockSend, onOpenPromptStorage, isQueueRunning, queueProgress, onStopQueue }) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
       <div className="flex items-center gap-0.5">
@@ -910,6 +1050,15 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
         <PreserveThinkingToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
+        <TooltipIconButton
+          tooltip="Prompt Storage"
+          variant="ghost"
+          className="size-8 rounded-full text-muted-foreground"
+          onClick={onOpenPromptStorage}
+          type="button"
+        >
+          <BookmarkIcon className="size-4" />
+        </TooltipIconButton>
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
@@ -934,40 +1083,58 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
             </TooltipIconButton>
           </ComposerPrimitive.StopDictation>
         </ComposerPrimitive.If>
-        <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <ComposerPrimitive.Send asChild={true}>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="submit"
-              variant="default"
-              size="icon"
-              disabled={disabled}
-              onClick={(event) => {
-                if (blockSend?.()) {
-                  event.preventDefault();
-                }
-              }}
-              className="aui-composer-send size-8 rounded-full"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
-        <AuiIf condition={({ thread }) => thread.isRunning}>
-          <ComposerPrimitive.Cancel asChild={true}>
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-cancel size-8 rounded-full"
-              aria-label="Stop generating"
-            >
-              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
-        </AuiIf>
+        {isQueueRunning ? (
+          // Queue mode: replace send/cancel with a single pulsing stop-queue button
+          // that shows progress and halts the entire sequence when clicked.
+          <button
+            type="button"
+            onClick={onStopQueue}
+            aria-label="Stop prompt queue"
+            className="flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white animate-pulse hover:animate-none hover:bg-red-700 transition-colors"
+          >
+            <SquareIcon className="size-3 fill-current shrink-0" />
+            <span className="tabular-nums">
+              {queueProgress?.current ?? 0}/{queueProgress?.total ?? 0}
+            </span>
+          </button>
+        ) : (
+          <>
+            <AuiIf condition={({ thread }) => !thread.isRunning}>
+              <ComposerPrimitive.Send asChild={true}>
+                <TooltipIconButton
+                  tooltip="Send message"
+                  side="bottom"
+                  type="submit"
+                  variant="default"
+                  size="icon"
+                  disabled={disabled}
+                  onClick={(event) => {
+                    if (blockSend?.()) {
+                      event.preventDefault();
+                    }
+                  }}
+                  className="aui-composer-send size-8 rounded-full"
+                  aria-label="Send message"
+                >
+                  <ArrowUpIcon className="aui-composer-send-icon size-4" />
+                </TooltipIconButton>
+              </ComposerPrimitive.Send>
+            </AuiIf>
+            <AuiIf condition={({ thread }) => thread.isRunning}>
+              <ComposerPrimitive.Cancel asChild={true}>
+                <Button
+                  type="button"
+                  variant="default"
+                  size="icon"
+                  className="aui-composer-cancel size-8 rounded-full"
+                  aria-label="Stop generating"
+                >
+                  <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+                </Button>
+              </ComposerPrimitive.Cancel>
+            </AuiIf>
+          </>
+        )}
       </div>
     </div>
   );

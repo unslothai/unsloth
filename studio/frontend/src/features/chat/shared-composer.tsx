@@ -17,8 +17,9 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, BookmarkIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "@/lib/toast";
+import { PromptStorageDialog } from "./prompt-storage/prompt-storage-dialog";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -281,7 +282,10 @@ export function SharedComposer({
   model2?: CompareModelSelection;
 }): ReactElement {
   const [text, setText] = useState("");
+  const textRef = useRef(text);
+  textRef.current = text;
   const [running, setRunning] = useState(false);
+  const [sending, setSending] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
@@ -289,7 +293,19 @@ export function SharedComposer({
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const sendingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Prompt storage & queue ────────────────────────────────────────────────
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
+  const queueRef = useRef<string[]>([]);
+  const queueIndexRef = useRef(0);
+  const isQueueRunningRef = useRef(false);
+  const prevRunningRef = useRef(false);
+  const sendRef = useRef<(() => void) | null>(null);
+  // ─────────────────────────────────────────────────────────────────────────
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -431,6 +447,33 @@ export function SharedComposer({
     return () => clearInterval(id);
   }, [handlesRef]);
 
+  // Advance prompt queue when all models finish (running: true → false).
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current;
+    prevRunningRef.current = running;
+    if (!isQueueRunningRef.current || !wasRunning || running) return;
+    const nextIndex = queueIndexRef.current + 1;
+    if (nextIndex >= queueRef.current.length) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.success("Prompt queue complete");
+      return;
+    }
+    queueIndexRef.current = nextIndex;
+    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    const next = queueRef.current[nextIndex];
+    toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
+      description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+    });
+    setText(next);
+    setTimeout(() => {
+      sendRef.current?.();
+    }, 100);
+  }, [running]);
+
   // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
   useEffect(() => {
     const ta = textareaRef.current;
@@ -515,8 +558,9 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) return;
-    const msg = text.trim();
+    sendRef.current = send;
+    if (composingRef.current || sendingRef.current) return;
+    const msg = textRef.current.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
 
     const hasCompareHandles = Boolean(
@@ -534,28 +578,43 @@ export function SharedComposer({
       return;
     }
 
-    const content: CompareMessagePart[] = [];
-    for (const { file } of pendingImages) {
-      try {
-        const image = await fileToBase64DataURL(file);
-        content.push({ type: "image", image });
-      } catch {
-        // skip failed image
-      }
-    }
-    if (pendingAudio) {
-      content.push({ type: "audio", audio: pendingAudio.base64 });
-    }
-    if (msg) {
-      content.push({ type: "text", text: msg });
-    }
-    if (content.length === 0) return;
+    const releaseSending = () => {
+      sendingRef.current = false;
+      setSending(false);
+    };
+    sendingRef.current = true;
+    setSending(true);
 
-    setText("");
-    setPendingImages([]);
-    setPendingAudio(null);
-    clearPendingAudioStore();
-    textareaRef.current?.focus();
+    let content: CompareMessagePart[] = [];
+    let ready = false;
+    try {
+      content = [];
+      for (const { file } of pendingImages) {
+        try {
+          const image = await fileToBase64DataURL(file);
+          content.push({ type: "image", image });
+        } catch {
+          // skip failed image
+        }
+      }
+      if (pendingAudio) {
+        content.push({ type: "audio", audio: pendingAudio.base64 });
+      }
+      if (msg) {
+        content.push({ type: "text", text: msg });
+      }
+      if (content.length === 0) return;
+
+      setText("");
+      setPendingImages([]);
+      setPendingAudio(null);
+      clearPendingAudioStore();
+      textareaRef.current?.focus();
+
+      ready = true;
+    } finally {
+      if (!ready) releaseSending();
+    }
 
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
@@ -704,6 +763,7 @@ export function SharedComposer({
         handle.append(content);
       }
     }
+    releaseSending();
   }
 
   function stop() {
@@ -713,7 +773,7 @@ export function SharedComposer({
     }
   }
 
-  const busy = running || comparing;
+  const busy = running || sending || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
     // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
@@ -739,6 +799,30 @@ export function SharedComposer({
   const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
 
   return (
+    <>
+    <PromptStorageDialog
+      open={promptStorageOpen}
+      onOpenChange={setPromptStorageOpen}
+      onUse={(text) => {
+        setText(text);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      }}
+      onRunList={(items) => {
+        const filtered = items.filter((p) => p.trim());
+        if (!filtered.length) return;
+        setPromptStorageOpen(false);
+        queueRef.current = filtered;
+        queueIndexRef.current = 0;
+        isQueueRunningRef.current = true;
+        setIsQueueRunning(true);
+        setQueueProgress({ current: 1, total: filtered.length });
+        toast(`Prompt 1 / ${filtered.length}`, {
+          description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+        });
+        setText(filtered[0]);
+        setTimeout(() => { sendRef.current?.(); }, 100);
+      }}
+    />
     <div
       className={`chat-composer-surface ${dragging ? "border-ring bg-accent/50" : ""}`}
       onDragOver={(e) => {
@@ -1051,6 +1135,17 @@ export function SharedComposer({
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
           </button>
+          <TooltipIconButton
+            tooltip="Prompt storage"
+            side="bottom"
+            variant="ghost"
+            size="icon"
+            className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
+            onClick={() => setPromptStorageOpen(true)}
+            aria-label="Prompt storage"
+          >
+            <BookmarkIcon className="size-4" />
+          </TooltipIconButton>
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (
@@ -1082,7 +1177,26 @@ export function SharedComposer({
               )}
             </>
           )}
-          {busy ? (
+          {isQueueRunning ? (
+            <button
+              type="button"
+              onClick={() => {
+                isQueueRunningRef.current = false;
+                setIsQueueRunning(false);
+                queueRef.current = [];
+                queueIndexRef.current = 0;
+                setQueueProgress({ current: 0, total: 0 });
+                stop();
+              }}
+              aria-label="Stop prompt queue"
+              className="flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white animate-pulse hover:animate-none hover:bg-red-700 transition-colors"
+            >
+              <SquareIcon className="size-3 fill-current shrink-0" />
+              <span className="tabular-nums">
+                {queueProgress.current}/{queueProgress.total}
+              </span>
+            </button>
+          ) : busy ? (
             <Button
               type="button"
               variant="default"
@@ -1109,5 +1223,6 @@ export function SharedComposer({
         </div>
       </div>
     </div>
+    </>
   );
 }
