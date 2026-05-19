@@ -158,3 +158,92 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
     assert backend._is_vlm is True
     assert isinstance(backend._processor, _DummyProcessor)
     assert isinstance(backend._tokenizer, _DummyTokenizer)
+
+
+# Regression: MLXInferenceBackend.generate_chat_response must accept the
+# four template kwargs (tools / enable_thinking / reasoning_effort /
+# preserve_thinking) so the route layer can forward what the user
+# toggled in the UI. The previous signature raised
+# "got an unexpected keyword argument 'tools'" on Mac.
+
+
+def test_mlx_generate_chat_response_accepts_template_kwargs():
+    import inspect
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    sig = inspect.signature(MLXInferenceBackend.generate_chat_response)
+    params = sig.parameters
+    for name in ("tools", "enable_thinking", "reasoning_effort", "preserve_thinking"):
+        assert name in params, (
+            f"MLX.generate_chat_response is missing the {name!r} kwarg; "
+            "the route layer forwards this and a missing kwarg raises "
+            "TypeError on Mac"
+        )
+        assert params[name].default is None, (
+            f"{name!r} must default to None so existing callers stay valid"
+        )
+
+
+def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
+    """The Mac text path must route through apply_chat_template_for_
+    generation so reasoning / tool kwargs reach the tokenizer."""
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    captured = {}
+
+    def _fake_apply(tokenizer, messages, **kwargs):
+        captured["tokenizer"] = tokenizer
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "<rendered prompt>"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers."
+        "apply_chat_template_for_generation",
+        _fake_apply,
+        raising = True,
+    )
+
+    # mlx_lm.stream_generate yields response objects with .token; make a
+    # one-token generator so _generate_text returns without touching the
+    # real stack.
+    import types as _types
+    mlx_lm_pkg = _types.ModuleType("mlx_lm")
+    mlx_lm_sample = _types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: None
+
+    class _Resp:
+        def __init__(self, tok): self.token = tok
+
+    def _stream_generate(_model, _tokenizer, **_kw):
+        yield _Resp(1)
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tok:
+        chat_template = "x"
+        def decode(self, ids, skip_special_tokens = False):
+            return "hi"
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tok()
+    backend._is_vlm = False
+
+    out = list(backend.generate_chat_response(
+        messages = [{"role": "user", "content": "ping"}],
+        tools = [{"function": {"name": "web_search"}}],
+        enable_thinking = True,
+        reasoning_effort = "medium",
+        preserve_thinking = True,
+        max_new_tokens = 1,
+    ))
+    assert out == ["hi"]
+    # The kwargs the user toggled must reach the chat-template helper.
+    assert captured["kwargs"]["tools"] == [{"function": {"name": "web_search"}}]
+    assert captured["kwargs"]["enable_thinking"] is True
+    assert captured["kwargs"]["reasoning_effort"] == "medium"
+    assert captured["kwargs"]["preserve_thinking"] is True

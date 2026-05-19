@@ -246,6 +246,14 @@ class MLXInferenceBackend:
         max_new_tokens = 256,
         repetition_penalty = 1.0,
         cancel_event = None,
+        # Reasoning / tool kwargs forwarded by the route + worker -- the
+        # MLX path renders the template via apply_chat_template_for_
+        # generation so these are honoured the same way as the
+        # transformers path.
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -288,6 +296,10 @@ class MLXInferenceBackend:
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
         else:
             yield from self._generate_text(
@@ -299,6 +311,10 @@ class MLXInferenceBackend:
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
 
     def _generate_text(
@@ -311,14 +327,26 @@ class MLXInferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
-        prompt = self._tokenizer.apply_chat_template(
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
+
+        prompt = apply_chat_template_for_generation(
+            self._tokenizer,
             messages,
-            tokenize = False,
-            add_generation_prompt = True,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
         if prompt is None:
             raise RuntimeError(
@@ -392,20 +420,38 @@ class MLXInferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
-        # Apply chat template
-        chat_fn = getattr(self._processor, "apply_chat_template", None)
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
+
+        # Pick the chat-template-aware caller: processors that expose
+        # their own apply_chat_template + chat_template attr (e.g.
+        # Qwen2.5-VL) use it directly; otherwise fall back to the
+        # nested tokenizer.
+        chat_target = self._processor
         if (
-            chat_fn is None
+            getattr(self._processor, "apply_chat_template", None) is None
             or not hasattr(self._processor, "chat_template")
             or self._processor.chat_template is None
         ):
-            tok = getattr(self._processor, "tokenizer", self._processor)
-            chat_fn = tok.apply_chat_template
+            chat_target = getattr(self._processor, "tokenizer", self._processor)
 
-        prompt = chat_fn(messages, tokenize = False, add_generation_prompt = True)
+        prompt = apply_chat_template_for_generation(
+            chat_target,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
 
         # For VLM: always use mlx_vlm's stream_generate which handles
         # pixel_values properly (passes None for text-only, image for VLM)
