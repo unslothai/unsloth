@@ -74,6 +74,7 @@ export function SettingsDialog() {
   const activeTab = useSettingsDialogStore((s) => s.activeTab);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const opener = useSettingsDialogStore((s) => s.opener);
   const reduced = useReducedMotion();
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
@@ -98,6 +99,15 @@ export function SettingsDialog() {
       <DialogContent
         showCloseButton={false}
         overlayClassName="bg-background/40"
+        onCloseAutoFocus={(e) => {
+          // Restore focus to the element that triggered openDialog().
+          // Radix's FocusScope races our rAF-scheduled tab-button focus
+          // and loses the previous-focus reference, so we restore by hand.
+          if (opener && opener.isConnected) {
+            e.preventDefault();
+            opener.focus({ preventScroll: true });
+          }
+        }}
         className={cn(
           "!max-w-none h-[560px] w-[820px] p-0 overflow-hidden",
           "shadow-border rounded-xl border-border",
