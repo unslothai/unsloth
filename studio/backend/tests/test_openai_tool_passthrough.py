@@ -28,6 +28,7 @@ sys.path.insert(0, _backend)
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from core.inference.api_monitor import ApiMonitor
@@ -671,6 +672,143 @@ class TestApiMonitorStreamingFailures:
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
             assert "Lost connection" in entry["error"]
+
+        asyncio.run(_run())
+
+
+class TestApiMonitorTextCompletionsFailures:
+    def test_non_streaming_transport_error_marks_monitor_failed(self, monkeypatch):
+        async def _run():
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inference_routes,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://127.0.0.1:8080",
+                    model_identifier = "local-model",
+                    context_length = 4096,
+                ),
+            )
+
+            class DummyAsyncClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    pass
+
+                async def post(self, url, json, timeout):
+                    request = httpx.Request("POST", url)
+                    raise httpx.ConnectError("connection refused", request = request)
+
+            monkeypatch.setattr(
+                inference_routes.httpx,
+                "AsyncClient",
+                DummyAsyncClient,
+            )
+
+            request = SimpleNamespace(
+                url = SimpleNamespace(path = "/v1/completions"),
+                method = "POST",
+                json = lambda: asyncio.sleep(
+                    0,
+                    result = {
+                        "model": "local-model",
+                        "prompt": "hello",
+                        "stream": False,
+                    },
+                ),
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                await inference_routes.openai_completions(request, current_subject = "u")
+
+            assert exc_info.value.status_code == 502
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "Lost connection" in entry["error"]
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_streaming_upstream_error_status_marks_monitor_failed(self, monkeypatch):
+        async def _run():
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_routes, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inference_routes,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://127.0.0.1:8080",
+                    model_identifier = "local-model",
+                    context_length = 4096,
+                ),
+            )
+
+            class DummyResponse:
+                status_code = 400
+
+                async def aread(self):
+                    return b'{"error":{"message":"bad prompt"}}'
+
+                def aiter_bytes(self):
+                    raise AssertionError("non-200 response should not stream bytes")
+
+                async def aclose(self):
+                    pass
+
+            class DummyAsyncClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def build_request(self, method, url, json):
+                    return httpx.Request(method, url, json = json)
+
+                async def send(self, _req, stream):
+                    assert stream is True
+                    return DummyResponse()
+
+                async def aclose(self):
+                    pass
+
+            monkeypatch.setattr(
+                inference_routes.httpx,
+                "AsyncClient",
+                DummyAsyncClient,
+            )
+
+            request = SimpleNamespace(
+                url = SimpleNamespace(path = "/v1/completions"),
+                method = "POST",
+                json = lambda: asyncio.sleep(
+                    0,
+                    result = {
+                        "model": "local-model",
+                        "prompt": "hello",
+                        "stream": True,
+                    },
+                ),
+            )
+
+            response = await inference_routes.openai_completions(
+                request,
+                current_subject = "u",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+
+            assert chunks == [b'{"error":{"message":"bad prompt"}}']
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "bad prompt" in entry["error"]
+            assert monitor.active_count() == 0
 
         asyncio.run(_run())
 

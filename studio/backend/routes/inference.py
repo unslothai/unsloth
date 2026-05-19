@@ -3365,6 +3365,17 @@ async def openai_completions(
             try:
                 req = client.build_request("POST", target_url, json = body)
                 resp = await client.send(req, stream = True)
+                if resp.status_code != 200:
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    api_monitor.fail(monitor_id, err_text[:500])
+                    logger.error(
+                        "openai_completions upstream error: status=%s body=%s",
+                        resp.status_code,
+                        err_text[:500],
+                    )
+                    yield err_bytes
+                    return
                 bytes_iter = resp.aiter_bytes()
                 async for chunk in bytes_iter:
                     sse_residual += chunk.decode("utf-8", errors = "ignore")
@@ -3410,8 +3421,16 @@ async def openai_completions(
 
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(target_url, json = body, timeout = 600)
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(target_url, json = body, timeout = 600)
+        except httpx.RequestError as e:
+            logger.error("openai_completions upstream unreachable: %s", e)
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            raise HTTPException(
+                status_code = 502,
+                detail = _friendly_error(e),
+            )
         if resp.status_code == 200:
             try:
                 data = resp.json()
