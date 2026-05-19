@@ -359,7 +359,7 @@ export function useChatModelRuntime() {
               reasoningDefault = false;
             }
           }
-          useChatRuntimeStore.getState().setReasoningEnabled(reasoningDefault);
+          useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
         }
       } else if (!statusRes.active_model && !isExternalSelectionActive) {
         useChatRuntimeStore.setState({
