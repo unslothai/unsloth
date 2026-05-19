@@ -806,6 +806,274 @@ class TestLoopBehaviour:
         assert "boom" in tool_end["result"]
 
 
+class TestLoopRePrompt:
+    """Re-prompt-on-plan-without-action parity with the GGUF path.
+
+    When the model emits forward-looking intent ("Let me search for
+    that") without actually calling a tool, the loop must nudge it to
+    act instead of silently terminating. Up to ``_MAX_REPROMPTS`` (3)
+    re-prompts per request, drawn from extra iteration slots so the
+    caller's tool-call budget is preserved.
+    """
+
+    def test_intent_signal_triggers_reprompt(self):
+        # Turn 1: intent signal, no tool call.
+        # Turn 2 (re-prompt): proper tool call -> executes.
+        # Turn 3: final answer.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me search for that."],
+                [
+                    '<tool_call>{"name":"web_search","arguments":'
+                    '{"query":"sky color"}}</tool_call>'
+                ],
+                ["The sky is blue."],
+            ],
+            exec_results = ["Blue (Rayleigh scattering)"],
+        )
+        events = _collect_events(loop)
+        # web_search must have been called once (after the re-prompt).
+        assert exec_fn.calls == [("web_search", {"query": "sky color"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "blue" in contents[-1]["text"].lower()
+
+    def test_intent_signal_without_tools_does_not_reprompt(self):
+        # Same intent signal but no tools enabled -- must NOT re-prompt.
+        loop, exec_fn = _make_loop(
+            turns = [["Let me think about that for a moment."]],
+            exec_results = [],
+        )
+        # _make_loop hard-codes three tools; rebuild without tools.
+        from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+        def _gen(_messages):
+            yield "Let me think about that for a moment."
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [],
+                execute_tool = exec_fn,
+            )
+        )
+        assert exec_fn.calls == []
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "think" in contents[-1]["text"].lower()
+
+    def test_direct_answer_does_not_trigger_reprompt(self):
+        # Plain answer with no intent words: do NOT re-prompt.
+        loop, exec_fn = _make_loop(
+            turns = [["4"]],
+            exec_results = [],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and contents[-1]["text"].strip() == "4"
+
+    def test_max_reprompts_capped_at_three(self):
+        # Model keeps stalling with intent -- after 3 re-prompts the
+        # loop must give up rather than burn forever.
+        turns = [["Let me search for that."]] * 6  # well over the cap
+        loop, exec_fn = _make_loop(
+            turns = turns,
+            exec_results = [],
+        )
+        events = _collect_events(loop, max_events = 500)
+        # No tool ever ran, but the loop terminated cleanly.
+        assert exec_fn.calls == []
+        statuses = [e for e in events if e["type"] == "status"]
+        assert statuses and statuses[-1]["text"] == ""
+
+    def test_short_intent_below_buffer_threshold_triggers_reprompt(self):
+        # Short emission that never exits BUFFERING (< 32 chars + no
+        # marker prefix). The unified buffer-end path must still
+        # trigger the intent re-prompt, not silently terminate.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me check."],
+                [
+                    '<tool_call>{"name":"web_search","arguments":'
+                    '{"query":"x"}}</tool_call>'
+                ],
+                ["found"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+
+    def test_reprompt_does_not_consume_tool_budget(self):
+        # max_tool_iterations=1: one re-prompt, then one real tool call,
+        # then the budget-exhausted final answer must still fire. If the
+        # re-prompt ate the slot the tool call would never run.
+        loop, exec_fn = _make_loop(
+            turns = [
+                # 1. Intent stall (re-prompt 1/3).
+                ["Let me search for that."],
+                # 2. Real tool call (uses the budget slot).
+                [
+                    '<tool_call>{"name":"web_search","arguments":'
+                    '{"query":"weather"}}</tool_call>'
+                ],
+                # 3. Budget exhausted -> nudged final answer.
+                ["Final: it is sunny"],
+            ],
+            exec_results = ["sunny"],
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "sunny" in contents[-1]["text"].lower()
+
+
+class TestLoopCanonicalHealKey:
+    """Per-tool canonical heal key (``code`` for python, ``command`` for
+    terminal, ``query`` for everything else). Mirrors GGUF after the
+    PR-5615 follow-up that ported this mapping over."""
+
+    def test_python_bare_string_heals_to_code(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"python","arguments":"print(1)"}'
+                    "</tool_call>"
+                ],
+                ["done"],
+            ],
+            exec_results = ["1\n"],
+        )
+        events = _collect_events(loop)
+        # The bare string must heal to {"code": "print(1)"}, not
+        # {"query": ...}, so the python sandbox actually executes it.
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+
+    def test_terminal_bare_string_heals_to_command(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"terminal","arguments":"ls -la"}'
+                    "</tool_call>"
+                ],
+                ["done"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("terminal", {"command": "ls -la"})]
+
+    def test_unknown_tool_bare_string_heals_to_query(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":"hello"}'
+                    "</tool_call>"
+                ],
+                ["ok"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "hello"})]
+
+
+class TestGGUFSafetensorsHealingParity:
+    """Pin parity between the GGUF agentic loop and the safetensors /
+    MLX loop so a regression on either side breaks CI."""
+
+    def test_gguf_imports_shared_signal_markers(self):
+        # The GGUF BUFFERING state machine must wake on every emission
+        # marker the shared parser knows -- otherwise Llama-3 / Mistral
+        # / Gemma 4 emissions slip past as plain prose when the
+        # llama-server structured channel fails.
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(
+            LlamaCppBackend.generate_chat_completion_with_tools
+        )
+        assert "_SHARED_TOOL_XML_SIGNALS" in src, (
+            "GGUF agentic loop must reuse the shared TOOL_XML_SIGNALS "
+            "tuple so it wakes on all five emission formats"
+        )
+
+    def test_gguf_uses_shared_strip_helper(self):
+        # The GGUF stream-cleanup function must delegate to the shared
+        # strip_tool_markup so closed-pair markup is removed for every
+        # emission family (Llama-3 <|python_tag|>, Mistral [TOOL_CALLS],
+        # Gemma 4 <|tool_call>...<tool_call|>).
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(
+            LlamaCppBackend.generate_chat_completion_with_tools
+        )
+        assert "_shared_strip_tool_markup" in src, (
+            "GGUF stream cleanup must delegate to the shared "
+            "strip_tool_markup helper"
+        )
+
+    def test_gguf_uses_canonical_heal_keys(self):
+        # GGUF must heal a bare-string ``arguments`` to the same per-tool
+        # canonical key as safetensors -- ``code`` for python, ``command``
+        # for terminal, ``query`` for everything else.
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(
+            LlamaCppBackend.generate_chat_completion_with_tools
+        )
+        # The canonical key dict literal must be present in the heal
+        # path so a Llama-3 / Mistral / Gemma 4 bare-string emission
+        # for python doesn't get routed as {"query": "print(1)"}.
+        assert '"python": "code"' in src
+        assert '"terminal": "command"' in src
+
+    def test_intent_regex_matches_same_phrases_as_gguf(self):
+        # The intent re-prompt regex must match the SAME forward-looking
+        # phrases on both backends so behaviour is the same on Mac (MLX
+        # / safetensors) and on Linux (GGUF).
+        from core.inference.llama_cpp import _INTENT_SIGNAL as gguf_re
+        from core.inference.safetensors_agentic import (
+            _INTENT_SIGNAL as sf_re,
+        )
+
+        for phrase in (
+            "I'll search for that",
+            "I will look it up",
+            "Let me check",
+            "I am going to call the tool",
+            "First, I will explore",
+            "Here's my plan",
+            "Now I need to call web_search",
+        ):
+            assert gguf_re.search(phrase), f"GGUF missed {phrase!r}"
+            assert sf_re.search(phrase), f"safetensors missed {phrase!r}"
+
+        for plain in (
+            "4",
+            "Hello!",
+            "The sky is blue.",
+            "I can help with that.",
+            "I should mention",
+            "Let's go.",
+        ):
+            assert not gguf_re.search(plain), f"GGUF wrongly fired on {plain!r}"
+            assert not sf_re.search(plain), f"safetensors wrongly fired on {plain!r}"
+
+    def test_max_reprompts_equal_on_both_backends(self):
+        from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap
+        from core.inference.safetensors_agentic import _MAX_REPROMPTS as sf_cap
+
+        assert gguf_cap == sf_cap == 3
+
+
 class TestLoopControl:
     def test_cancel_event_breaks_loop(self):
         cancel = threading.Event()
