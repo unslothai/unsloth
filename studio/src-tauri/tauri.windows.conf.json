@@ -8,7 +8,7 @@
           "-ExecutionPolicy",
           "Bypass",
           "-File",
-          "src-tauri/windows/sign-with-trusted-signing.ps1",
+          "windows/sign-with-trusted-signing.ps1",
           "%1"
         ]
       }
