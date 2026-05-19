@@ -473,7 +473,10 @@ def _strip_tool_xml(text: str) -> str:
     from studio.backend.core.inference.tool_call_parser import (
         _strip_mistral_closed_calls,
     )
+
     return _TOOL_XML_RE.sub("", _strip_mistral_closed_calls(text))
+
+
 logger = get_logger(__name__)
 
 
