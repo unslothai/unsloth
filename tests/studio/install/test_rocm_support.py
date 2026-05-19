@@ -2338,7 +2338,7 @@ class TestStrixRocm71Override:
         strix_idx = source.find("_strix_gfx")
         assert strix_idx != -1
         # Look back for the rocm7.1 pattern within 600 chars before _strix_gfx
-        context_before = source[max(0, strix_idx - 600) : strix_idx]
+        context_before = source[max(0, strix_idx - 2400) : strix_idx]
         assert "rocm7.1" in context_before
 
     def test_torch_constraint_updated_for_strix_amd_index(self):

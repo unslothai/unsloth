@@ -405,6 +405,26 @@ def _has_rocm_gpu() -> bool:
         if result.returncode == 0 and result.stdout.strip():
             if check_fn(result.stdout):
                 return True
+    # sysfs KFD topology fallback (Linux only) -- matches install.sh's
+    # runtime-only detection. On minimal package-managed installs (no
+    # rocminfo / no amd-smi GUI tools), the kernel exposes AMD GPUs via
+    # /sys/class/kfd so `studio update` can still detect the GPU and
+    # repair the venv.
+    if sys.platform != "win32":
+        try:
+            kfd_nodes = "/sys/class/kfd/kfd/topology/nodes"
+            if os.path.isdir(kfd_nodes):
+                for entry in os.listdir(kfd_nodes):
+                    gpu_id_path = os.path.join(kfd_nodes, entry, "gpu_id")
+                    try:
+                        with open(gpu_id_path) as fh:
+                            gpu_id = fh.read().strip()
+                    except OSError:
+                        continue
+                    if gpu_id and gpu_id != "0":  # gpu_id 0 = CPU node
+                        return True
+        except OSError:
+            pass
     return False
 
 
@@ -429,30 +449,40 @@ def _has_usable_nvidia_gpu() -> bool:
 def _detect_amd_gfx_codes() -> list[str]:
     """Return the list of AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
 
-    Parses ``rocminfo`` output for ``ISA Info`` / ``gfx`` entries.  Returns an
-    empty list when rocminfo is not found or no GPU agents are present.
+    Probes rocminfo first, then falls back to ``amd-smi list`` and
+    ``amd-smi static --asic`` for runtime-only Radeon hosts that ship
+    amd-smi but no rocminfo. Returns an empty list when no probe yields
+    a gfx target.
     """
     import re
 
-    exe = shutil.which("rocminfo")
-    if not exe:
-        return []
-    try:
-        result = subprocess.run(
-            [exe],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 15,
-        )
-    except Exception:
-        return []
-    if result.returncode != 0:
-        return []
-    # Match lines like "  Name:                    gfx1151" or ISA strings
-    # "amdgcn-amd-amdhsa--gfx1151".  Exclude the CPU agent (gfx000).
-    codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", result.stdout.lower())
-    return list(dict.fromkeys(f"gfx{c}" for c in codes))  # deduplicate, preserve order
+    def _extract(text: str) -> list[str]:
+        codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())
+        return list(dict.fromkeys(f"gfx{c}" for c in codes))
+
+    probes: list[list[str]] = []
+    if shutil.which("rocminfo"):
+        probes.append(["rocminfo"])
+    if shutil.which("amd-smi"):
+        probes.append(["amd-smi", "list"])
+        probes.append(["amd-smi", "static", "--asic"])
+    for cmd in probes:
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 15,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+        codes = _extract(result.stdout)
+        if codes:
+            return codes
+    return []
 
 
 # Set by _ensure_rocm_torch() on success; suppresses the post-install AMD warning.
@@ -709,13 +739,49 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
-    if not has_hip_torch:
-        if _strix_override_url is not None and _strix_override_pkgs is not None:
-            index_url = _strix_override_url
-            _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
-            print(f"   Strix ROCm 7.1 override -- installing torch from {index_url}")
+    # Strix override on ROCm 7.1 must fire even when has_hip_torch is True --
+    # an existing torch with `torch.version.hip == "7.1"` is exactly the broken
+    # combo the override is meant to repair, so skipping it leaves users on
+    # the known _grouped_mm segfault.
+    if _strix_override_url is not None and _strix_override_pkgs is not None:
+        index_url = _strix_override_url
+        _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
+        print(f"   Strix ROCm 7.1 override -- installing torch from {index_url}")
+        pip_install(
+            "ROCm torch (Strix arch-specific)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            index_url,
+            constrain = False,
+        )
+        rocm_torch_ready = True
+    elif not has_hip_torch:
+        # Select best matching wheel tag (newest ROCm version <= installed)
+        tag = next(
+            (
+                t
+                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                if ver >= (maj, mn)
+            ),
+            None,
+        )
+        if tag is None:
+            print(
+                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- "
+                f"skipping torch reinstall"
+            )
+        else:
+            index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+            print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+            _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
+                tag, _ROCM_TORCH_PKG_SPECS["_default"]
+            )
             pip_install(
-                "ROCm torch (Strix arch-specific)",
+                f"ROCm torch ({tag})",
                 "--force-reinstall",
                 "--no-cache-dir",
                 _torch_pkg,
@@ -726,39 +792,6 @@ def _ensure_rocm_torch() -> None:
                 constrain = False,
             )
             rocm_torch_ready = True
-        else:
-            # Select best matching wheel tag (newest ROCm version <= installed)
-            tag = next(
-                (
-                    t
-                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                    if ver >= (maj, mn)
-                ),
-                None,
-            )
-            if tag is None:
-                print(
-                    f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- "
-                    f"skipping torch reinstall"
-                )
-            else:
-                index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-                print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
-                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
-                    tag, _ROCM_TORCH_PKG_SPECS["_default"]
-                )
-                pip_install(
-                    f"ROCm torch ({tag})",
-                    "--force-reinstall",
-                    "--no-cache-dir",
-                    _torch_pkg,
-                    _vision_pkg,
-                    _audio_pkg,
-                    "--index-url",
-                    index_url,
-                    constrain = False,
-                )
-                rocm_torch_ready = True
 
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix) and falls

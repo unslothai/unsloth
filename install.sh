@@ -1832,13 +1832,45 @@ esac
 # Detect these GPUs when TORCH_INDEX_URL is rocm7.1 and override to rocm7.2.
 case "$TORCH_INDEX_URL" in
     */rocm7.1|*/rocm7.1.*)
-        _strix_gfx=""
+        # Collect every gfx token in rocminfo / amd-smi enumeration order
+        # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
+        # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
+        # where the user selected the dGPU does NOT get rerouted to the
+        # Strix per-gfx index.
+        _gfx_all=""
         if command -v rocminfo >/dev/null 2>&1; then
-            _strix_gfx=$(rocminfo 2>/dev/null | grep -oE 'gfx1151|gfx1150' | head -1)
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
         fi
-        if [ -z "$_strix_gfx" ] && command -v amd-smi >/dev/null 2>&1; then
-            _strix_gfx=$(amd-smi list 2>/dev/null | grep -oE 'gfx1151|gfx1150' | head -1)
+        if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+            # PowerShell paths also probe `amd-smi static --asic`; mirror it
+            # so a host with hipinfo-less amd-smi reports the gfx target.
+            if [ -z "$_gfx_all" ]; then
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+            fi
         fi
+        _runtime_gfx=""
+        if [ -n "$_gfx_all" ]; then
+            _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+            _idx=0
+            if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
+                _first=${_vis%%,*}
+                case "$_first" in
+                    ''|*[!0-9]*) _idx=0 ;;
+                    *) _idx=$_first ;;
+                esac
+            fi
+            _runtime_gfx=$(printf '%s\n' "$_gfx_all" | awk -v idx="$_idx" '
+                NF { vals[n++] = $0 }
+                END {
+                    if (idx < 0 || idx >= n) idx = 0
+                    if (n > 0) print vals[idx]
+                }')
+        fi
+        _strix_gfx=""
+        case "$_runtime_gfx" in
+            gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
+        esac
         if [ -n "$_strix_gfx" ]; then
             echo "" >&2
             echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2

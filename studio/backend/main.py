@@ -70,25 +70,22 @@ if sys.platform == "win32":
     # this the server process crashes with "Configured ROCm binary not found".
     # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
     # before any import that pulls in bitsandbytes (mirrors worker.py logic).
-    # Gate on the active torch runtime, not env-var presence -- HIP_PATH /
-    # ROCM_PATH stay set after a user installs the HIP SDK and reverts to a
-    # CUDA torch wheel, and setting BNB_ROCM_VERSION there makes bitsandbytes
-    # look for a ROCm DLL that doesn't exist and crash the CUDA backend.
+    # Gate on the active torch runtime only. AMD SDK / Radeon Windows wheels
+    # may not set HIP_PATH / ROCM_PATH, but they do populate torch.version.hip
+    # or encode "rocm" in torch.__version__. A previous version of this gate
+    # required HIP_PATH / ROCM_PATH and silently skipped BNB_ROCM_VERSION for
+    # those wheels.
     _is_rocm_host = False
-    if os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"):
-        try:
-            import torch as _torch_probe
+    try:
+        import torch as _torch_probe
 
-            # Broad check: torch.version.hip OR "rocm" in torch.__version__ --
-            # AMD SDK / Radeon wheels may not populate torch.version.hip but
-            # still encode "rocm" in __version__. Matches worker.py + hardware.py.
-            _is_rocm_host = bool(
-                getattr(getattr(_torch_probe, "version", None), "hip", None)
-                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
-            )
-            del _torch_probe
-        except Exception:
-            pass
+        _is_rocm_host = bool(
+            getattr(getattr(_torch_probe, "version", None), "hip", None)
+            or "rocm" in getattr(_torch_probe, "__version__", "").lower()
+        )
+        del _torch_probe
+    except Exception:
+        pass
     if _is_rocm_host and "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
 

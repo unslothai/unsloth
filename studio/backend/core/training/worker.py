@@ -2060,9 +2060,24 @@ def run_training_process(
     global _WINDOWS_ROCM_GROUPED_MM_LIB
     if sys.platform == "win32":
         _torch_for_rocm = sys.modules.get("torch")
-        if _torch_for_rocm is not None and getattr(
-            getattr(_torch_for_rocm, "version", None), "hip", None
-        ):
+        # Broad check: torch.version.hip OR "rocm" in torch.__version__.
+        # AMD SDK / Radeon Windows wheels do not always populate
+        # torch.version.hip; without the broad check the BNB version pin,
+        # dynamo-disable, and _grouped_mm fallback below silently skip
+        # (matches the torchao stub gate above and main.py).
+        _build_version_for_rocm = (
+            getattr(_torch_for_rocm, "__version__", "").lower()
+            if _torch_for_rocm is not None
+            else ""
+        )
+        _is_win_rocm_torch = bool(
+            _torch_for_rocm is not None
+            and (
+                getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
+                or "rocm" in _build_version_for_rocm
+            )
+        )
+        if _is_win_rocm_torch:
             # Disable dynamo (belt-and-suspenders; JitDecomp patch below is the
             # real fix, but keeping dynamo off avoids any other compile paths).
             if "TORCHDYNAMO_DISABLE" not in os.environ:
@@ -2112,12 +2127,24 @@ def run_training_process(
 
             # Parse HIP version for the kernel-fix gate below.
             # torch.version.hip can be "7.13.99004", "7.2.0", etc.
-            # We only need major.minor for the comparison.
+            # AMD SDK / Radeon wheels may leave torch.version.hip unset and
+            # encode the ROCm version in torch.__version__ instead
+            # (e.g. "2.11.0+rocm7.13.0" or "2.9.0+rocmsdk20251116"); fall back
+            # to that string when version.hip is missing.
             def _hip_ver_at_least(major: int, minor: int) -> bool:
+                import re as _re_ver
                 _hip_str = getattr(
                     getattr(_torch_for_rocm, "version", None), "hip", None
                 )
                 if not _hip_str:
+                    _ver_match = _re_ver.search(
+                        r"rocm(\d+)\.(\d+)", _build_version_for_rocm
+                    )
+                    if _ver_match:
+                        return (
+                            int(_ver_match.group(1)),
+                            int(_ver_match.group(2)),
+                        ) >= (major, minor)
                     return False
                 try:
                     _parts = [int(x) for x in str(_hip_str).split(".")[:2]]
@@ -2138,11 +2165,24 @@ def run_training_process(
                     def _grouped_mm_safe_impl(
                         self, mat2, offs = None, bias = None, out_dtype = None
                     ):
-                        """Python mm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
+                        """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
                         _t = _torch_for_rocm
                         if offs is None:
-                            # Simple case: plain matrix multiply.
-                            result = _t.mm(self.contiguous(), mat2.contiguous())
+                            # No offsets: behave like the real op, which
+                            # accepts either (M, K) x (K, N) -> mm, or 3-D
+                            # batched inputs -> bmm. Picking torch.mm
+                            # unconditionally previously raised "self must be
+                            # a matrix" on 3-D MoE workloads.
+                            if self.dim() == 3 and mat2.dim() == 3:
+                                result = _t.bmm(self.contiguous(), mat2.contiguous())
+                            elif self.dim() == 3 and mat2.dim() == 2:
+                                # Broadcast 2-D mat2 across the batch dim.
+                                result = _t.matmul(self.contiguous(), mat2.contiguous())
+                            elif self.dim() == 2 and mat2.dim() == 3:
+                                # Broadcast 2-D self across batch via matmul semantics.
+                                result = _t.matmul(self.contiguous(), mat2.contiguous())
+                            else:
+                                result = _t.mm(self.contiguous(), mat2.contiguous())
                         else:
                             # Grouped case: offs[i] is the exclusive end-row of
                             # group i in `self`; mat2 may be 3-D or 2-D.
