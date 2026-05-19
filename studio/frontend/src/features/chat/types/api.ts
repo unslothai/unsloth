@@ -42,8 +42,20 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  /**
+   * Speculative decoding mode for GGUF models. Canonical values:
+   * "auto" (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for
+   * sub-3B), "mtp" (force draft-mtp only on both GPU and CPU), "ngram"
+   * (force ngram-mod only), "mtp+ngram" (force ngram-mod + draft-mtp
+   * chain on both platforms), or "off". Legacy values "default" /
+   * "draft-mtp" / "ngram-mod" / "ngram-simple" are still accepted by
+   * the backend.
+   */
   speculative_type?: string | null;
-  /** --spec-draft-n-max override for MTP speculative decoding. */
+  /**
+   * Override --spec-draft-n-max for MTP speculative decoding. Only
+   * applied when speculative_type resolves to "mtp" or "mtp+ngram".
+   */
   spec_draft_n_max?: number | null;
 }
 
@@ -120,6 +132,7 @@ export interface LoadModelResponse {
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
+  /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
 }
@@ -158,6 +171,7 @@ export interface InferenceStatusResponse {
   native_context_length?: number | null;
   cache_type_kv?: string | null;
   chat_template_override?: string | null;
+  /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
 }

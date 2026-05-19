@@ -991,23 +991,43 @@ export function ChatSettingsPanel({
                       Speculative Decoding
                     </span>
                     <InfoHint>
-                      Faster generation with 0% accuracy hit.
+                      Faster generation with 0% accuracy hit. Auto picks
+                      MTP / ngram-mod based on the model and platform.
+                      Pick MTP, Ngram, or MTP+Ngram to force a specific
+                      strategy on both GPU and CPU.
                     </InfoHint>
                   </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={
-                      speculativeType !== "off" && speculativeType != null
-                    }
-                    onCheckedChange={(checked) => {
-                      setSpeculativeType(checked ? "default" : "off");
-                      if (!checked) {
-                        setSpecDraftNMax(null);
-                      }
-                    }}
-                  />
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Select
+                      value={speculativeType ?? "auto"}
+                      onValueChange={(v) => {
+                        setSpeculativeType(v);
+                        if (v !== "mtp" && v !== "mtp+ngram") {
+                          setSpecDraftNMax(null);
+                        }
+                      }}
+                    >
+                      <SelectTrigger
+                        animateRadius={false}
+                        icon={ArrowDown01Icon}
+                        iconClassName="size-3.5"
+                        className="grid h-7 w-[120px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        data-test-id="speculative-type-select"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                        <SelectItem value="auto">Auto</SelectItem>
+                        <SelectItem value="mtp">MTP</SelectItem>
+                        <SelectItem value="ngram">Ngram</SelectItem>
+                        <SelectItem value="mtp+ngram">MTP+Ngram</SelectItem>
+                        <SelectItem value="off">Off</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
-                {speculativeType !== "off" && speculativeType != null && (
+                {(speculativeType === "mtp" ||
+                  speculativeType === "mtp+ngram") && (
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">

@@ -526,6 +526,51 @@ def _build_ngram_mod_flags(
     return []
 
 
+# Canonical Speculative Decoding modes exposed by the Studio chat UI.
+# The dropdown renders five options (auto, mtp, ngram, mtp+ngram, off);
+# the load API also accepts legacy values that the original Switch and
+# external callers emit (default, draft-mtp, ngram-mod, ngram-simple).
+_CANONICAL_SPEC_MODES = {"auto", "mtp", "ngram", "mtp+ngram", "off", "ngram-simple"}
+_LEGACY_SPEC_MODE_MAP = {
+    "default": "auto",
+    "draft-mtp": "mtp",
+    "ngram-mod": "ngram",
+}
+
+
+def _canonicalize_spec_mode(value):
+    """Map any accepted ``speculative_type`` input onto a canonical mode.
+
+    Returns one of ``auto``, ``mtp``, ``ngram``, ``mtp+ngram``, ``off``,
+    ``ngram-simple``, or ``None`` (callers treat ``None`` as ``auto``).
+    Unknown strings collapse to ``auto`` so a stale UI value or typo
+    falls back to the safe platform-aware path.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip().lower()
+    if not stripped:
+        return None
+    if stripped in _CANONICAL_SPEC_MODES:
+        return stripped
+    if stripped in _LEGACY_SPEC_MODE_MAP:
+        return _LEGACY_SPEC_MODE_MAP[stripped]
+    # llama.cpp comma-chains are emitted by old persisted state e.g.
+    # "ngram-mod,draft-mtp"; collapse the most common one explicitly.
+    pieces = [p.strip() for p in stripped.split(",") if p.strip()]
+    has_mtp = any(p in ("mtp", "draft-mtp") for p in pieces)
+    has_ngram = any(p in ("ngram", "ngram-mod") for p in pieces)
+    if has_mtp and has_ngram:
+        return "mtp+ngram"
+    if has_mtp:
+        return "mtp"
+    if has_ngram:
+        return "ngram"
+    return "auto"
+
+
 def _backfill_usage_from_timings(usage, timings):
     """Synthesize ``usage`` from llama-server's ``timings`` when the
     OpenAI-style usage block is missing or reports zero tokens.
@@ -591,6 +636,13 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
+        # Canonical UI-facing mode the user requested: one of
+        # ``auto``/``mtp``/``ngram``/``mtp+ngram``/``off``/``ngram-simple``.
+        # Round-tripped through the status API so the dropdown reflects
+        # the picked mode rather than the resolved internal flag set
+        # (auto on a 27B MTP GGUF resolves to draft-mtp but the dropdown
+        # should still read "Auto").
+        self._requested_spec_mode: Optional[str] = None
         # User-supplied --spec-draft-n-max override (None = platform default).
         self._spec_draft_n_max: Optional[int] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
@@ -872,6 +924,11 @@ class LlamaCppBackend:
     @property
     def speculative_type(self) -> Optional[str]:
         return self._speculative_type
+
+    @property
+    def requested_spec_mode(self) -> Optional[str]:
+        """Canonical UI-facing mode the user requested (see field doc)."""
+        return self._requested_spec_mode
 
     @property
     def spec_draft_n_max(self) -> Optional[int]:
@@ -2819,172 +2876,16 @@ class LlamaCppBackend:
                 # (llama.cpp #22673). Auto-enabled via nextn_predict_layers,
                 # fallback to -MTP in name. GPU: MTP-only. CPU/Mac: chain
                 # with ngram-mod. See unsloth.ai/docs/models/qwen3.6#mtp-guide.
-                _valid_spec_types = {"ngram-simple", "ngram-mod", "draft-mtp"}
-                normalized_spec = (
-                    speculative_type.lower().strip() if speculative_type else None
+                spec_flags = self._build_speculative_flags(
+                    speculative_type = speculative_type,
+                    spec_draft_n_max = spec_draft_n_max,
+                    extra_args = extra_args,
+                    model_identifier = model_identifier,
+                    model_path = model_path,
+                    gpus = bool(gpus),
+                    binary = binary,
                 )
-                is_mtp_model = bool(self._nextn_predict_layers) or (
-                    _is_mtp_model_name(model_identifier, model_path)
-                )
-                user_owns_spec_type = _extra_args_set_spec_type(extra_args)
-                # Sub-3B dense MTP regresses vs spec-off because the draft
-                # head's per-token cost exceeds the acceptance savings at
-                # this scale. Q4_K_XL clean bench (each prompt once after
-                # an unrelated warmup) on B200 and x86 CPU:
-                #   0.8B GPU: draft-mtp n=2 = 0.58x vs OFF; ngram-only = 1.10x
-                #   2B   GPU: draft-mtp n=2 = 0.82x vs OFF; OFF or ngram = 1.00x
-                #   0.8B CPU: chained n=2   = 0.86x vs OFF; ngram-only = 1.19x
-                #   2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
-                #   4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
-                # Fall back to ngram-mod (zero-VRAM, near-zero idle cost on
-                # diverse content) instead of disabling spec entirely.
-                _mtp_size_b = _extract_model_size_b(model_identifier)
-                _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 3.0
-                # Auto-promote unset/"default" to draft-mtp on MTP GGUFs.
-                # llama.cpp #22673: MTP is compatible with mmproj, so the
-                # vision gate previously here was wrong.
-                if (
-                    is_mtp_model
-                    and not _mtp_too_small
-                    and not user_owns_spec_type
-                    and normalized_spec in (None, "", "default")
-                ):
-                    normalized_spec = "draft-mtp"
-                elif (
-                    is_mtp_model
-                    and _mtp_too_small
-                    and not user_owns_spec_type
-                    and normalized_spec in (None, "", "default")
-                ):
-                    # Sub-3B: drop the MTP draft head, keep ngram-mod when
-                    # the binary supports it. User can still force MTP via
-                    # --spec-type or the Studio toggle.
-                    _small_caps = self.probe_server_capabilities(binary)
-                    if _small_caps.get("supports_ngram_mod"):
-                        normalized_spec = "ngram-mod"
-                        logger.info(
-                            f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
-                            "is below the 3B speedup threshold; using "
-                            "ngram-mod only (zero-VRAM, no draft head). "
-                            "Override via --spec-type or the Studio "
-                            "Speculative Decoding toggle."
-                        )
-                    else:
-                        logger.info(
-                            f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
-                            "is below the 3B speedup threshold and the bundled "
-                            "llama-server does not advertise ngram-mod; "
-                            "auto-disabling speculative decoding."
-                        )
-                if user_owns_spec_type:
-                    # User --spec-type wins; suppress auto-emit so we
-                    # don't emit a duplicate (single-flag, comma-chained).
-                    normalized_spec = None
-                    self._speculative_type = None
-                # Default reset; MTP branch re-sets when user overrides.
-                self._spec_draft_n_max = None
-                if normalized_spec and normalized_spec != "off":
-                    if normalized_spec == "default":
-                        cmd.append("--spec-default")
-                        self._speculative_type = "default"
-                    elif normalized_spec == "draft-mtp":
-                        # Probe binary; fail gracefully on outdated prebuilts.
-                        # Use whichever token the binary advertises
-                        # (older: draft-mtp; renamed upstream: mtp).
-                        caps = self.probe_server_capabilities(binary)
-                        mtp_token = caps.get("mtp_token") if caps else None
-                        if not mtp_token:
-                            logger.warning(
-                                "MTP GGUF detected but llama-server lacks "
-                                "--spec-type mtp/draft-mtp; run "
-                                "`unsloth studio update`. Loading without "
-                                "speculative decoding."
-                            )
-                            self._speculative_type = None
-                        else:
-                            # User override > platform default. Bench on
-                            # Qwen3.6-27B-MTP-GGUF UD-Q4_K_XL on B200 across
-                            # essay / code / story / math / science prompts
-                            # shows n_max=2 is the universal sweet spot
-                            # (1.18x-1.47x vs spec-off). At n_max=6 the essay
-                            # prompt fell BELOW spec-off (64.6 vs 79.1 t/s)
-                            # because wasted draft decode dominates once
-                            # acceptance rate drops past n=3 or so. Matches
-                            # the dataset README "n_max=2 is the sweet spot
-                            # for 36 of 42 quants".
-                            if spec_draft_n_max is not None:
-                                draft_n_max = int(spec_draft_n_max)
-                                self._spec_draft_n_max = draft_n_max
-                            else:
-                                draft_n_max = 2 if gpus else 3
-                            # MTP requires post-rename llama-server (MTP
-                            # merge #22673 landed after the rename), so
-                            # --spec-draft-n-max is always real here;
-                            # still resolve via probe for symmetry.
-                            n_max_flag = (
-                                caps.get("spec_draft_n_max_flag")
-                                or "--spec-draft-n-max"
-                            )
-                            if gpus:
-                                cmd.extend(
-                                    [
-                                        "--spec-type",
-                                        mtp_token,
-                                        n_max_flag,
-                                        str(draft_n_max),
-                                    ]
-                                )
-                            else:
-                                # CPU/Mac: chain ngram-mod + MTP in one
-                                # comma-separated --spec-type (not repeated).
-                                # ngram-mod knobs match llama.cpp defaults
-                                # (n-match 24, n-min 48, n-max 64).
-                                ngram_knobs = _build_ngram_mod_flags(caps)
-                                if ngram_knobs:
-                                    spec_value = f"ngram-mod,{mtp_token}"
-                                else:
-                                    # Binary has no usable ngram-mod knob
-                                    # surface; degrade to MTP-only so the
-                                    # spec block still engages.
-                                    logger.warning(
-                                        "llama-server lacks ngram-mod tuning "
-                                        "flags; loading MTP only (no ngram chain)"
-                                    )
-                                    spec_value = mtp_token
-                                cmd.extend(
-                                    [
-                                        "--spec-type",
-                                        spec_value,
-                                        n_max_flag,
-                                        str(draft_n_max),
-                                    ]
-                                )
-                                cmd.extend(ngram_knobs)
-                            self._speculative_type = "draft-mtp"
-                            logger.info(
-                                f"Spec decoding: {mtp_token} ({'GPU' if gpus else 'CPU/Mac'})"
-                            )
-                    elif normalized_spec in _valid_spec_types:
-                        cmd.extend(["--spec-type", normalized_spec])
-                        if normalized_spec == "ngram-mod":
-                            # Probe so we use the right flag set: new
-                            # binaries take --spec-ngram-mod-n-*, legacy
-                            # binaries take --spec-ngram-size-n /
-                            # --draft-min / --draft-max. The two sets
-                            # carry the same defaults.
-                            ngram_caps = self.probe_server_capabilities(binary)
-                            ngram_knobs = _build_ngram_mod_flags(ngram_caps)
-                            if not ngram_knobs:
-                                logger.warning(
-                                    "llama-server lacks ngram-mod tuning "
-                                    "flags; loading without --spec-ngram-mod-* knobs"
-                                )
-                            cmd.extend(ngram_knobs)
-                        self._speculative_type = normalized_spec
-                    else:
-                        self._speculative_type = None
-                else:
-                    self._speculative_type = None
+                cmd.extend(spec_flags)
 
                 # Apply custom chat template override if provided
                 self._chat_template_override = chat_template_override
@@ -3316,6 +3217,223 @@ class LlamaCppBackend:
                 )
                 return True
 
+    def _build_speculative_flags(
+        self,
+        *,
+        speculative_type: Optional[str],
+        spec_draft_n_max: Optional[int],
+        extra_args: Optional[List[str]],
+        model_identifier: str,
+        model_path: Optional[str],
+        gpus: bool,
+        binary: Optional[str],
+    ) -> List[str]:
+        """Return the llama-server flag list for the requested spec mode.
+
+        Side effects: sets ``self._speculative_type`` (resolved internal
+        emit), ``self._requested_spec_mode`` (canonical UI mode for the
+        status round-trip), and ``self._spec_draft_n_max`` (user override
+        only; None when the platform default applies).
+
+        Speculative decoding (n-gram self-speculation, zero VRAM cost):
+        ngram-mod uses a ~16 MB shared hash pool, constant memory /
+        complexity, variable draft lengths. Helps most when the model
+        repeats existing text (code refactor, summarisation, reasoning).
+        For general chat with low repetition, overhead is ~5 ms.
+
+        Benchmarks from upstream llama.cpp speculative-decoding PRs:
+          Scenario                        | Without | With    | Speedup
+          gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+          Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+          gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+
+        Sub-3B dense MTP regresses vs spec-off because the draft head's
+        per-token cost exceeds the acceptance savings at this scale.
+        Q4_K_XL clean bench (each prompt once after an unrelated warmup)
+        on B200 + x86 CPU:
+          0.8B GPU: draft-mtp n=2 = 0.58x vs OFF; ngram-only = 1.10x
+          2B   GPU: draft-mtp n=2 = 0.82x vs OFF; OFF or ngram = 1.00x
+          0.8B CPU: chained n=2   = 0.86x vs OFF; ngram-only = 1.19x
+          2B   CPU: chained n=2   = 0.83x vs OFF; ngram-only = 1.01x
+          4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
+        Auto falls back to ngram-mod (zero-VRAM, near-zero idle cost on
+        diverse content); forced MTP variants engage anyway and just log
+        a warning per the user's choice.
+        """
+        flags: List[str] = []
+        # Reset; emit branches re-set on the resolved emission.
+        self._spec_draft_n_max = None
+        self._speculative_type = None
+
+        # Canonical UI-facing requested mode: auto / mtp / ngram /
+        # mtp+ngram / off / ngram-simple. Legacy values are mapped via
+        # _canonicalize_spec_mode (default->auto, draft-mtp->mtp,
+        # ngram-mod->ngram, "ngram-mod,draft-mtp"->mtp+ngram).
+        canonical_mode = _canonicalize_spec_mode(speculative_type)
+        is_mtp_model = bool(self._nextn_predict_layers) or (
+            _is_mtp_model_name(model_identifier, model_path)
+        )
+        user_owns_spec_type = _extra_args_set_spec_type(extra_args)
+        _mtp_size_b = _extract_model_size_b(model_identifier)
+        _mtp_too_small = _mtp_size_b is not None and _mtp_size_b < 3.0
+
+        if user_owns_spec_type:
+            # User --spec-type in extra_args wins outright; suppress
+            # auto-emit so we don't emit a duplicate / conflicting
+            # spec block. Record requested mode as None.
+            self._requested_spec_mode = None
+            return flags
+
+        effective_mode = canonical_mode or "auto"
+        self._requested_spec_mode = effective_mode
+
+        def _resolved_draft_n_max() -> int:
+            # User override wins; else platform default (the B200 / x86
+            # clean-sweep sweet spot from PR #5582 is n=2 GPU, n=3 CPU;
+            # raising past 3 starts to regress on essay-style
+            # low-acceptance prompts).
+            if spec_draft_n_max is not None:
+                n = int(spec_draft_n_max)
+                self._spec_draft_n_max = n
+                return n
+            return 2 if gpus else 3
+
+        def _emit_mtp(*, chain_ngram: bool) -> bool:
+            """Append --spec-type mtp[/draft-mtp][,ngram-mod] + n-max."""
+            caps = self.probe_server_capabilities(binary)
+            mtp_token = caps.get("mtp_token") if caps else None
+            if not mtp_token:
+                logger.warning(
+                    "Requested MTP speculative decoding but "
+                    "llama-server lacks --spec-type mtp/draft-mtp; "
+                    "run `unsloth studio update`. Loading without "
+                    "speculative decoding."
+                )
+                return False
+            draft_n_max = _resolved_draft_n_max()
+            n_max_flag = (
+                caps.get("spec_draft_n_max_flag")
+                or "--spec-draft-n-max"
+            )
+            if chain_ngram:
+                ngram_knobs = _build_ngram_mod_flags(caps)
+                if ngram_knobs:
+                    spec_value = f"ngram-mod,{mtp_token}"
+                else:
+                    logger.warning(
+                        "llama-server lacks ngram-mod tuning "
+                        "flags; loading MTP only (no ngram chain)"
+                    )
+                    spec_value = mtp_token
+                flags.extend(
+                    [
+                        "--spec-type",
+                        spec_value,
+                        n_max_flag,
+                        str(draft_n_max),
+                    ]
+                )
+                flags.extend(ngram_knobs)
+            else:
+                flags.extend(
+                    [
+                        "--spec-type",
+                        mtp_token,
+                        n_max_flag,
+                        str(draft_n_max),
+                    ]
+                )
+            self._speculative_type = "draft-mtp"
+            chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
+            logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
+            return True
+
+        def _emit_ngram_mod() -> bool:
+            """Append --spec-type ngram-mod + flag-set knobs."""
+            ngram_caps = self.probe_server_capabilities(binary)
+            ngram_knobs = _build_ngram_mod_flags(ngram_caps)
+            flags.extend(["--spec-type", "ngram-mod"])
+            if not ngram_knobs:
+                logger.warning(
+                    "llama-server lacks ngram-mod tuning "
+                    "flags; loading without --spec-ngram-mod-* knobs"
+                )
+            flags.extend(ngram_knobs)
+            self._speculative_type = "ngram-mod"
+            logger.info("Spec decoding: ngram-mod")
+            return True
+
+        if effective_mode == "off":
+            return flags  # nothing to emit
+        if effective_mode == "ngram-simple":
+            flags.extend(["--spec-type", "ngram-simple"])
+            self._speculative_type = "ngram-simple"
+            return flags
+        if effective_mode == "ngram":
+            _emit_ngram_mod()
+            return flags
+        if effective_mode == "mtp":
+            if _mtp_too_small:
+                logger.warning(
+                    f"Forcing MTP on a {_mtp_size_b:.1f}B model; "
+                    "the bench shows draft-mtp regresses below 3B. "
+                    "Engaging anyway (user override)."
+                )
+            elif not is_mtp_model:
+                logger.warning(
+                    "Forcing MTP on a non-MTP GGUF; llama-server may "
+                    "fall back to spec-off if no nextn head is present. "
+                    "Engaging anyway (user override)."
+                )
+            _emit_mtp(chain_ngram = False)
+            return flags
+        if effective_mode == "mtp+ngram":
+            if _mtp_too_small:
+                logger.warning(
+                    f"Forcing MTP+Ngram on a {_mtp_size_b:.1f}B model; "
+                    "the bench shows the chain regresses below 3B. "
+                    "Engaging anyway (user override)."
+                )
+            elif not is_mtp_model:
+                logger.warning(
+                    "Forcing MTP+Ngram on a non-MTP GGUF; llama-server "
+                    "may fall back to ngram-only if no nextn head is "
+                    "present. Engaging anyway (user override)."
+                )
+            _emit_mtp(chain_ngram = True)
+            return flags
+
+        # effective_mode == "auto": today's promotion path. llama.cpp
+        # #22673: MTP is compatible with mmproj, so there's no vision gate.
+        if is_mtp_model and not _mtp_too_small:
+            # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
+            _emit_mtp(chain_ngram = not gpus)
+        elif is_mtp_model and _mtp_too_small:
+            # Sub-3B fallback: drop the MTP draft head, keep ngram-mod
+            # when the binary supports it.
+            _small_caps = self.probe_server_capabilities(binary)
+            if _small_caps.get("supports_ngram_mod"):
+                logger.info(
+                    f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
+                    "is below the 3B speedup threshold; using ngram-mod "
+                    "only (zero-VRAM, no draft head). Override via "
+                    "--spec-type or the Studio Speculative Decoding "
+                    "dropdown."
+                )
+                _emit_ngram_mod()
+            else:
+                logger.info(
+                    f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
+                    "is below the 3B speedup threshold and the bundled "
+                    "llama-server does not advertise ngram-mod; "
+                    "auto-disabling speculative decoding."
+                )
+        else:
+            # Non-MTP model: let llama-server choose its default strategy.
+            flags.append("--spec-default")
+            self._speculative_type = "default"
+        return flags
+
     def _already_in_target_state(
         self,
         *,
@@ -3365,38 +3483,29 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        # Mirror load_model's auto-promotion. Vision is no longer a
-        # spec blocker (llama.cpp #22673: MTP is compatible with mmproj).
-        # Sub-3B MTP models fall back to ngram-mod (or off if the binary
-        # has no ngram support).
-        raw_spec = _norm(speculative_type)
-        req_spec = raw_spec or "off"
-        _reload_size_b = _extract_model_size_b(model_identifier)
-        _reload_too_small = _reload_size_b is not None and _reload_size_b < 3.0
-        if (
-            raw_spec in (None, "default")
-            and _is_mtp_model_name(model_identifier, gguf_path)
-            and not _extra_args_set_spec_type(extra_args)
-        ):
-            if not _reload_too_small:
-                req_spec = "draft-mtp"
-            else:
-                # Sub-3B reload would have come up under load_model's
-                # fallback policy (ngram-mod if supported, else off).
-                _binary = self._find_llama_server_binary()
-                _caps = self.probe_server_capabilities(_binary) if _binary else None
-                if _caps and _caps.get("supports_ngram_mod"):
-                    req_spec = "ngram-mod"
-                # else: leave req_spec as "off"
-        backend_spec = _norm(self._speculative_type) or "off"
-        if req_spec != backend_spec:
+        # Compare on the canonical UI-facing mode the user requested.
+        # When extra_args carries --spec-type, the route-layer code paths
+        # bypass the dropdown anyway and the backend stores
+        # _requested_spec_mode = None; the request mirrors that by
+        # canonicalising to None.
+        if _extra_args_set_spec_type(extra_args):
+            req_mode = None
+        else:
+            req_mode = _canonicalize_spec_mode(speculative_type) or "auto"
+        backend_mode = self._requested_spec_mode
+        if req_mode != backend_mode:
             return False
 
-        # spec_draft_n_max only matters when MTP is engaged; None on
-        # either side means "platform default" and matches anything.
-        if req_spec == "draft-mtp" and spec_draft_n_max is not None:
-            if int(spec_draft_n_max) != (self._spec_draft_n_max or 0):
-                return False
+        # spec_draft_n_max only matters when an MTP variant is actually
+        # engaged. Compare on the resolved spec rather than the requested
+        # mode so an Auto request that auto-promoted to draft-mtp under
+        # the hood still bounces a reload when the user changes n_max.
+        if (
+            self._speculative_type == "draft-mtp"
+            and spec_draft_n_max is not None
+            and int(spec_draft_n_max) != (self._spec_draft_n_max or 0)
+        ):
+            return False
 
         if (self._chat_template_override or None) != (chat_template_override or None):
             return False
@@ -3464,6 +3573,7 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._speculative_type = None
+            self._requested_spec_mode = None
             self._spec_draft_n_max = None
             self._n_layers = None
             self._n_kv_heads = None

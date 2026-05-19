@@ -70,7 +70,16 @@ class LoadRequest(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Speculative decoding mode for GGUF models (e.g. 'ngram-simple', 'ngram-mod'). Ignored for non-GGUF and vision models.",
+        description = (
+            "Speculative decoding mode for GGUF models. Canonical values: "
+            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
+            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
+            "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
+            "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
+            "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
+            "still accepted. Ignored for non-GGUF and vision models."
+        ),
     )
     spec_draft_n_max: Optional[int] = Field(
         None,
@@ -80,8 +89,8 @@ class LoadRequest(BaseModel):
             "Max draft tokens per step for MTP speculative decoding "
             "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
             "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
-            "quants). Ignored when speculative_type resolves to off or to "
-            "a non-MTP mode."
+            "quants). Only applied when speculative_type resolves to "
+            "'mtp' or 'mtp+ngram'."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(
@@ -230,7 +239,12 @@ class LoadResponse(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = (
+            "Canonical UI-facing requested speculative decoding mode "
+            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "'ngram-simple'), round-tripped from the original LoadRequest "
+            "via _canonicalize_spec_mode. None when no model is loaded."
+        ),
     )
     spec_draft_n_max: Optional[int] = Field(
         None,
@@ -359,7 +373,12 @@ class InferenceStatusResponse(BaseModel):
     )
     speculative_type: Optional[str] = Field(
         None,
-        description = "Active speculative decoding mode (e.g. 'ngram-simple', 'ngram-mod'), or None if disabled",
+        description = (
+            "Canonical UI-facing requested speculative decoding mode "
+            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "'ngram-simple'), round-tripped from the original LoadRequest. "
+            "None when no model is loaded."
+        ),
     )
     spec_draft_n_max: Optional[int] = Field(
         None,

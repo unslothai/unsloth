@@ -141,10 +141,30 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
 }
 
+// Canonicalises any value the backend reports (or persisted state holds)
+// onto the five UI-facing modes the Speculative Decoding dropdown
+// understands: "auto" / "mtp" / "ngram" / "mtp+ngram" / "off" / null.
+// Mirrors backend _canonicalize_spec_mode so old persisted "default" /
+// "draft-mtp" / "ngram-mod" / chain values round-trip cleanly.
 function normalizeSpeculativeType(v: string | null | undefined): string | null {
   if (v == null) return null;
-  if (v === "default" || v === "off") return v;
-  return "default";
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "ngram-simple") return "ngram-simple";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod") return "ngram";
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older persisted state).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
 }
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
