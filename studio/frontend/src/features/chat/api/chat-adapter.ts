@@ -624,6 +624,17 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
+    // Cap also gates the default download so the total /api/inference/load
+    // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+      toast.dismiss(toastId);
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+      };
+    }
+
     // No cached models found — try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
@@ -642,6 +653,7 @@ async function autoLoadSmallestModel(): Promise<{
         toast.dismiss(toastId);
         return { loaded: false, blockedByTrustRemoteCode };
       }
+      loadAttempts += 1;
       const loadResp = await loadModel({
         model_path: "unsloth/gemma-4-E2B-it-GGUF",
         hf_token: hfToken,
