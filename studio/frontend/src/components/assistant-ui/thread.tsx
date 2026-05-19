@@ -699,9 +699,11 @@ const ReasoningToggle: FC = () => {
       aria-label={
         reasoningLockedOn
           ? "Thinking is required for this model"
-          : effectiveReasoningEnabled
-            ? "Disable thinking"
-            : "Enable thinking"
+          : disabled
+            ? "Thinking (model not loaded)"
+            : effectiveReasoningEnabled
+              ? "Disable thinking"
+              : "Enable thinking"
       }
     >
       {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
@@ -985,15 +987,59 @@ const MessageError: FC = () => {
   );
 };
 
+// Heuristic: text the model emits before a tool actually starts often
+// includes the opening of one of the tool-call markup shapes the
+// backend strips. When that shape appears in the assistant's
+// content but no tool-call PART has landed yet (because the backend
+// only emits tool_start after the markup parses cleanly), the user
+// otherwise stares at a frozen "Generating..." for the whole time it
+// takes the model to finish writing the tool call.
+const TOOL_CALL_PROBE = /<tool_call>|<function=|<\|tool_call>|<\|python_tag\|>|\[TOOL_CALLS\]/i;
+
 const GeneratingIndicator: FC = () => {
-  const show = useAuiState(
-    ({ message }) =>
-      message.content.length === 0 && message.status?.type === "running",
-  );
-  if (!show) {
+  const phase = useAuiState(({ message }) => {
+    if (message.status?.type !== "running") return null;
+    const content = message.content;
+    if (!content || content.length === 0) return "generating";
+    // If every part is empty (placeholder text added but no chars yet)
+    // we still want to surface generating activity.
+    let allEmpty = true;
+    let sawToolSignal = false;
+    for (const p of content) {
+      const t = (p as { type?: string }).type;
+      if (t === "text" || t === "reasoning") {
+        const text = ((p as { text?: string }).text ?? "");
+        if (text.length > 0) {
+          allEmpty = false;
+          if (TOOL_CALL_PROBE.test(text)) {
+            sawToolSignal = true;
+          }
+        }
+      } else {
+        // tool-call / source / etc. mean a real part exists; the
+        // RunningToolIndicator or message body handles those.
+        return null;
+      }
+    }
+    if (sawToolSignal) return "calling-tool";
+    if (allEmpty) return "generating";
     return null;
-  }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  });
+  if (!phase) return null;
+  return (
+    <span
+      data-slot="generating-indicator"
+      data-phase={phase}
+      className="aui-generating-indicator inline-flex items-center gap-2 text-sm text-muted-foreground"
+      aria-live="polite"
+    >
+      <span
+        aria-hidden
+        className="aui-generating-indicator-dot inline-block size-2 animate-pulse rounded-full bg-muted-foreground/60"
+      />
+      <span>{phase === "calling-tool" ? "Calling tool..." : "Generating..."}</span>
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
@@ -1011,6 +1057,73 @@ const CancelledIndicator: FC = () => {
     <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
       Cancelled.
     </span>
+  );
+};
+
+// Pins activity to the bottom of the assistant bubble so the chat
+// doesn't look frozen during the gap between "model wrote intent" and
+// "tool actually invoked", or between back-to-back tool calls.
+//
+// Scope: only fires when the tail of the message has no streaming
+// answer content yet. Once the model has emitted reasoning or non-empty
+// text after the last tool, those parts already visibly show progress
+// and the "Working..." row would be misleading.
+//
+// Return value is a string ("tool:<name>" | "working" | "") rather than
+// an object so useAuiState's referential-equality memoization holds
+// across renders -- returning a fresh object each render would invalidate
+// equality and force the component to rerender every frame.
+const RunningToolIndicator: FC = () => {
+  const signal = useAuiState(({ message }) => {
+    if (message.status?.type !== "running") return "";
+    const parts = message.parts;
+    // Walk from the tail. The first meaningful part decides what's
+    // currently visible to the user: a streaming text/reasoning part
+    // means the answer is already moving and the indicator must stay
+    // hidden; a tool-call part means we're either mid-tool (specific
+    // "Running ..." label) or in a pending gap before the next answer
+    // segment ("Working...").
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      const p = parts[i] as
+        | { type?: string; text?: string; toolName?: string; status?: { type?: string } }
+        | undefined;
+      const t = p?.type;
+      if (t === "text") {
+        // Non-empty text after the last tool -> model is streaming the
+        // final answer. Skip empty text placeholders that some adapters
+        // emit before the first delta.
+        if (typeof p?.text === "string" && p.text.length > 0) return "";
+        continue;
+      }
+      if (t === "reasoning") return "";
+      if (t === "tool-call") {
+        if (p?.status?.type === "running") return `tool:${p.toolName ?? "tool"}`;
+        return "working";
+      }
+      // Other part types (source attachments, etc.) -- keep walking.
+    }
+    return "";
+  });
+  if (!signal) return null;
+  const toolName = signal.startsWith("tool:") ? signal.slice(5) : null;
+  return (
+    <div
+      data-slot="running-tool-indicator"
+      className="aui-running-tool-indicator mt-2 flex items-center gap-2 text-sm text-muted-foreground"
+      aria-live="polite"
+    >
+      <span
+        aria-hidden
+        className="aui-running-tool-indicator-dot inline-block size-2 animate-pulse rounded-full bg-muted-foreground/60"
+      />
+      {toolName ? (
+        <span>
+          Running <span className="font-mono text-xs">{toolName}</span>...
+        </span>
+      ) : (
+        <span>Working...</span>
+      )}
+    </div>
   );
 };
 
@@ -1042,6 +1155,7 @@ const AssistantMessage: FC = () => {
           }}
         />
         <SourcesGroup />
+        <RunningToolIndicator />
         <MessageError />
       </div>
 

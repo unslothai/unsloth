@@ -989,9 +989,11 @@ export function SharedComposer({
               aria-label={
                 reasoningLockedOn
                   ? "Thinking is required for this model"
-                  : effectiveReasoningEnabled
-                    ? "Disable thinking"
-                    : "Enable thinking"
+                  : reasoningDisabled
+                    ? "Thinking (model not loaded)"
+                    : effectiveReasoningEnabled
+                      ? "Disable thinking"
+                      : "Enable thinking"
               }
             >
               {reasoningLockedOn ||
@@ -1047,7 +1049,13 @@ export function SharedComposer({
             }}
             className="composer-pill-btn"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+            aria-label={
+              searchDisabled
+                ? "Web search (unavailable)"
+                : toolsEnabled
+                  ? "Disable web search"
+                  : "Enable web search"
+            }
           >
             <GlobeIcon className="size-3.5" />
             <span>Search</span>
@@ -1058,7 +1066,13 @@ export function SharedComposer({
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+            aria-label={
+              codeDisabled
+                ? "Code execution (unavailable)"
+                : codeToolsEnabled
+                  ? "Disable code execution"
+                  : "Enable code execution"
+            }
           >
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
