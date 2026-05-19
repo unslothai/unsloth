@@ -8,6 +8,7 @@ import sys
 from unittest import mock
 
 from utils import wheel_utils
+from utils.native_path_leases import LEASE_SECRET_ENV
 from utils.wheel_utils import KernelPackageSpec
 
 
@@ -394,3 +395,100 @@ def test_direct_wheel_tries_uv_then_pip(monkeypatch):
     assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
     assert "--no-deps" not in calls[1]
     assert calls[1][-1] == calls[0][-1]
+
+
+def _hip_env() -> dict[str, str]:
+    # ROCm env: hip_version set, cuda_major empty -> no wheel candidate.
+    return {
+        "python_tag": "cp313",
+        "torch_mm": "2.10",
+        "cuda_major": "",
+        "cxx11abi": "TRUE",
+        "platform_tag": "linux_x86_64",
+        "hip_version": "6.2",
+    }
+
+
+def test_rocm_without_hipcc_skips_source_build(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _hip_env())
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
+    # No hipcc on PATH.
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: None)
+
+    statuses: list[str] = []
+    run_mock = mock.Mock()
+    assert (
+        wheel_utils.install_optional_kernel(
+            wheel_utils.FLASH_ATTN_SPEC,
+            python_executable = sys.executable,
+            use_uv = False,
+            allow_pypi_fallback = True,
+            run = run_mock,
+            status = statuses.append,
+        )
+        is False
+    )
+    run_mock.assert_not_called()
+    assert any("hipcc" in s.lower() for s in statuses)
+
+
+def test_rocm_with_hipcc_injects_gcc_install_dir_into_subprocess_env(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _hip_env())
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
+    monkeypatch.setattr(
+        wheel_utils.shutil,
+        "which",
+        lambda name: "/usr/bin/hipcc" if name == "hipcc" else None,
+    )
+    monkeypatch.setattr(
+        wheel_utils,
+        "_hipcc_gcc_install_dir",
+        lambda: "/usr/lib/gcc/x86_64-linux-gnu/13",
+    )
+    monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    assert (
+        wheel_utils.install_optional_kernel(
+            wheel_utils.FLASH_ATTN_SPEC,
+            python_executable = sys.executable,
+            use_uv = False,
+            allow_pypi_fallback = True,
+            run = fake_run,
+        )
+        is True
+    )
+    assert captured["kwargs"]["timeout"] == 1800
+    env = captured["kwargs"]["env"]
+    assert "--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13" in env["HIPCC_COMPILE_FLAGS_APPEND"]
+
+
+def test_install_subprocess_env_strips_native_path_lease_secret(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _env())
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: None)
+    monkeypatch.setenv(LEASE_SECRET_ENV, "test-only-secret-value")
+
+    seen_env: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        seen_env.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    wheel_utils.install_optional_kernel(
+        wheel_utils.FLASH_ATTN_SPEC,
+        python_executable = sys.executable,
+        use_uv = False,
+        allow_pypi_fallback = False,
+        run = fake_run,
+    )
+    assert seen_env, "subprocess.run must receive a non-empty env"
+    assert LEASE_SECRET_ENV not in seen_env
