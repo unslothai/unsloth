@@ -994,6 +994,22 @@
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;
 	}
+
+	/* Long lines inside fenced code blocks should scroll horizontally
+	 * within the block, not push the chat column wider. Streamdown's
+	 * default <pre> ships with `overflow-x: visible` + `white-space:
+	 * pre` + `word-break: normal`, so an unbreakable run (long URL,
+	 * hex string, single-line curl command) escapes the bubble to the
+	 * right and reflows the message column. Switch the inner <pre> to
+	 * `overflow-x: auto` so the scrollbar appears on the code block
+	 * itself; the parent stays clipped so it cannot widen the bubble. */
+	.aui-thread-root [data-streamdown="code-block"] pre {
+		overflow-x: auto;
+	}
+	.aui-thread-root [data-streamdown="code-block"] {
+		max-width: 100%;
+		overflow-x: hidden;
+	}
 }
 
 /* Lighter shadow + tighter vertical padding than Sonner's defaults; !important because Sonner injects its base rules at runtime. */
