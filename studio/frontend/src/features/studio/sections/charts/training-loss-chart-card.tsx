@@ -70,11 +70,11 @@ export function TrainingLossChartCard({
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
-    <Card data-tour="studio-training-loss" size="sm">
+    <Card data-tour="studio-training-loss" size="sm" className="h-full">
       <CardHeader>
         <CardTitle className="text-sm">Training Loss</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex-1 min-h-0">
         <ChartContainer config={lossConfig} className={CHART_CONTAINER_CLASS}>
           <LineChart
             data={data}

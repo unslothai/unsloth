@@ -45,6 +45,22 @@ def run(args):
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
+    # Activation capture setup (optional)
+    capture_callback = None
+    if args.capture_activations:
+        from unsloth import (
+            ActivationCaptureConfig,
+            ActivationCapture,
+            ActivationCaptureCallback,
+        )
+
+        _capture_cfg = ActivationCaptureConfig(
+            output_dir = args.capture_output_dir,
+            capture_interval = args.capture_interval,
+            max_channels = args.capture_max_channels,
+        )
+        # Capture object is created after the model is loaded (see below)
+
     # Load model and tokenizer
     device_map, distributed = prepare_device_map()
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -119,14 +135,26 @@ def run(args):
             if use_modelscope:
                 from modelscope import MsDataset
 
-                dataset = MsDataset.load(args.dataset, split = "train")
+                dataset = MsDataset.load(args.dataset, split = args.dataset_split)
             else:
                 # Existing HuggingFace dataset logic
-                dataset = load_dataset(args.dataset, split = "train")
+                dataset = load_dataset(args.dataset, split = args.dataset_split)
 
-            # Apply formatting for structured datasets
-            dataset = dataset.map(formatting_prompts_func, batched = True)
+            # Apply formatting for structured datasets (skip if 'text' column already present)
+            if "text" not in dataset.column_names:
+                dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
+
+    # Attach activation capture now that model exists
+    if args.capture_activations:
+        from unsloth import ActivationCapture, ActivationCaptureCallback
+
+        capture = ActivationCapture(model, _capture_cfg)
+        capture_callback = ActivationCaptureCallback(capture)
+        print(
+            f"🦥 Unsloth: Activation capture enabled "
+            f"(every {args.capture_interval} steps → '{args.capture_output_dir}')"
+        )
 
     # Load dataset using smart loader
     dataset = load_dataset_smart(args)
@@ -156,14 +184,25 @@ def run(args):
     )
 
     # Initialize trainer
+    _callbacks = []
+    if capture_callback is not None:
+        _callbacks.append(capture_callback)
+
     trainer = SFTTrainer(
         model = model,
         processing_class = tokenizer,
         train_dataset = dataset,
         args = training_args,
+        callbacks = _callbacks if _callbacks else None,
     )
 
     trainer.train()
+
+    if args.capture_activations:
+        print(
+            f"\n🦥 Activation data saved to '{args.capture_output_dir}'.\n"
+            f"   Run: python visualize_activations.py {args.capture_output_dir}"
+        )
 
     # Save model
     if args.save_model:
@@ -240,6 +279,12 @@ if __name__ == "__main__":
         type = str,
         default = "yahma/alpaca-cleaned",
         help = "Huggingface dataset to use for training",
+    )
+    model_group.add_argument(
+        "--dataset_split",
+        type = str,
+        default = "train",
+        help = "Dataset split to use (default: train)",
     )
 
     lora_group = parser.add_argument_group(
@@ -467,6 +512,34 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--stride", type = int, default = 512, help = "Overlap between chunks"
+    )
+
+    viz_group = parser.add_argument_group(
+        "🧠 Activation Visualization Options",
+        "Capture hidden-state statistics during training for visualization.",
+    )
+    viz_group.add_argument(
+        "--capture_activations",
+        action = "store_true",
+        help = "Enable neuron activation capture for visualization",
+    )
+    viz_group.add_argument(
+        "--capture_output_dir",
+        type = str,
+        default = "activation_logs",
+        help = "Directory to write activation_log.jsonl + metadata.json (default: activation_logs)",
+    )
+    viz_group.add_argument(
+        "--capture_interval",
+        type = int,
+        default = 10,
+        help = "Record activations every N optimizer steps (default: 10)",
+    )
+    viz_group.add_argument(
+        "--capture_max_channels",
+        type = int,
+        default = 64,
+        help = "Number of hidden-state channels tracked per layer (default: 64)",
     )
 
     args = parser.parse_args()

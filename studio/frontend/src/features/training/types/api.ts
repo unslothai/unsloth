@@ -57,6 +57,7 @@ export interface TrainingStartRequest {
   wandb_project: string | null;
   enable_tensorboard: boolean;
   tensorboard_dir: string | null;
+  enable_activation_capture: boolean;
   resume_from_checkpoint?: string | null;
 }
 
