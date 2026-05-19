@@ -363,8 +363,8 @@ const VIEW_MODES: ViewModeConfig[] = [
   {
     key: "activations",
     label: "Activations",
-    latex: "\\bar{a} \\equiv \\frac{1}{C}\\sum_{i=1}^{C}|x_i|",
-    description: "C = sampled channels, xᵢ = activation of channel i. How strongly each neuron fires.",
+    latex: "\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]",
+    description: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value from the activation log — how strongly each channel fires on average.",
   },
   {
     key: "gradients",
@@ -507,6 +507,7 @@ function HeatmapCanvas({
   overlaySets,
   expanded = false,
   outlierBlend = false,
+  viewMode = "activations",
 }: {
   values: Record<string, number[]> | null;
   capturedChannels: number[];
@@ -514,6 +515,7 @@ function HeatmapCanvas({
   overlaySets: OverlaySets;
   expanded?: boolean;
   outlierBlend?: boolean;
+  viewMode?: ViewMode;
 }): ReactElement {
   const canvasRef         = useRef<HTMLCanvasElement>(null);
   const wrapperRef        = useRef<HTMLDivElement>(null);
@@ -613,9 +615,15 @@ function HeatmapCanvas({
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 
   if (!values) {
+    const nullMsg =
+      viewMode === "gradients"
+        ? "Gradient data not captured. Enable capture_gradients in activation capture settings."
+        : viewMode === "lora_norms"
+          ? "LoRA norm data not captured. Enable capture_lora_norms in activation capture settings."
+          : "No activation data yet";
     return (
-      <div className="flex h-[120px] w-full items-center justify-center rounded border border-border/40">
-        <p className="text-xs text-muted-foreground">No activation data yet</p>
+      <div className="flex h-[120px] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
+        <p className="text-xs text-muted-foreground">{nullMsg}</p>
       </div>
     );
   }
@@ -1005,6 +1013,15 @@ export function NeuronHeatmapSection({
             />
           ))}
         </div>
+
+        {/* Scalar-mode info banner */}
+        {(viewMode === "gradients" || viewMode === "lora_norms") && (
+          <p className="mt-1 text-[10px] text-muted-foreground/70 leading-relaxed">
+            {viewMode === "gradients"
+              ? "Each row is the gradient norm ‖∇L‖₂ for that layer — a per-layer scalar broadcast across all channels. Brighter rows = larger gradient flow."
+              : "Each row is the LoRA adapter Frobenius norm ‖ΔW‖_F for that layer — a per-layer scalar broadcast across channels. Darker rows = adapter barely moving."}
+          </p>
+        )}
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
@@ -1014,6 +1031,7 @@ export function NeuronHeatmapSection({
           activeOverlays={activeOverlays}
           overlaySets={overlaySets}
           outlierBlend={outlierBlend}
+          viewMode={viewMode}
         />
 
         {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
@@ -1046,6 +1064,7 @@ export function NeuronHeatmapSection({
               overlaySets={overlaySets}
               expanded={true}
               outlierBlend={outlierBlend}
+              viewMode={viewMode}
             />
             {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
             {!isTraining && records.length > 1 && (

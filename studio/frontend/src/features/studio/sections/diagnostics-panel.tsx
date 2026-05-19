@@ -47,7 +47,7 @@ interface InfoDialogProps {
 export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogProps): ReactElement {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(90vw,640px)] max-h-[80vh] overflow-y-auto">
+      <DialogContent className="w-[min(92vw,900px)] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-bold">How to read Interpretability</DialogTitle>
         </DialogHeader>
@@ -77,8 +77,8 @@ export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogPro
             {[
               {
                 label: "Activations (default)",
-                latex: "\\bar{a} \\equiv \\frac{1}{C}\\sum_{i=1}^{C}|x_i|",
-                desc: "C = sampled channels, xᵢ = activation of channel i. How strongly each neuron fires on average.",
+                latex: "\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]",
+                desc: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value stored in the activation log — the average absolute magnitude per channel.",
               },
               {
                 label: "Gradients",

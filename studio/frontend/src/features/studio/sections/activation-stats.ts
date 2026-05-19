@@ -7,6 +7,9 @@ import type { ActivationRecord } from "@/features/training/api/train-api";
 
 export const DEAD_THRESHOLD = 0.01;
 export const CONSTANT_CV_THRESHOLD = 0.05;
+// Require at least this many steps before labelling a neuron "constant".
+// With only 2–3 samples the CV is trivially low and produces false positives.
+export const MIN_STEPS_FOR_CONSTANT = 5;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -64,7 +67,7 @@ export function computeLayerStats(records: ActivationRecord[]): LayerStats[] {
         deadCount++;
         continue;
       }
-      if (vals.length >= 2) {
+      if (vals.length >= MIN_STEPS_FOR_CONSTANT) {
         const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
         const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
         const cv = mean > 0 ? std / mean : 0;
@@ -114,7 +117,7 @@ export function computeOverlaySets(
         continue;
       }
 
-      if (vals.length >= 2) {
+      if (vals.length >= MIN_STEPS_FOR_CONSTANT) {
         const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
         const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
         const cv = mean > 0 ? std / mean : 0;
