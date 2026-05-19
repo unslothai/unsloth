@@ -21,7 +21,12 @@ from collections import deque
 import time
 import os
 
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+_OFFLINE_VALS = {"1", "true", "yes", "on"}
+if not (
+    os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+    or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+):
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import requests
 import torch
 import gc
