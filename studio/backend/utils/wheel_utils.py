@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -350,6 +351,20 @@ def _pypi_install_command(
     return cmd
 
 
+def _hipcc_gcc_install_dir() -> str | None:
+    """Return a gcc install dir whose matching libstdc++ headers exist."""
+    if not sys.platform.startswith("linux"):
+        return None
+    if platform.machine().lower() != "x86_64":
+        return None
+    for version in (14, 13, 12, 11):
+        runtime = f"/usr/lib/gcc/x86_64-linux-gnu/{version}/include"
+        headers = f"/usr/include/c++/{version}"
+        if os.path.isdir(runtime) and os.path.isdir(headers):
+            return f"/usr/lib/gcc/x86_64-linux-gnu/{version}"
+    return None
+
+
 def install_optional_kernel(
     spec: KernelPackageSpec,
     *,
@@ -427,6 +442,16 @@ def install_optional_kernel(
         uv_needs_system = uv_needs_system,
         is_hip = is_hip,
     )
+    pypi_cmds = [pypi_cmd]
+    if pypi_cmd[:3] == ["uv", "pip", "install"]:
+        pip_cmd = _pypi_install_command(
+            spec,
+            python_executable = python_executable,
+            use_uv = False,
+            uv_needs_system = uv_needs_system,
+            is_hip = is_hip,
+        )
+        pypi_cmds.append(pip_cmd)
 
     run_kwargs: dict[str, object] = {
         "stdout": subprocess.PIPE,
@@ -436,52 +461,82 @@ def install_optional_kernel(
     }
     if is_hip:
         run_kwargs["timeout"] = 1800
+        existing_flags = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
+        if "--gcc-install-dir" not in existing_flags:
+            gcc_dir = _hipcc_gcc_install_dir()
+            if gcc_dir is not None:
+                env_with_gcc = dict(run_kwargs["env"])  # type: ignore[arg-type]
+                appended = (f"{existing_flags} --gcc-install-dir={gcc_dir}").strip()
+                env_with_gcc["HIPCC_COMPILE_FLAGS_APPEND"] = appended
+                run_kwargs["env"] = env_with_gcc
+                _logger.info(
+                    "HIP source build for %s: appended "
+                    "--gcc-install-dir=%s to HIPCC_COMPILE_FLAGS_APPEND",
+                    spec.display_name,
+                    gcc_dir,
+                )
 
-    try:
-        result = run(pypi_cmd, **run_kwargs)
-    except subprocess.TimeoutExpired:
-        _logger.error(
-            "%s installation timed out after %ds",
-            spec.display_name,
-            run_kwargs.get("timeout"),
-        )
-        if status is not None:
-            status(
-                f"{spec.display_name} installation timed out after "
-                f"{run_kwargs.get('timeout')}s"
-            )
-        return False
-
-    if result.returncode != 0:
-        if is_hip:
-            error_lines = (result.stdout or "").strip().splitlines()
-            snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
+    last_result: subprocess.CompletedProcess[str] | None = None
+    for cmd in pypi_cmds:
+        try:
+            result = run(cmd, **run_kwargs)
+        except subprocess.TimeoutExpired:
             _logger.error(
-                "Failed to compile %s for ROCm:\n%s",
+                "%s installation timed out after %ds",
                 spec.display_name,
-                result.stdout,
+                run_kwargs.get("timeout"),
             )
             if status is not None:
                 status(
-                    f"Failed to compile {spec.display_name} for ROCm. "
-                    "Check that hipcc and ROCm development headers are installed.\n"
-                    f"{snippet}"
+                    f"{spec.display_name} installation timed out after "
+                    f"{run_kwargs.get('timeout')}s"
                 )
-        else:
-            _logger.error(
-                "Failed to install %s from PyPI:\n%s",
+            return False
+
+        if result.returncode == 0:
+            if is_hip:
+                _logger.info(
+                    "Compiled and installed %s from source for ROCm",
+                    spec.display_name,
+                )
+            else:
+                _logger.info("Installed %s from PyPI", spec.display_name)
+            return True
+
+        last_result = result
+        if cmd[:3] == ["uv", "pip", "install"] and len(pypi_cmds) > 1:
+            _logger.warning(
+                "uv failed to install %s from PyPI; falling back to pip:\n%s",
                 spec.display_name,
                 result.stdout,
             )
+            continue
+        break
+
+    if last_result is None:
         return False
 
     if is_hip:
-        _logger.info(
-            "Compiled and installed %s from source for ROCm", spec.display_name
+        error_lines = (last_result.stdout or "").strip().splitlines()
+        snippet = "\n".join(error_lines[-5:]) if error_lines else "(no output)"
+        _logger.error(
+            "Failed to compile %s for ROCm:\n%s",
+            spec.display_name,
+            last_result.stdout,
         )
+        if status is not None:
+            status(
+                f"Failed to compile {spec.display_name} for ROCm. "
+                "Check that hipcc and ROCm development headers are installed.\n"
+                f"{snippet}"
+            )
     else:
-        _logger.info("Installed %s from PyPI", spec.display_name)
-    return True
+        _logger.error(
+            "Failed to install %s from PyPI:\n%s",
+            spec.display_name,
+            last_result.stdout,
+        )
+    return False
 
 
 def url_exists(url: str) -> bool:

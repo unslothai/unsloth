@@ -113,6 +113,49 @@ def fail(m):
     raise AssertionError(f"[ui] FAIL: {m}")
 
 
+def expected_default_model():
+    override = os.environ.get("EXPECTED_DEFAULT_MODEL")
+    if override:
+        return override
+
+    # Parse DEFAULT_MODELS_GGUF as a literal out of defaults.py instead of
+    # importing it. The Playwright job installs Studio with --no-torch, so
+    # the studio.backend.core.inference package init (which eagerly imports
+    # the orchestrator -> structlog) and defaults.py's own
+    # `import utils.hardware.hardware as hw` are both unavailable.
+    import ast
+
+    defaults_path = (
+        Path(__file__).resolve().parents[2]
+        / "studio"
+        / "backend"
+        / "core"
+        / "inference"
+        / "defaults.py"
+    )
+    try:
+        tree = ast.parse(defaults_path.read_text())
+    except Exception as exc:
+        fail(f"could not read {defaults_path}: {exc}")
+    models = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_MODELS_GGUF"
+            for t in node.targets
+        ):
+            continue
+        try:
+            models = ast.literal_eval(node.value)
+        except Exception as exc:
+            fail(f"could not eval DEFAULT_MODELS_GGUF literal: {exc}")
+        break
+    if not models:
+        fail("DEFAULT_MODELS_GGUF not found or empty in defaults.py")
+    return models[0]
+
+
 def soft_fail(m):
     """Hard fail in STRICT mode, info-warn otherwise.
 
@@ -347,6 +390,17 @@ with sync_playwright() as p:
             except Exception:
                 pass
             if _form_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; immediate retry just re-fails. Back off
+                # 5s then 15s before next attempt.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _form_attempt == 0 else 15
+                    print(
+                        f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
                 # Recovery: replace the page if it died, otherwise the
                 # next loop iteration's page.goto() handles the reload.
                 page = recover_or_replace_page(
@@ -464,10 +518,7 @@ with sync_playwright() as p:
     # list or hides the default would break the first-launch UX,
     # which is what this assertion guards.
     step("default_models[0] matches DEFAULT_MODELS_GGUF[0]")
-    EXPECTED_DEFAULT = os.environ.get(
-        "EXPECTED_DEFAULT_MODEL",
-        "unsloth/gemma-4-E2B-it-GGUF",
-    )
+    EXPECTED_DEFAULT = expected_default_model()
     defaults_resp = evaluate_fetch(
         page,
         f"{BASE}/api/models/list",

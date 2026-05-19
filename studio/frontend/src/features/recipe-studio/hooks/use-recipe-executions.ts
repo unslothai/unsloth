@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import {
   getInferenceStatus,

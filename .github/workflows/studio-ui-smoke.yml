@@ -64,8 +64,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -86,10 +84,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
         if: always() && steps.prime-hf.outcome == 'success'
@@ -232,12 +229,55 @@ jobs:
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
+      # IME + multilingual paste regression (issue #5318 / PR #5327).
+      # Third Studio on its own port so a hang here cannot poison the
+      # earlier UI tests. No GGUF -- the bug surface is the composer.
+      - name: Reset auth + boot Studio for IME / i18n tests (port 18896)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18896 \
+            > logs/studio_ime.log 2>&1 &
+          echo "STUDIO_IME_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health on 18896
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:18896/api/health" > /tmp/health3.json; then
+              jq -e '.status == "healthy"' /tmp/health3.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health3.json
+
+      - name: Pass bootstrap pw for IME / i18n test
+        # IME smoke does the change-password against the bootstrap that
+        # Studio's frontend injects into the page, so it only needs the
+        # NEW password.
+        run: |
+          NEW="CIIme-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_IME_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Drive IME + multilingual paste regression with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18896
+          STUDIO_NEW_PW: ${{ env.STUDIO_IME_NEW_PW }}
+          PW_ART_DIR: logs/playwright_ime
+          STUDIO_UI_STRICT: '1'
+        run: |
+          mkdir -p logs/playwright_ime
+          python tests/studio/playwright_chat_ime_i18n.py
+
+      - name: Stop third Studio
+        if: always()
+        run: |
+          kill "${STUDIO_IME_PID}" 2>/dev/null || true
+          sleep 2
+
       - name: Upload Playwright artifacts
-        # Always upload (not just failure) so a green run's screenshots
-        # are reviewable in the Actions UI -- catches "passed but the
-        # UI is silently broken" regressions that would be invisible
-        # otherwise. Both Studio's logs (chat + extra) and BOTH
-        # Playwright artifact dirs are bundled.
+        # Always upload so a green run's screenshots stay reviewable --
+        # catches "passed but the UI is silently broken" regressions.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -245,7 +285,9 @@ jobs:
           path: |
             logs/studio.log
             logs/studio_extra.log
+            logs/studio_ime.log
             logs/install.log
             logs/playwright
             logs/playwright_extra
+            logs/playwright_ime
           retention-days: 7

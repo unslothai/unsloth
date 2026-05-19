@@ -23,6 +23,7 @@ on:
   pull_request:
     paths:
       - 'install.ps1'
+      - 'uninstall.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
@@ -64,8 +65,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -268,6 +267,39 @@ jobs:
           kill "$PID" 2>/dev/null || true
           echo "post-update Studio /api/health OK"
 
+      - name: Uninstall and verify clean
+        # Round-trip through uninstall.ps1 against the default install
+        # tree at %USERPROFILE%\.unsloth\studio. Catches regressions
+        # where install.ps1 starts writing under a new key (registry,
+        # Start Menu, %APPDATA%) and uninstall.ps1 has not been updated
+        # to match. Skips gracefully if uninstall.ps1 has not landed yet
+        # (lets this workflow merge before #5513).
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          if (-not (Test-Path "$PWD\uninstall.ps1")) {
+            Write-Host "uninstall.ps1 not present in this tree; skipping round-trip"
+            "" | Set-Content logs/uninstall.log
+            exit 0
+          }
+          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
+          $leak = 0
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth\studio",
+            "$env:USERPROFILE\.unsloth\studio\unsloth_studio",
+            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe"
+          )) {
+            if (Test-Path -LiteralPath $p) {
+              Write-Host "::error::leak: $p"
+              $leak++
+            }
+          }
+          if ($leak -gt 0) { exit 1 }
+          # Idempotency.
+          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Select-Object -Last 5
+          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Select-Object -Last 5
+          Write-Host "PASS: windows install -> update -> uninstall round-trip clean"
+
       - name: Upload update logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -278,4 +310,5 @@ jobs:
             logs/update.log
             logs/update2.log
             logs/studio.log
+            logs/uninstall.log
           retention-days: 7

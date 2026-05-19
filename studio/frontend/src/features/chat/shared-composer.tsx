@@ -14,17 +14,22 @@ import {
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isMultimodalResponse } from "./types/api";
+import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
-import { parseExternalModelId } from "./external-providers";
+import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   type ReasoningEffort,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import { getExternalReasoningCapabilities } from "./provider-capabilities";
+import {
+  getExternalReasoningCapabilities,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
 import {
   type CompositionEvent,
   type KeyboardEvent,
@@ -62,6 +67,11 @@ const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
+
+// Mirrors the threshold in thread.tsx — see the comment there. Chrome on
+// Windows-over-WSL (issue #5546) never fires `compositionend` after the
+// IME commit, so the compose flag would otherwise stay true forever.
+const IME_STUCK_TIMEOUT_MS = 2500;
 
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -279,6 +289,7 @@ export function SharedComposer({
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -291,6 +302,7 @@ export function SharedComposer({
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -304,6 +316,9 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
@@ -312,10 +327,28 @@ export function SharedComposer({
     (s) => s.lastOpenRouterChosenModel,
   );
   const externalSelection = parseExternalModelId(checkpoint);
+  const isExternalModel = externalSelection !== null;
   const selectedExternalProvider =
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
+  const imageUnavailableReason = getImageInputUnavailableReason({
+    activeModel,
+    isExternalModel,
+    externalSupportsVision: providerTypeSupportsVision(
+      selectedExternalProvider?.providerType,
+    ),
+    externalModelLabel: externalSelection?.modelId ?? null,
+    loadedIsMultimodal,
+    modelLoaded,
+  });
+  const isCompareMode = Boolean(model1?.id || model2?.id);
+  // Attach-time gate. Compare mode defers to send: the catalog can lag
+  // behind a model's real capabilities (e.g., a GGUF whose mmproj
+  // arrives after the catalog snapshot), and we only sync the models[]
+  // entry after ensureModelLoaded runs at send time. Single mode uses
+  // the loaded model's runtime capability.
+  const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
     externalSelection?.modelId === "openrouter/free" &&
@@ -327,6 +360,10 @@ export function SharedComposer({
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
         )
       : null;
   const isExternalOpenAIReasoning =
@@ -345,13 +382,39 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  // Kimi's $web_search builtin mandates thinking=disabled per the docs at
+  // https://platform.kimi.ai/docs/guide/use-web-search. Both pills stay
+  // clickable for Kimi, but turning one on flips the other off — the
+  // click handlers below enforce this mutual exclusion so the visible
+  // state always matches what the backend actually sends.
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && reasoningEffort !== "none";
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const toolsDisabled = !modelLoaded || !supportsTools;
+  // Two-pill gating: Search pill lights up when the runtime has either
+  // a local tool runtime (supportsTools, gives us our Code/python + local
+  // web_search) OR a server-side web_search the provider runs for us
+  // (supportsBuiltinWebSearch, currently OpenAI / Anthropic / OpenRouter
+  // / Kimi). Code pill lights up on the local runtime OR when Anthropic
+  // is selected with a model that accepts the server-side
+  // code_execution_20250825 tool — see
+  // providerSupportsBuiltinCodeExecution. Anthropic is the only external
+  // provider that ships a code-execution tool today.
+  const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
+    selectedExternalProvider?.providerType,
+    effectiveExternalModelId,
+    selectedExternalProvider?.baseUrl,
+  );
+  const searchDisabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  const codeDisabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
+  // Backwards-compatible alias for any other call site that may still
+  // reference `toolsDisabled` (rare; both pills used it before).
+  const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
 
@@ -386,6 +449,7 @@ export function SharedComposer({
   const addFiles = useCallback((files: FileList | null) => {
     if (!files?.length) return;
     const next: PendingImage[] = [];
+    let droppedImageForUnavailable = false;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file) continue;
@@ -400,24 +464,75 @@ export function SharedComposer({
       // Handle image files
       if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
       if (file.size > MAX_IMAGE_SIZE) continue;
+      if (attachUnavailableReason) {
+        droppedImageForUnavailable = true;
+        continue;
+      }
       next.push({ id: crypto.randomUUID(), file });
     }
+    if (droppedImageForUnavailable && attachUnavailableReason) {
+      toast.error(attachUnavailableReason);
+    }
     setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore]);
+  }, [setPendingAudioStore, attachUnavailableReason]);
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  function clearStuckImeTimer() {
+    if (stuckImeTimerRef.current) {
+      clearTimeout(stuckImeTimerRef.current);
+      stuckImeTimerRef.current = null;
+    }
+  }
+
   function setCompositionState(next: boolean) {
     composingRef.current = next;
     setIsComposing(next);
+    clearStuckImeTimer();
+    if (next) {
+      stuckImeTimerRef.current = setTimeout(() => {
+        stuckImeTimerRef.current = null;
+        composingRef.current = false;
+        setIsComposing(false);
+      }, IME_STUCK_TIMEOUT_MS);
+    }
   }
+
+  function refreshStuckImeTimer() {
+    if (!composingRef.current) {
+      return;
+    }
+    clearStuckImeTimer();
+    stuckImeTimerRef.current = setTimeout(() => {
+      stuckImeTimerRef.current = null;
+      composingRef.current = false;
+      setIsComposing(false);
+    }, IME_STUCK_TIMEOUT_MS);
+  }
+
+  useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
     if (composingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
+
+    const hasCompareHandles = Boolean(
+      handlesRef.current["model1"] || handlesRef.current["model2"],
+    );
+    const isGeneralizedCompare =
+      hasCompareHandles && Boolean(model1?.id || model2?.id);
+
+    if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
+      // Single mode: the loaded model's runtime capability is known
+      // here. Compare mode defers — each ensureModelLoaded below sets
+      // loadedIsMultimodal for its side, and the chat-adapter's
+      // pre-stream gate runs per-side against that fresh state.
+      toast.error(imageUnavailableReason);
+      return;
+    }
 
     const content: CompareMessagePart[] = [];
     for (const { file } of pendingImages) {
@@ -443,8 +558,6 @@ export function SharedComposer({
     textareaRef.current?.focus();
 
     // Generalized compare: load each model before dispatching to its side
-    const hasCompareHandles = Boolean(handlesRef.current["model1"] || handlesRef.current["model2"]);
-    const isGeneralizedCompare = hasCompareHandles && Boolean(model1?.id || model2?.id);
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
       const maxSeqLength = store.params.maxSeqLength;
@@ -505,7 +618,36 @@ export function SharedComposer({
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          loadedIsMultimodal: isMultimodalResponse(resp),
         });
+        // Sync the models[] entry with the load response so the
+        // attach/send gates read fresh capabilities. /api/models/list
+        // can lag behind a model's actual state (e.g., a GGUF whose
+        // mmproj was downloaded after the catalog snapshot).
+        const currentModels = useChatRuntimeStore.getState().models;
+        const idx = currentModels.findIndex((m) => m.id === sel.id);
+        const synced = {
+          isVision: Boolean(resp.is_vision),
+          isGguf: Boolean(resp.is_gguf),
+          isAudio: Boolean(resp.is_audio),
+          audioType: resp.audio_type ?? null,
+          hasAudioInput: Boolean(resp.has_audio_input),
+        };
+        if (idx === -1) {
+          store.setModels([
+            ...currentModels,
+            {
+              id: sel.id,
+              name: resp.display_name ?? sel.id,
+              isLora: sel.isLora,
+              ...synced,
+            },
+          ]);
+        } else {
+          const next = [...currentModels];
+          next[idx] = { ...next[idx], ...synced };
+          store.setModels(next);
+        }
         return resp.status;
       }
 
@@ -575,8 +717,17 @@ export function SharedComposer({
 
   function onKeyDown(e: KeyboardEvent) {
     // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
-    // Don't hijack it. See issue #5318.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // Don't hijack it. See issue #5318. Re-pin composingRef in case the stuck
+    // watchdog (#5546) cleared it during a long candidate-window pause; this
+    // keeps a follow-up click-Send from submitting preedit text. Re-arm the
+    // watchdog on the same path — without it the WSL+Chrome no-compositionend
+    // case would leave composingRef pinned forever after an IME keypress and
+    // re-lock Send.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
+      composingRef.current = true;
+      refreshStuckImeTimer();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -646,6 +797,9 @@ export function SharedComposer({
         onCompositionStart={() => {
           setCompositionState(true);
         }}
+        onCompositionUpdate={() => {
+          refreshStuckImeTimer();
+        }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           setCompositionState(false);
           setText(e.currentTarget.value);
@@ -654,9 +808,12 @@ export function SharedComposer({
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
+        // dir="auto" auto-detects RTL (Arabic / Hebrew / Persian / Urdu)
+        // from the first strong character; no effect on LTR scripts.
+        dir="auto"
       />
       <div className="composer-action-wrapper">
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <input
             ref={fileInputRef}
             type="file"
@@ -674,7 +831,13 @@ export function SharedComposer({
             variant="ghost"
             size="icon"
             className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              // The picker accepts both image and audio. Don't gate the
+              // button on image-availability — addFiles still filters
+              // image files per-file when the loaded model can't take
+              // them, while audio attach always works.
+              fileInputRef.current?.click();
+            }}
             aria-label="Add Attachment"
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />
@@ -712,12 +875,12 @@ export function SharedComposer({
                   type="button"
                   disabled={reasoningDisabled}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                    "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
                     reasoningDisabled
                       ? "cursor-not-allowed opacity-40"
                       : effectiveReasoningVisualEnabled
-                        ? "bg-primary/10 text-primary hover:bg-primary/20"
-                        : "text-muted-foreground hover:bg-muted-foreground/15",
+                        ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                        : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
                   )}
                   aria-label={`Reasoning effort: ${reasoningEffort}`}
                 >
@@ -766,6 +929,11 @@ export function SharedComposer({
                       setReasoningEffort(level);
                       setReasoningEnabled(true);
                       applyQwenThinkingParams(true);
+                      // Mutual exclusion: turning thinking on for a
+                      // Kimi model forces the web_search builtin off.
+                      if (isKimiExternal && toolsEnabled) {
+                        setToolsEnabled(false);
+                      }
                     }}
                   >
                     {formatReasoningEffortLabel(level, externalSelection?.modelId)}
@@ -789,16 +957,22 @@ export function SharedComposer({
                 const next = !reasoningEnabled;
                 setReasoningEnabled(next);
                 applyQwenThinkingParams(next);
+                // Mutual exclusion: Kimi's $web_search builtin
+                // requires thinking off, so turning thinking on flips
+                // the Search pill off (and vice versa).
+                if (isKimiExternal && next && toolsEnabled) {
+                  setToolsEnabled(false);
+                }
               }}
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
                 reasoningLockedOn
-                  ? "cursor-not-allowed bg-primary/10 text-primary"
+                  ? "cursor-not-allowed text-primary"
                   : reasoningDisabled
                     ? "cursor-not-allowed opacity-40"
                     : effectiveReasoningEnabled
-                      ? "bg-primary/10 text-primary hover:bg-primary/20"
-                      : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+                      ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                      : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
                 reasoningLockedOn
@@ -824,12 +998,12 @@ export function SharedComposer({
               disabled={!modelLoaded}
               onClick={() => setPreserveThinking(!preserveThinking)}
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
                 !modelLoaded
                   ? "cursor-not-allowed opacity-40"
                   : preserveThinking
-                    ? "bg-primary/10 text-primary hover:bg-primary/20"
-                    : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+                    ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                    : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
                 preserveThinking ? "Disable preserve think" : "Enable preserve think"
@@ -845,10 +1019,22 @@ export function SharedComposer({
           )}
           <button
             type="button"
-            disabled={toolsDisabled}
-            onClick={() => setToolsEnabled(!toolsEnabled)}
+            disabled={searchDisabled}
+            onClick={() => {
+              const next = !toolsEnabled;
+              setToolsEnabled(next);
+              // Kimi's $web_search builtin requires thinking=disabled
+              // (https://platform.kimi.ai/docs/guide/use-web-search).
+              // Toggle the Think pill off when Search comes on, and
+              // back on when Search goes off — mutual exclusion that
+              // mirrors what the backend enforces.
+              if (isKimiExternal) {
+                setReasoningEnabled(!next);
+                applyQwenThinkingParams(!next);
+              }
+            }}
             className="composer-pill-btn"
-            data-active={toolsEnabled && !toolsDisabled ? "true" : "false"}
+            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
             <GlobeIcon className="size-3.5" />
@@ -856,10 +1042,10 @@ export function SharedComposer({
           </button>
           <button
             type="button"
-            disabled={toolsDisabled}
+            disabled={codeDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
-            data-active={codeToolsEnabled && !toolsDisabled ? "true" : "false"}
+            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
             <CodeToggleIcon className="size-3.5" />

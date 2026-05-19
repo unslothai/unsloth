@@ -50,8 +50,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: studio/frontend/package-lock.json
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -72,10 +70,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m pip install --upgrade huggingface_hub hf_transfer
+          python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
-          HF_HUB_ENABLE_HF_TRANSFER=1 \
-            hf download "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
         if: always() && steps.prime-hf.outcome == 'success'
@@ -186,16 +183,16 @@ jobs:
           # available to llama.cpp from CI; gemma-3-270m turn latency
           # has been observed to crowd the 180s default. Triple it.
           STUDIO_UI_TURN_TIMEOUT_MS: '540000'
-        # Retry up to 3 times to absorb the racy Playwright Node 24
-        # pipeTransport.js 'Unexpected end of JSON input' crash that
-        # fires intermittently on macos-14 free runners (Chromium
-        # browser process dies mid-test → driver Node process can't
-        # parse the truncated JSON-RPC line and exits). The retry
-        # FULLY resets Studio (kill, reset-password, reboot, wait
-        # /api/health, re-export bootstrap pw) before re-running the
-        # script so the change-password flow finds a fresh bootstrap.
-        # A real test failure (assertion / timeout) does NOT match the
-        # JSON pattern so it bypasses retry and surfaces immediately.
+        # Retry up to 3 times to absorb known macos-14 free-runner
+        # flakes: (1) Playwright Node 24 pipeTransport.js 'Unexpected
+        # end of JSON input' crash when the Chromium browser process
+        # dies mid-test, and (2) Chromium net::ERR_NO_BUFFER_SPACE
+        # when the runner's kernel briefly runs out of socket buffers.
+        # The retry FULLY resets Studio (kill, reset-password, reboot,
+        # wait /api/health, re-export bootstrap pw) before re-running
+        # the script. A real test failure (assertion / timeout) does
+        # NOT match either pattern so it bypasses retry and surfaces
+        # immediately.
         run: |
           mkdir -p logs/playwright
           attempt=1
@@ -208,9 +205,10 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            if grep -q "Unexpected end of JSON input" logs/playwright_attempt_${attempt}.log \
+            if { grep -q "Unexpected end of JSON input" logs/playwright_attempt_${attempt}.log \
+                 || grep -q "ERR_NO_BUFFER_SPACE"        logs/playwright_attempt_${attempt}.log; } \
                && [ "$attempt" -lt "$max_attempts" ]; then
-              echo "::warning::Playwright pipeTransport JSON crash on attempt ${attempt}; resetting Studio and retrying..."
+              echo "::warning::Playwright flake on attempt ${attempt}; resetting Studio and retrying..."
               kill "${STUDIO_PID}" 2>/dev/null || true
               sleep 2
               unsloth studio reset-password
@@ -283,8 +281,8 @@ jobs:
           STUDIO_UI_TURN_TIMEOUT_MS: '540000'
           GGUF_REPO: ${{ env.GGUF_REPO }}
           GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
-        # Same pipeTransport JSON-crash retry shape as "Drive the chat
-        # UI with Playwright" -- see comment there.
+        # Same flake-retry shape as "Drive the chat UI with Playwright"
+        # -- catches pipeTransport JSON crash and ERR_NO_BUFFER_SPACE.
         run: |
           mkdir -p logs/playwright_extra
           attempt=1
@@ -297,9 +295,10 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            if grep -q "Unexpected end of JSON input" logs/playwright_extra_attempt_${attempt}.log \
+            if { grep -q "Unexpected end of JSON input" logs/playwright_extra_attempt_${attempt}.log \
+                 || grep -q "ERR_NO_BUFFER_SPACE"        logs/playwright_extra_attempt_${attempt}.log; } \
                && [ "$attempt" -lt "$max_attempts" ]; then
-              echo "::warning::Playwright pipeTransport JSON crash on attempt ${attempt}; resetting Studio and retrying..."
+              echo "::warning::Playwright flake on attempt ${attempt}; resetting Studio and retrying..."
               kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
               sleep 2
               unsloth studio reset-password

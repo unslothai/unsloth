@@ -301,6 +301,48 @@ def test_flash_linear_attention_fallback_runs_plain_uv_install(monkeypatch):
     url_exists.assert_not_called()
 
 
+def test_pypi_fallback_tries_pip_after_uv_failure(monkeypatch):
+    _patch_missing_package(monkeypatch)
+    monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/uv")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0] == "uv":
+            return subprocess.CompletedProcess(cmd, 1, "uv failed")
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    assert (
+        wheel_utils.install_optional_kernel(
+            wheel_utils.FLASH_LINEAR_ATTN_SPEC,
+            python_executable = sys.executable,
+            use_uv = True,
+            allow_pypi_fallback = True,
+            run = fake_run,
+        )
+        is True
+    )
+
+    assert calls == [
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "flash-linear-attention==0.5.0",
+        ],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "flash-linear-attention==0.5.0",
+        ],
+    ]
+
+
 def test_already_importable_package_returns_true_without_install(monkeypatch):
     probe_mock = mock.Mock()
     monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", probe_mock)
