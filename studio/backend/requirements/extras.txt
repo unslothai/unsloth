@@ -11,7 +11,7 @@ hydra-core
 hypothesis
 kgb
 parameterized
-pytest<9.0
+pytest<10.0
 pytest-json-report
 pytest-rerunfailures==15.1
 pytest-xdist
