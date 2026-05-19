@@ -437,8 +437,7 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * without selecting one. Prefers GGUF (picks smallest cached variant),
  * falls back to smallest cached safetensors model.
  */
-// Cap the auto-load cascade so a folder of broken cached repos cannot fire
-// dozens of /api/inference/load POSTs in a row when every load throws.
+// Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 
 async function autoLoadSmallestModel(): Promise<{
