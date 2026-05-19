@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import katex from "katex";
+import "katex/dist/katex.min.css";
 import {
   type ReactElement,
   useCallback,
@@ -501,25 +502,20 @@ function HeatmapCanvas({
       const canvas = canvasRef.current;
       if (!canvas || !values) return;
 
+      const cw = wrapperRef.current?.offsetWidth ?? 0;
       let physicalScale = 1;
-      if (expanded) {
-        const cw = wrapperRef.current?.offsetWidth ?? 0;
-        if (cw > 0) {
-          const lKeys   = Object.keys(values);
-          const numLays = lKeys.length;
-          const numCh   = capturedChannels.length || values[lKeys[0]]?.length || 1;
-          const naturalW = LEFT_MARGIN + numCh   * CELL_SLOT;
-          const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN + TOP_MARGIN;
-          const maxH        = window.innerHeight * 0.65;
-          const visualScale = Math.min(cw / naturalW, maxH / naturalH, 8);
-          const dpr         = window.devicePixelRatio || 1;
-          physicalScale     = visualScale * dpr;
-          canvas.style.width  = `${Math.round(naturalW * visualScale)}px`;
-          canvas.style.height = `${Math.round(naturalH * visualScale)}px`;
-        }
-      } else {
-        canvas.style.width  = "";
-        canvas.style.height = "";
+      if (cw > 0) {
+        const lKeys   = Object.keys(values);
+        const numLays = lKeys.length;
+        const numCh   = capturedChannels.length || values[lKeys[0]]?.length || 1;
+        const naturalW = LEFT_MARGIN + numCh   * CELL_SLOT;
+        const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN + TOP_MARGIN;
+        const maxH     = expanded ? window.innerHeight * 0.65 : window.innerHeight * 0.4;
+        const visualScale = Math.min(cw / naturalW, maxH / naturalH, 8);
+        const dpr         = window.devicePixelRatio || 1;
+        physicalScale     = visualScale * dpr;
+        canvas.style.width  = `${Math.round(naturalW * visualScale)}px`;
+        canvas.style.height = `${Math.round(naturalH * visualScale)}px`;
       }
 
       layoutRef.current = drawHeatmap(
@@ -532,14 +528,13 @@ function HeatmapCanvas({
   }, [values, capturedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded]);
 
   useEffect(() => {
-    if (!expanded) return;
     const el = wrapperRef.current;
     if (!el) return;
     imperativeDrawRef.current?.();
     const ro = new ResizeObserver(() => imperativeDrawRef.current?.());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [expanded]);
+  }, []);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -591,11 +586,11 @@ function HeatmapCanvas({
 
   return (
     <>
-      <div ref={wrapperRef} className={expanded ? "w-full overflow-hidden" : "overflow-x-auto"}>
+      <div ref={wrapperRef} className="w-full overflow-hidden">
         <canvas
           ref={canvasRef}
           className="block cursor-crosshair"
-          style={expanded ? { imageRendering: "auto" } : undefined}
+          style={{ imageRendering: "auto" }}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
         />
@@ -885,8 +880,8 @@ export function NeuronHeatmapSection({
           <div className="flex items-center gap-1.5">
             <CardTitle className="text-sm ml-1">Neuron Activations</CardTitle>
             {records.length > 0 && (
-              <span className="rounded border border-border/60 px-2 py-0.5 text-[10px] leading-tight text-muted-foreground text-center">
-                {numLayers} layers ·<br />{numChannels} channels
+              <span className="rounded border border-border/60 px-2 py-0.5 text-[10px] leading-none text-muted-foreground whitespace-nowrap">
+                {numLayers} layers · {numChannels} ch
               </span>
             )}
           </div>
@@ -908,7 +903,7 @@ export function NeuronHeatmapSection({
             <button
               type="button"
               onClick={() => setInfoOpen(true)}
-              className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100 text-[11px] font-medium leading-none"
+              className="rounded border border-border/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground hover:border-border focus:text-foreground leading-none"
               title="How to read this chart"
               aria-label="Open interpretability guide"
             >

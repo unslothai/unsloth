@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { ActivationMetadata, ActivationRecord } from "@/features/training/api/train-api";
 import { type ReactElement, useMemo, useState } from "react";
 import katex from "katex";
+import "katex/dist/katex.min.css";
 import { computeLayerStats, computeOverlaySets, DEAD_THRESHOLD } from "./activation-stats";
 
 // ── KaTeX helpers ─────────────────────────────────────────────────────────────

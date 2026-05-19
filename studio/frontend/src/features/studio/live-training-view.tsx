@@ -62,7 +62,7 @@ function InterpretabilitySection({
       />
 
       {/* Trend chart — full width, compact */}
-      <div className="h-[200px]">
+      <div className="h-[280px]">
         <NeuronHealthTrend
           isTraining={isTraining}
           records={records}
