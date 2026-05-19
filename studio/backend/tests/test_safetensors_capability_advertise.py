@@ -207,6 +207,43 @@ def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
+# Qwen3.5 family pins -- the live GGUF + safetensors templates fetched
+# from the unsloth/Qwen3.5-0.8B(-GGUF) repos both wrap tool calls as
+# ``<tool_call>\n<function=name>...``. Capture a faithful slice so the
+# classifier never silently regresses for this family.
+
+QWEN35_TOOL_INSTRUCTION = (
+    "{%- if tools %}\n"
+    "  <|im_start|>system\n"
+    "  # Tools\n"
+    "  <tools>\n"
+    "  {%- for tool in tools %}{{ tool | tojson }}{%- endfor %}\n"
+    "  </tools>\n"
+    "  If you choose to call a function ONLY reply in the following format:\n"
+    "  <tool_call>\n"
+    "  <function=example_function_name>\n"
+    "  <parameter=example_parameter_1>\n"
+    "  value_1\n"
+    "  </parameter>\n"
+    "  </function>\n"
+    "  </tool_call>\n"
+    "  <|im_end|>\n"
+    "{%- endif %}\n"
+    "{%- if enable_thinking is defined and enable_thinking %}{{- '<think>' }}{%- endif %}\n"
+)
+
+
+def test_detect_safetensors_features_qwen35_keeps_tools_on():
+    """unsloth/Qwen3.5-0.8B family must surface tools+reasoning enabled."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3.5-0.8B")
+    flags = _detect_safetensors_features(backend, QWEN35_TOOL_INSTRUCTION)
+    assert flags["supports_tools"] is True
+    assert flags["supports_reasoning"] is True
+    assert flags["reasoning_style"] == "enable_thinking"
+
+
 # ── Tests: IPC bridge contract ───────────────────────────────────────
 
 
