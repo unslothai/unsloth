@@ -254,8 +254,26 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # gpt-oss: keep reasoning on, drop tools (Harmony uses a separate
-    # channel, not <tool_call> XML this loop parses).
+    # Our safetensors loop only parses <tool_call>{json}</tool_call>
+    # and <function=name>...</function>. Llama uses <|python_tag|>,
+    # Mistral uses [TOOL_CALLS]; advertising tools for those would
+    # enable a pill the parser cannot honour. GGUF is unaffected --
+    # llama-server normalises every format into structured deltas.
+    if (
+        flags.get("supports_tools")
+        and chat_template
+        and "<tool_call>" not in chat_template
+        and "<function=" not in chat_template
+    ):
+        logger.info(
+            "safetensors: template advertises tools but uses an "
+            "emission format the loop cannot parse; suppressing "
+            "supports_tools"
+        )
+        flags["supports_tools"] = False
+
+    # gpt-oss: keep reasoning on, drop tools (Harmony channel, not
+    # <tool_call> XML this loop parses).
     try:
         if hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model():
             flags["supports_reasoning"] = True

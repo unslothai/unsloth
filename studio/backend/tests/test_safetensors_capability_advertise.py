@@ -22,7 +22,8 @@ if str(_backend_root) not in sys.path:
 # Qwen3 snippet covering tools, enable_thinking, preserve_thinking.
 QWEN3_TEMPLATE = """
 {%- if tools %}
-  {{- '<|im_start|>system\\n' }}
+  {{- '<|im_start|>system\\nFor each function call, return a json object'
+      ' wrapped inside <tool_call></tool_call> tags.\\n' }}
   {%- for tool in tools %}
     {{- tool | tojson }}
   {%- endfor %}
@@ -126,6 +127,84 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "reasoning_effort"
     assert flags["supports_tools"] is False
+
+
+# Llama-3 / Mistral templates advertise tool handling but the model emits
+# tool calls in <|python_tag|> / [TOOL_CALLS] format -- not the
+# <tool_call> / <function= our parser understands. The route helper must
+# refuse to flip supports_tools=True for those families so the UI does
+# not enable a pill the agentic loop cannot honour.
+
+LLAMA3_TEMPLATE = """
+{%- if tools %}
+  {{- '<|start_header_id|>system<|end_header_id|>' }}
+  {{- 'You have access to the following tools.' }}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+{%- for message in messages %}
+  {%- if message.role == 'tool' %}
+    {{- '<|start_header_id|>ipython<|end_header_id|>' }}
+    {{- '<|python_tag|>' }}
+    {{- message.content }}
+  {%- endif %}
+{%- endfor %}
+"""
+
+MISTRAL_TEMPLATE = """
+{%- if tools %}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+{%- for message in messages %}
+  {%- if message.role == 'tool' %}
+    {{- '[TOOL_CALLS]' + message.content + '[/TOOL_CALLS]' }}
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_detect_safetensors_features_llama3_template_suppresses_tools():
+    """Llama-3 emits <|python_tag|>; safetensors loop cannot parse it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    flags = _detect_safetensors_features(backend, LLAMA3_TEMPLATE)
+    assert flags["supports_tools"] is False
+
+
+def test_detect_safetensors_features_mistral_template_suppresses_tools():
+    """Mistral emits [TOOL_CALLS]; safetensors loop cannot parse it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/mistral-7b-instruct-v0.3")
+    flags = _detect_safetensors_features(backend, MISTRAL_TEMPLATE)
+    assert flags["supports_tools"] is False
+
+
+def test_detect_safetensors_features_qwen_tool_call_keeps_tools_on():
+    """Sanity check: gate only suppresses non-Qwen formats."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
+    flags = _detect_safetensors_features(backend, QWEN3_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
+    """Templates emitting <function=name> XML are parser-compatible."""
+    from routes.inference import _detect_safetensors_features
+
+    tpl_with_function_xml = (
+        "{%- if tools %}<|im_start|>system\n"
+        "Tool call format: <function=name><parameter=k>v</parameter></function>"
+        "<|im_end|>{%- endif %}"
+    )
+    backend = SimpleNamespace(active_model_name = "custom/with-function-xml")
+    flags = _detect_safetensors_features(backend, tpl_with_function_xml)
+    assert flags["supports_tools"] is True
 
 
 # ── Tests: IPC bridge contract ───────────────────────────────────────
