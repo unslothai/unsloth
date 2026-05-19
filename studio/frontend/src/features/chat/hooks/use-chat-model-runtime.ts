@@ -358,6 +358,12 @@ export function useChatModelRuntime() {
               specDraftNMax: statusRes.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: statusRes.spec_draft_n_max ?? null,
             }),
+          ...(statusRes.spec_draft_p_min !== undefined &&
+            prevState.loadedSpecDraftPMin === null &&
+            prevState.specDraftPMin === null && {
+              specDraftPMin: statusRes.spec_draft_p_min ?? null,
+              loadedSpecDraftPMin: statusRes.spec_draft_p_min ?? null,
+            }),
           ...(statusRes.cache_type_kv !== undefined &&
             prevState.loadedKvCacheDtype === null && {
               kvCacheDtype: statusRes.cache_type_kv,
@@ -585,6 +591,8 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: null,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                specDraftPMin: null,
+                loadedSpecDraftPMin: null,
               });
             }
 
@@ -595,6 +603,7 @@ export function useChatModelRuntime() {
               ggufContextLength,
               speculativeType,
               specDraftNMax,
+              specDraftPMin,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -623,6 +632,7 @@ export function useChatModelRuntime() {
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
               spec_draft_n_max: specDraftNMax,
+              spec_draft_p_min: specDraftPMin,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -712,6 +722,8 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              specDraftPMin: loadResponse.spec_draft_p_min ?? null,
+              loadedSpecDraftPMin: loadResponse.spec_draft_p_min ?? null,
               customContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: effectiveChatTemplateOverride,

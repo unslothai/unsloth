@@ -1011,7 +1011,15 @@ def test_canonicalize_spec_mode(value, expected):
 # ── _build_speculative_flags resolver matrix ──────────────────────
 
 
-def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft-mtp"):
+def _resolver_backend(
+    monkeypatch,
+    *,
+    ngram_supported = True,
+    mtp_token = "draft-mtp",
+    p_min_flag = "--spec-draft-p-min",
+    supports_ngram_map_k = True,
+    supports_ngram_map_k4v = True,
+):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
@@ -1020,6 +1028,9 @@ def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
         "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "spec_draft_p_min_flag": p_min_flag,
+        "supports_ngram_map_k": supports_ngram_map_k,
+        "supports_ngram_map_k4v": supports_ngram_map_k4v,
     }
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -1198,3 +1209,132 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
     # _requested_spec_mode still reflects the user's choice.
     assert backend.requested_spec_mode == "mtp"
     assert backend.speculative_type is None
+
+
+# ── spec_draft_p_min ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("mode", ["mtp", "mtp+ngram"])
+def test_build_speculative_flags_emits_p_min_for_mtp_modes(monkeypatch, mode):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        spec_draft_p_min = 0.25,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-draft-p-min") == "0.2500"
+    assert backend.spec_draft_p_min == 0.25
+
+
+@pytest.mark.parametrize("mode", ["auto", "ngram", "off", "ngram-simple"])
+def test_build_speculative_flags_does_not_emit_p_min_for_non_mtp_modes(
+    monkeypatch, mode
+):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        spec_draft_p_min = 0.25,
+        extra_args = None,
+        # Use a non-MTP model so "auto" doesn't promote to draft-mtp
+        # and accidentally pick up the p-min emission.
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-draft-p-min" not in flags
+    assert backend.spec_draft_p_min is None
+
+
+def test_build_speculative_flags_p_min_skipped_when_binary_lacks_flag(monkeypatch):
+    # Older llama-server (no #23269): p_min flag is None in the probe.
+    # Resolver should log a warning and skip emission rather than crash.
+    backend = _resolver_backend(monkeypatch, p_min_flag = None)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        spec_draft_p_min = 0.5,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-draft-p-min" not in flags
+    assert backend.spec_draft_p_min is None
+
+
+def test_build_speculative_flags_p_min_emitted_via_auto_when_promoted(monkeypatch):
+    # Auto on an MTP GGUF auto-promotes to draft-mtp; p_min should still
+    # flow through because the resolved emission is MTP.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        spec_draft_p_min = 0.1,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert parsed.get("--spec-draft-p-min") == "0.1000"
+
+
+# ── ngram-map-k / ngram-map-k4v ──────────────────────────────────
+
+
+@pytest.mark.parametrize("variant", ["ngram-map-k", "ngram-map-k4v"])
+def test_build_speculative_flags_ngram_map_variants(monkeypatch, variant):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = variant,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == variant
+    assert parsed.get(f"--spec-{variant}-size-n") == "16"
+    assert parsed.get(f"--spec-{variant}-size-m") == "24"
+    assert parsed.get(f"--spec-{variant}-min-hits") == "1"
+    assert backend.requested_spec_mode == variant
+    assert backend.speculative_type == variant
+    # n-max/p-min are MTP-only knobs; ngram-map-* variants don't carry them.
+    assert "--spec-draft-n-max" not in flags
+    assert "--spec-draft-p-min" not in flags
+
+
+def test_build_speculative_flags_ngram_map_k_skipped_when_unsupported(monkeypatch):
+    backend = _resolver_backend(monkeypatch, supports_ngram_map_k = False)
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram-map-k",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
+    assert backend.speculative_type is None
+    # Requested mode still round-trips so the UI / status can surface it.
+    assert backend.requested_spec_mode == "ngram-map-k"
+
+
+def test_canonicalize_spec_mode_recognises_ngram_map_variants():
+    assert _canonicalize_spec_mode("ngram-map-k") == "ngram-map-k"
+    assert _canonicalize_spec_mode("ngram-map-k4v") == "ngram-map-k4v"
+    assert _canonicalize_spec_mode("NGRAM-MAP-K4V") == "ngram-map-k4v"

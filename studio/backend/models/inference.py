@@ -71,14 +71,16 @@ class LoadRequest(BaseModel):
     speculative_type: Optional[str] = Field(
         None,
         description = (
-            "Speculative decoding mode for GGUF models. Canonical values: "
-            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
-            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
-            "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
-            "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
-            "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
-            "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF and vision models."
+            "Speculative decoding mode for GGUF models. Canonical values "
+            "exposed by the Studio dropdown: 'auto' (platform-aware: MTP "
+            "on MTP GGUFs, ngram-mod fallback for sub-3B), 'mtp' (force "
+            "draft-mtp only on both GPU and CPU), 'ngram' (force "
+            "ngram-mod only), 'mtp+ngram' (force ngram-mod+draft-mtp "
+            "chain on both platforms), 'off' (disabled). Power-user "
+            "spec types accepted via API: 'ngram-simple', 'ngram-map-k', "
+            "'ngram-map-k4v'. Legacy values 'default' (-> auto), "
+            "'draft-mtp' (-> mtp), 'ngram-mod' (-> ngram) are still "
+            "accepted. Ignored for non-GGUF and vision models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -91,6 +93,19 @@ class LoadRequest(BaseModel):
             "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
             "quants). Only applied when speculative_type resolves to "
             "'mtp' or 'mtp+ngram'."
+        ),
+    )
+    spec_draft_p_min: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = (
+            "Min draft probability for MTP speculative decoding "
+            "(--spec-draft-p-min). Drafts with predicted probability "
+            "below this threshold are rejected. Defaults to 0.0 (no "
+            "filtering) since llama.cpp #23269; before that the flag "
+            "existed but was non-functional. Only applied when "
+            "speculative_type resolves to 'mtp' or 'mtp+ngram'."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(
@@ -242,8 +257,9 @@ class LoadResponse(BaseModel):
         description = (
             "Canonical UI-facing requested speculative decoding mode "
             "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
-            "'ngram-simple'), round-tripped from the original LoadRequest "
-            "via _canonicalize_spec_mode. None when no model is loaded."
+            "'ngram-simple' / 'ngram-map-k' / 'ngram-map-k4v'), "
+            "round-tripped from the original LoadRequest via "
+            "_canonicalize_spec_mode. None when no model is loaded."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -251,6 +267,13 @@ class LoadResponse(BaseModel):
         description = (
             "Active --spec-draft-n-max for MTP speculative decoding, or "
             "None when the platform default is in effect."
+        ),
+    )
+    spec_draft_p_min: Optional[float] = Field(
+        None,
+        description = (
+            "Active --spec-draft-p-min for MTP speculative decoding, or "
+            "None when the llama-server default (0.0) is in effect."
         ),
     )
 
@@ -376,8 +399,9 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "Canonical UI-facing requested speculative decoding mode "
             "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
-            "'ngram-simple'), round-tripped from the original LoadRequest. "
-            "None when no model is loaded."
+            "'ngram-simple' / 'ngram-map-k' / 'ngram-map-k4v'), "
+            "round-tripped from the original LoadRequest. None when no "
+            "model is loaded."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -385,6 +409,13 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "Active --spec-draft-n-max for MTP speculative decoding, or "
             "None when the platform default is in effect."
+        ),
+    )
+    spec_draft_p_min: Optional[float] = Field(
+        None,
+        description = (
+            "Active --spec-draft-p-min for MTP speculative decoding, or "
+            "None when the llama-server default (0.0) is in effect."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(
