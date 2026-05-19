@@ -747,6 +747,11 @@ export function ChatPage(): ReactElement {
         provider?.providerType === "openai");
     const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
     const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const nextToolsEnabled = supportsBuiltinWebSearch
+      ? isKimi
+        ? false
+        : (storedToolsEnabled ?? searchOnByDefault)
+      : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -772,9 +777,7 @@ export function ChatPage(): ReactElement {
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
-      toolsEnabled: supportsBuiltinWebSearch
-        ? (storedToolsEnabled ?? searchOnByDefault)
-        : false,
+      toolsEnabled: nextToolsEnabled,
       codeToolsEnabled: supportsBuiltinCodeExecution
         ? (storedCodeToolsEnabled ?? false)
         : false,
@@ -955,6 +958,11 @@ export function ChatPage(): ReactElement {
         const storedCodeToolsEnabled = loadOptionalBool(
           CHAT_CODE_TOOLS_ENABLED_KEY,
         );
+        const nextToolsEnabled = supportsBuiltinWebSearch
+          ? isKimi
+            ? false
+            : (storedToolsEnabled ?? searchOnByDefault)
+          : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -984,9 +992,7 @@ export function ChatPage(): ReactElement {
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
-          toolsEnabled: supportsBuiltinWebSearch
-            ? (storedToolsEnabled ?? searchOnByDefault)
-            : false,
+          toolsEnabled: nextToolsEnabled,
           codeToolsEnabled: supportsBuiltinCodeExecution
             ? (storedCodeToolsEnabled ?? false)
             : false,
