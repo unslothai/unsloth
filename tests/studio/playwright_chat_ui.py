@@ -118,16 +118,42 @@ def expected_default_model():
     if override:
         return override
 
-    studio_backend = Path(__file__).resolve().parents[2] / "studio" / "backend"
-    if str(studio_backend) not in sys.path:
-        sys.path.insert(0, str(studio_backend))
+    # Parse DEFAULT_MODELS_GGUF as a literal out of defaults.py instead of
+    # importing it. The Playwright job installs Studio with --no-torch, so
+    # the studio.backend.core.inference package init (which eagerly imports
+    # the orchestrator -> structlog) and defaults.py's own
+    # `import utils.hardware.hardware as hw` are both unavailable.
+    import ast
+
+    defaults_path = (
+        Path(__file__).resolve().parents[2]
+        / "studio"
+        / "backend"
+        / "core"
+        / "inference"
+        / "defaults.py"
+    )
     try:
-        from core.inference.defaults import DEFAULT_MODELS_GGUF
+        tree = ast.parse(defaults_path.read_text())
     except Exception as exc:
-        fail(f"could not import DEFAULT_MODELS_GGUF: {exc}")
-    if not DEFAULT_MODELS_GGUF:
-        fail("DEFAULT_MODELS_GGUF is empty")
-    return DEFAULT_MODELS_GGUF[0]
+        fail(f"could not read {defaults_path}: {exc}")
+    models = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_MODELS_GGUF"
+            for t in node.targets
+        ):
+            continue
+        try:
+            models = ast.literal_eval(node.value)
+        except Exception as exc:
+            fail(f"could not eval DEFAULT_MODELS_GGUF literal: {exc}")
+        break
+    if not models:
+        fail("DEFAULT_MODELS_GGUF not found or empty in defaults.py")
+    return models[0]
 
 
 def soft_fail(m):
