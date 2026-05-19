@@ -388,9 +388,9 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs, "no tool message reached the model"
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], (
-                f"sentinel leaked to model: {tm['content']!r}"
-            )
+            assert (
+                "__IMAGES__" not in tm["content"]
+            ), f"sentinel leaked to model: {tm['content']!r}"
 
     def test_image_sentinel_stripped_with_multiple_markers(self):
         # Two sentinels back-to-back: the old rsplit-with-maxsplit=1
@@ -423,12 +423,12 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], (
-                f"second sentinel leaked: {tm['content']!r}"
-            )
-            assert tm["content"] == "panel", (
-                f"expected payload-only 'panel', got {tm['content']!r}"
-            )
+            assert (
+                "__IMAGES__" not in tm["content"]
+            ), f"second sentinel leaked: {tm['content']!r}"
+            assert (
+                tm["content"] == "panel"
+            ), f"expected payload-only 'panel', got {tm['content']!r}"
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(

@@ -376,13 +376,8 @@ def run_safetensors_tool_loop(
             # a leading sentinel and multiple sentinels are both peeled
             # off in one cut.
             result_for_model = result
-            if (
-                isinstance(result_for_model, str)
-                and "__IMAGES__:" in result_for_model
-            ):
-                result_for_model = result_for_model.split(
-                    "__IMAGES__:", 1
-                )[0].rstrip()
+            if isinstance(result_for_model, str) and "__IMAGES__:" in result_for_model:
+                result_for_model = result_for_model.split("__IMAGES__:", 1)[0].rstrip()
             if is_error:
                 result_for_model = result_for_model + TOOL_ERROR_NUDGE
 
