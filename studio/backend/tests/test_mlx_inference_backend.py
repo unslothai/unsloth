@@ -179,9 +179,9 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
             "the route layer forwards this and a missing kwarg raises "
             "TypeError on Mac"
         )
-        assert params[name].default is None, (
-            f"{name!r} must default to None so existing callers stay valid"
-        )
+        assert (
+            params[name].default is None
+        ), f"{name!r} must default to None so existing callers stay valid"
 
 
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
@@ -199,8 +199,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
         return "<rendered prompt>"
 
     monkeypatch.setattr(
-        "core.inference.chat_template_helpers."
-        "apply_chat_template_for_generation",
+        "core.inference.chat_template_helpers." "apply_chat_template_for_generation",
         _fake_apply,
         raising = True,
     )
@@ -209,22 +208,26 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     # one-token generator so _generate_text returns without touching the
     # real stack.
     import types as _types
+
     mlx_lm_pkg = _types.ModuleType("mlx_lm")
     mlx_lm_sample = _types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
 
     class _Resp:
-        def __init__(self, tok): self.token = tok
+        def __init__(self, tok):
+            self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp(1)
+
     mlx_lm_pkg.stream_generate = _stream_generate
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
 
     class _Tok:
         chat_template = "x"
+
         def decode(self, ids, skip_special_tokens = False):
             return "hi"
 
@@ -233,14 +236,16 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     backend._tokenizer = _Tok()
     backend._is_vlm = False
 
-    out = list(backend.generate_chat_response(
-        messages = [{"role": "user", "content": "ping"}],
-        tools = [{"function": {"name": "web_search"}}],
-        enable_thinking = True,
-        reasoning_effort = "medium",
-        preserve_thinking = True,
-        max_new_tokens = 1,
-    ))
+    out = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "ping"}],
+            tools = [{"function": {"name": "web_search"}}],
+            enable_thinking = True,
+            reasoning_effort = "medium",
+            preserve_thinking = True,
+            max_new_tokens = 1,
+        )
+    )
     assert out == ["hi"]
     # The kwargs the user toggled must reach the chat-template helper.
     assert captured["kwargs"]["tools"] == [{"function": {"name": "web_search"}}]
