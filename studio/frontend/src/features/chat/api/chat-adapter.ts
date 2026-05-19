@@ -601,6 +601,12 @@ async function autoLoadSmallestModel(): Promise<{
             reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
             supportsPreserveThinking: sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
+            // Parity with the GGUF branch above.
+            toolsEnabled: sfLoadResp.supports_tools ?? false,
+            codeToolsEnabled: sfLoadResp.supports_tools ?? false,
+            defaultChatTemplate: sfLoadResp.chat_template ?? null,
+            chatTemplateOverride: null,
+            loadedChatTemplateOverride: null,
           });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
