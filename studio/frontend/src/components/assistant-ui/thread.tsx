@@ -1019,34 +1019,32 @@ const CancelledIndicator: FC = () => {
 // Pins activity to the bottom of the assistant bubble so the chat
 // doesn't look frozen during the gap between "model wrote intent" and
 // "tool actually invoked", or between back-to-back tool calls.
-// - When a tool-call part is currently `running`, shows the tool name.
-// - When the message is still streaming but no tool is mid-execution
-//   (e.g. model is generating the tool-call decision tokens, or has
-//   just rendered the lead-in text "Let me build it:"), falls back to
-//   a neutral "Working..." so the user sees that work is still happening.
+//
+// Return value is a string ("tool:<name>" | "working" | "") rather than
+// an object so useAuiState's referential-equality memoization holds
+// across renders -- returning a fresh object each render would invalidate
+// equality and force the component to rerender every frame.
 const RunningToolIndicator: FC = () => {
-  const state = useAuiState(({ message }) => {
-    if (message.status?.type !== "running") return null;
+  const signal = useAuiState(({ message }) => {
+    if (message.status?.type !== "running") return "";
     const parts = message.parts;
-    // Most recent running tool wins, if any.
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       const p = parts[i] as
         | { type?: string; toolName?: string; status?: { type?: string } }
         | undefined;
       if (p?.type === "tool-call" && p.status?.type === "running") {
-        return { kind: "tool" as const, name: p.toolName ?? "tool" };
+        return `tool:${p.toolName ?? "tool"}`;
       }
     }
-    // No tool currently running, but message itself is still streaming.
-    // GeneratingIndicator only shows while content.length === 0, so once
-    // any text has rendered we lose its dots. Surface a generic "Working..."
+    // No tool currently running, but message is still streaming.
+    // GeneratingIndicator hides once content.length > 0, so once any
+    // text has rendered we lose its dots. Surface a generic "Working..."
     // so the chat doesn't go silent between phases.
-    if (parts.length > 0) {
-      return { kind: "working" as const };
-    }
-    return null;
+    if (parts.length > 0) return "working";
+    return "";
   });
-  if (!state) return null;
+  if (!signal) return null;
+  const toolName = signal.startsWith("tool:") ? signal.slice(5) : null;
   return (
     <div
       data-slot="running-tool-indicator"
@@ -1057,9 +1055,9 @@ const RunningToolIndicator: FC = () => {
         aria-hidden
         className="aui-running-tool-indicator-dot inline-block size-2 animate-pulse rounded-full bg-muted-foreground/60"
       />
-      {state.kind === "tool" ? (
+      {toolName ? (
         <span>
-          Running <span className="font-mono text-xs">{state.name}</span>...
+          Running <span className="font-mono text-xs">{toolName}</span>...
         </span>
       ) : (
         <span>Working...</span>
