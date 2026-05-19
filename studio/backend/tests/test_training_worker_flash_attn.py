@@ -200,6 +200,7 @@ def _force_missing_fla_imports(monkeypatch):
 
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)
@@ -220,26 +221,26 @@ def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     assert any("flash-linear-attention" in s for s in statuses)
 
 
-def test_flash_linear_attention_not_skipped_on_blackwell(monkeypatch):
+def test_flash_linear_attention_skipped_on_blackwell(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_model_wants_tilelang", lambda model_name: True)
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
-    monkeypatch.setattr(
-        worker,
-        "has_blackwell_gpu",
-        mock.Mock(side_effect = AssertionError("FLA must not use Blackwell gate")),
-    )
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)
-    monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
+    statuses: list[str] = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, msg: statuses.append(msg))
 
     worker._ensure_flash_linear_attention(
         event_queue = [],
         model_name = "unsloth/Qwen3.5-2B",
     )
 
-    run_mock.assert_called_once()
+    run_mock.assert_not_called()
+    assert statuses == [
+        "Skipping flash-linear-attention install: Blackwell GPU detected"
+    ]
 
 
 def test_flash_linear_attention_skips_for_unrelated_models(monkeypatch):
@@ -273,6 +274,7 @@ def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
 
 def test_flash_linear_attention_matches_full_qwen3_family(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)

@@ -416,6 +416,12 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             ),
         )
         return False
+    if has_blackwell_gpu():
+        _send_status(
+            event_queue,
+            "Skipping flash-linear-attention install: Blackwell GPU detected",
+        )
+        return False
 
     # Probe once; reuse result so the --force-reinstall decision and the short-circuit
     # share the same call count (stable for tests).
