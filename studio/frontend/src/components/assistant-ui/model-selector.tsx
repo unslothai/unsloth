@@ -21,7 +21,9 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { type KeyboardEvent, useMemo, useState } from "react";
+import { Input } from "../ui/input";
+import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -29,8 +31,6 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
-import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
-import { Input } from "../ui/input";
 
 const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   openai: "svg",
@@ -241,10 +241,47 @@ function ModelSelectorContent({
     return "hub";
   }, [externalModels, loraModels, value]);
 
+  function focusActiveModelOption(root: HTMLElement): boolean {
+    const option =
+      root.querySelector<HTMLElement>(
+        '[role="tabpanel"]:not([hidden]) [data-model-picker-option][tabindex="0"]',
+      ) ??
+      root.querySelector<HTMLElement>(
+        '[data-model-picker-option][tabindex="0"]',
+      );
+    if (!option) {
+      return false;
+    }
+    option.focus();
+    return true;
+  }
+
+  function handlePickerEntryKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowDown") {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (
+      target.closest("input, textarea, [contenteditable='true']") ||
+      target.closest('[role="listbox"]')
+    ) {
+      return;
+    }
+
+    if (focusActiveModelOption(event.currentTarget)) {
+      event.preventDefault();
+    }
+  }
+
   return (
     <PopoverContent
       align="start"
       data-tour={dataTour}
+      onKeyDown={handlePickerEntryKeyDown}
       className={cn(
         "menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
         className,
