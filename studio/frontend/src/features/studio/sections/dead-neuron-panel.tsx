@@ -14,34 +14,13 @@ import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ReplayControls } from "./neuron-heatmap-section";
 import type { ActivationRecord } from "@/features/training/api/train-api";
-import { type ReactElement, useMemo, useState, useSyncExternalStore } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ResponsiveContainer,
-  Tooltip as RechartsTooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { type ReactElement, useMemo, useState } from "react";
 
 // A neuron channel is "dead" if its max mean_abs across all captured steps is below this.
 const DEAD_THRESHOLD = 0.01;
 // A channel is "constant" if its coefficient of variation (std/mean) is below this.
 const CONSTANT_CV_THRESHOLD = 0.05;
 
-function subscribe(cb: () => void): () => void {
-  const observer = new MutationObserver(cb);
-  observer.observe(document.documentElement, { attributeFilter: ["class"] });
-  return () => observer.disconnect();
-}
-function getSnapshot(): boolean {
-  return document.documentElement.classList.contains("dark");
-}
-function useIsDark(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
-}
 
 interface LayerStats {
   layer: string;
@@ -101,21 +80,11 @@ function computeLayerStats(records: ActivationRecord[]): LayerStats[] {
   });
 }
 
-interface NeuronHealthChartProps {
+interface NeuronHealthTableProps {
   stats: LayerStats[];
-  isDark: boolean;
 }
 
-function NeuronHealthChart({ stats, isDark }: NeuronHealthChartProps): ReactElement {
-  const tooltipStyle = {
-    fontSize: 11,
-    borderRadius: 8,
-    background: isDark ? "#000" : "#fff",
-    color: isDark ? "#fff" : "#000",
-    border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`,
-    padding: "6px 10px",
-  };
-
+function NeuronHealthTable({ stats }: NeuronHealthTableProps): ReactElement {
   if (stats.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
@@ -124,59 +93,80 @@ function NeuronHealthChart({ stats, isDark }: NeuronHealthChartProps): ReactElem
     );
   }
 
+  // Scale bars to the max value in the data so differences are visible
+  const maxPct = Math.max(...stats.map((s) => Math.max(s.deadPct, s.constantPct)), 1);
+
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <BarChart
-        data={stats}
-        layout="vertical"
-        margin={{ top: 0, right: 12, bottom: 18, left: 28 }}
-        barSize={6}
-        barGap={2}
-      >
-        <CartesianGrid horizontal={false} strokeDasharray="3 3" className="stroke-border" />
-        <XAxis
-          type="number"
-          domain={[0, 100]}
-          tickFormatter={(v) => `${v}%`}
-          tick={{ fontSize: 10 }}
-          className="fill-muted-foreground"
-          label={{ value: "% of channels", position: "insideBottom", offset: -2, fontSize: 10, fill: "rgba(120,120,120,0.75)" }}
-        />
-        <YAxis
-          type="category"
-          dataKey="layer"
-          tick={{ fontSize: 9 }}
-          width={28}
-          className="fill-muted-foreground"
-          label={{ value: "Layer", angle: -90, position: "insideLeft", offset: 12, style: { fontSize: 10, fill: "rgba(120,120,120,0.75)", textAnchor: "middle" } }}
-        />
-        <RechartsTooltip
-          formatter={(_v, name, item) => [
-            `${(Number(item?.value) ?? 0).toFixed(1)}%`,
-            name === "deadPct" ? "Dead neurons" : "Constant neurons",
-          ]}
-          contentStyle={tooltipStyle}
-          wrapperStyle={{ outline: "none" }}
-          cursor={{ fill: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)" }}
-        />
-        <Bar dataKey="deadPct" name="deadPct" radius={[0, 2, 2, 0]}>
-          {stats.map((entry) => (
-            <Cell
-              key={entry.layer}
-              fill={entry.deadPct > 20 ? "rgb(239,68,68)" : "rgb(239,68,68,0.6)"}
-            />
+    <div className="overflow-y-auto h-full">
+      <table className="w-full text-xs border-separate border-spacing-0">
+        <thead className="sticky top-0 bg-card z-10">
+          <tr>
+            <th className="text-left font-normal text-muted-foreground pb-1 pr-2 w-8">Layer</th>
+            <th className="text-left font-normal text-muted-foreground pb-1 pr-1 w-[50%]">
+              <span className="text-red-500/70">Dead</span>
+            </th>
+            <th className="text-left font-normal text-muted-foreground pb-1 w-[50%]">
+              <span className="text-amber-500/70">Constant</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {stats.map((row) => (
+            <tr key={row.layer} className="group">
+              <td className="pr-2 py-0.5 text-muted-foreground font-mono leading-none">
+                {row.layer}
+              </td>
+              <td className="pr-2 py-0.5">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1 h-2 rounded-sm overflow-hidden bg-muted/40">
+                    <div
+                      className={cn(
+                        "h-full rounded-sm transition-all duration-300",
+                        row.deadPct > 20 ? "bg-red-500" : "bg-red-500/50",
+                      )}
+                      style={{ width: `${(row.deadPct / maxPct) * 100}%` }}
+                    />
+                  </div>
+                  <span
+                    className={cn(
+                      "w-8 text-right tabular-nums leading-none shrink-0",
+                      row.deadPct > 20
+                        ? "text-red-500 font-medium"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {row.deadPct.toFixed(1)}%
+                  </span>
+                </div>
+              </td>
+              <td className="py-0.5">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1 h-2 rounded-sm overflow-hidden bg-muted/40">
+                    <div
+                      className={cn(
+                        "h-full rounded-sm transition-all duration-300",
+                        row.constantPct > 30 ? "bg-amber-500" : "bg-amber-500/50",
+                      )}
+                      style={{ width: `${(row.constantPct / maxPct) * 100}%` }}
+                    />
+                  </div>
+                  <span
+                    className={cn(
+                      "w-8 text-right tabular-nums leading-none shrink-0",
+                      row.constantPct > 30
+                        ? "text-amber-500 font-medium"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {row.constantPct.toFixed(1)}%
+                  </span>
+                </div>
+              </td>
+            </tr>
           ))}
-        </Bar>
-        <Bar dataKey="constantPct" name="constantPct" radius={[0, 2, 2, 0]}>
-          {stats.map((entry) => (
-            <Cell
-              key={entry.layer}
-              fill={entry.constantPct > 30 ? "rgb(245,158,11)" : "rgb(245,158,11,0.55)"}
-            />
-          ))}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -188,10 +178,9 @@ interface DeadNeuronPanelProps {
 }
 
 export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }: DeadNeuronPanelProps): ReactElement {
-  const isDark = useIsDark();
   const [expanded, setExpanded] = useState(false);
 
-  // Only consider records up to the current step so the chart stays in sync with the heatmap
+  // Only consider records up to the current step so the table stays in sync with the heatmap
   const visibleRecords = records.slice(0, stepIndex + 1);
   const stats = useMemo(() => computeLayerStats(visibleRecords), [visibleRecords]);
 
@@ -228,7 +217,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                         dead (avg)
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent className={cn("max-w-[240px]", isDark ? "dark" : "light")}>
+                    <TooltipContent className="max-w-[240px]">
                       <p className="font-medium mb-1">Dead neurons</p>
                       <p className="text-xs/relaxed font-normal">
                         A channel is dead when its mean absolute activation stays below 0.01 across all
@@ -249,7 +238,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                         constant (avg)
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent className={cn("max-w-[240px]", isDark ? "dark" : "light")}>
+                    <TooltipContent className="max-w-[240px]">
                       <p className="font-medium mb-1">Constant neurons</p>
                       <p className="text-xs/relaxed font-normal">
                         A channel is constant when its activation barely changes over training steps
@@ -266,15 +255,15 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
             type="button"
             onClick={() => setExpanded(true)}
             className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
-            title="Expand chart"
-            aria-label="Expand Neuron Health chart"
+            title="Expand"
+            aria-label="Expand Neuron Health"
           >
             <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
           </button>
         </CardTitle>
       </CardHeader>
       <CardContent className="flex-1 min-h-0 pt-0">
-        <NeuronHealthChart stats={stats} isDark={isDark} />
+        <NeuronHealthTable stats={stats} />
       </CardContent>
 
       <Dialog open={expanded} onOpenChange={setExpanded}>
@@ -283,8 +272,8 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
             <DialogTitle className="font-bold">Neuron Health</DialogTitle>
           </DialogHeader>
           <div className="mt-2 w-full flex flex-col gap-3">
-            <div style={{ height: Math.min(window.innerHeight * 0.55, 480) }}>
-              <NeuronHealthChart stats={stats} isDark={isDark} />
+            <div style={{ height: Math.min(window.innerHeight * 0.65, 520) }}>
+              <NeuronHealthTable stats={stats} />
             </div>
             {!isTraining && records.length > 1 && (
               <ReplayControls
