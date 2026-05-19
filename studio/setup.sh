@@ -42,6 +42,12 @@ _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
 _DEFAULT_LLAMA_TAG="latest"
 _DEFAULT_LLAMA_FORCE_COMPILE_REF="master"
 
+# Bun pin. Tracks the version used to generate the committed bun.lock
+# files. Auto-installed on absence; force-reinstalled only as a
+# cache-corruption recovery step (we don't overwrite a user's existing
+# bun unless their install is producing corrupt output).
+_BUN_PIN_VERSION="1.3.11"
+
 # ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
@@ -295,6 +301,31 @@ fi
 step "node" "$(node -v) | npm $(npm -v)"
 verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NPM_MAJOR=${NPM_MAJOR:-unknown}"
 
+# ── Bun (optional, used for faster lockfile-strict installs) ──
+# Auto-install only when missing. We do NOT overwrite a user's existing
+# bun unless their install is producing corrupt output (handled inside
+# the frontend install loop below as a cache-recovery step).
+_bun_at_pin() {
+    command -v bun >/dev/null 2>&1 || return 1
+    [ "$(bun --version 2>/dev/null)" = "$_BUN_PIN_VERSION" ]
+}
+_install_pinned_bun() {
+    substep "installing bun@$_BUN_PIN_VERSION (pinned)"
+    if run_maybe_quiet npm install -g "bun@$_BUN_PIN_VERSION" && command -v bun &>/dev/null; then
+        substep "bun $(bun --version) installed"
+        return 0
+    fi
+    substep "bun install skipped (npm ci will be used instead)" "$C_WARN"
+    return 1
+}
+if ! command -v bun &>/dev/null; then
+    _install_pinned_bun || true
+elif _bun_at_pin; then
+    verbose_substep "bun $(bun --version) at pin"
+else
+    substep "bun $(bun --version) present (pin is $_BUN_PIN_VERSION; not overwriting user install)"
+fi
+
 # ── Build frontend ──
 substep "building frontend..."
 cd "$SCRIPT_DIR/frontend"
@@ -315,32 +346,48 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Frontend install: Bun --frozen-lockfile first (faster, typically 5-10x)
-# when a committed bun.lock is present, npm ci as the always-available
-# fallback. Both run in lockfile-strict mode so the install is
-# byte-reproducible from whichever lockfile the chosen package manager
-# understands. The build always runs through Node (npm run build) --
-# avoids bun runtime quirks on some platforms.
+# Frontend install: Bun --frozen-lockfile first (faster, typically
+# 5-10x) when a committed bun.lock is present, npm ci as the
+# always-available fallback. Both run in lockfile-strict mode so the
+# install is byte-reproducible from whichever lockfile the chosen
+# package manager understands. The build always runs through Node
+# (npm run build) -- avoids bun runtime quirks on some platforms.
 #
-# Bun's package cache can occasionally store metadata-only entries that
-# pass exit 0 but leave binaries (tsc, vite) missing. We verify both
-# binaries after install; on failure we clear the cache and let npm ci
-# take over rather than retrying bun, since npm ci is the more
-# defensive path under cache corruption.
+# Cache-corruption recovery ladder. Bun's package cache can store
+# metadata-only entries that pass `bun install` exit 0 but leave
+# binaries (tsc, vite) missing. We verify both binaries after each
+# attempt and escalate:
+#   try 1: bun install --frozen-lockfile
+#   try 2: rm -rf node_modules + bun pm cache rm, retry
+#   try 3: force-reinstall bun@$_BUN_PIN_VERSION (a corrupted bun
+#          binary itself can produce empty payloads), retry
+#   final: npm ci (always-available safety net)
 _bun_install_ok=false
 if [ -f bun.lock ] && command -v bun &>/dev/null; then
-    substep "using bun --frozen-lockfile (faster)"
-    if run_quiet_no_exit "bun install --frozen-lockfile" bun install --frozen-lockfile --no-progress \
-        && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
-        && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
-        _bun_install_ok=true
-    else
-        substep "bun --frozen-lockfile failed or left binaries missing; clearing cache + falling back to npm ci" "$C_WARN"
+    substep "using bun $(bun --version) --frozen-lockfile (faster)"
+    _bun_attempts=0
+    while [ "$_bun_attempts" -lt 3 ] && [ "$_bun_install_ok" = false ]; do
+        _bun_attempts=$((_bun_attempts + 1))
+        if run_quiet_no_exit "bun install --frozen-lockfile (try $_bun_attempts)" bun install --frozen-lockfile --no-progress \
+            && { [ -x node_modules/.bin/tsc ] || [ -f node_modules/.bin/tsc.exe ] || [ -f node_modules/.bin/tsc.bunx ]; } \
+            && { [ -x node_modules/.bin/vite ] || [ -f node_modules/.bin/vite.exe ] || [ -f node_modules/.bin/vite.bunx ]; }; then
+            _bun_install_ok=true
+            break
+        fi
         rm -rf node_modules
-        run_maybe_quiet bun pm cache rm || true
-    fi
+        if [ "$_bun_attempts" -eq 1 ]; then
+            substep "bun install incomplete (try 1); clearing cache + retrying" "$C_WARN"
+            run_maybe_quiet bun pm cache rm || true
+        elif [ "$_bun_attempts" -eq 2 ]; then
+            substep "bun install still incomplete (try 2); reinstalling bun@$_BUN_PIN_VERSION + retrying" "$C_WARN"
+            run_maybe_quiet bun pm cache rm || true
+            _install_pinned_bun || true
+        fi
+    done
 fi
 if [ "$_bun_install_ok" = false ]; then
+    substep "falling back to npm ci"
+    rm -rf node_modules
     run_quiet_no_exit "npm ci" npm ci --no-fund --no-audit --loglevel=error
     _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then

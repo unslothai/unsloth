@@ -36,6 +36,12 @@ $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 
+# Bun pin. Tracks the version used to generate the committed bun.lock
+# files. Auto-installed on absence; force-reinstalled only as a
+# cache-corruption recovery step (we don't overwrite a user's existing
+# bun unless their install is producing corrupt output).
+$Script:BunPinVersion = "1.3.11"
+
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
@@ -1146,6 +1152,33 @@ if ($IsPipInstall) {
     }
 
     step "node" "$(node -v) | npm $(npm -v)"
+
+    # ── Bun (optional, used for faster lockfile-strict installs) ──
+    # Auto-install only when missing. We do NOT overwrite a user's
+    # existing bun unless their install is producing corrupt output
+    # (handled inside the frontend install block below as a cache-
+    # recovery step). Pin tracks the version used to generate the
+    # committed bun.lock files.
+    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        substep "installing bun@$Script:BunPinVersion (pinned)..."
+        $prevEAP_bun = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        Invoke-SetupCommand { npm install -g "bun@$Script:BunPinVersion" } | Out-Null
+        $ErrorActionPreference = $prevEAP_bun
+        Refresh-Environment
+        if (Get-Command bun -ErrorAction SilentlyContinue) {
+            substep "bun $(bun --version) installed"
+        } else {
+            substep "bun install skipped (npm ci will be used instead)"
+        }
+    } else {
+        $bunVer = (bun --version 2>$null)
+        if ($bunVer -eq $Script:BunPinVersion) {
+            substep "bun $bunVer at pin"
+        } else {
+            substep "bun $bunVer present (pin is $Script:BunPinVersion; not overwriting user install)"
+        }
+    }
 }
 
 # 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
@@ -1320,25 +1353,48 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
+    # Cache-corruption recovery ladder. Bun's package cache can store
+    # metadata-only entries that pass `bun install` exit 0 but leave
+    # binaries (tsc, vite) missing. We verify both binaries after each
+    # attempt and escalate:
+    #   try 1: bun install --frozen-lockfile
+    #   try 2: remove node_modules + bun pm cache rm, retry
+    #   try 3: force-reinstall bun@$Script:BunPinVersion (a corrupted
+    #          bun binary itself can produce empty payloads), retry
+    #   final: npm ci (always-available safety net)
     $InstallOk = $false
     $UseBun = (Test-Path "bun.lock" -PathType Leaf) -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
     if ($UseBun) {
-        Write-Host "   Using bun --frozen-lockfile (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile --no-progress }
-        # On Windows, .bin/ entries vary by package manager:
-        #   npm  -> tsc, tsc.cmd, tsc.ps1
-        #   bun  -> tsc.exe, tsc.bunx
-        $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
-        $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
-        if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
-            $InstallOk = $true
-        } else {
-            substep "bun --frozen-lockfile failed or left binaries missing; clearing cache + falling back to npm ci" "Yellow"
+        $bunVer = (bun --version 2>$null)
+        Write-Host "   Using bun $bunVer --frozen-lockfile (faster)" -ForegroundColor DarkGray
+        $bunAttempt = 0
+        while ($bunAttempt -lt 3 -and -not $InstallOk) {
+            $bunAttempt++
+            $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile --no-progress }
+            # On Windows, .bin/ entries vary by package manager:
+            #   npm -> tsc, tsc.cmd, tsc.ps1
+            #   bun -> tsc.exe, tsc.bunx
+            $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
+            $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
+            if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
+                $InstallOk = $true
+                break
+            }
             if (Test-Path "node_modules") { Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue }
-            Invoke-SetupCommand { bun pm cache rm } | Out-Null
+            if ($bunAttempt -eq 1) {
+                substep "bun install incomplete (try 1); clearing cache + retrying" "Yellow"
+                Invoke-SetupCommand { bun pm cache rm } | Out-Null
+            } elseif ($bunAttempt -eq 2) {
+                substep "bun install still incomplete (try 2); reinstalling bun@$Script:BunPinVersion + retrying" "Yellow"
+                Invoke-SetupCommand { bun pm cache rm } | Out-Null
+                Invoke-SetupCommand { npm install -g "bun@$Script:BunPinVersion" } | Out-Null
+                Refresh-Environment
+            }
         }
     }
     if (-not $InstallOk) {
+        substep "falling back to npm ci" "Yellow"
+        if (Test-Path "node_modules") { Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue }
         $npmExit = Invoke-SetupCommand { npm ci }
         if ($npmExit -ne 0) {
             Pop-Location
