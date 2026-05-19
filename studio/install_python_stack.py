@@ -227,6 +227,28 @@ def _detect_rocm_version() -> tuple[int, int] | None:
     return None
 
 
+def _pick_visible_index(num_tokens: int) -> int:
+    """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES to an integer
+    index into a list of length num_tokens. Returns 0 (first GPU) for
+    unset, empty, '-1', UUID-style, or out-of-range values."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        _val = os.environ.get(_env)
+        if _val is None:
+            continue
+        _val = _val.strip()
+        if _val == "" or _val == "-1":
+            return 0
+        _first = _val.split(",")[0].strip()
+        try:
+            _idx = int(_first)
+            if 0 <= _idx < num_tokens:
+                return _idx
+        except ValueError:
+            pass
+        return 0
+    return 0
+
+
 def _detect_windows_gfx_arch() -> str | None:
     """Return the gcnArchName on Windows (e.g. 'gfx1200'), or None.
 
@@ -234,6 +256,10 @@ def _detect_windows_gfx_arch() -> str | None:
     then hipinfo (PATH or HIP_PATH / ROCM_PATH bin), then amd-smi. Without
     the amd-smi fallback, runtime-only AMD installs without hipinfo on PATH
     return early and `studio update` cannot repair a CPU-only venv.
+
+    On multi-GPU hosts, all detected gfx tokens are deduplicated (preserving
+    enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES selects
+    which one to install for. The first GPU is used when no env var is set.
     """
     import re
 
@@ -241,6 +267,15 @@ def _detect_windows_gfx_arch() -> str | None:
     _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
     if _override and _override.strip():
         return _override.strip().lower()
+
+    def _dedup_pick(tokens: list[str]) -> "str | None":
+        if not tokens:
+            return None
+        _seen: list[str] = []
+        for _t in tokens:
+            if _t not in _seen:
+                _seen.append(_t)
+        return _seen[_pick_visible_index(len(_seen))]
 
     # 2. hipinfo via PATH, then HIP_PATH\bin / ROCM_PATH\bin.
     hipinfo = shutil.which("hipinfo")
@@ -262,10 +297,14 @@ def _detect_windows_gfx_arch() -> str | None:
             )
             if result.returncode == 0:
                 text = result.stdout.decode(errors = "replace")
-                m = re.search(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
-                if m:
-                    # Lowercase -- hipinfo sometimes emits "Gfx1151".
-                    return m.group(1).strip().lower()
+                # findall picks every gcnArchName line so multi-GPU hosts
+                # are enumerable and HIP_VISIBLE_DEVICES selects correctly.
+                _tokens = [t.strip().lower() for t in re.findall(
+                    r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text
+                )]
+                _pick = _dedup_pick(_tokens)
+                if _pick:
+                    return _pick
         except Exception:
             pass
 
@@ -283,20 +322,17 @@ def _detect_windows_gfx_arch() -> str | None:
                 if result.returncode != 0:
                     continue
                 text = result.stdout.decode(errors = "replace")
-                # Anchor on a labelled gfx line (e.g. "TARGET_GRAPHICS_VERSION: gfx1151"
-                # or "Arch:  gfx1151") to avoid catching stray gfx mentions in
-                # warnings or device-name strings. Fall back to a bare token match
-                # only if no labelled line is found.
-                m = re.search(
+                # Prefer labelled gfx lines; fall back to bare tokens.
+                _labelled = re.findall(
                     r"(?im)^\s*(?:target_graphics_version|gfx|arch|asic)\b[^:\r\n]*:\s*(gfx[1-9][0-9a-z]{2,3})\b",
                     text,
                 )
-                if not m:
-                    m = re.search(r"\bgfx[1-9][0-9a-z]{2,3}\b", text.lower())
-                    if m:
-                        return m.group(0)
-                    continue
-                return m.group(1).lower()
+                _tokens = [t.lower() for t in _labelled]
+                if not _tokens:
+                    _tokens = re.findall(r"\bgfx[1-9][0-9a-z]{2,3}\b", text.lower())
+                _pick = _dedup_pick(_tokens)
+                if _pick:
+                    return _pick
             except Exception:
                 continue
     return None
@@ -436,6 +472,7 @@ def _install_bnb_windows_rocm() -> bool:
         return False
     _prev = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
     os.environ["UV_SKIP_WHEEL_FILENAME_CHECK"] = "1"
+    _ok = False  # init so a raise inside pip_install_try does not produce UnboundLocalError
     try:
         _ok = pip_install_try(
             "bitsandbytes (AMD Windows, pre-release main)",
@@ -491,7 +528,7 @@ def _ensure_rocm_torch() -> None:
                 ],
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
-                timeout = 30,
+                timeout = 90,
             )
             _torch_ok = _probe.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
@@ -529,7 +566,7 @@ def _ensure_rocm_torch() -> None:
                 ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
-                timeout = 30,
+                timeout = 90,
             )
             if probe.returncode == 0 and probe.stdout.decode().strip() == "yes":
                 _torch_already_rocm = True
@@ -609,7 +646,7 @@ def _ensure_rocm_torch() -> None:
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
-            timeout = 30,
+            timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
         probe = None
@@ -625,6 +662,10 @@ def _ensure_rocm_torch() -> None:
     # in torch._grouped_mm. AMD's per-gfx repo ships torch 2.11.0+rocm7.13.0
     # with the real fix, so route those hosts there instead of the generic
     # pytorch.org rocm7.1 wheel. Mirrors install.sh's Strix override.
+    # On mixed hosts (Strix iGPU + non-Strix dGPU), only route to the AMD
+    # per-gfx index when the GPU HIP will actually run on is the Strix one --
+    # otherwise the dGPU would get an incompatible wheel. Use HIP_VISIBLE_DEVICES
+    # to determine the runtime target.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     if ver < (7, 2):
@@ -632,25 +673,42 @@ def _ensure_rocm_torch() -> None:
         _strix_gfx = {"gfx1151", "gfx1150"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
         if _detected_strix:
-            _gfx_str = ", ".join(sorted(_detected_strix))
-            _selected_gfx = sorted(_detected_strix)[0]
-            _amd_mirror = (
-                os.environ.get("UNSLOTH_AMD_ROCM_MIRROR")
-                or "https://repo.amd.com/rocm/whl"
-            ).rstrip("/")
-            _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
-            _strix_override_pkgs = (
-                "torch>=2.11.0,<2.12.0",
-                "torchvision",
-                "torchaudio",
+            # Pick the runtime-visible GPU. If HIP_VISIBLE_DEVICES selects a
+            # specific index into gfx_codes, use that gfx; else default to the
+            # first listed GPU. Skip the override unless the resolved GPU is
+            # Strix.
+            _runtime_gfx = (
+                gfx_codes[_pick_visible_index(len(gfx_codes))]
+                if gfx_codes
+                else None
             )
-            print(
-                f"\n   ⚠️  {_gfx_str} (AMD Strix) detected with ROCm {ver[0]}.{ver[1]}.\n"
-                f"   ROCm 7.1 has a known _grouped_mm segfault on this GPU;\n"
-                f"   routing torch install to AMD's arch-specific index\n"
-                f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
-                f"   with the upstream fix.\n"
-            )
+            if _runtime_gfx in _strix_gfx:
+                _selected_gfx = _runtime_gfx
+                _amd_mirror = (
+                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR")
+                    or "https://repo.amd.com/rocm/whl"
+                ).rstrip("/")
+                _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
+                _strix_override_pkgs = (
+                    "torch>=2.11.0,<2.12.0",
+                    "torchvision",
+                    "torchaudio",
+                )
+                print(
+                    f"\n   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
+                    f"{ver[0]}.{ver[1]}.\n"
+                    f"   ROCm 7.1 has a known _grouped_mm segfault on this GPU;\n"
+                    f"   routing torch install to AMD's arch-specific index\n"
+                    f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
+                    f"   with the upstream fix.\n"
+                )
+            else:
+                _gfx_str = ", ".join(sorted(_detected_strix))
+                print(
+                    f"\n   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"selects a non-Strix runtime target ({_runtime_gfx});\n"
+                    f"   skipping AMD per-gfx index override.\n"
+                )
 
     if not has_hip_torch:
         if _strix_override_url is not None and _strix_override_pkgs is not None:

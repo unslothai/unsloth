@@ -2319,7 +2319,7 @@ class TestStrixRocm71Override:
         # The URL must incorporate the detected gfx arch so gfx1151 → .../gfx1151/
         strix_idx = source.find("_amd_strix_base")
         assert strix_idx != -1
-        ctx = source[strix_idx : strix_idx + 200]
+        ctx = source[strix_idx : strix_idx + 500]
         assert "_strix_gfx" in ctx
 
     def test_radeon_repo_bypassed_for_strix_in_install_sh(self):

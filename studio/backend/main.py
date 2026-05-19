@@ -32,9 +32,19 @@ if sys.platform == "win32":
         _default_root = os.path.join(
             os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
         )
+        def _ver_key(name: str) -> tuple:
+            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            parts = []
+            for chunk in name.split("."):
+                try:
+                    parts.append((0, int(chunk)))
+                except ValueError:
+                    parts.append((1, chunk))
+            return tuple(parts)
+
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(os.listdir(_default_root), reverse = True):
+                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         candidates.append(_bin)
@@ -66,7 +76,13 @@ if sys.platform == "win32":
         try:
             import torch as _torch_probe
 
-            _is_rocm_host = bool(getattr(_torch_probe.version, "hip", None))
+            # Broad check: torch.version.hip OR "rocm" in torch.__version__ --
+            # AMD SDK / Radeon wheels may not populate torch.version.hip but
+            # still encode "rocm" in __version__. Matches worker.py + hardware.py.
+            _is_rocm_host = bool(
+                getattr(getattr(_torch_probe, "version", None), "hip", None)
+                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
+            )
             del _torch_probe
         except Exception:
             pass

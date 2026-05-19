@@ -1852,7 +1852,13 @@ case "$TORCH_INDEX_URL" in
             # over the pytorch.org rocm7.2 fallback because it exercises the real GPU
             # kernel path. Set UNSLOTH_AMD_ROCM_MIRROR to override for air-gapped installs.
             _amd_strix_base="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
-            TORCH_INDEX_URL="${_amd_strix_base%/}/${_strix_gfx}/"
+            # Strip ALL trailing slashes to match Python's .rstrip("/") -- a
+            # double-/triple-slash mirror URL would otherwise produce 404s on
+            # strict pip proxies (artifactory, sonatype).
+            while [ "${_amd_strix_base%/}" != "$_amd_strix_base" ]; do
+                _amd_strix_base="${_amd_strix_base%/}"
+            done
+            TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
         fi

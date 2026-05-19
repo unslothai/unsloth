@@ -91,9 +91,20 @@ if sys.platform == "win32":
         _default_root = os.path.join(
             os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
         )
+
+        def _ver_key(name: str) -> tuple:
+            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            parts = []
+            for chunk in name.split("."):
+                try:
+                    parts.append((0, int(chunk)))
+                except ValueError:
+                    parts.append((1, chunk))
+            return tuple(parts)
+
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(os.listdir(_default_root), reverse = True):
+                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         _candidates.append(_bin)
