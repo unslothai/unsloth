@@ -234,4 +234,10 @@ package-lock.json
 !studio/frontend/package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
+# Bun lockfiles: same opt-in policy as package-lock.json above.
+# bun install --frozen-lockfile needs these committed for the same surfaces.
+bun.lock
+!studio/frontend/bun.lock
+!studio/backend/core/data_recipe/oxc-validator/bun.lock
+!studio/bun.lock
 llama.cpp/
