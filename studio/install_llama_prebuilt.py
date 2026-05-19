@@ -2637,7 +2637,11 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     _tokens = re.findall(r"gfx[1-9][0-9a-z]{2,3}", out.lower())
     if not _tokens:
         return None
-    _vis = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get("ROCR_VISIBLE_DEVICES") or ""
+    _vis = (
+        os.environ.get("HIP_VISIBLE_DEVICES")
+        or os.environ.get("ROCR_VISIBLE_DEVICES")
+        or ""
+    )
     if _vis:
         _first = _vis.split(",")[0].strip()
         try:
