@@ -81,6 +81,7 @@ _WINDOWS_ROCM_GROUPED_MM_LIB = None
 # scope so they are not garbage collected.
 _ROCM_DLL_HANDLES: list = []
 if sys.platform == "win32":
+
     def _add_rocm_dll_dirs_worker() -> None:
         _candidates: list[str] = []
         for _var in ("HIP_PATH", "ROCM_PATH"):
@@ -104,6 +105,7 @@ if sys.platform == "win32":
                     _ROCM_DLL_HANDLES.append(os.add_dll_directory(_d))
                 except (OSError, AttributeError):
                     pass
+
     _add_rocm_dll_dirs_worker()
     del _add_rocm_dll_dirs_worker
 
@@ -1968,6 +1970,7 @@ def run_training_process(
     if sys.platform == "win32":
         try:
             import torch as _torch_probe
+
             _is_win32_rocm = bool(
                 getattr(getattr(_torch_probe, "version", None), "hip", None)
                 or "rocm" in getattr(_torch_probe, "__version__", "").lower()
