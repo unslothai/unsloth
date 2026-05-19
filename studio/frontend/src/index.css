@@ -1187,3 +1187,23 @@
 	color: var(--popover-foreground) !important;
 	border-color: var(--border) !important;
 }
+
+/*
+ * prefers-reduced-motion: honour the OS-level "reduce motion" preference.
+ * Tailwind animate-in/out, Radix open/close transforms, infinite shine/pulse
+ * keyframes, and Framer Motion layout transitions all ignore the media query
+ * by default. Forcing every animation/transition to ~0ms collapses zoom-ins,
+ * slide-ins, and continuous shimmers to a single frame without removing the
+ * end state. Hover colour changes become instant rather than fading, which is
+ * the documented WCAG outcome (motion is "minimised, not removed").
+ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
