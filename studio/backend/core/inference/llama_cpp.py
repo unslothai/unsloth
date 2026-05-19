@@ -57,15 +57,9 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 
-# Mid-plan EOS detectors. Auto-continue runs alongside the _INTENT_SIGNAL
-# re-prompt path but stays neutral ("Continue.") instead of tool-coercive,
-# so it also handles tool-less turns. Three observed shapes:
-#   1. Trailing intent at end of buffer: "Let me clone the repo."
-#   2. Numbered or bulleted list under a "Let me ...:" header.
-#   3. Bare trailing colon: "Let me check the repo:"
-# "let me know" is a closing phrase, not a mid-plan signal; exclude it via
-# negative lookahead so a final "If you need anything else, let me know."
-# does not trigger spurious auto-continues.
+# Mid-plan EOS detectors. Three shapes: trailing intent, list under a
+# "Let me ...:" header, bare trailing colon. "let me know" is a closer,
+# not a plan signal -- excluded via negative lookahead.
 _TRAILING_PLAN_INTENT = re.compile(
     r"(?i)("
     r"let me(?!\s+know\b)|now let me|i['’]ll now|next,?\s*i['’]ll|"
@@ -73,17 +67,10 @@ _TRAILING_PLAN_INTENT = re.compile(
     r")[^.!?\n]*[.!?]?\s*$"
 )
 _TRAILING_PLAN_LIST = re.compile(
-    # No `m` flag: the trailing anchor must match end-of-string, not
-    # end-of-line. With `m` an answer like "1. one\n2. two\n\nDone." would
-    # still match on the list block and trigger a spurious auto-continue.
-    #
-    # Anchors below also defend against a subtler backtrack: each list
-    # item starts with `[ \t]*` (horizontal whitespace only, NOT `\s*`)
-    # so the marker must sit on its own line, not be picked up mid-prose
-    # via a substring like "42." inside a sentence such as
-    # "Let me explain:\n1. The function returns 42.\n\nThat's the answer."
-    # The item content ends with `(?:\n|\Z)` so the iteration boundary
-    # is a real line break or end-of-buffer.
+    # `\Z` (not `$`) so the regex only fires when the list is the last
+    # thing in the buffer, not when a closing paragraph follows.
+    # `[ \t]*` before each marker keeps it line-anchored so a mid-prose
+    # "42." cannot pose as a phantom list item.
     r"(?i)"
     r"(?:let me|i['’]ll|i will|i['’]m going to|i am going to|"
     r"here['’]?s (?:my |the |a )?(?:plan|approach|steps?)|"
@@ -102,11 +89,7 @@ _MAX_CONTINUES = 3
 
 
 def _trailing_plan_hit(stripped: str) -> bool:
-    """True if the last `_TRAILING_PLAN_WINDOW` chars look mid-plan.
-
-    The window covers both single-line trailing intent and list endings
-    where the intent cue is several lines above the last item.
-    """
+    """True if the last `_TRAILING_PLAN_WINDOW` chars look mid-plan."""
     if not stripped:
         return False
     tail = stripped[-_TRAILING_PLAN_WINDOW:]
@@ -4078,18 +4061,13 @@ class LlamaCppBackend:
         # direct answer like "4" or "Hello!" will not match.
         # Pattern is compiled once at module level (_INTENT_SIGNAL).
         _reprompt_count = 0
-        # Auto-continue (mid-plan EOS) uses its own counter so it does
-        # not steal the tool-coercive re-prompt budget.
+        # Separate counter so auto-continue doesn't steal reprompt budget.
         _continue_count = 0
 
-        # Grant headroom for re-prompts and continues only as they're
-        # actually consumed, so the caller's tool-iteration cap is
-        # respected end-to-end. Each consumed re-prompt or continue
-        # raises the effective cap by exactly one slot, so the total
-        # never exceeds max_tool_iterations + reprompts + continues
-        # (bounded above by max_tool_iterations + _MAX_REPROMPTS +
-        # _MAX_CONTINUES). itertools.count keeps `continue` semantics
-        # intact in the loop body below.
+        # Dynamic cap: caller's max_tool_iterations is honored exactly
+        # until a reprompt/continue actually fires; each consumed event
+        # earns its own slot back. itertools.count preserves loop-body
+        # `continue` semantics.
         for iteration in _itertools.count():
             if iteration >= (max_tool_iterations + _reprompt_count + _continue_count):
                 break
@@ -4426,19 +4404,14 @@ class LlamaCppBackend:
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
 
-                        # Tool-coercive re-prompt fires when there are
-                        # tools and the model wrote intent text without
-                        # invoking one.
+                        # Tool-coercive reprompt: intent text without a tool call.
                         _tool_intent_hit = (
                             tools
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                             and _INTENT_SIGNAL.search(_stripped) is not None
                         )
-                        # Neutral auto-continue fires when the model
-                        # stops mid-plan with a trailing intent cue,
-                        # numbered/bulleted list, or bare colon. Works
-                        # with or without tools, on any response length.
+                        # Neutral auto-continue on mid-plan EOS. Works without tools.
                         _trailing_hit = (
                             _continue_count < _MAX_CONTINUES
                             and _trailing_plan_hit(_stripped)
@@ -4485,9 +4458,8 @@ class LlamaCppBackend:
                             _it_r = _iter_timings or {}
                             _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
-                            # boundary=True: the next agentic iteration
-                            # starts a fresh assistant turn, so adapters
-                            # must reset their cumulative cursor here.
+                            # boundary=True: next iter starts a fresh
+                            # turn, so adapters must reset their cursor.
                             yield {"type": "status", "text": "", "boundary": True}
                             continue
 
@@ -4756,17 +4728,10 @@ class LlamaCppBackend:
                         tool_msg["tool_call_id"] = tool_call_id
                     conversation.append(tool_msg)
 
-                # Clear tool status badge before next generation iteration.
-                # We do NOT mark this as a boundary: the preceding
-                # tool_end event already opened a fresh text block and
-                # reset the cumulative cursor in Anthropic streaming
-                # (see AnthropicStreamEmitter._handle_tool_end), and the
-                # OpenAI-compat path resets prev_text on tool_start. A
-                # second boundary here would close the freshly opened
-                # text block (empty) and reopen it, producing a spurious
-                # content_block_stop/start pair on every tool call.
+                # UI badge clear. NOT a boundary: tool_end already
+                # reset adapter cursors (would emit a spurious empty
+                # block if we flagged it).
                 yield {"type": "status", "text": ""}
-                # Continue the loop to let model respond with context
                 continue
 
             except httpx.ConnectError:

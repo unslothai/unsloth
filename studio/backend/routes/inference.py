@@ -2459,14 +2459,9 @@ async def openai_chat_completions(
                             break
 
                         if event["type"] == "status":
-                            # boundary=True flags a true iteration
-                            # boundary (auto-continue re-prompt or
-                            # post-tool resume). Reset the cumulative
-                            # cursor only then; non-boundary empty
-                            # status events (UI badge clears at normal
-                            # stream end) keep the existing cursor so
-                            # we do not spuriously re-emit a duplicate
-                            # prefix on the next "content" yield.
+                            # boundary=True: auto-continue reprompt.
+                            # Reset cursor only then; plain empty-status
+                            # events (badge clears) keep the cursor.
                             if event.get("boundary"):
                                 prev_text = ""
                             # Emit tool status as a custom SSE event
@@ -2481,17 +2476,9 @@ async def openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
-                            # Both endpoints of a tool call begin a fresh
-                            # cumulative-text window: tool_start because
-                            # the model's next visible content restarts
-                            # cumulative-from-zero in the post-tool turn,
-                            # and tool_end because after we emit the
-                            # tool result, the model's next iteration
-                            # produces its own fresh cumulative stream
-                            # (the post-tool empty-status event is just
-                            # a UI badge clear; it does NOT carry a
-                            # boundary flag, so this is the place to
-                            # reset prev_text on tool_end).
+                            # Both edges of a tool call restart cumulative
+                            # text: tool_start opens a new stream, tool_end
+                            # is the cursor reset for the post-tool turn.
                             prev_text = ""
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
@@ -4385,12 +4372,7 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
         elif etype == "tool_end":
             prev_text = ""
         elif etype == "status" and event.get("boundary"):
-            # Iteration-boundary marker: the next content event
-            # restarts the cumulative diff baseline, so reset prev_text
-            # the same way tool_end does. Without this a shorter
-            # continuation gets dropped entirely and a longer one
-            # loses its prefix. Plain empty-status events (UI badge
-            # clears at normal stream end) do not match this branch.
+            # Iteration-boundary marker: reset like tool_end does.
             prev_text = ""
         elif etype == "metadata":
             usage = event.get("usage", {})
