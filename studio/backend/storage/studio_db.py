@@ -177,6 +177,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_settings_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            quarantined_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -818,22 +829,105 @@ def count_chat_threads() -> int:
         conn.close()
 
 
+class ChatMessageConflictError(RuntimeError):
+    """Raised when a chat message id already belongs to another thread."""
+
+
+class CorruptSettingsError(RuntimeError):
+    """Raised when a partial settings patch would overwrite corrupt settings."""
+
+
+def _parse_chat_setting_json(key: str, value_json: str) -> tuple[bool, Any]:
+    try:
+        return True, json.loads(value_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning(
+            "Corrupt chat_settings JSON; quarantining key=%s error=%s",
+            key,
+            exc,
+        )
+        return False, None
+
+
+def _load_chat_settings_for_merge(
+    conn: sqlite3.Connection,
+) -> tuple[dict[str, Any], set[str]]:
+    rows = conn.execute("SELECT key, value_json FROM chat_settings").fetchall()
+    current: dict[str, Any] = {}
+    corrupt: set[str] = set()
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        ok, value = _parse_chat_setting_json(row["key"], row["value_json"])
+        if ok:
+            current[row["key"]] = value
+            continue
+        corrupt.add(row["key"])
+        conn.execute(
+            """
+            INSERT INTO chat_settings_quarantine
+                (key, value_json, reason, quarantined_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (row["key"], row["value_json"], "json_decode_error", now),
+        )
+        conn.execute(
+            "DELETE FROM chat_settings WHERE key = ? AND value_json = ?",
+            (row["key"], row["value_json"]),
+        )
+    return current, corrupt
+
+
+def _raise_if_chat_message_thread_conflicts(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    message_ids: list[str],
+) -> None:
+    unique_ids = list(dict.fromkeys(message_ids))
+    if not unique_ids:
+        return
+    conflicts: list[str] = []
+    for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT id FROM chat_messages
+            WHERE id IN ({placeholders}) AND thread_id != ?
+            ORDER BY id
+            """,
+            (*chunk, thread_id),
+        ).fetchall()
+        conflicts.extend(row["id"] for row in rows)
+    if conflicts:
+        preview = ", ".join(conflicts[:5])
+        suffix = "" if len(conflicts) <= 5 else f" (+{len(conflicts) - 5} more)"
+        raise ChatMessageConflictError(
+            f"Message id already belongs to another thread: {preview}{suffix}"
+        )
+
+
 def upsert_chat_message(message: dict) -> dict:
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        _raise_if_chat_message_thread_conflicts(
+            conn,
+            message["threadId"],
+            [message["id"]],
+        )
         conn.execute(
             """
             INSERT INTO chat_messages
                 (id, thread_id, parent_id, role, content_json, attachments_json, metadata_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                thread_id = excluded.thread_id,
                 parent_id = excluded.parent_id,
                 role = excluded.role,
                 content_json = excluded.content_json,
                 attachments_json = excluded.attachments_json,
                 metadata_json = excluded.metadata_json,
                 created_at = excluded.created_at
+            WHERE excluded.thread_id = chat_messages.thread_id
             """,
             (
                 message["id"],
@@ -852,6 +946,9 @@ def upsert_chat_message(message: dict) -> dict:
         )
         conn.commit()
         return message
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -863,7 +960,12 @@ def sync_chat_messages(
 ) -> list[dict]:
     conn = get_connection()
     try:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
+        _raise_if_chat_message_thread_conflicts(
+            conn,
+            thread_id,
+            [m["id"] for m in messages],
+        )
         if prune_missing:
             conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
         conn.executemany(
@@ -872,13 +974,13 @@ def sync_chat_messages(
                 (id, thread_id, parent_id, role, content_json, attachments_json, metadata_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                thread_id = excluded.thread_id,
                 parent_id = excluded.parent_id,
                 role = excluded.role,
                 content_json = excluded.content_json,
                 attachments_json = excluded.attachments_json,
                 metadata_json = excluded.metadata_json,
                 created_at = excluded.created_at
+            WHERE excluded.thread_id = chat_messages.thread_id
             """,
             [
                 (
@@ -900,6 +1002,9 @@ def sync_chat_messages(
         )
         conn.commit()
         return list_chat_messages(thread_id)
+    except ChatMessageConflictError:
+        conn.rollback()
+        raise
     except sqlite3.Error:
         logger.exception("Failed to sync chat messages for thread %s", thread_id)
         conn.rollback()
@@ -960,7 +1065,7 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             messages.extend(_chat_message_from_row(row) for row in rows)
         return sorted(
             messages,
-            key = lambda message: (message["createdAt"], message["id"]),
+            key=lambda message: (message["createdAt"], message["id"]),
         )
     finally:
         conn.close()
@@ -1023,10 +1128,18 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        current_rows = conn.execute(
-            "SELECT key, value_json FROM chat_settings"
-        ).fetchall()
-        current = {r["key"]: _json_loads(r["value_json"], None) for r in current_rows}
+        current, corrupt = _load_chat_settings_for_merge(conn)
+        unsafe_partial_keys = [
+            key
+            for key, value in updates.items()
+            if key in corrupt and isinstance(value, dict)
+        ]
+        if unsafe_partial_keys:
+            conn.commit()
+            keys = ", ".join(sorted(unsafe_partial_keys))
+            raise CorruptSettingsError(
+                f"Cannot apply partial settings patch to corrupt key(s): {keys}"
+            )
         merged = _deep_merge_settings(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
@@ -1041,6 +1154,8 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         return merged
+    except CorruptSettingsError:
+        raise
     except Exception:
         conn.rollback()
         raise

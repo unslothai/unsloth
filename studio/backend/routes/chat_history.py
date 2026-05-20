@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from storage.studio_db import (
+    ChatMessageConflictError,
+    CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
     delete_chat_threads,
@@ -59,7 +61,7 @@ class ChatMessage(BaseModel):
     threadId: str
     parentId: Optional[str] = None
     role: str
-    content: Any = Field(default_factory = list)
+    content: Any = Field(default_factory=list)
     attachments: Optional[Any] = None
     metadata: Optional[dict[str, Any]] = None
     createdAt: int
@@ -95,7 +97,7 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
@@ -110,14 +112,14 @@ class ChatInferenceSettings(BaseModel):
 
 
 class ChatPreset(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     params: ChatInferenceSettings
 
 
 class ChatSettingsPayload(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     inferenceParams: Optional[ChatInferenceSettings] = None
     customPresets: Optional[list[ChatPreset]] = None
@@ -131,8 +133,8 @@ class ChatSettingsPayload(BaseModel):
     ] = None
     preserveThinking: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
-    toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default=None, ge=1)
+    toolCallTimeout: Optional[int] = Field(default=None, ge=1)
 
 
 class ChatSettingsResponse(BaseModel):
@@ -147,7 +149,7 @@ class ChatMessagesBatchResponse(BaseModel):
     messagesByThreadId: dict[str, list[ChatMessage]]
 
 
-@router.get("/threads", response_model = ChatThreadListResponse)
+@router.get("/threads", response_model=ChatThreadListResponse)
 async def list_threads(
     model_type: Optional[str] = Query(None),
     pair_id: Optional[str] = Query(None),
@@ -155,14 +157,14 @@ async def list_threads(
     current_subject: str = Depends(get_current_subject),
 ):
     threads = list_chat_threads(
-        model_type = model_type,
-        pair_id = pair_id,
-        include_archived = include_archived,
+        model_type=model_type,
+        pair_id=pair_id,
+        include_archived=include_archived,
     )
-    return ChatThreadListResponse(threads = [ChatThread(**t) for t in threads])
+    return ChatThreadListResponse(threads=[ChatThread(**t) for t in threads])
 
 
-@router.post("/threads", response_model = ChatThread)
+@router.post("/threads", response_model=ChatThread)
 async def save_thread(
     payload: ChatThread,
     current_subject: str = Depends(get_current_subject),
@@ -170,33 +172,33 @@ async def save_thread(
     return ChatThread(**upsert_chat_thread(payload.model_dump()))
 
 
-@router.get("/threads/{thread_id}", response_model = ChatThread)
+@router.get("/threads/{thread_id}", response_model=ChatThread)
 async def get_thread(
     thread_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
     thread = get_chat_thread(thread_id)
     if thread is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return ChatThread(**thread)
 
 
-@router.patch("/threads/{thread_id}", response_model = ChatThread)
+@router.patch("/threads/{thread_id}", response_model=ChatThread)
 async def patch_thread(
     thread_id: str,
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
 ):
-    patch = payload.model_dump(exclude_unset = True)
+    patch = payload.model_dump(exclude_unset=True)
     for field in ("title", "modelType", "modelId", "archived", "createdAt"):
         if field in patch and patch[field] is None:
-            raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
+            raise HTTPException(status_code=400, detail=f"{field} cannot be null")
     thread = update_chat_thread(
         thread_id,
         patch,
     )
     if thread is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return ChatThread(**thread)
 
 
@@ -209,19 +211,19 @@ async def delete_threads(
     return {"status": "deleted"}
 
 
-@router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
+@router.get("/threads/{thread_id}/messages", response_model=ChatMessageListResponse)
 async def get_thread_messages(
     thread_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return ChatMessageListResponse(
-        messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
+        messages=[ChatMessage(**m) for m in list_chat_messages(thread_id)]
     )
 
 
-@router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
+@router.post("/messages:batch", response_model=ChatMessagesBatchResponse)
 async def batch_thread_messages(
     payload: ChatMessagesBatchRequest,
     current_subject: str = Depends(get_current_subject),
@@ -233,24 +235,24 @@ async def batch_thread_messages(
         tid = m["threadId"]
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**m))
-    return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+    return ChatMessagesBatchResponse(messagesByThreadId=by_thread)
 
 
-@router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
+@router.get("/threads/{thread_id}/messages/{message_id}", response_model=ChatMessage)
 async def get_thread_message(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     message = get_chat_message(thread_id, message_id)
     if message is None:
-        raise HTTPException(status_code = 404, detail = f"Message {message_id} not found")
+        raise HTTPException(status_code=404, detail=f"Message {message_id} not found")
     return ChatMessage(**message)
 
 
-@router.put("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
+@router.put("/threads/{thread_id}/messages/{message_id}", response_model=ChatMessage)
 async def save_thread_message(
     thread_id: str,
     message_id: str,
@@ -258,40 +260,54 @@ async def save_thread_message(
     current_subject: str = Depends(get_current_subject),
 ):
     if thread_id != payload.threadId or message_id != payload.id:
-        raise HTTPException(status_code = 400, detail = "Message id mismatch")
+        raise HTTPException(status_code=400, detail="Message id mismatch")
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatMessage(**upsert_chat_message(payload.model_dump()))
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    try:
+        return ChatMessage(**upsert_chat_message(payload.model_dump()))
+    except ChatMessageConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
+@router.put("/threads/{thread_id}/messages", response_model=ChatMessageListResponse)
 async def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
 ):
+    mismatched_ids = [
+        message.id for message in payload.messages if message.threadId != thread_id
+    ]
+    if mismatched_ids:
+        preview = ", ".join(mismatched_ids[:5])
+        suffix = (
+            "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Message threadId mismatch: {preview}{suffix}",
+        )
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    messages = []
-    for message in payload.messages:
-        data = message.model_dump()
-        data["threadId"] = thread_id
-        messages.append(data)
-    return ChatMessageListResponse(
-        messages = [
-            ChatMessage(**m)
-            for m in sync_chat_messages(
-                thread_id,
-                messages,
-                prune_missing = payload.pruneMissing,
-            )
-        ]
-    )
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    messages = [message.model_dump() for message in payload.messages]
+    try:
+        return ChatMessageListResponse(
+            messages=[
+                ChatMessage(**m)
+                for m in sync_chat_messages(
+                    thread_id,
+                    messages,
+                    prune_missing=payload.pruneMissing,
+                )
+            ]
+        )
+    except ChatMessageConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.get("/count", response_model = ChatCountResponse)
+@router.get("/count", response_model=ChatCountResponse)
 async def count_threads(current_subject: str = Depends(get_current_subject)):
-    return ChatCountResponse(count = count_chat_threads())
+    return ChatCountResponse(count=count_chat_threads())
 
 
 @router.delete("")
@@ -300,12 +316,12 @@ async def clear_history(current_subject: str = Depends(get_current_subject)):
     return {"status": "deleted"}
 
 
-@router.get("/settings", response_model = ChatSettingsResponse)
+@router.get("/settings", response_model=ChatSettingsResponse)
 async def get_settings(current_subject: str = Depends(get_current_subject)):
-    return ChatSettingsResponse(settings = list_chat_settings())
+    return ChatSettingsResponse(settings=list_chat_settings())
 
 
-@router.put("/settings", response_model = ChatSettingsResponse)
+@router.put("/settings", response_model=ChatSettingsResponse)
 async def put_settings(
     payload: dict[str, Any],
     current_subject: str = Depends(get_current_subject),
@@ -313,24 +329,27 @@ async def put_settings(
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code = 400, detail = exc.errors()) from exc
+        raise HTTPException(status_code=400, detail=exc.errors()) from exc
     # Atomic read + deep-merge + write inside one BEGIN IMMEDIATE so two
     # concurrent slider drags can't drop each other's updates.
-    return ChatSettingsResponse(
-        settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
-    )
+    try:
+        return ChatSettingsResponse(
+            settings=upsert_chat_settings_merge(parsed.model_dump(exclude_unset=True))
+        )
+    except CorruptSettingsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.get("/export", response_model = ChatExportResponse)
+@router.get("/export", response_model=ChatExportResponse)
 async def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
 
-    threads = list_chat_threads(include_archived = True)
+    threads = list_chat_threads(include_archived=True)
     messages = list_chat_messages_for_threads([thread["id"] for thread in threads])
     return ChatExportResponse(
-        exportedAt = datetime.now(timezone.utc).isoformat(),
-        version = 1,
-        threadCount = len(threads),
-        threads = [ChatThread(**thread) for thread in threads],
-        messages = [ChatMessage(**message) for message in messages],
+        exportedAt=datetime.now(timezone.utc).isoformat(),
+        version=1,
+        threadCount=len(threads),
+        threads=[ChatThread(**thread) for thread in threads],
+        messages=[ChatMessage(**message) for message in messages],
     )
