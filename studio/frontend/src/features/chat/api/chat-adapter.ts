@@ -26,6 +26,7 @@ import {
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
   OpenAIChatCompletionsRequest,
@@ -483,6 +484,9 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  * without selecting one. Prefers GGUF (picks smallest cached variant),
  * falls back to smallest cached safetensors model.
  */
+// Cap cascade so broken cached repos can't spam /api/inference/load.
+const MAX_AUTO_LOAD_ATTEMPTS = 3;
+
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -497,6 +501,7 @@ async function autoLoadSmallestModel(): Promise<{
   });
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
+  let loadAttempts = 0;
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -527,6 +532,7 @@ async function autoLoadSmallestModel(): Promise<{
     if (ggufRepos.length > 0) {
       const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
+        if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
           const variants = await listGgufVariants(repo.repo_id);
           const downloaded = variants.variants
@@ -544,6 +550,7 @@ async function autoLoadSmallestModel(): Promise<{
             ) {
               continue;
             }
+            loadAttempts += 1;
             const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: hfToken,
@@ -619,6 +626,7 @@ async function autoLoadSmallestModel(): Promise<{
         (a, b) => a.size_bytes - b.size_bytes,
       );
       for (const repo of sorted) {
+        if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
           if (
             !(await canAutoLoad({
@@ -630,6 +638,7 @@ async function autoLoadSmallestModel(): Promise<{
           ) {
             continue;
           }
+          loadAttempts += 1;
           const sfLoadResp = await loadModel({
             model_path: repo.repo_id,
             hf_token: hfToken,
@@ -653,6 +662,12 @@ async function autoLoadSmallestModel(): Promise<{
             supportsPreserveThinking:
               sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
+            // Parity with the GGUF branch above.
+            toolsEnabled: sfLoadResp.supports_tools ?? false,
+            codeToolsEnabled: sfLoadResp.supports_tools ?? false,
+            defaultChatTemplate: sfLoadResp.chat_template ?? null,
+            chatTemplateOverride: null,
+            loadedChatTemplateOverride: null,
           });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -676,6 +691,17 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
+    // Cap also gates the default download so the total /api/inference/load
+    // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+      toast.dismiss(toastId);
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+      };
+    }
+
     // No cached models found — try downloading a small default GGUF
     toast("Downloading a small model…", {
       id: toastId,
@@ -695,6 +721,7 @@ async function autoLoadSmallestModel(): Promise<{
         toast.dismiss(toastId);
         return { loaded: false, blockedByTrustRemoteCode };
       }
+      loadAttempts += 1;
       const loadResp = await loadModel({
         model_path: "unsloth/gemma-4-E2B-it-GGUF",
         hf_token: hfToken,
@@ -805,6 +832,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const { supportsTools, toolsEnabled, codeToolsEnabled } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
+      if (
+        isExternalRequest &&
+        !useExternalProvidersStore.getState().connectionsEnabled
+      ) {
+        toast.error("Connections are disabled.", {
+          description:
+            "Turn on Enable connections in Settings > Connections to use hosted models.",
+        });
+        throw new Error("Connections disabled.");
+      }
       const externalProvider = isExternalRequest
         ? loadExternalProviders().find(
             (provider) => provider.id === externalSelection.providerId,

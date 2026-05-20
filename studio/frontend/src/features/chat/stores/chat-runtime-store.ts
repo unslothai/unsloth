@@ -20,6 +20,9 @@ import {
 } from "../utils/chat-settings-storage";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
+export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
+export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
+export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type ReasoningEffort =
@@ -113,6 +116,31 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+function loadBool(key: string, fallback: boolean): boolean {
+  const raw = loadOptionalBool(key);
+  return raw ?? fallback;
+}
+
+export function loadOptionalBool(key: string): boolean | null {
+  if (!canUseStorage()) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    return raw === "true";
+  } catch {
+    return null;
+  }
+}
+
+function saveBool(key: string, value: boolean): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(key, value ? "true" : "false");
+  } catch {
+    // ignore
+  }
+}
+
 function loadString(key: string, fallback: string): string {
   if (!canUseStorage()) return fallback;
   try {
@@ -197,6 +225,9 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  /** User --spec-draft-n-max override (null = platform default). */
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
   loadedIsMultimodal: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
@@ -233,12 +264,18 @@ type ChatRuntimeStore = {
   setActiveThreadId: (threadId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
-  setReasoningEnabled: (enabled: boolean) => void;
+  setReasoningEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
   setLastOpenRouterChosenModel: (chosen: string | null) => void;
   setReasoningStyle: (style: ReasoningStyle) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
-  setToolsEnabled: (enabled: boolean) => void;
+  setToolsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -247,6 +284,7 @@ type ChatRuntimeStore = {
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
+  setSpecDraftNMax: (value: number | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -458,7 +496,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
-  reasoningEnabled: true,
+  reasoningEnabled: loadBool(CHAT_REASONING_ENABLED_KEY, true),
   reasoningStyle: "enable_thinking",
   reasoningEffort: "medium",
   supportsReasoningOff: false,
@@ -469,8 +507,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsTools: false,
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
-  toolsEnabled: false,
-  codeToolsEnabled: false,
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -478,8 +516,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "default",
+  speculativeType: "auto",
   loadedSpeculativeType: null,
+  specDraftNMax: null,
+  loadedSpecDraftNMax: null,
   loadedIsMultimodal: false,
   customContextLength: null,
   defaultChatTemplate: null,
@@ -633,15 +673,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "default",
+      speculativeType: "auto",
       loadedSpeculativeType: null,
+      specDraftNMax: null,
+      loadedSpecDraftNMax: null,
       loadedIsMultimodal: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
     })),
-  setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setReasoningEnabled: (reasoningEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      }
+      return { reasoningEnabled };
+    }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
@@ -663,8 +711,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { preserveThinking };
     }),
-  setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
-  setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
+  setToolsEnabled: (toolsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      }
+      return { toolsEnabled };
+    }),
+  setCodeToolsEnabled: (codeToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
+      return { codeToolsEnabled };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
@@ -696,6 +754,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
+  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),

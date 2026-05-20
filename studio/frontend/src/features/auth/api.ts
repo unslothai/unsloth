@@ -72,7 +72,11 @@ async function redirectToAuth(): Promise<void> {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
-      if (data.requires_password_change || mustChangePassword()) target = "/change-password";
+      // Server truth wins; keep localStorage in sync both ways.
+      if (data.requires_password_change !== mustChangePassword()) {
+        setMustChangePassword(data.requires_password_change);
+      }
+      if (data.requires_password_change) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -164,6 +168,14 @@ export async function authFetch(
     });
   } catch (err) {
     if (err instanceof TypeError) {
+      // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
+      // it's always backend-down; in the web build distinguish offline
+      // so the user gets the right recovery path.
+      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+        throw new Error(
+          "You appear to be offline. Check your network connection and try again.",
+        );
+      }
       throw new Error("Studio isn't running -- please relaunch it.");
     }
     throw err;

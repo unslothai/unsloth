@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -50,9 +51,11 @@ import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
+  allowsManualModelIdsWithCatalog,
   customProviderBaseUrlPlaceholder,
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
+  customPresetSkipsApiKeyField,
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -60,8 +63,10 @@ import {
   setExternalProviderApiKey,
   supportsProviderPromptCaching,
   supportsProviderReasoningToggle,
+  supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
@@ -135,8 +140,37 @@ function parseManualModelIds(text: string): string[] {
   return out;
 }
 
-// Remote providers safe for manual model IDs (openrouter drops unused params).
-const MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES = new Set<string>(["openrouter"]);
+// Remote providers that support both catalog load and manual model IDs.
+const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }> =
+  {
+    ollama: {
+      title: "No local Ollama models found.",
+      description:
+        "Run `ollama pull <model>` in a terminal, then reload — or enter a model ID manually below.",
+    },
+    llama_cpp: {
+      title: "No llama.cpp models found.",
+      description:
+        "Ensure llama-server is running with models loaded, then reload — or enter model IDs manually below.",
+    },
+    vllm: {
+      title: "No vLLM models found.",
+      description:
+        "Ensure the vLLM server is running and models are loaded, then reload — or enter model IDs manually below.",
+    },
+  };
+
+function emptyCatalogHint(providerType: string): {
+  title: string;
+  description: string;
+} {
+  return (
+    EMPTY_CATALOG_HINTS[providerType] ?? {
+      title: "No models returned by this provider.",
+      description: "Enter model IDs manually below, or check the server.",
+    }
+  );
+}
 
 function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
   if (providerType === "anthropic") {
@@ -190,12 +224,16 @@ export function ChatProvidersSettings({
   const [customProviderName, setCustomProviderName] = useState("Custom");
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const setConnectionsEnabled = useExternalProvidersStore(
+    (s) => s.setConnectionsEnabled,
+  );
   const isCustomProvider = isCustomProviderType(providerType);
-  // Ollama runs locally and does not require an API key. Hide the input
-  // entirely rather than just marking it optional so users aren't prompted
-  // for a credential the provider never uses.
-  const isOllamaProvider = providerType === "ollama";
-  const showApiKeyField = !isOllamaProvider;
+  // Local presets (Ollama, llama.cpp) never use API keys — hide the field.
+  // vLLM may optionally use a bearer token on secured deployments.
+  const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
@@ -205,22 +243,31 @@ export function ChatProvidersSettings({
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
-  const isManualModelList = isCustomProvider || isCuratedModelList;
+  const isManualModelList =
+    (isCustomProvider && !supportsRemoteModelCatalog(providerType)) ||
+    isCuratedModelList;
 
   const modelsPanelKey = isCustomProvider
     ? providerType || "custom"
     : isCuratedModelList
       ? "curated"
       : "remote";
-  const formModelCount = isManualModelList
-    ? new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])
-        .size
-    : selectedModelIds.length;
+  const remoteAllowsManual = allowsManualModelIdsWithCatalog(providerType);
+  const formModelCount =
+    isManualModelList || remoteAllowsManual
+      ? new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])
+          .size
+      : selectedModelIds.length;
   const modelStatusLabel =
-    !isManualModelList && availableModels.length === 0
+    !isManualModelList &&
+    !remoteAllowsManual &&
+    availableModels.length === 0
       ? "No models loaded"
       : `${formModelCount} ${formModelCount === 1 ? "model" : "models"} selected`;
-  const showModelsBody = isManualModelList || availableModels.length > 0;
+  const showModelsBody =
+    isManualModelList ||
+    remoteAllowsManual ||
+    availableModels.length > 0;
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
     if (!query) {
@@ -249,15 +296,11 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed default_models only when the catalog is not fetched live:
-    // curated providers (catalog too large to enumerate, defaults are
-    // the suggestion shortlist) and Ollama (local, no API key — local
-    // /models stands in). Remote-mode cloud providers stay empty until
-    // the user clicks "Load available models" with a key, since
-    // different API tiers expose different catalogs and we don't want
-    // to advertise models the user can't actually call.
-    const seedDefaults =
-      entry.model_list_mode === "curated" || providerType === "ollama";
+    // Seed default_models only for curated providers (catalog too large to
+    // enumerate — defaults are the suggestion shortlist). Remote-mode cloud
+    // providers and local OpenAI-compat presets stay empty until the user
+    // clicks "Load available models".
+    const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -371,12 +414,8 @@ export function ChatProvidersSettings({
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
-    if (entry) {
-      const seedDefaults =
-        entry.model_list_mode === "curated" || providerType === "ollama";
-      if (seedDefaults) {
-        setAvailableModels([...entry.default_models]);
-      }
+    if (entry?.model_list_mode === "curated") {
+      setAvailableModels([...entry.default_models]);
     }
     setPage("form");
   }
@@ -436,7 +475,7 @@ export function ChatProvidersSettings({
       toast.error("Choose a provider first.");
       return;
     }
-    if (isCustomProvider) {
+    if (isCustomProvider && !supportsRemoteModelCatalog(providerType)) {
       toast.info("This connection uses manual model IDs.");
       return;
     }
@@ -452,14 +491,20 @@ export function ChatProvidersSettings({
     }
     setModelsLoading(true);
     try {
-      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isCustomProvider);
+      const baseUrl = parseBaseUrlForProvider(
+        baseUrlDraft,
+        supportsRemoteModelCatalog(providerType),
+      );
+      const backendProviderType =
+        toExternalBackendProviderType(providerType) ?? providerType;
       const models = await listProviderModels({
-        providerType,
+        providerType: backendProviderType,
         apiKey: apiKey.trim(),
         baseUrl,
       });
-      const registryDefaults =
-        registryByType.get(providerType)?.default_models ?? [];
+      const registryDefaults = supportsRemoteModelCatalog(providerType)
+        ? []
+        : (registryByType.get(providerType)?.default_models ?? []);
       // Union of registry defaults + fetched models, defaults first so any
       // curated picks (e.g. claude-haiku-4-5) always show even when the
       // provider's /models endpoint omits them.
@@ -475,6 +520,14 @@ export function ChatProvidersSettings({
       setSelectedModelIds((prev) =>
         prev.filter((id) => modelIds.includes(id)),
       );
+      if (modelIds.length === 0) {
+        const hint = emptyCatalogHint(providerType);
+        toast.info(hint.title, { description: hint.description });
+      } else {
+        toast.success(
+          `Found ${modelIds.length} ${modelIds.length === 1 ? "model" : "models"}.`,
+        );
+      }
       if (editingProviderId) {
         onProvidersChange(
           providersRef.current.map((provider) =>
@@ -508,9 +561,10 @@ export function ChatProvidersSettings({
       return;
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
-    const manualOnly = isCustomProvider || curated;
-    const remoteAllowsManual =
-      MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType);
+    const manualOnly =
+      (isCustomProvider && !supportsRemoteModelCatalog(providerType)) ||
+      curated;
+    const remoteAllowsManual = allowsManualModelIdsWithCatalog(providerType);
     const manualIds = parseManualModelIds(manualModelIds);
     const allowManual = manualOnly || remoteAllowsManual;
     const modelsToSave = pruneProviderModelIds(
@@ -529,7 +583,7 @@ export function ChatProvidersSettings({
         toast.error("Add at least one model ID.");
         return;
       }
-    } else if (remoteAllowsManual && manualIds.length > 0) {
+    } else if (remoteAllowsManual) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -613,8 +667,11 @@ export function ChatProvidersSettings({
     }
     const entry = registryByType.get(existing.providerType);
     const curated = entry?.model_list_mode === "curated";
-    const manualOnly = isEditingCustomProvider || curated;
-    const remoteAllowsManual = MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(
+    const manualOnly =
+      (isEditingCustomProvider &&
+        !supportsRemoteModelCatalog(existing.providerType)) ||
+      curated;
+    const remoteAllowsManual = allowsManualModelIdsWithCatalog(
       existing.providerType,
     );
     const manualIds = parseManualModelIds(manualModelIds);
@@ -635,7 +692,7 @@ export function ChatProvidersSettings({
         toast.error("Add at least one model ID.");
         return;
       }
-    } else if (remoteAllowsManual && manualIds.length > 0) {
+    } else if (remoteAllowsManual) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -721,10 +778,32 @@ export function ChatProvidersSettings({
         ? provider.isReasoningModel === true
         : false,
     );
-    if (isCustomProviderType(provider.providerType)) {
+    if (
+      isCustomProviderType(provider.providerType) &&
+      !supportsRemoteModelCatalog(provider.providerType)
+    ) {
       setAvailableModels([]);
       setSelectedModelIds([]);
       setManualModelIds(provider.models.join("\n"));
+      return;
+    }
+    if (supportsRemoteModelCatalog(provider.providerType)) {
+      const cachedCatalog = provider.availableModels ?? [];
+      const catalogModels = pruneProviderModelIds(provider.providerType, [
+        ...new Set(
+          cachedCatalog
+            .map((model) => model.trim())
+            .filter((model) => model.length > 0),
+        ),
+      ]);
+      setAvailableModels(catalogModels);
+      const catalogSet = new Set(catalogModels);
+      setSelectedModelIds(
+        provider.models.filter((model) => catalogSet.has(model)),
+      );
+      setManualModelIds(
+        provider.models.filter((model) => !catalogSet.has(model)).join("\n"),
+      );
       return;
     }
     const entry = registryByType.get(provider.providerType);
@@ -771,10 +850,8 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    // Ollama runs locally and never requires a key — fall through to the
-    // real connection check instead of prompting for credentials the form
-    // no longer exposes.
-    if (!savedKey && provider.providerType !== "ollama") {
+    // Local OpenAI-compat presets skip API keys — run the connection check.
+    if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -1075,7 +1152,7 @@ export function ChatProvidersSettings({
                       modelsLoading || mutatingProvider || isManualModelList
                     }
                     title={
-                      isCustomProvider
+                      isManualModelList && isCustomProvider
                         ? "This connection uses manual model IDs"
                         : isCuratedModelList
                           ? "Full catalog is not fetched for this provider"
@@ -1095,7 +1172,7 @@ export function ChatProvidersSettings({
                     )}
                   </Button>
                 </div>
-                {isCustomProvider ? (
+                {isCustomProvider && !supportsRemoteModelCatalog(providerType) ? (
                   <div className="space-y-3 px-4 py-4">
                     <div className="space-y-2">
                       <Label
@@ -1211,7 +1288,7 @@ export function ChatProvidersSettings({
                     </div>
                   </div>
                 ) : availableModels.length === 0 &&
-                  !MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? null : (
+                  !allowsManualModelIdsWithCatalog(providerType) ? null : (
                   <div className="space-y-3 px-4 py-4">
                     {availableModels.length === 0 ? null : (
                       <>
@@ -1280,8 +1357,8 @@ export function ChatProvidersSettings({
                         </ul>
                       </>
                     )}
-                    {/* Manual IDs allowed for openrouter only. */}
-                    {MANUAL_MODEL_ID_REMOTE_PROVIDER_TYPES.has(providerType) ? (
+                    {/* Manual IDs allowed alongside catalog load. */}
+                    {allowsManualModelIdsWithCatalog(providerType) ? (
                       <div className="space-y-2">
                         <Label
                           htmlFor="provider-manual-models"
@@ -1297,7 +1374,9 @@ export function ChatProvidersSettings({
                           onChange={(event) =>
                             setManualModelIds(event.target.value)
                           }
-                          placeholder={"model-id-1\nmodel-id-2"}
+                          placeholder={customProviderModelIdsPlaceholder(
+                            providerType,
+                          )}
                           rows={4}
                           className="min-h-[80px] resize-y font-mono text-sm"
                         />
@@ -1355,6 +1434,30 @@ export function ChatProvidersSettings({
           </p>
         </div>
       </header>
+
+      <div className="flex w-full max-w-[760px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
+        <div className="flex items-center gap-2">
+          <Label
+            htmlFor="chat-connections-enabled"
+            className="cursor-pointer text-xs text-muted-foreground"
+          >
+            Enable connections
+          </Label>
+          <Switch
+            id="chat-connections-enabled"
+            checked={connectionsEnabled}
+            onCheckedChange={setConnectionsEnabled}
+            aria-label="Enable connections"
+            aria-describedby="chat-connections-description"
+          />
+        </div>
+        <p
+          id="chat-connections-description"
+          className="max-w-md text-[11px] leading-snug text-muted-foreground/65 sm:text-right"
+        >
+          When off, all provider connections are disabled.
+        </p>
+      </div>
 
       <section className="flex max-w-[760px] flex-col gap-2">
         <div className="overflow-hidden rounded-[10px] border border-border/70 bg-muted/[0.12]">

@@ -300,7 +300,11 @@ export function SharedComposer({
     return s.models.find((m) => m.id === checkpoint);
   });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -525,7 +529,19 @@ export function SharedComposer({
       handlesRef.current["model1"] || handlesRef.current["model2"],
     );
     const isGeneralizedCompare =
-      hasCompareHandles && Boolean(model1?.id || model2?.id);
+      hasCompareHandles && Boolean(model1?.id && model2?.id);
+
+    // Generalized compare requires both panes to have a model. A
+    // half-selected send either races to an empty bubble with bogus
+    // tok/s (#5569) or leaves the empty pane with a dangling prompt.
+    // hasCompareHandles is true only in GeneralCompareContent, so
+    // LoraCompare and single-pane chats are unaffected.
+    if (hasCompareHandles && !isGeneralizedCompare) {
+      toast.error("Pick a model in each pane to compare", {
+        description: "Use the model dropdown above each pane, then send your prompt.",
+      });
+      return;
+    }
 
     if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
       // Single mode: the loaded model's runtime capability is known
@@ -951,7 +967,7 @@ export function SharedComposer({
                       // Mutual exclusion: turning thinking on for a
                       // Kimi model forces the web_search builtin off.
                       if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false);
+                        setToolsEnabled(false, { persist: false });
                       }
                     }}
                   >
@@ -980,7 +996,7 @@ export function SharedComposer({
                 // requires thinking off, so turning thinking on flips
                 // the Search pill off (and vice versa).
                 if (isKimiExternal && next && toolsEnabled) {
-                  setToolsEnabled(false);
+                  setToolsEnabled(false, { persist: false });
                 }
               }}
               className={cn(
@@ -1048,7 +1064,7 @@ export function SharedComposer({
               // back on when Search goes off — mutual exclusion that
               // mirrors what the backend enforces.
               if (isKimiExternal) {
-                setReasoningEnabled(!next);
+                setReasoningEnabled(!next, { persist: false });
                 applyQwenThinkingParams(!next);
               }
             }}

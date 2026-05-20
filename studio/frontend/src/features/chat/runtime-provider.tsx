@@ -36,6 +36,7 @@ import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import {
+  loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -110,7 +111,7 @@ class VisionImageAdapter implements AttachmentAdapter {
     let externalSupportsVision: boolean | null = null;
     let externalModelLabel: string | null = null;
     if (externalSelection !== null) {
-      const providers = loadExternalProviders();
+      const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
       const provider = providers.find(
         (p) => p.id === externalSelection.providerId,
       );
