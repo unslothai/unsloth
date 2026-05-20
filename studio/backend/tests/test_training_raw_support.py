@@ -117,8 +117,12 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_mlx_worker_uses_cuda_style_model_and_lora_init_seed(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
 
-        self.assertIn('model_random_state = config.get("model_random_state", 3407)', source)
-        self.assertIn('lora_random_state = config.get("lora_random_state", 3407)', source)
+        self.assertIn(
+            'model_random_state = config.get("model_random_state", 3407)', source
+        )
+        self.assertIn(
+            'lora_random_state = config.get("lora_random_state", 3407)', source
+        )
         self.assertIn("random_state = model_random_state", source)
         self.assertIn("random_state = lora_random_state", source)
         self.assertIn('seed = config.get("random_seed", 3407)', source)

@@ -86,10 +86,7 @@ def test_mlx_studio_rejects_unknown_scheduler():
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
     source = (
-        Path(__file__).resolve().parents[1]
-        / "core"
-        / "training"
-        / "worker.py"
+        Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
     ).read_text()
 
     assert "tokenizer = tokenizer" in source
