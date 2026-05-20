@@ -117,11 +117,6 @@ const CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS: Record<string, string> = {
   ),
 };
 
-const CUSTOM_PROVIDER_BASE_URL_DEFAULTS: Record<string, string> = {
-  ollama: "http://localhost:11434/v1",
-  llama_cpp: "http://localhost:8080/v1",
-};
-
 const CUSTOM_PROVIDER_MODEL_IDS_PLACEHOLDERS: Record<string, string> = {
   [LEGACY_CUSTOM_PROVIDER_TYPE]: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
   ...Object.fromEntries(
@@ -188,13 +183,6 @@ export function customProviderBaseUrlPlaceholder(
     CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[providerType] ??
     CUSTOM_PROVIDER_BASE_URL_PLACEHOLDERS[LEGACY_CUSTOM_PROVIDER_TYPE]
   );
-}
-
-export function customProviderBaseUrlDefault(
-  providerType: string | null | undefined,
-): string {
-  if (!providerType) return "";
-  return CUSTOM_PROVIDER_BASE_URL_DEFAULTS[providerType] ?? "";
 }
 
 export function customProviderModelIdsPlaceholder(

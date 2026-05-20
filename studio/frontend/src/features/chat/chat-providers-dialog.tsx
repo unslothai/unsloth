@@ -52,7 +52,6 @@ import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
-  customProviderBaseUrlDefault,
   customProviderBaseUrlPlaceholder,
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
@@ -170,6 +169,14 @@ function emptyCatalogHint(providerType: string): {
       title: "No models returned by this provider.",
       description: "Enter model IDs manually below, or check the server.",
     }
+  );
+}
+
+function shouldAppendOpenAiVersionPath(providerType: string): boolean {
+  return (
+    providerType === "ollama" ||
+    providerType === "llama_cpp" ||
+    providerType === "vllm"
   );
 }
 
@@ -314,7 +321,7 @@ export function ChatProvidersSettings({
     if (!entry) {
       if (isCustomProviderType(providerType)) {
         setCustomProviderName(customProviderDisplayName(providerType));
-        setBaseUrlDraft(customProviderBaseUrlDefault(providerType));
+        setBaseUrlDraft("");
       }
       return;
     }
@@ -327,7 +334,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
-    setBaseUrlDraft(customProviderBaseUrlDefault(providerType));
+    setBaseUrlDraft("");
   }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
@@ -425,7 +432,7 @@ export function ChatProvidersSettings({
     setEditingProviderId(null);
     setApiKey("");
     setShowApiKey(false);
-    setBaseUrlDraft(customProviderBaseUrlDefault(providerType));
+    setBaseUrlDraft("");
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -464,7 +471,10 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
   }
 
-  function parseOptionalBaseUrl(input: string): string | null {
+  function parseOptionalBaseUrl(
+    input: string,
+    options: { appendOpenAiVersionPath?: boolean } = {},
+  ): string | null {
     const trimmed = input.trim();
     if (!trimmed) return null;
     let parsed: URL;
@@ -476,12 +486,19 @@ export function ChatProvidersSettings({
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("Base URL must use http or https.");
     }
+    if (options.appendOpenAiVersionPath) {
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      if (!pathname) {
+        parsed.pathname = "/v1";
+      }
+    }
     return parsed.toString().replace(/\/+$/, "");
   }
 
   function parseBaseUrlForProvider(
     input: string,
     required: boolean,
+    providerTypeForUrl: string,
   ): string | null {
     const trimmed = input.trim();
     if (!trimmed) {
@@ -490,7 +507,9 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    return parseOptionalBaseUrl(trimmed);
+    return parseOptionalBaseUrl(trimmed, {
+      appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
+    });
   }
 
   async function loadModels() {
@@ -517,6 +536,7 @@ export function ChatProvidersSettings({
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
         supportsRemoteModelCatalog(providerType),
+        providerType,
       );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;
@@ -625,7 +645,11 @@ export function ChatProvidersSettings({
     }
     setMutatingProvider(true);
     try {
-      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isCustomProvider);
+      const baseUrl = parseBaseUrlForProvider(
+        baseUrlDraft,
+        isCustomProvider,
+        providerType,
+      );
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -737,6 +761,7 @@ export function ChatProvidersSettings({
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
         isEditingCustomProvider,
+        existing.providerType,
       );
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
@@ -794,9 +819,7 @@ export function ChatProvidersSettings({
     );
     setApiKey(getExternalProviderApiKey(provider.id));
     setShowApiKey(false);
-    setBaseUrlDraft(
-      provider.baseUrl || customProviderBaseUrlDefault(provider.providerType),
-    );
+    setBaseUrlDraft(provider.baseUrl);
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)

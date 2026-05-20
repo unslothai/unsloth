@@ -2940,7 +2940,13 @@ class ExternalProviderClient:
             data = response.json()
             # OpenAI format: {"data": [{"id": "...", ...}, ...]}
             # Some local servers (Ollama with no models) return data: null.
-            models = data.get("data") or []
+            models: list[dict[str, Any]] = []
+            if isinstance(data, dict):
+                raw_models = data.get("data") or []
+                if isinstance(raw_models, list):
+                    models = [
+                        model for model in raw_models if isinstance(model, dict)
+                    ]
             if not models and self.provider_type == "ollama":
                 models = await self._list_ollama_native_models()
             return models
@@ -2958,9 +2964,14 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         payload = response.json()
+        if not isinstance(payload, dict):
+            return []
+        raw_models = payload.get("models") or []
+        if not isinstance(raw_models, list):
+            return []
         return [
             {"id": entry.get("name", "").strip(), "owned_by": "ollama"}
-            for entry in (payload.get("models") or [])
+            for entry in raw_models
             if isinstance(entry, dict) and entry.get("name", "").strip()
         ]
 
