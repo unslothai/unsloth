@@ -1048,10 +1048,6 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             stdout = _stream_for_subprocess(sys.stdout),
             stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
-        result = subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-            env = env,
-        )
     else:
         result = subprocess.run(["bash", str(script)], env = env)
 
