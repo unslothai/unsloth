@@ -1002,8 +1002,20 @@
 	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
 }
 
-[data-sonner-toast][data-styled='true']:has([data-close-button]) {
+[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
 	padding-right: 44px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
+	padding-right: 84px !important;
+}
+
+[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
+	position: absolute !important;
+	right: 36px !important;
+	top: 50% !important;
+	transform: translateY(-50%) !important;
+	margin: 0 !important;
 }
 
 /* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */

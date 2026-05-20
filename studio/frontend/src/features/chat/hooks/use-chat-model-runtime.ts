@@ -55,10 +55,12 @@ type SelectedModelInput = {
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "items-start gap-2.5",
+  toast: "items-center gap-2.5",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
+  cancelButton:
+    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-[11px] !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -232,14 +234,12 @@ export function useChatModelRuntime() {
       message: string,
       progressPercent?: number | null,
       progressLabel?: string | null,
-      onStop?: () => void,
     ) =>
       createElement(ModelLoadDescription, {
         title,
         message,
         progressPercent,
         progressLabel,
-        onStop,
       }),
     [],
   );
@@ -795,26 +795,32 @@ export function useChatModelRuntime() {
 
         const isCachedLoad = isDownloaded || isCachedLora;
         const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
+        const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
+          description,
+          duration: Infinity as const,
+          closeButton: true,
+          cancel: {
+            label: "Cancel",
+            onClick: cancelLoading,
+          },
+          classNames: MODEL_LOAD_TOAST_CLASSNAMES,
+          onDismiss: (dismissedToast: { id: string | number }) => {
+            if (loadToastIdRef.current !== dismissedToast.id) {
+              return;
+            }
+            setLoadToastDismissedState(true);
+          },
+        });
         const toastId = toast(
           null,
-          {
-            description: renderLoadDescription(
+          modelLoadToastOptions(
+            renderLoadDescription(
               toastTitle,
               loadingDescription,
               isCachedLoad ? null : 0,
               isCachedLoad ? null : "Preparing download",
-              cancelLoading,
             ),
-            duration: Infinity,
-            closeButton: false,
-            classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-            onDismiss: (dismissedToast) => {
-              if (loadToastIdRef.current !== dismissedToast.id) {
-                return;
-              }
-              setLoadToastDismissedState(true);
-            },
-          },
+          ),
         );
         loadToastIdRef.current = toastId;
 
@@ -921,20 +927,14 @@ export function useChatModelRuntime() {
               if (loadToastDismissedRef.current) return;
               toast(null, {
                 id: toastId,
-                description: renderLoadDescription(
-                  "Downloading model…",
-                  loadingDescription,
-                  pct,
-                  progressLabel,
-                  cancelLoading,
+                ...modelLoadToastOptions(
+                  renderLoadDescription(
+                    "Downloading model…",
+                    loadingDescription,
+                    pct,
+                    progressLabel,
+                  ),
                 ),
-                duration: Infinity,
-                closeButton: false,
-                classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-                onDismiss: (dismissedToast) => {
-                  if (loadToastIdRef.current !== dismissedToast.id) return;
-                  setLoadToastDismissedState(true);
-                },
               });
             } else if (
               prog.downloaded_bytes > 0 &&
@@ -961,20 +961,14 @@ export function useChatModelRuntime() {
               if (!loadToastDismissedRef.current) {
                 toast(null, {
                   id: toastId,
-                  description: renderLoadDescription(
-                    "Starting model…",
-                    "Download complete. Loading the model into memory.",
-                    100,
-                    "Download complete",
-                    cancelLoading,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Starting model…",
+                      "Download complete. Loading the model into memory.",
+                      100,
+                      "Download complete",
+                    ),
                   ),
-                  duration: Infinity,
-                  closeButton: false,
-                  classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-                  onDismiss: (dismissedToast) => {
-                    if (loadToastIdRef.current !== dismissedToast.id) return;
-                    setLoadToastDismissedState(true);
-                  },
                 });
               }
               notifyNative({
@@ -1024,20 +1018,14 @@ export function useChatModelRuntime() {
             if (loadToastDismissedRef.current) return;
             toast(null, {
               id: toastId,
-              description: renderLoadDescription(
-                "Starting model…",
-                "Paging weights into memory.",
-                pct,
-                label,
-                cancelLoading,
+              ...modelLoadToastOptions(
+                renderLoadDescription(
+                  "Starting model…",
+                  "Paging weights into memory.",
+                  pct,
+                  label,
+                ),
               ),
-              duration: Infinity,
-              closeButton: false,
-              classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-              onDismiss: (dismissedToast) => {
-                if (loadToastIdRef.current !== dismissedToast.id) return;
-                setLoadToastDismissedState(true);
-              },
             });
           } catch {
             // Ignore polling errors.
@@ -1064,8 +1052,11 @@ export function useChatModelRuntime() {
             toast.success(`${displayName} loaded`, {
               id: toastId,
               description: undefined,
+              cancel: undefined,
+              classNames: undefined,
               closeButton: true,
               duration: 8000,
+              onDismiss: undefined,
             });
           }
           notifyNative({
@@ -1084,8 +1075,11 @@ export function useChatModelRuntime() {
               toast.error(message, {
                 id: toastId,
                 description: undefined,
+                cancel: undefined,
+                classNames: undefined,
                 closeButton: true,
                 duration: 8000,
+                onDismiss: undefined,
               });
             }
             notifyNative({
