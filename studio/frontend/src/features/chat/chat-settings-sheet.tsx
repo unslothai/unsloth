@@ -1500,6 +1500,13 @@ export function ChatSettingsPanel({
 
   return (
     <aside
+      // When `open` is false the aside collapses to width 0 with
+      // overflow:hidden, but its inner controls remain in the DOM
+      // (Configuration heading, Close button, sliders, etc). Without
+      // `inert`, keyboard users Tab into off-screen focusable controls
+      // and screen readers announce them as available. `inert` also
+      // sets aria-hidden semantics so AT skips the subtree entirely.
+      inert={!open}
       className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
     >
       <div className="h-full w-full">{settingsContent}</div>
