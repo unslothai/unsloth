@@ -21,10 +21,18 @@ import { useChatSearchStore } from "../stores/chat-search-store";
 // characters happen to appear out of order, so a unique marker that matches no
 // title/preview still keeps rows visible and never shows "No chats match".
 // Require every whitespace-separated token to appear as a substring instead.
-export function chatSearchFilter(value: string, search: string): number {
+//
+// Each item's `value` is its (unique) thread id used for cmdk selection/keyboard
+// navigation, so the searchable title/preview text is supplied via `keywords`
+// and matched here.
+export function chatSearchFilter(
+  _value: string,
+  search: string,
+  keywords?: string[],
+): number {
   const query = search.trim().toLowerCase();
   if (query === "") return 1;
-  const haystack = value.toLowerCase();
+  const haystack = (keywords ?? []).join(" ").toLowerCase();
   const tokens = query.split(/\s+/);
   return tokens.every((token) => haystack.includes(token)) ? 1 : 0;
 }
@@ -98,7 +106,8 @@ export function ChatSearchDialog() {
             {items.map((item) => (
               <CommandPrimitive.Item
                 key={item.id}
-                value={`${item.title} ${item.preview}`}
+                value={item.id}
+                keywords={[item.title, item.preview]}
                 onSelect={() => {
                   navigate({
                     to: "/chat",
