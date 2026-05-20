@@ -5,7 +5,7 @@
 # at install time (read back from share\studio.conf).
 #
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\uninstall.ps1
+# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
@@ -345,7 +345,7 @@ function Uninstall-UnslothStudio {
         Write-Host "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
         Write-Host "pointing at a custom directory, re-run this script with the same variable"
         Write-Host "set to also remove that install tree, e.g.:"
-        Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; .\uninstall.ps1"
+        Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex"
     }
 }
 
