@@ -62,9 +62,7 @@ let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 let inflightFlush: Promise<void> = Promise.resolve();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" && value !== null && !Array.isArray(value)
-  );
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
@@ -86,6 +84,10 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   try {
     await savePersistedChatSettingsPatch(patch, { keepalive });
   } catch {
+    const retryPatch: SettingsPatch = {};
+    mergePatch(retryPatch, patch);
+    mergePatch(retryPatch, pendingPatch);
+    pendingPatch = retryPatch;
     warnSettingsPersistenceFailure();
   }
 }
@@ -95,7 +97,9 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
-    inflightFlush = inflightFlush.catch(() => undefined).then(() => flushSettingsPatch());
+    inflightFlush = inflightFlush
+      .catch(() => undefined)
+      .then(() => flushSettingsPatch());
   }, SETTINGS_DEBOUNCE_MS);
 }
 
@@ -272,10 +276,7 @@ type ChatRuntimeStore = {
   setReasoningStyle: (style: ReasoningStyle) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
-  setToolsEnabled: (
-    enabled: boolean,
-    options?: { persist?: boolean },
-  ) => void;
+  setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -549,7 +550,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           }
           const nextState: Partial<ChatRuntimeStore> = {
             settingsHydrated: true,
-            ...getHydratedPresetState(settings, state, hydrationVersions.presets),
+            ...getHydratedPresetState(
+              settings,
+              state,
+              hydrationVersions.presets,
+            ),
             ...getHydratedSettingsState(settings, state, hydrationVersions),
           };
           return nextState;

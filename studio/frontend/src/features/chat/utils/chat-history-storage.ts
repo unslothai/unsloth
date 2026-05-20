@@ -308,10 +308,8 @@ export async function getStoredChatThread(
   if (backendThread && !isChatThreadDeleted(backendThread.id)) {
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
-  if (isLegacyChatImportDone()) return undefined;
-  return legacyThread && !isChatThreadDeleted(legacyThread.id)
-    ? legacyThread
-    : undefined;
+  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) return undefined;
+  return importLegacyThread(legacyThread).catch(() => legacyThread);
 }
 
 export async function ensureStoredChatThread(
@@ -333,8 +331,7 @@ export async function ensureStoredChatThread(
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
   if (!legacyThread || isChatThreadDeleted(legacyThread.id)) return undefined;
-  if (!fallback && isLegacyChatImportDone()) return undefined;
-  return importLegacyThread(legacyThread);
+  return importLegacyThread(legacyThread).catch(() => legacyThread);
 }
 
 export async function listStoredChatMessages(
@@ -356,7 +353,9 @@ export async function listStoredChatMessages(
   ]);
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
-      includeLegacyOnly: !isLegacyChatImportDone(),
+      includeLegacyOnly:
+        !isLegacyChatImportDone() ||
+        (backendMessages.length === 0 && legacyMessages.length > 0),
     });
     if (legacyMessages.length > 0 && merged.shouldSync) {
       return syncChatMessages(threadId, merged.messages, {
@@ -365,7 +364,13 @@ export async function listStoredChatMessages(
     }
     return merged.messages;
   }
-  if (backendMessages && isLegacyChatImportDone()) return [];
+  if (
+    backendMessages &&
+    isLegacyChatImportDone() &&
+    legacyMessages.length === 0
+  ) {
+    return [];
+  }
   return legacyMessages.filter(
     (message) => !isChatThreadDeleted(message.threadId),
   );
@@ -397,7 +402,6 @@ export async function getStoredChatMessage(
     }
     return backendMessage;
   }
-  if (isLegacyChatImportDone()) return undefined;
   return matchingLegacyMessage;
 }
 
@@ -415,7 +419,10 @@ export async function listStoredChatThreads(
     await importLegacyChatsIfNeeded().catch(() => undefined);
     backendThreads = await listChatThreads(args).catch(() => backendThreads);
   }
-  const includeLegacyOnly = !backendThreads || !isLegacyChatImportDone();
+  const includeLegacyOnly =
+    !backendThreads ||
+    !isLegacyChatImportDone() ||
+    (backendThreads.length === 0 && legacyThreads.length > 0);
   const byId = new Map<string, ThreadRecord>();
   if (includeLegacyOnly) {
     for (const thread of legacyThreads) byId.set(thread.id, thread);
@@ -596,7 +603,11 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     if (isChatThreadDeleted(message.threadId)) continue;
     messagesById.set(message.id, message);
   }
-  const includeLegacyOnly = backend === null || !isLegacyChatImportDone();
+  const includeLegacyOnly =
+    backend === null ||
+    !isLegacyChatImportDone() ||
+    ((backend.threads.length === 0 || backend.messages.length === 0) &&
+      (legacyThreads.length > 0 || legacyMessages.length > 0));
   for (const thread of legacyThreads as ThreadRecord[]) {
     if (
       isChatThreadDeleted(thread.id) ||

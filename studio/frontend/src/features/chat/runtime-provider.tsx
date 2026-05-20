@@ -54,7 +54,6 @@ import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
-  getStoredChatMessage,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -844,9 +843,7 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const attachments =
           message.role === "user" ? cloneAttachments(message.attachments) : [];
         const custom = message.metadata?.custom;
-        const existing = await getStoredChatMessage(remoteId, message.id);
-        const createdAt =
-          existing?.createdAt ?? message.createdAt?.getTime?.() ?? Date.now();
+        const createdAt = message.createdAt?.getTime?.() ?? Date.now();
         await saveStoredChatMessage({
           id: message.id,
           threadId: remoteId,

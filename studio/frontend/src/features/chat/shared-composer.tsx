@@ -17,10 +17,23 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  GlobeIcon,
+  HeadphonesIcon,
+  LightbulbIcon,
+  LightbulbOffIcon,
+  MicIcon,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
-import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
+import {
+  parseExternalModelId,
+  providerTypeSupportsVision,
+} from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   type ReasoningEffort,
@@ -82,7 +95,10 @@ function fileToBase64DataURL(file: File): Promise<string> {
   });
 }
 
-function formatReasoningEffortLabel(level: ReasoningEffort, modelId?: string): string {
+function formatReasoningEffortLabel(
+  level: ReasoningEffort,
+  modelId?: string,
+): string {
   if (level === "max") return "Max";
   if (level === "xhigh") {
     const normalized = modelId?.trim().toLowerCase() ?? "";
@@ -118,7 +134,12 @@ function useDictation(
   const start = useCallback(() => {
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
-      (window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition);
+      (window.SpeechRecognition ??
+        (
+          window as unknown as {
+            webkitSpeechRecognition?: typeof SpeechRecognition;
+          }
+        ).webkitSpeechRecognition);
     if (!SpeechRecognitionAPI) {
       return;
     }
@@ -164,7 +185,11 @@ function useDictation(
 
   const supported =
     typeof window !== "undefined" &&
-    !!(window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition);
+    !!(
+      window.SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: unknown })
+        .webkitSpeechRecognition
+    );
 
   return { isDictating, start, stop, supported };
 }
@@ -203,9 +228,18 @@ export function RegisterCompareHandle({
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
+        aui
+          .thread()
+          .append({ role: "user", content, createdAt: new Date() } as never),
       appendMessage: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date(), startRun: false } as never),
+        aui
+          .thread()
+          .append({
+            role: "user",
+            content,
+            createdAt: new Date(),
+            startRun: false,
+          } as never),
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -249,7 +283,8 @@ function PendingImageThumb({
     setSrc(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
-  if (!src) return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+  if (!src)
+    return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
   return (
     <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
@@ -285,7 +320,10 @@ export function SharedComposer({
   const [sending, setSending] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<{
+    name: string;
+    base64: string;
+  } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -315,10 +353,16 @@ export function SharedComposer({
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
+  const reasoningEffortLevels = useChatRuntimeStore(
+    (s) => s.reasoningEffortLevels,
+  );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const supportsPreserveThinking = useChatRuntimeStore((s) => s.supportsPreserveThinking);
+  const supportsPreserveThinking = useChatRuntimeStore(
+    (s) => s.supportsPreserveThinking,
+  );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
@@ -422,11 +466,16 @@ export function SharedComposer({
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
-  const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
-
-  const { isDictating, start: startDictation, stop: stopDictation, supported: dictationSupported } = useDictation(
-    setText,
+  const clearPendingAudioStore = useChatRuntimeStore(
+    (s) => s.clearPendingAudio,
   );
+
+  const {
+    isDictating,
+    start: startDictation,
+    stop: stopDictation,
+    supported: dictationSupported,
+  } = useDictation(setText);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -444,43 +493,48 @@ export function SharedComposer({
     ta.style.height = "auto";
     const styles = window.getComputedStyle(ta);
     const lineHeight = parseFloat(styles.lineHeight) || 20;
-    const paddingY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const borderY = parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
+    const paddingY =
+      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const borderY =
+      parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
     const maxHeight = lineHeight * 6 + paddingY + borderY;
     const next = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${next}px`;
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback((files: FileList | null) => {
-    if (!files?.length) return;
-    const next: PendingImage[] = [];
-    let droppedImageForUnavailable = false;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (!file) continue;
-      // Handle audio files
-      if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
-        fileToBase64(file).then((base64) => {
-          setPendingAudio({ name: file.name, base64 });
-          setPendingAudioStore(base64, file.name);
-        });
-        continue;
+  const addFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files?.length) return;
+      const next: PendingImage[] = [];
+      let droppedImageForUnavailable = false;
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file) continue;
+        // Handle audio files
+        if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
+          fileToBase64(file).then((base64) => {
+            setPendingAudio({ name: file.name, base64 });
+            setPendingAudioStore(base64, file.name);
+          });
+          continue;
+        }
+        // Handle image files
+        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+        if (file.size > MAX_IMAGE_SIZE) continue;
+        if (attachUnavailableReason) {
+          droppedImageForUnavailable = true;
+          continue;
+        }
+        next.push({ id: crypto.randomUUID(), file });
       }
-      // Handle image files
-      if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
-      if (file.size > MAX_IMAGE_SIZE) continue;
-      if (attachUnavailableReason) {
-        droppedImageForUnavailable = true;
-        continue;
+      if (droppedImageForUnavailable && attachUnavailableReason) {
+        toast.error(attachUnavailableReason);
       }
-      next.push({ id: crypto.randomUUID(), file });
-    }
-    if (droppedImageForUnavailable && attachUnavailableReason) {
-      toast.error(attachUnavailableReason);
-    }
-    setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore, attachUnavailableReason]);
+      setPendingImages((prev) => [...prev, ...next]);
+    },
+    [setPendingAudioStore, attachUnavailableReason],
+  );
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
@@ -538,12 +592,17 @@ export function SharedComposer({
     // LoraCompare and single-pane chats are unaffected.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
-        description: "Use the model dropdown above each pane, then send your prompt.",
+        description:
+          "Use the model dropdown above each pane, then send your prompt.",
       });
       return;
     }
 
-    if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
+    if (
+      pendingImages.length > 0 &&
+      !isGeneralizedCompare &&
+      imageUnavailableReason
+    ) {
       // Single mode: the loaded model's runtime capability is known
       // here. Compare mode defers — each ensureModelLoaded below sets
       // loadedIsMultimodal for its side, and the chat-adapter's
@@ -591,30 +650,51 @@ export function SharedComposer({
       if (!ready) releaseSending();
     }
 
-    // Generalized compare: load each model before dispatching to its side
-    if (isGeneralizedCompare) {
-      const store = useChatRuntimeStore.getState();
-      const maxSeqLength = store.params.maxSeqLength;
-      const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride =
-        chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+    try {
+      // Generalized compare: load each model before dispatching to its side
+      if (isGeneralizedCompare) {
+        const store = useChatRuntimeStore.getState();
+        const maxSeqLength = store.params.maxSeqLength;
+        const trustRemoteCode = store.params.trustRemoteCode ?? false;
+        const chatTemplateOverride = store.chatTemplateOverride;
+        const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
+          ? chatTemplateOverride
+          : null;
 
-      function modelDisplayName(id: string): string {
-        const parts = id.split("/");
-        return parts[parts.length - 1] || id;
-      }
+        function modelDisplayName(id: string): string {
+          const parts = id.split("/");
+          return parts[parts.length - 1] || id;
+        }
 
-      // Helper: load a model and update store checkpoint
-      async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
-        const currentStore = useChatRuntimeStore.getState();
-        const isAlreadyActive =
-          currentStore.params.checkpoint === sel.id &&
-          (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
-        if (!isAlreadyActive) {
-          const validation = await validateModel({
+        // Helper: load a model and update store checkpoint
+        async function ensureModelLoaded(
+          sel: CompareModelSelection,
+        ): Promise<string> {
+          const currentStore = useChatRuntimeStore.getState();
+          const isAlreadyActive =
+            currentStore.params.checkpoint === sel.id &&
+            (currentStore.activeGgufVariant ?? null) ===
+              (sel.ggufVariant ?? null);
+          if (!isAlreadyActive) {
+            const validation = await validateModel({
+              model_path: sel.id,
+              hf_token: currentStore.hfToken || null,
+              max_seq_length: maxSeqLength,
+              load_in_4bit: true,
+              is_lora: sel.isLora,
+              gguf_variant: sel.ggufVariant ?? null,
+              trust_remote_code: trustRemoteCode,
+              chat_template_override: effectiveChatTemplateOverride,
+            });
+            if (validation.requires_trust_remote_code && !trustRemoteCode) {
+              throw new Error(
+                `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+              );
+            }
+          }
+          const resp = await loadModel({
             model_path: sel.id,
-            hf_token: currentStore.hfToken || null,
+            hf_token: useChatRuntimeStore.getState().hfToken || null,
             max_seq_length: maxSeqLength,
             load_in_4bit: true,
             is_lora: sel.isLora,
@@ -622,123 +702,126 @@ export function SharedComposer({
             trust_remote_code: trustRemoteCode,
             chat_template_override: effectiveChatTemplateOverride,
           });
-          if (validation.requires_trust_remote_code && !trustRemoteCode) {
-            throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
-            );
+          const store = useChatRuntimeStore.getState();
+          store.setCheckpoint(
+            resp.model,
+            resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          );
+          store.setModelRequiresTrustRemoteCode(
+            resp.requires_trust_remote_code ?? false,
+          );
+          useChatRuntimeStore.setState({
+            supportsReasoning: resp.supports_reasoning ?? false,
+            reasoningAlwaysOn: resp.reasoning_always_on ?? false,
+            reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+            supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+            supportsTools: resp.supports_tools ?? false,
+            loadedIsMultimodal: isMultimodalResponse(resp),
+          });
+          // Sync the models[] entry with the load response so the
+          // attach/send gates read fresh capabilities. /api/models/list
+          // can lag behind a model's actual state (e.g., a GGUF whose
+          // mmproj was downloaded after the catalog snapshot).
+          const currentModels = useChatRuntimeStore.getState().models;
+          const idx = currentModels.findIndex((m) => m.id === sel.id);
+          const synced = {
+            isVision: Boolean(resp.is_vision),
+            isGguf: Boolean(resp.is_gguf),
+            isAudio: Boolean(resp.is_audio),
+            audioType: resp.audio_type ?? null,
+            hasAudioInput: Boolean(resp.has_audio_input),
+          };
+          if (idx === -1) {
+            store.setModels([
+              ...currentModels,
+              {
+                id: sel.id,
+                name: resp.display_name ?? sel.id,
+                isLora: sel.isLora,
+                ...synced,
+              },
+            ]);
+          } else {
+            const next = [...currentModels];
+            next[idx] = { ...next[idx], ...synced };
+            store.setModels(next);
           }
-        }
-        const resp = await loadModel({
-          model_path: sel.id,
-          hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
-          load_in_4bit: true,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: trustRemoteCode,
-          chat_template_override: effectiveChatTemplateOverride,
-        });
-        const store = useChatRuntimeStore.getState();
-        store.setCheckpoint(
-          resp.model,
-          resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
-        );
-        store.setModelRequiresTrustRemoteCode(
-          resp.requires_trust_remote_code ?? false,
-        );
-        useChatRuntimeStore.setState({
-          supportsReasoning: resp.supports_reasoning ?? false,
-          reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
-          supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
-          supportsTools: resp.supports_tools ?? false,
-          loadedIsMultimodal: isMultimodalResponse(resp),
-        });
-        // Sync the models[] entry with the load response so the
-        // attach/send gates read fresh capabilities. /api/models/list
-        // can lag behind a model's actual state (e.g., a GGUF whose
-        // mmproj was downloaded after the catalog snapshot).
-        const currentModels = useChatRuntimeStore.getState().models;
-        const idx = currentModels.findIndex((m) => m.id === sel.id);
-        const synced = {
-          isVision: Boolean(resp.is_vision),
-          isGguf: Boolean(resp.is_gguf),
-          isAudio: Boolean(resp.is_audio),
-          audioType: resp.audio_type ?? null,
-          hasAudioInput: Boolean(resp.has_audio_input),
-        };
-        if (idx === -1) {
-          store.setModels([
-            ...currentModels,
-            {
-              id: sel.id,
-              name: resp.display_name ?? sel.id,
-              isLora: sel.isLora,
-              ...synced,
-            },
-          ]);
-        } else {
-          const next = [...currentModels];
-          next[idx] = { ...next[idx], ...synced };
-          store.setModels(next);
-        }
-        return resp.status;
-      }
-
-      const handle1 = handlesRef.current["model1"];
-      const handle2 = handlesRef.current["model2"];
-
-      // Show user messages immediately on both sides
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
-
-      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
-      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
-      const toastId = toast("Comparing models…", { duration: Infinity });
-
-      setComparing(true);
-      try {
-        // Side 1: load → generate → wait
-        if (handle1 && model1?.id) {
-          toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
-          const status1 = await ensureModelLoaded(model1);
-          toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
-          const done = handle1.waitForRunEnd();
-          handle1.startRun();
-          await done;
+          return resp.status;
         }
 
-        // Side 2: load → generate → wait
-        if (handle2 && model2?.id) {
-          const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
-            || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
-          if (needsLoad) {
-            toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
+        const handle1 = handlesRef.current["model1"];
+        const handle2 = handlesRef.current["model2"];
+
+        // Show user messages immediately on both sides
+        if (handle1) handle1.appendMessage(content);
+        if (handle2) handle2.appendMessage(content);
+
+        const name1 = model1?.id ? modelDisplayName(model1.id) : "";
+        const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+        const toastId = toast("Comparing models…", { duration: Infinity });
+
+        setComparing(true);
+        try {
+          // Side 1: load → generate → wait
+          if (handle1 && model1?.id) {
+            toast("Loading Model 1…", {
+              id: toastId,
+              description: name1,
+              duration: Infinity,
+            });
+            const status1 = await ensureModelLoaded(model1);
+            toast("Generating with Model 1…", {
+              id: toastId,
+              description: `${name1} (${status1})`,
+              duration: Infinity,
+            });
+            const done = handle1.waitForRunEnd();
+            handle1.startRun();
+            await done;
           }
-          const status2 = await ensureModelLoaded(model2);
-          toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
-          const done = handle2.waitForRunEnd();
-          handle2.startRun();
-          await done;
-        }
 
-        toast.success("Compare complete", { id: toastId, duration: 2000 });
-      } catch (err) {
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
-      } finally {
-        setComparing(false);
+          // Side 2: load → generate → wait
+          if (handle2 && model2?.id) {
+            const needsLoad =
+              model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
+              (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+            if (needsLoad) {
+              toast("Loading Model 2…", {
+                id: toastId,
+                description: name2,
+                duration: Infinity,
+              });
+            }
+            const status2 = await ensureModelLoaded(model2);
+            toast("Generating with Model 2…", {
+              id: toastId,
+              description: `${name2} (${status2})`,
+              duration: Infinity,
+            });
+            const done = handle2.waitForRunEnd();
+            handle2.startRun();
+            await done;
+          }
+
+          toast.success("Compare complete", { id: toastId, duration: 2000 });
+        } catch (err) {
+          toast.error("Compare failed", {
+            id: toastId,
+            description: err instanceof Error ? err.message : "Unknown error",
+            duration: 4000,
+          });
+        } finally {
+          setComparing(false);
+        }
+      } else {
+        // Original behavior: fire all handles simultaneously
+        for (const handle of Object.values(handlesRef.current)) {
+          handle.append(content);
+        }
       }
-    } else {
-      // Original behavior: fire all handles simultaneously
-      for (const handle of Object.values(handlesRef.current)) {
-        handle.append(content);
-      }
+    } finally {
+      releaseSending();
     }
-    releaseSending();
   }
 
   function stop() {
@@ -771,7 +854,12 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
+  const canSend =
+    (text.trim().length > 0 ||
+      pendingImages.length > 0 ||
+      pendingAudio !== null) &&
+    !busy &&
+    !isComposing;
 
   return (
     <div
@@ -806,7 +894,10 @@ export function SharedComposer({
               <span className="max-w-48 truncate">{pendingAudio.name}</span>
               <button
                 type="button"
-                onClick={() => { setPendingAudio(null); clearPendingAudioStore(); }}
+                onClick={() => {
+                  setPendingAudio(null);
+                  clearPendingAudioStore();
+                }}
                 className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
                 aria-label="Remove audio"
               >
@@ -904,127 +995,133 @@ export function SharedComposer({
           )}
           {showReasoningControl ? (
             effectiveReasoningStyle === "reasoning_effort" ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild={true}>
-                <button
-                  type="button"
-                  disabled={reasoningDisabled}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                    reasoningDisabled
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <button
+                    type="button"
+                    disabled={reasoningDisabled}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                      reasoningDisabled
+                        ? "cursor-not-allowed opacity-40"
+                        : effectiveReasoningVisualEnabled
+                          ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                          : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+                    )}
+                    aria-label={`Reasoning effort: ${reasoningEffort}`}
+                  >
+                    {effectiveReasoningVisualEnabled ? (
+                      <LightbulbIcon className="size-3.5" />
+                    ) : (
+                      <LightbulbOffIcon className="size-3.5" />
+                    )}
+                    <span>
+                      Think:{" "}
+                      {effectiveReasoningVisualEnabled
+                        ? formatReasoningEffortLabel(
+                            reasoningEffort,
+                            externalSelection?.modelId,
+                          )
+                        : formatReasoningDisabledLabel(
+                            effectiveSupportsReasoningOff,
+                            isExternalOpenAIReasoning,
+                            checkpoint,
+                          )}
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {effectiveSupportsReasoningOff && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setReasoningEnabled(false);
+                        applyQwenThinkingParams(false);
+                      }}
+                    >
+                      {formatReasoningDisabledLabel(
+                        effectiveSupportsReasoningOff,
+                        isExternalOpenAIReasoning,
+                        checkpoint,
+                      )}
+                      {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
+                    </DropdownMenuItem>
+                  )}
+                  {effectiveReasoningEffortLevels
+                    .filter((level) => level !== "none")
+                    .map((level) => (
+                      <DropdownMenuItem
+                        key={level}
+                        onSelect={() => {
+                          setReasoningEffort(level);
+                          setReasoningEnabled(true);
+                          applyQwenThinkingParams(true);
+                          // Mutual exclusion: turning thinking on for a
+                          // Kimi model forces the web_search builtin off.
+                          if (isKimiExternal && toolsEnabled) {
+                            setToolsEnabled(false, { persist: false });
+                          }
+                        }}
+                      >
+                        {formatReasoningEffortLabel(
+                          level,
+                          externalSelection?.modelId,
+                        )}
+                        {effectiveReasoningVisualEnabled &&
+                        reasoningEffort === level
+                          ? " \u2713"
+                          : ""}
+                      </DropdownMenuItem>
+                    ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <button
+                type="button"
+                disabled={reasoningDisabled || reasoningLockedOn}
+                aria-disabled={reasoningDisabled || reasoningLockedOn}
+                title={
+                  reasoningLockedOn
+                    ? "This model requires reasoning to stay on."
+                    : undefined
+                }
+                onClick={() => {
+                  if (reasoningLockedOn) return;
+                  const next = !reasoningEnabled;
+                  setReasoningEnabled(next);
+                  applyQwenThinkingParams(next);
+                  // Mutual exclusion: Kimi's $web_search builtin
+                  // requires thinking off, so turning thinking on flips
+                  // the Search pill off (and vice versa).
+                  if (isKimiExternal && next && toolsEnabled) {
+                    setToolsEnabled(false, { persist: false });
+                  }
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                  reasoningLockedOn
+                    ? "cursor-not-allowed text-primary"
+                    : reasoningDisabled
                       ? "cursor-not-allowed opacity-40"
-                      : effectiveReasoningVisualEnabled
+                      : effectiveReasoningEnabled
                         ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
                         : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-                  )}
-                  aria-label={`Reasoning effort: ${reasoningEffort}`}
-                >
-                  {effectiveReasoningVisualEnabled ? (
-                    <LightbulbIcon className="size-3.5" />
-                  ) : (
-                    <LightbulbOffIcon className="size-3.5" />
-                  )}
-                  <span>
-                    Think:{" "}
-                    {effectiveReasoningVisualEnabled
-                      ? formatReasoningEffortLabel(
-                          reasoningEffort,
-                          externalSelection?.modelId,
-                        )
-                      : formatReasoningDisabledLabel(
-                          effectiveSupportsReasoningOff,
-                          isExternalOpenAIReasoning,
-                          checkpoint,
-                        )}
-                  </span>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {effectiveSupportsReasoningOff && (
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      setReasoningEnabled(false);
-                      applyQwenThinkingParams(false);
-                    }}
-                  >
-                    {formatReasoningDisabledLabel(
-                      effectiveSupportsReasoningOff,
-                      isExternalOpenAIReasoning,
-                      checkpoint,
-                    )}
-                    {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
-                  </DropdownMenuItem>
                 )}
-                {effectiveReasoningEffortLevels
-                  .filter((level) => level !== "none")
-                  .map((level) => (
-                  <DropdownMenuItem
-                    key={level}
-                    onSelect={() => {
-                      setReasoningEffort(level);
-                      setReasoningEnabled(true);
-                      applyQwenThinkingParams(true);
-                      // Mutual exclusion: turning thinking on for a
-                      // Kimi model forces the web_search builtin off.
-                      if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false, { persist: false });
-                      }
-                    }}
-                  >
-                    {formatReasoningEffortLabel(level, externalSelection?.modelId)}
-                    {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <button
-              type="button"
-              disabled={reasoningDisabled || reasoningLockedOn}
-              aria-disabled={reasoningDisabled || reasoningLockedOn}
-              title={
-                reasoningLockedOn
-                  ? "This model requires reasoning to stay on."
-                  : undefined
-              }
-              onClick={() => {
-                if (reasoningLockedOn) return;
-                const next = !reasoningEnabled;
-                setReasoningEnabled(next);
-                applyQwenThinkingParams(next);
-                // Mutual exclusion: Kimi's $web_search builtin
-                // requires thinking off, so turning thinking on flips
-                // the Search pill off (and vice versa).
-                if (isKimiExternal && next && toolsEnabled) {
-                  setToolsEnabled(false, { persist: false });
-                }
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                reasoningLockedOn
-                  ? "cursor-not-allowed text-primary"
-                  : reasoningDisabled
-                    ? "cursor-not-allowed opacity-40"
+                aria-label={
+                  reasoningLockedOn
+                    ? "Thinking is required for this model"
                     : effectiveReasoningEnabled
-                      ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                      : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-              )}
-              aria-label={
-                reasoningLockedOn
-                  ? "Thinking is required for this model"
-                  : effectiveReasoningEnabled
-                    ? "Disable thinking"
-                    : "Enable thinking"
-              }
-            >
-              {reasoningLockedOn ||
-              (effectiveReasoningEnabled && !reasoningDisabled) ? (
-                <LightbulbIcon className="size-3.5" />
-              ) : (
-                <LightbulbOffIcon className="size-3.5" />
-              )}
-              <span>Think</span>
-            </button>
+                      ? "Disable thinking"
+                      : "Enable thinking"
+                }
+              >
+                {reasoningLockedOn ||
+                (effectiveReasoningEnabled && !reasoningDisabled) ? (
+                  <LightbulbIcon className="size-3.5" />
+                ) : (
+                  <LightbulbOffIcon className="size-3.5" />
+                )}
+                <span>Think</span>
+              </button>
             )
           ) : null}
           {supportsPreserveThinking && (
@@ -1041,7 +1138,9 @@ export function SharedComposer({
                     : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
-                preserveThinking ? "Disable preserve think" : "Enable preserve think"
+                preserveThinking
+                  ? "Disable preserve think"
+                  : "Enable preserve think"
               }
             >
               {preserveThinking && modelLoaded ? (
@@ -1070,7 +1169,9 @@ export function SharedComposer({
             }}
             className="composer-pill-btn"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+            aria-label={
+              toolsEnabled ? "Disable web search" : "Enable web search"
+            }
           >
             <GlobeIcon className="size-3.5" />
             <span>Search</span>
@@ -1081,7 +1182,11 @@ export function SharedComposer({
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+            aria-label={
+              codeToolsEnabled
+                ? "Disable code execution"
+                : "Enable code execution"
+            }
           >
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>

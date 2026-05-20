@@ -154,7 +154,9 @@ function toFullPreset(preset: PersistedChatPreset): Preset {
   };
 }
 
-function sanitizeCustomPresets(value: unknown): PersistedChatPreset[] | undefined {
+function sanitizeCustomPresets(
+  value: unknown,
+): PersistedChatPreset[] | undefined {
   if (!Array.isArray(value)) return undefined;
   if (value.length === 0) return [];
 
@@ -169,10 +171,12 @@ function sanitizeCustomPresets(value: unknown): PersistedChatPreset[] | undefine
     .filter((preset): preset is PersistedChatPreset => preset !== null);
 
   if (presets.length === 0) return [];
-  return normalizeCustomPresets(presets.map(toFullPreset)).map((preset, index) => ({
-    name: preset.name,
-    params: presets[index]?.params ?? {},
-  }));
+  return normalizeCustomPresets(presets.map(toFullPreset)).map(
+    (preset, index) => ({
+      name: preset.name,
+      params: presets[index]?.params ?? {},
+    }),
+  );
 }
 
 function sanitizePresetSource(value: unknown): ChatPresetSource | undefined {
@@ -219,7 +223,8 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (activePresetSource) settings.activePresetSource = activePresetSource;
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
-  if (preserveThinking !== undefined) settings.preserveThinking = preserveThinking;
+  if (preserveThinking !== undefined)
+    settings.preserveThinking = preserveThinking;
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
   }
@@ -273,9 +278,7 @@ function loadLegacySystemPromptPresets(
 
 export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
   return (
-    !settings.inferenceParams ||
-    !hasKeys(settings.inferenceParams)
-  ) &&
+    (!settings.inferenceParams || !hasKeys(settings.inferenceParams)) &&
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
@@ -284,7 +287,8 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.preserveThinking === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
-    settings.toolCallTimeout === undefined;
+    settings.toolCallTimeout === undefined
+  );
 }
 
 export function loadLegacyChatSettings(): PersistedChatSettings {
@@ -297,7 +301,9 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
     parseJson(getStorageItem(INFERENCE_PARAMS_KEY)),
   );
   const customPresets = sanitizeCustomPresets(parseJson(rawCustomPresets));
-  const legacyPromptPresets = loadLegacySystemPromptPresets(customPresets ?? []);
+  const legacyPromptPresets = loadLegacySystemPromptPresets(
+    customPresets ?? [],
+  );
   const activePreset = getStorageItem(CHAT_ACTIVE_PRESET_KEY);
   const activePresetSource = sanitizePresetSource(
     getStorageItem(CHAT_ACTIVE_PRESET_SOURCE_KEY),
@@ -323,7 +329,8 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   if (activePresetSource) settings.activePresetSource = activePresetSource;
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
-  if (preserveThinking !== undefined) settings.preserveThinking = preserveThinking;
+  if (preserveThinking !== undefined)
+    settings.preserveThinking = preserveThinking;
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
   }
@@ -347,11 +354,21 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
     return legacySettings;
   }
 
+  const legacySettings = loadLegacyChatSettings();
   if (isLegacySettingsImportDone()) {
-    return dbSettings;
+    if (
+      !isEmptyChatSettings(dbSettings) ||
+      isEmptyChatSettings(legacySettings)
+    ) {
+      return dbSettings;
+    }
+    try {
+      return sanitizeChatSettings(await saveChatSettingsPatch(legacySettings));
+    } catch {
+      return legacySettings;
+    }
   }
 
-  const legacySettings = loadLegacyChatSettings();
   if (isEmptyChatSettings(legacySettings)) {
     markLegacySettingsImportDone();
     return dbSettings;
