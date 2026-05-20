@@ -1065,7 +1065,7 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             messages.extend(_chat_message_from_row(row) for row in rows)
         return sorted(
             messages,
-            key=lambda message: (message["createdAt"], message["id"]),
+            key = lambda message: (message["createdAt"], message["id"]),
         )
     finally:
         conn.close()

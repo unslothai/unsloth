@@ -16,12 +16,12 @@ from routes import chat_history
 
 def _message(message_id: str, thread_id: str) -> chat_history.ChatMessage:
     return chat_history.ChatMessage(
-        id=message_id,
-        threadId=thread_id,
-        parentId=None,
-        role="user",
-        content=[{"type": "text", "text": "hello"}],
-        createdAt=1_700_000_000_000,
+        id = message_id,
+        threadId = thread_id,
+        parentId = None,
+        role = "user",
+        content = [{"type": "text", "text": "hello"}],
+        createdAt = 1_700_000_000_000,
     )
 
 
@@ -44,10 +44,10 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
             chat_history.replace_thread_messages(
                 "thread-1",
                 chat_history.ChatMessageSyncRequest(
-                    messages=[_message("msg-1", "thread-2")],
-                    pruneMissing=True,
+                    messages = [_message("msg-1", "thread-2")],
+                    pruneMissing = True,
                 ),
-                current_subject="test-user",
+                current_subject = "test-user",
             )
         )
 
