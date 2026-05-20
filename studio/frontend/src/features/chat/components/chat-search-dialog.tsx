@@ -17,6 +17,18 @@ import { useEffect } from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
 
+// cmdk's default `commandScore` returns a small non-zero score when a few query
+// characters happen to appear out of order, so a unique marker that matches no
+// title/preview still keeps rows visible and never shows "No chats match".
+// Require every whitespace-separated token to appear as a substring instead.
+export function chatSearchFilter(value: string, search: string): number {
+  const query = search.trim().toLowerCase();
+  if (query === "") return 1;
+  const haystack = value.toLowerCase();
+  const tokens = query.split(/\s+/);
+  return tokens.every((token) => haystack.includes(token)) ? 1 : 0;
+}
+
 function formatRelative(createdAt: number): string {
   const diff = Date.now() - createdAt;
   const day = 86_400_000;
@@ -54,7 +66,7 @@ export function ChatSearchDialog() {
       className="shadow-border corner-squircle w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
-      <Command className="rounded-none p-0">
+      <Command className="rounded-none p-0" filter={chatSearchFilter}>
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
             icon={SearchIcon}
