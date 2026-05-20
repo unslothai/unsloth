@@ -1002,6 +1002,10 @@
 	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
 }
 
+[data-sonner-toast][data-styled='true']:has([data-close-button]) {
+	padding-right: 44px !important;
+}
+
 /* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
 .dark [data-sonner-toast][data-styled='true'] {
 	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
@@ -1174,7 +1178,8 @@
 
 /* Override sonner top: 0 and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: 8px !important;
+	top: 50% !important;
+	transform: translateY(-50%) !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
 	border-color: var(--border) !important;

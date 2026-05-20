@@ -65,13 +65,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
-          // Pin close button to the top-right corner inside the toast.
-          // Overrides sonner's default left placement and outside-corner
-          // translate; top offset is set via a rule in index.css since sonner
-          // hardcodes `top: 0` (not a CSS variable).
+          // Pin the close button inside the toast on the right edge.
+          // Sonner hardcodes `top: 0`, so the vertical centering lives in
+          // index.css alongside the theme-token hover override.
           "--toast-close-button-start": "unset",
-          "--toast-close-button-end": "8px",
-          "--toast-close-button-transform": "none",
+          "--toast-close-button-end": "12px",
+          "--toast-close-button-transform": "translateY(-50%)",
         } as React.CSSProperties
       }
       // No swipe gestures; keeps toast text selectable.
