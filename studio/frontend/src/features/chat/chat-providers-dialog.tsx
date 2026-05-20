@@ -52,6 +52,7 @@ import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
+  customProviderBaseUrlDefault,
   customProviderBaseUrlPlaceholder,
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
@@ -268,6 +269,26 @@ export function ChatProvidersSettings({
     isManualModelList ||
     remoteAllowsManual ||
     availableModels.length > 0;
+  const missingModelCatalogBaseUrl =
+    supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
+  const missingModelCatalogApiKey =
+    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+  const loadModelsDisabled =
+    modelsLoading ||
+    mutatingProvider ||
+    isManualModelList ||
+    missingModelCatalogBaseUrl ||
+    missingModelCatalogApiKey;
+  const loadModelsTitle =
+    isManualModelList && isCustomProvider
+      ? "This connection uses manual model IDs"
+      : isCuratedModelList
+        ? "Full catalog is not fetched for this provider"
+        : missingModelCatalogBaseUrl
+          ? "Enter a Base URL before loading models"
+          : missingModelCatalogApiKey
+            ? "Enter an API key before loading models"
+            : undefined;
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
     if (!query) {
@@ -293,6 +314,7 @@ export function ChatProvidersSettings({
     if (!entry) {
       if (isCustomProviderType(providerType)) {
         setCustomProviderName(customProviderDisplayName(providerType));
+        setBaseUrlDraft(customProviderBaseUrlDefault(providerType));
       }
       return;
     }
@@ -305,6 +327,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setBaseUrlDraft(customProviderBaseUrlDefault(providerType));
   }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
@@ -402,7 +425,7 @@ export function ChatProvidersSettings({
     setEditingProviderId(null);
     setApiKey("");
     setShowApiKey(false);
-    setBaseUrlDraft("");
+    setBaseUrlDraft(customProviderBaseUrlDefault(providerType));
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -771,7 +794,9 @@ export function ChatProvidersSettings({
     );
     setApiKey(getExternalProviderApiKey(provider.id));
     setShowApiKey(false);
-    setBaseUrlDraft(provider.baseUrl);
+    setBaseUrlDraft(
+      provider.baseUrl || customProviderBaseUrlDefault(provider.providerType),
+    );
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
@@ -1148,16 +1173,8 @@ export function ChatProvidersSettings({
                         ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
                         : "h-8 shrink-0 px-3"
                     }
-                    disabled={
-                      modelsLoading || mutatingProvider || isManualModelList
-                    }
-                    title={
-                      isManualModelList && isCustomProvider
-                        ? "This connection uses manual model IDs"
-                        : isCuratedModelList
-                          ? "Full catalog is not fetched for this provider"
-                          : undefined
-                    }
+                    disabled={loadModelsDisabled}
+                    title={loadModelsTitle}
                     onClick={() => void loadModels()}
                   >
                     {modelsLoading ? (
