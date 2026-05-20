@@ -298,7 +298,11 @@ export function SharedComposer({
     return s.models.find((m) => m.id === checkpoint);
   });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
