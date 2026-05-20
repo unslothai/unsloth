@@ -2944,9 +2944,7 @@ class ExternalProviderClient:
             if isinstance(data, dict):
                 raw_models = data.get("data") or []
                 if isinstance(raw_models, list):
-                    models = [
-                        model for model in raw_models if isinstance(model, dict)
-                    ]
+                    models = [model for model in raw_models if isinstance(model, dict)]
             if not models and self.provider_type == "ollama":
                 models = await self._list_ollama_native_models()
             return models
