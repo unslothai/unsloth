@@ -482,6 +482,15 @@ export async function syncStoredChatMessages(
   return syncChatMessages(threadId, messages, options);
 }
 
+export async function saveStoredChatThread(
+  thread: ThreadRecord,
+): Promise<ThreadRecord> {
+  if (isChatThreadDeleted(thread.id)) {
+    throw new Error(`Thread ${thread.id} was deleted`);
+  }
+  return saveChatThread(thread);
+}
+
 export async function updateStoredChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
@@ -519,11 +528,16 @@ export interface ClearStoredChatsResult {
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
   // Clear both sides independently and report each outcome so the
   // toast can distinguish full vs partial success.
-  const [backendThreads, legacyThreads] = await Promise.all([
-    listChatThreads().catch(() => []),
+  const [backendThreadsResult, legacyThreads] = await Promise.all([
+    listChatThreads()
+      .then((threads) => ({ ok: true as const, threads }))
+      .catch(() => ({ ok: false as const, threads: [] as ThreadRecord[] })),
     db.threads.toArray().catch(() => []),
   ]);
-  const backendThreadIds = new Set(backendThreads.map((thread) => thread.id));
+  const backendInventoryLoaded = backendThreadsResult.ok;
+  const backendThreadIds = new Set(
+    backendThreadsResult.threads.map((thread) => thread.id),
+  );
   const legacyThreadIds = new Set(legacyThreads.map((thread) => thread.id));
   const allThreadIds = Array.from(
     new Set([...backendThreadIds, ...legacyThreadIds]),
@@ -558,7 +572,8 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
 
   result.deletedThreadIds = allThreadIds.filter((id) => {
     const backendDeleted =
-      !backendThreadIds.has(id) || result.backend === "cleared";
+      result.backend === "cleared" ||
+      (backendInventoryLoaded && !backendThreadIds.has(id));
     const legacyDeleted =
       !legacyThreadIds.has(id) || result.legacy === "cleared";
     return backendDeleted && legacyDeleted;

@@ -58,6 +58,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
   saveStoredChatMessage,
+  saveStoredChatThread,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
@@ -564,7 +565,9 @@ export async function ensureThreadRecord({
   if (isChatThreadDeleted(threadId)) {
     return;
   }
-  const existing = await ensureStoredChatThread(threadId);
+  const existing = (await listStoredChatThreads({ includeArchived: true })).find(
+    (thread) => thread.id === threadId,
+  );
   if (existing) {
     return;
   }
@@ -581,12 +584,15 @@ export async function ensureThreadRecord({
   };
 
   try {
-    await ensureStoredChatThread(threadId, record);
+    await saveStoredChatThread(record);
   } catch (error) {
     // assistant-ui can issue overlapping first-message persistence calls.
     // If another call created the same thread while this one was waiting,
     // treat initialization as successful and let the message write continue.
-    if (await getStoredChatThread(threadId)) {
+    const existingAfterRace = await listStoredChatThreads({
+      includeArchived: true,
+    }).catch(() => []);
+    if (existingAfterRace.some((thread) => thread.id === threadId)) {
       return;
     }
     throw error;
