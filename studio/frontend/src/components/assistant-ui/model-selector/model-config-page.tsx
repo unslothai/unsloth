@@ -52,6 +52,15 @@ import type { DeletedModelRef, ModelPickTarget } from "./types";
 
 const DEFAULT_CONTEXT_FALLBACK = 131072;
 
+const SPECULATIVE_OPTIONS: { value: string; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "mtp", label: "MTP" },
+  { value: "ngram", label: "Ngram" },
+  { value: "mtp+ngram", label: "MTP+Ngram" },
+  { value: "off", label: "Off" },
+];
+const MTP_MODES = new Set(["mtp", "mtp+ngram"]);
+
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack: () => void;
@@ -294,8 +303,6 @@ export function ModelConfigPage({
   }, [initial, initialIsDefault]);
 
   const isGguf = target.isGguf;
-  const speculativeOn =
-    config.speculativeType != null && config.speculativeType !== "off";
   const nativeMaxContext = sameAsLoaded
     ? (ggufNativeContextFromStore ?? ggufContextFromStore ?? null)
     : fetchedMaxContext;
@@ -387,11 +394,13 @@ export function ModelConfigPage({
     config.speculativeType !== DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.speculativeType !== null
   ) {
-    summaryParts.push(
-      config.speculativeType === "off"
-        ? "Speculative off"
-        : "Speculative on",
-    );
+    const specLabel =
+      SPECULATIVE_OPTIONS.find((o) => o.value === config.speculativeType)
+        ?.label ?? config.speculativeType;
+    summaryParts.push(`Speculative ${specLabel}`);
+  }
+  if (config.specDraftNMax != null) {
+    summaryParts.push(`Draft ${config.specDraftNMax}`);
   }
   if (config.chatTemplateOverride != null) {
     summaryParts.push("Custom chat template");
@@ -615,19 +624,71 @@ export function ModelConfigPage({
               label="Speculative Decoding"
               info={
                 <>
-                  N-gram speculation. Faster generation with negligible VRAM
-                  overhead. Text-only models.
+                  Faster generation with no accuracy hit. Auto picks MTP or
+                  ngram based on the model and platform. Pick a mode to force
+                  it on both GPU and CPU.
                 </>
               }
             >
-              <Switch
-                className="panel-switch shrink-0"
-                checked={speculativeOn}
-                onCheckedChange={(checked) =>
-                  update("speculativeType", checked ? "default" : "off")
-                }
-              />
+              <Select
+                value={config.speculativeType ?? "auto"}
+                onValueChange={(v) => {
+                  update("speculativeType", v);
+                  if (!MTP_MODES.has(v)) update("specDraftNMax", null);
+                }}
+              >
+                <SelectTrigger
+                  animateRadius={false}
+                  icon={ArrowDown01Icon}
+                  iconClassName="size-3.5"
+                  className="grid h-7 w-[120px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] px-2 py-0 text-[13px]! font-medium hover:bg-black/[0.06] focus-visible:border-transparent focus-visible:ring-0 dark:bg-white/[0.05] dark:hover:bg-white/[0.07] [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="menu-soft-surface rounded-lg border-0 ring-0">
+                  {SPECULATIVE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </FieldRow>
+
+            {MTP_MODES.has(config.speculativeType ?? "") && (
+              <FieldRow
+                label="Draft Tokens"
+                info={
+                  <>
+                    Max MTP draft tokens per step (--spec-draft-n-max). Lower =
+                    less wasted draft decode. Higher = bigger speedup when
+                    acceptance stays high. Default: 2 on GPU, 3 on CPU/Mac.
+                  </>
+                }
+              >
+                <input
+                  type="number"
+                  min={1}
+                  max={16}
+                  step={1}
+                  value={config.specDraftNMax ?? ""}
+                  placeholder="auto"
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") {
+                      update("specDraftNMax", null);
+                      return;
+                    }
+                    const parsed = Number.parseInt(raw, 10);
+                    if (Number.isFinite(parsed)) {
+                      update("specDraftNMax", Math.max(1, Math.min(16, parsed)));
+                    }
+                  }}
+                  aria-label="Speculative decoding draft tokens"
+                  className="h-7 w-[72px] rounded-[10px] border-transparent bg-black/[0.04] px-2 py-0 text-[13px] font-medium text-foreground outline-none hover:bg-black/[0.06] focus-visible:ring-0 dark:bg-white/[0.05] dark:hover:bg-white/[0.07]"
+                />
+              </FieldRow>
+            )}
           </section>
         )}
 

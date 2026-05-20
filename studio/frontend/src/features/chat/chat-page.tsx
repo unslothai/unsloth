@@ -179,6 +179,7 @@ function applyPickerConfigToRuntime(
   useChatRuntimeStore.setState({
     kvCacheDtype: config.kvCacheDtype,
     speculativeType: config.speculativeType,
+    specDraftNMax: config.specDraftNMax,
     customContextLength: config.customContextLength,
     chatTemplateOverride: config.chatTemplateOverride,
   });

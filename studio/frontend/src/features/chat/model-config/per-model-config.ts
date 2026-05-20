@@ -4,6 +4,7 @@
 export interface PerModelConfig {
   kvCacheDtype: string | null;
   speculativeType: string | null;
+  specDraftNMax: number | null;
   customContextLength: number | null;
   chatTemplateOverride: string | null;
   trustRemoteCode?: boolean;
@@ -11,14 +12,22 @@ export interface PerModelConfig {
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   kvCacheDtype: null,
-  speculativeType: "default",
+  speculativeType: "auto",
+  specDraftNMax: null,
   customContextLength: null,
   chatTemplateOverride: null,
   trustRemoteCode: false,
 };
 
 const VALID_KV_CACHE_DTYPES = new Set(["bf16", "q8_0", "q5_1", "q4_1"]);
-const VALID_SPECULATIVE_TYPES = new Set(["default", "off"]);
+const VALID_SPECULATIVE_TYPES = new Set([
+  "auto",
+  "mtp",
+  "ngram",
+  "mtp+ngram",
+  "off",
+]);
+const MTP_SPECULATIVE_TYPES = new Set(["mtp", "mtp+ngram"]);
 
 const STORAGE_KEY = "unsloth_model_configs";
 const MAX_ENTRIES = 500;
@@ -60,17 +69,31 @@ function writeMap(map: StoredMap): void {
 
 function normalize(raw: unknown): PerModelConfig {
   const partial = (raw && typeof raw === "object" ? raw : {}) as Partial<PerModelConfig>;
+  const rawSpecType =
+    typeof partial.speculativeType === "string"
+      ? partial.speculativeType === "default"
+        ? "auto"
+        : partial.speculativeType
+      : null;
+  const speculativeType =
+    rawSpecType != null && VALID_SPECULATIVE_TYPES.has(rawSpecType)
+      ? rawSpecType
+      : DEFAULT_PER_MODEL_CONFIG.speculativeType;
+  const specDraftNMax =
+    speculativeType != null &&
+    MTP_SPECULATIVE_TYPES.has(speculativeType) &&
+    typeof partial.specDraftNMax === "number" &&
+    Number.isFinite(partial.specDraftNMax)
+      ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
+      : null;
   return {
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
         ? partial.kvCacheDtype
         : null,
-    speculativeType:
-      typeof partial.speculativeType === "string" &&
-      VALID_SPECULATIVE_TYPES.has(partial.speculativeType)
-        ? partial.speculativeType
-        : DEFAULT_PER_MODEL_CONFIG.speculativeType,
+    speculativeType,
+    specDraftNMax,
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength)
@@ -109,6 +132,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
+    config.specDraftNMax == null &&
     (config.chatTemplateOverride ?? null) === null &&
     Boolean(config.trustRemoteCode) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.trustRemoteCode)
