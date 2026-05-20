@@ -9,6 +9,9 @@ export {
   type HfModelResult,
   type HfSortDirection,
   type HfSortKey,
+  type UnslothSupport,
+  type UnslothSupportStatus,
+  classifyUnslothSupport,
   useHfModelSearch,
 } from "./use-hf-model-search";
 export { useRecommendedModelVram } from "./use-recommended-model-vram";

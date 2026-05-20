@@ -5,15 +5,19 @@
 Datasets API routes
 """
 
+import asyncio
 import base64
 import io
 import json
+import os
 import sys
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from uuid import uuid4
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 import re as _re
 import structlog
@@ -26,21 +30,41 @@ def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
 
 
-_dataset_size_cache: dict[str, int] = {}
+_dataset_size_cache: "OrderedDict[str, int]" = OrderedDict()
+_dataset_size_neg_cache: "OrderedDict[str, float]" = OrderedDict()
+_DATASET_SIZE_CACHE_MAX = 256
+_DATASET_SIZE_NEG_TTL = 60.0
+_dataset_size_cache_lock = threading.Lock()
 
 
 def _get_dataset_size_cached(repo_id: str) -> int:
-    if repo_id in _dataset_size_cache:
-        return _dataset_size_cache[repo_id]
+    with _dataset_size_cache_lock:
+        cached = _dataset_size_cache.get(repo_id)
+        if cached is not None:
+            _dataset_size_cache.move_to_end(repo_id)
+            return cached
+        neg_ts = _dataset_size_neg_cache.get(repo_id)
+        if neg_ts is not None and (time.monotonic() - neg_ts) < _DATASET_SIZE_NEG_TTL:
+            return 0
     try:
         from huggingface_hub import dataset_info as hf_dataset_info
 
         info = hf_dataset_info(repo_id, token = None, files_metadata = True)
         total = sum(s.size for s in info.siblings if getattr(s, "size", None))
-        _dataset_size_cache[repo_id] = total
-        return total
     except Exception:
+        with _dataset_size_cache_lock:
+            _dataset_size_neg_cache[repo_id] = time.monotonic()
+            _dataset_size_neg_cache.move_to_end(repo_id)
+            while len(_dataset_size_neg_cache) > _DATASET_SIZE_CACHE_MAX:
+                _dataset_size_neg_cache.popitem(last = False)
         return 0
+    with _dataset_size_cache_lock:
+        _dataset_size_cache[repo_id] = total
+        _dataset_size_cache.move_to_end(repo_id)
+        _dataset_size_neg_cache.pop(repo_id, None)
+        while len(_dataset_size_cache) > _DATASET_SIZE_CACHE_MAX:
+            _dataset_size_cache.popitem(last = False)
+    return total
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
@@ -88,8 +112,10 @@ from utils.paths import (
     dataset_uploads_root,
     ensure_dir,
     recipe_datasets_root,
+    resolve_cached_repo_id_case,
     resolve_dataset_path,
 )
+from utils import hf_cache_scan
 
 
 def _serialize_preview_value(value):
@@ -355,6 +381,159 @@ def list_local_datasets(
     return LocalDatasetsResponse(datasets = _build_local_dataset_items())
 
 
+def _scan_hf_dataset_caches() -> list[dict]:
+    """Walk active + legacy + default HF caches; return one row per cached dataset repo."""
+    from huggingface_hub import scan_cache_dir
+    from utils import hf_cache_scan
+    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
+
+    scans: list = []
+    seen_roots: set[str] = set()
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        active_root = Path(HF_HUB_CACHE).resolve()
+        seen_roots.add(str(active_root))
+        if active_root.is_dir():
+            scans.append(scan_cache_dir())
+    except Exception as exc:
+        logger.warning("Could not scan active HF cache: %s", exc)
+    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        extra = extra_fn()
+        if extra.is_dir() and str(extra.resolve()) not in seen_roots:
+            seen_roots.add(str(extra.resolve()))
+            try:
+                scans.append(scan_cache_dir(cache_dir = str(extra)))
+            except Exception as exc:
+                logger.warning("Could not scan HF cache %s: %s", extra, exc)
+
+    seen_lower: dict[str, dict] = {}
+    inspected = 0
+    for hf_cache in scans:
+        for repo_info in hf_cache.repos:
+            inspected += 1
+            try:
+                # repo_type is an enum-like string ("dataset"/"model"/"space")
+                # — compare against str(...) to avoid quirks if the library
+                # ever switches to an Enum.
+                if str(repo_info.repo_type) != "dataset":
+                    continue
+                total_size = int(getattr(repo_info, "size_on_disk", 0) or 0)
+                if total_size == 0:
+                    total_size = sum(
+                        int(f.size_on_disk or 0)
+                        for rev in repo_info.revisions
+                        for f in rev.files
+                    )
+                key = repo_info.repo_id.lower()
+                existing = seen_lower.get(key)
+                if existing is None or total_size > existing["size_bytes"]:
+                    seen_lower[key] = {
+                        "repo_id": repo_info.repo_id,
+                        "size_bytes": total_size,
+                        "cache_path": str(repo_info.repo_path),
+                    }
+            except Exception as exc:
+                label = getattr(repo_info, "repo_id", "<unknown>")
+                logger.warning("Skipping cached dataset repo %s: %s", label, exc)
+
+    partial = hf_cache_scan.partial_repo_ids(
+        "dataset", (row["repo_id"] for row in seen_lower.values()),
+    )
+    for row in seen_lower.values():
+        row["partial"] = row["repo_id"] in partial
+    logger.info(
+        "Cached dataset scan: roots=%d inspected=%d returned=%d",
+        len(seen_roots), inspected, len(seen_lower),
+    )
+    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+
+
+@router.get("/cached")
+async def list_cached_datasets(
+    current_subject: str = Depends(get_current_subject),
+):
+    """List dataset repos already downloaded into the HF cache."""
+    try:
+        return {"cached": await asyncio.to_thread(_scan_hf_dataset_caches)}
+    except Exception as exc:
+        logger.error("Error listing cached datasets: %s", exc, exc_info = True)
+        return {"cached": []}
+
+
+@router.delete("/cached")
+async def delete_cached_dataset(
+    repo_id: str = Body(..., embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Remove a cached dataset repo from the HF cache."""
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+
+    repo_key = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
+    if not _registry.begin_delete(repo_key):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Cancel the active download before deleting.",
+        )
+    try:
+        return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_id)
+    finally:
+        _registry.end_delete(repo_key)
+
+
+def _delete_cached_dataset_blocking(repo_id: str) -> dict:
+    from huggingface_hub import scan_cache_dir
+    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
+
+    scans: list = []
+    seen_roots: set[str] = set()
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        active_root = Path(HF_HUB_CACHE).resolve()
+        seen_roots.add(str(active_root))
+        if active_root.is_dir():
+            scans.append(scan_cache_dir())
+    except Exception as exc:
+        logger.warning("Could not scan active HF cache: %s", exc)
+    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        extra = extra_fn()
+        if extra.is_dir() and str(extra.resolve()) not in seen_roots:
+            seen_roots.add(str(extra.resolve()))
+            try:
+                scans.append(scan_cache_dir(cache_dir = str(extra)))
+            except Exception as exc:
+                logger.warning("Could not scan HF cache %s: %s", extra, exc)
+
+    deleted = False
+    for hf_cache in scans:
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "dataset":
+                continue
+            if repo_info.repo_id.lower() != repo_id.lower():
+                continue
+            try:
+                strategy = hf_cache.delete_revisions(
+                    *(rev.commit_hash for rev in repo_info.revisions)
+                )
+                strategy.execute()
+                deleted = True
+            except Exception as exc:
+                logger.error(
+                    "Failed deleting cached dataset %s: %s", repo_id, exc,
+                )
+                raise HTTPException(
+                    status_code = 500,
+                    detail = f"Failed to delete dataset: {exc}",
+                ) from exc
+
+    if not deleted:
+        from utils import hf_cache_scan
+        if hf_cache_scan.purge_partial_repo("dataset", repo_id):
+            return {"status": "deleted", "repo_id": repo_id}
+        raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
+    return {"status": "deleted", "repo_id": repo_id}
+
+
 @router.get("/download-progress")
 async def get_dataset_download_progress(
     repo_id: str = Query(
@@ -378,7 +557,7 @@ async def get_dataset_download_progress(
         "progress": 0,
         "cache_path": None,
     }
-    try:
+    def _compute():
         if not _is_valid_repo_id(repo_id):
             return _empty
 
@@ -391,13 +570,17 @@ async def get_dataset_download_progress(
         cache_path: Optional[str] = None
 
         if cache_dir.is_dir():
+            # Walk all case-variants of the target dir name (HF can keep
+            # ``datasets--owner--name`` and ``datasets--owner--Name``
+            # side-by-side; only one usually has the live blobs).
             for entry in cache_dir.iterdir():
                 if entry.name.lower() != target:
                     continue
-                cache_path = _resolve_hf_cache_realpath(entry)
+                if cache_path is None:
+                    cache_path = _resolve_hf_cache_realpath(entry)
                 blobs_dir = entry / "blobs"
                 if not blobs_dir.is_dir():
-                    break
+                    continue
                 for f in blobs_dir.iterdir():
                     if not f.is_file():
                         continue
@@ -405,7 +588,6 @@ async def get_dataset_download_progress(
                         in_progress_bytes += f.stat().st_size
                     else:
                         completed_bytes += f.stat().st_size
-                break
 
         downloaded_bytes = completed_bytes + in_progress_bytes
         if downloaded_bytes == 0:
@@ -433,6 +615,9 @@ async def get_dataset_download_progress(
             "progress": round(progress, 3),
             "cache_path": cache_path,
         }
+
+    try:
+        return await asyncio.to_thread(_compute)
     except Exception as e:
         logger.warning(f"Error checking dataset download progress for {repo_id}: {e}")
         return _empty
@@ -445,29 +630,32 @@ class DownloadDatasetRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token for gated/private repos"
     )
+    use_xet: bool = Field(
+        False,
+        description = "Enable Xet parallel chunked transport. Default False uses HTTP Range-resume.",
+    )
 
 
 class DatasetDownloadJobStatus(BaseModel):
     """Live state of a background dataset download job."""
 
-    state: str = Field(..., description = "'idle' | 'running' | 'complete' | 'error'")
+    state: str = Field(
+        ...,
+        description = "'idle' | 'running' | 'complete' | 'error' | 'cancelled'",
+    )
     error: Optional[str] = Field(None, description = "Error message if state == 'error'")
 
 
-_DATASET_DOWNLOAD_JOBS: dict[str, DatasetDownloadJobStatus] = {}
-_DATASET_DOWNLOAD_LOCK = threading.Lock()
+_registry = hf_cache_scan.DownloadRegistry()
 
 
-def _set_dataset_job(repo_id: str, status: DatasetDownloadJobStatus) -> None:
-    with _DATASET_DOWNLOAD_LOCK:
-        _DATASET_DOWNLOAD_JOBS[repo_id] = status
+def _dataset_status(repo_id: str) -> DatasetDownloadJobStatus:
+    state = _registry.get_job(repo_id)
+    return DatasetDownloadJobStatus(state = state.state, error = state.error)
 
 
-def _get_dataset_job(repo_id: str) -> DatasetDownloadJobStatus:
-    with _DATASET_DOWNLOAD_LOCK:
-        return _DATASET_DOWNLOAD_JOBS.get(
-            repo_id, DatasetDownloadJobStatus(state = "idle")
-        )
+def terminate_active_dataset_downloads() -> None:
+    _registry.terminate_all("dataset download")
 
 
 @router.post("/download", status_code = 202)
@@ -482,41 +670,99 @@ async def download_dataset(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    # Canonicalize so two different-cased paste-ins share one job + cache dir.
+    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
 
-    existing = _get_dataset_job(repo_id)
-    if existing.state == "running":
-        return {"repo_id": repo_id, "state": "running"}
+    transport = (
+        hf_cache_scan.TRANSPORT_XET if body.use_xet else hf_cache_scan.TRANSPORT_HTTP
+    )
+    claimed, claim_state = _registry.claim(repo_id, transport)
+    if not claimed:
+        return {"repo_id": repo_id, "state": claim_state}
 
-    _set_dataset_job(repo_id, DatasetDownloadJobStatus(state = "running"))
+    backend_dir = Path(__file__).resolve().parent.parent
+    try:
+        proc = hf_cache_scan.spawn_worker(
+            ["--repo-id", repo_id, "--dataset"],
+            body.hf_token,
+            backend_dir,
+            use_xet = body.use_xet,
+        )
+    except Exception as e:
+        scrubbed = hf_cache_scan.scrub_secrets(str(e), hf_token = body.hf_token)
+        logger.error(f"Failed to spawn dataset download worker for {repo_id}: {scrubbed}", exc_info = True)
+        _registry.set_job(repo_id, "error", scrubbed)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to start dataset download: {scrubbed}",
+        ) from e
 
-    def _worker() -> None:
+    if not _registry.register_process(repo_id, proc):
+        # Cancel landed during the claim→register window; honor it now.
         try:
-            from huggingface_hub import snapshot_download
-
-            snapshot_download(
-                repo_id = repo_id,
-                repo_type = "dataset",
-                token = body.hf_token,
-            )
-            _set_dataset_job(repo_id, DatasetDownloadJobStatus(state = "complete"))
-            logger.info(f"Dataset download complete: {repo_id}")
+            proc.kill()
+        except ProcessLookupError:
+            pass
         except Exception as e:
-            logger.error(
-                f"Dataset download failed for {repo_id}: {e}",
-                exc_info = True,
-            )
-            _set_dataset_job(
-                repo_id,
-                DatasetDownloadJobStatus(state = "error", error = str(e)),
-            )
+            logger.warning(f"Cancel SIGKILL for dataset {repo_id} failed: {e}")
+
+    worker_token = body.hf_token
+    def _watch() -> None:
+        hf_cache_scan.finalize_worker_exit(
+            _registry,
+            repo_id,
+            proc,
+            hf_token = worker_token,
+            label = repo_id,
+            log_prefix = "Dataset download",
+            logger = logger,
+        )
 
     threading.Thread(
-        target = _worker,
-        name = f"hf-dataset-download-{repo_id}",
+        target = _watch,
+        name = f"hf-dataset-download-watch-{repo_id}",
         daemon = True,
     ).start()
 
-    return {"repo_id": repo_id, "state": "running"}
+    return {"repo_id": repo_id, "state": _registry.get_job(repo_id).state}
+
+
+class CancelDatasetDownloadRequest(BaseModel):
+    repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
+
+
+@router.post("/download/cancel", status_code = 202)
+async def cancel_dataset_download(
+    body: CancelDatasetDownloadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Cancel an in-flight dataset download (SIGKILL; HF cache resumes on next download)."""
+    repo_id = body.repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(
+            status_code = 400, detail = f"Invalid repo_id: {repo_id!r}",
+        )
+    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
+
+    proc = _registry.get_process(repo_id)
+    if proc is None or proc.poll() is not None:
+        # The worker may be mid-spawn (claim→register window): arm a pending
+        # cancel so register_process kills it on arrival.
+        if _registry.mark_pending_cancel(repo_id):
+            return {"repo_id": repo_id, "state": "cancelling"}
+        return {"repo_id": repo_id, "state": _registry.get_job(repo_id).state}
+
+    if not _registry.request_cancel(repo_id, proc):
+        return {"repo_id": repo_id, "state": _registry.get_job(repo_id).state}
+
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception as e:
+        logger.warning(f"Cancel SIGKILL for dataset {repo_id} failed: {e}")
+
+    return {"repo_id": repo_id, "state": "cancelling"}
 
 
 @router.get("/download-status", response_model = DatasetDownloadJobStatus)
@@ -525,7 +771,27 @@ async def get_dataset_download_status(
     current_subject: str = Depends(get_current_subject),
 ):
     """Return the latest state of a background dataset download job."""
-    return _get_dataset_job(repo_id)
+    repo_id = resolve_cached_repo_id_case(repo_id.strip(), repo_type = "dataset")
+    return _dataset_status(repo_id)
+
+
+@router.get("/transport-status")
+async def get_dataset_transport_status(
+    repo_id: str = Query(..., description = "HuggingFace dataset repo ID"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return last transport used for this dataset + whether any partial
+    blobs exist + whether that partial supports byte-level resume.
+
+    See ``models.get_model_transport_status`` for the semantics of
+    ``resumable`` — XET partials are reported via ``has_partial`` but
+    are not byte-level resumable.
+    """
+    return {
+        "has_partial": hf_cache_scan.has_incomplete_blobs("dataset", repo_id),
+        "last_transport": hf_cache_scan.read_transport_marker("dataset", repo_id),
+        "resumable": hf_cache_scan.is_resumable_partial("dataset", repo_id),
+    }
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)

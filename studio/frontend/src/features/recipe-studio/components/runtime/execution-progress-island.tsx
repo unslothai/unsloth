@@ -71,7 +71,7 @@ function formatGitHubSourceSummary(
     return `Waiting for GitHub rate limit${wait}. Studio will resume automatically.`;
   }
   if (source.status === "retrying") {
-    return source.message ?? "GitHub request failed; retrying automatically.";
+    return source.message ?? "GitHub request failed. Retrying automatically.";
   }
 
   const parts = [

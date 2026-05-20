@@ -49,4 +49,5 @@ export interface ChatLoraSummary {
   updatedAt?: number;
   source?: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
+  runDisplayName?: string;
 }

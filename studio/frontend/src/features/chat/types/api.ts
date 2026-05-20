@@ -23,6 +23,7 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  run_display_name?: string | null;
 }
 
 export interface ListLorasResponse {
@@ -61,6 +62,7 @@ export interface GgufVariantDetail {
   quant: string;
   size_bytes: number;
   downloaded?: boolean;
+  partial?: boolean;
 }
 
 export interface GgufVariantsResponse {

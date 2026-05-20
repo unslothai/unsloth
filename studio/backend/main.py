@@ -212,6 +212,22 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
+    try:
+        from routes.models import terminate_active_downloads
+        terminate_active_downloads()
+    except Exception as exc:
+        import structlog
+        structlog.get_logger(__name__).warning(
+            "terminate_active_downloads failed on shutdown: %s", exc
+        )
+    try:
+        from routes.datasets import terminate_active_dataset_downloads
+        terminate_active_dataset_downloads()
+    except Exception as exc:
+        import structlog
+        structlog.get_logger(__name__).warning(
+            "terminate_active_dataset_downloads failed on shutdown: %s", exc
+        )
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 

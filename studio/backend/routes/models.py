@@ -5,15 +5,19 @@
 Model Management API routes
 """
 
+import asyncio
 import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
+import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 import structlog
@@ -53,6 +57,7 @@ try:
         _pick_best_gguf,
         _extract_quant_label,
         is_audio_input_type,
+        read_model_chat_template,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -63,6 +68,7 @@ try:
         resolve_output_dir,
         resolve_export_dir,
     )
+    from utils import hf_cache_scan
 except ImportError:
     # Fallback: try to import from parent directory
     parent_backend = backend_path.parent / "backend"
@@ -84,6 +90,7 @@ except ImportError:
         _pick_best_gguf,
         _extract_quant_label,
         is_audio_input_type,
+        read_model_chat_template,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -94,6 +101,7 @@ except ImportError:
         resolve_output_dir,
         resolve_export_dir,
     )
+    from utils import hf_cache_scan
 
 from models import (
     CheckpointInfo,
@@ -270,36 +278,60 @@ def _scan_models_dir(
     return found
 
 
+def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
+    blobs_dir = repo_dir / "blobs"
+    if not blobs_dir.is_dir():
+        return False
+    try:
+        for entry in blobs_dir.iterdir():
+            if entry.is_file() or entry.is_symlink():
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
-    found: List[LocalModelInfo] = []
+    discovered: List[tuple[Path, str, Optional[float]]] = []
     for repo_dir in cache_dir.glob("models--*"):
         if not repo_dir.is_dir():
             continue
-
+        if not _hf_repo_dir_has_content(repo_dir):
+            continue
         repo_name = repo_dir.name[len("models--") :]
         if not repo_name:
             continue
         model_id = repo_name.replace("--", "/")
-
         try:
             updated_at = repo_dir.stat().st_mtime
         except OSError:
             updated_at = None
+        discovered.append((repo_dir, model_id, updated_at))
 
-        found.append(
-            LocalModelInfo(
-                id = model_id,
-                model_id = model_id,
-                display_name = model_id.split("/")[-1],
-                path = str(repo_dir),
-                source = "hf_cache",
-                updated_at = updated_at,
+    try:
+        partial_ids = set(
+            hf_cache_scan.partial_repo_ids(
+                "model", (model_id for _, model_id, _ in discovered),
             ),
         )
-    return found
+    except Exception:
+        partial_ids = set()
+
+    return [
+        LocalModelInfo(
+            id = model_id,
+            model_id = model_id,
+            display_name = model_id.split("/")[-1],
+            path = str(repo_dir),
+            source = "hf_cache",
+            updated_at = updated_at,
+            partial = model_id in partial_ids,
+        )
+        for repo_dir, model_id, updated_at in discovered
+    ]
 
 
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
@@ -1549,7 +1581,7 @@ def _get_model_size_bytes(
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -1558,76 +1590,87 @@ async def get_model_config(
     This endpoint wraps the backend load_model_defaults function.
     """
     try:
-        if not is_local_path(model_name):
-            resolved = resolve_cached_repo_id_case(model_name)
-            if resolved != model_name:
-                logger.info(
-                    "Using cached repo_id casing '%s' for requested '%s'",
-                    resolved,
-                    model_name,
-                )
-            model_name = resolved
-
-        logger.info(f"Getting model config for: {model_name}")
-        from utils.models.model_config import detect_audio_type
-
-        # Load model defaults from backend
-        config_dict = load_model_defaults(model_name)
-
-        # Detect model capabilities (pass HF token for gated models)
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
-        audio_type = detect_audio_type(model_name, hf_token = hf_token)
-
-        # Check if it's a LoRA adapter
-        is_lora = False
-        base_model = None
-        max_position_embeddings = None
-        try:
-            model_config = ModelConfig.from_identifier(model_name)
-            is_lora = model_config.is_lora
-            base_model = model_config.base_model if is_lora else None
-            max_position_embeddings = _get_max_position_embeddings(model_config)
-        except Exception:
-            pass
-
-        # Fallback: try AutoConfig directly if not found yet
-        if max_position_embeddings is None:
-            try:
-                from transformers import AutoConfig as _AutoConfig
-
-                _trust = model_name.lower().startswith("unsloth/")
-                _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = _trust, token = hf_token
-                )
-                max_position_embeddings = _get_max_position_embeddings(_ac)
-            except Exception:
-                pass
-
-        logger.info(
-            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
-        )
-        return ModelDetails(
-            id = model_name,
-            model_name = model_name,
-            config = config_dict,
-            is_vision = is_vision,
-            is_embedding = is_embedding,
-            is_lora = is_lora,
-            is_audio = audio_type is not None,
-            audio_type = audio_type,
-            has_audio_input = is_audio_input_type(audio_type),
-            model_type = derive_model_type(is_vision, audio_type, is_embedding),
-            base_model = base_model,
-            max_position_embeddings = max_position_embeddings,
-            model_size_bytes = _get_model_size_bytes(model_name, hf_token),
-        )
-
+        return await asyncio.to_thread(_build_model_details, model_name, hf_token)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting model config: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500, detail = f"Failed to get model config: {str(e)}"
         )
+
+
+def _build_model_details(model_name: str, hf_token: Optional[str]) -> "ModelDetails":
+    """Synchronous model-config assembly. Runs network + disk I/O (HF Hub
+    requests, AutoConfig downloads, cache scans), so it must be called from a
+    worker thread rather than directly on the event loop."""
+    if not is_local_path(model_name):
+        resolved = resolve_cached_repo_id_case(model_name)
+        if resolved != model_name:
+            logger.info(
+                "Using cached repo_id casing '%s' for requested '%s'",
+                resolved,
+                model_name,
+            )
+        model_name = resolved
+
+    logger.info(f"Getting model config for: {model_name}")
+    from utils.models.model_config import detect_audio_type
+
+    # Load model defaults from backend
+    config_dict = load_model_defaults(model_name)
+
+    # Detect model capabilities (pass HF token for gated models)
+    is_vision = is_vision_model(model_name, hf_token = hf_token)
+    is_embedding = is_embedding_model(model_name, hf_token = hf_token)
+    audio_type = detect_audio_type(model_name, hf_token = hf_token)
+
+    # Check if it's a LoRA adapter
+    is_lora = False
+    base_model = None
+    max_position_embeddings = None
+    try:
+        model_config = ModelConfig.from_identifier(model_name)
+        is_lora = model_config.is_lora
+        base_model = model_config.base_model if is_lora else None
+        max_position_embeddings = _get_max_position_embeddings(model_config)
+    except Exception:
+        pass
+
+    # Fallback: try AutoConfig directly if not found yet
+    if max_position_embeddings is None:
+        try:
+            from transformers import AutoConfig as _AutoConfig
+
+            _trust = model_name.lower().startswith("unsloth/")
+            _ac = _AutoConfig.from_pretrained(
+                model_name, trust_remote_code = _trust, token = hf_token
+            )
+            max_position_embeddings = _get_max_position_embeddings(_ac)
+        except Exception:
+            pass
+
+    chat_template = read_model_chat_template(model_name, hf_token = hf_token)
+
+    logger.info(
+        f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}, chat_template={'yes' if chat_template else 'no'}"
+    )
+    return ModelDetails(
+        id = model_name,
+        model_name = model_name,
+        config = config_dict,
+        is_vision = is_vision,
+        is_embedding = is_embedding,
+        is_lora = is_lora,
+        is_audio = audio_type is not None,
+        audio_type = audio_type,
+        has_audio_input = is_audio_input_type(audio_type),
+        model_type = derive_model_type(is_vision, audio_type, is_embedding),
+        base_model = base_model,
+        max_position_embeddings = max_position_embeddings,
+        model_size_bytes = _get_model_size_bytes(model_name, hf_token),
+        chat_template = chat_template,
+    )
 
 
 @router.get("/loras")
@@ -1653,6 +1696,19 @@ async def scan_loras(
 
         # Scan training outputs
         trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+        run_display_names: dict[str, str] = {}
+        if trained_models:
+            from storage.studio_db import get_display_names_by_output_dirs
+
+            try:
+                run_display_names = get_display_names_by_output_dirs(
+                    [m[1] for m in trained_models]
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to join training-run display names; continuing without"
+                )
+                run_display_names = {}
         for display_name, model_path, model_type in trained_models:
             base_model = get_base_model_from_checkpoint(model_path)
             lora_list.append(
@@ -1662,6 +1718,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "training",
                     export_type = model_type,
+                    run_display_name = run_display_names.get(model_path),
                 )
             )
 
@@ -1784,6 +1841,7 @@ async def delete_finetuned_model(
     source: str = Body(...),
     export_type: Optional[str] = Body(None),
     gguf_variant: Optional[str] = Body(None),
+    delete_run_record: bool = Body(False),
     current_subject: str = Depends(get_current_subject),
 ):
     """Delete a Studio-trained or exported model from disk.
@@ -2002,8 +2060,35 @@ async def delete_finetuned_model(
 
         _prune_empty_parents(target_path, allowed_root)
 
+        deleted_run_ids: list[str] = []
+        if delete_run_record and source == "training":
+            from storage.studio_db import (
+                delete_run as delete_training_run_record,
+                get_run_ids_by_output_dir,
+            )
+
+            try:
+                deleted_run_ids = get_run_ids_by_output_dir(str(target_path))
+                for run_id in deleted_run_ids:
+                    delete_training_run_record(run_id)
+                if deleted_run_ids:
+                    logger.info(
+                        "Removed %s training run record(s) tied to %s",
+                        len(deleted_run_ids),
+                        target_path,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to remove training run record(s) for %s",
+                    target_path,
+                )
+
         logger.info("Deleted fine-tuned model at %s", target_path)
-        return {"status": "deleted", "path": str(target_path)}
+        return {
+            "status": "deleted",
+            "path": str(target_path),
+            "deleted_run_ids": deleted_run_ids,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -2082,7 +2167,7 @@ async def check_vision_model(
 @router.get("/check-embedding/{model_name:path}", response_model = EmbeddingCheckResponse)
 async def check_embedding_model(
     model_name: str,
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2114,9 +2199,7 @@ async def get_gguf_variants(
     repo_id: str = Query(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
-    hf_token: Optional[str] = Query(
-        None, description = "HuggingFace token for private repos"
-    ),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2179,16 +2262,20 @@ async def get_gguf_variants(
             cache_dir = Path(hf_constants.HF_HUB_CACHE)
             target = f"models--{repo_id.replace('/', '--')}".lower()
             for entry in cache_dir.iterdir():
-                if entry.name.lower() == target:
-                    snapshots = entry / "snapshots"
-                    if snapshots.is_dir():
-                        for snap in snapshots.iterdir():
-                            for f in _iter_gguf_paths(snap):
-                                q = _extract_quant_label(f.name)
-                                cached_bytes_by_quant[q] = (
-                                    cached_bytes_by_quant.get(q, 0) + f.stat().st_size
-                                )
-                    break
+                # Walk every sibling that lowercases to ``target`` —
+                # HF sometimes keeps both lowercase and case-preserved
+                # directories side-by-side for the same repo.
+                if entry.name.lower() != target:
+                    continue
+                snapshots = entry / "snapshots"
+                if not snapshots.is_dir():
+                    continue
+                for snap in snapshots.iterdir():
+                    for f in _iter_gguf_paths(snap):
+                        q = _extract_quant_label(f.name)
+                        cached_bytes_by_quant[q] = (
+                            cached_bytes_by_quant.get(q, 0) + f.stat().st_size
+                        )
         except Exception:
             pass
 
@@ -2199,6 +2286,31 @@ async def get_gguf_variants(
             # Allow small rounding tolerance (symlinks vs real sizes)
             return cached >= variant.size_bytes * 0.99
 
+        partial_quants: set[str] = set()
+        try:
+            incomplete_hashes = hf_cache_scan.incomplete_blob_hashes("model", repo_id)
+            if incomplete_hashes:
+                from huggingface_hub import model_info as hf_model_info
+                info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+                variant_to_hashes: dict[str, set[str]] = {}
+                for sibling in info.siblings:
+                    fname = sibling.rfilename
+                    if not fname.lower().endswith(".gguf") or "mmproj" in fname.lower():
+                        continue
+                    sha = getattr(getattr(sibling, "lfs", None), "sha256", None)
+                    if not sha:
+                        continue
+                    variant_to_hashes.setdefault(_extract_quant_label(fname), set()).add(sha)
+                for quant_label, hashes in variant_to_hashes.items():
+                    frozen = frozenset(hashes)
+                    _variant_hash_cache_set(
+                        (repo_id.lower(), quant_label.lower()), frozen,
+                    )
+                    if frozen & incomplete_hashes:
+                        partial_quants.add(quant_label)
+        except Exception as e:
+            logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
+
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [
@@ -2207,6 +2319,7 @@ async def get_gguf_variants(
                     quant = v.quant,
                     size_bytes = v.size_bytes,
                     downloaded = _is_fully_downloaded(v),
+                    partial = v.quant in partial_quants,
                 )
                 for v in variants
             ],
@@ -2231,74 +2344,49 @@ class DownloadModelRequest(BaseModel):
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated/private repos")
+    use_xet: bool = Field(
+        False,
+        description = "Enable Xet parallel chunked transport. Default False uses HTTP Range-resume.",
+    )
 
 
 class DownloadJobStatus(BaseModel):
     """Live state of a background download job."""
 
-    state: str = Field(..., description = "'idle' | 'running' | 'complete' | 'error'")
+    state: str = Field(
+        ...,
+        description = "'idle' | 'running' | 'complete' | 'error' | 'cancelled'",
+    )
     error: Optional[str] = Field(None, description = "Error message if state == 'error'")
 
 
-_DOWNLOAD_JOBS: Dict[str, DownloadJobStatus] = {}
-_DOWNLOAD_JOBS_LOCK = threading.Lock()
+_registry = hf_cache_scan.DownloadRegistry()
 
 
 def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
     return f"{repo_id}::{variant or ''}"
 
 
-def _set_download_job(key: str, status: DownloadJobStatus) -> None:
-    with _DOWNLOAD_JOBS_LOCK:
-        _DOWNLOAD_JOBS[key] = status
+def _job_status(key: str) -> DownloadJobStatus:
+    state = _registry.get_job(key)
+    return DownloadJobStatus(state = state.state, error = state.error)
 
 
-def _get_download_job(key: str) -> DownloadJobStatus:
-    with _DOWNLOAD_JOBS_LOCK:
-        return _DOWNLOAD_JOBS.get(key, DownloadJobStatus(state = "idle"))
+def terminate_active_downloads() -> None:
+    _registry.terminate_all("download")
 
 
-def _run_gguf_variant_download(repo_id: str, variant: str, hf_token: Optional[str]) -> None:
-    from huggingface_hub import hf_hub_download, model_info as hf_model_info
-    from utils.models.model_config import _extract_quant_label
-
-    info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
-    targets: List[str] = []
-    for sibling in info.siblings:
-        fname = sibling.rfilename
-        if not fname.lower().endswith(".gguf"):
-            continue
-        if "mmproj" in fname.lower():
-            continue
-        if _extract_quant_label(fname) != variant:
-            continue
-        targets.append(fname)
-
-    if not targets:
-        raise RuntimeError(
-            f"No GGUF shards matching variant '{variant}' in {repo_id}"
-        )
-
-    for filename in targets:
-        hf_hub_download(repo_id = repo_id, filename = filename, token = hf_token)
-
-
-def _run_snapshot_download(repo_id: str, hf_token: Optional[str]) -> None:
-    from huggingface_hub import snapshot_download
-
-    snapshot_download(
-        repo_id = repo_id,
-        token = hf_token,
-        ignore_patterns = [
-            "*.gguf",
-            "*.onnx",
-            "onnx/*",
-            "openvino/*",
-            "mlx/*",
-            "consolidated*",
-            "*.bin.index.json.bak",
-        ],
-    )
+def _spawn_download_worker(
+    repo_id: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+    use_xet: bool = False,
+) -> subprocess.Popen:
+    args = ["--repo-id", repo_id]
+    if variant:
+        args.extend(["--variant", variant])
+    backend_dir = Path(__file__).resolve().parent.parent
+    return hf_cache_scan.spawn_worker(args, hf_token, backend_dir, use_xet = use_xet)
 
 
 @router.post("/download", status_code = 202)
@@ -2313,41 +2401,109 @@ async def download_model(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    # Canonicalize so two different-cased paste-ins share one job + cache dir.
+    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
 
     variant = (body.gguf_variant or "").strip() or None
     key = _download_job_key(repo_id, variant)
+    transport = (
+        hf_cache_scan.TRANSPORT_XET if body.use_xet else hf_cache_scan.TRANSPORT_HTTP
+    )
 
-    existing = _get_download_job(key)
-    if existing.state == "running":
-        return {"job_key": key, "state": "running"}
+    claimed, claim_state = _registry.claim(key, transport)
+    if not claimed:
+        return {"job_key": key, "state": claim_state}
 
-    _set_download_job(key, DownloadJobStatus(state = "running"))
+    label = f"{repo_id}{f' [{variant}]' if variant else ''}"
+    try:
+        proc = _spawn_download_worker(repo_id, variant, body.hf_token, use_xet = body.use_xet)
+    except Exception as e:
+        scrubbed = hf_cache_scan.scrub_secrets(str(e), hf_token = body.hf_token)
+        logger.error(f"Failed to spawn download worker for {label}: {scrubbed}", exc_info = True)
+        _registry.set_job(key, "error", scrubbed)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to start download: {scrubbed}",
+        ) from e
 
-    def _worker() -> None:
+    if not _registry.register_process(key, proc):
+        # Cancel landed during the claim→register window; honor it now.
         try:
-            if variant:
-                _run_gguf_variant_download(repo_id, variant, body.hf_token)
-            else:
-                _run_snapshot_download(repo_id, body.hf_token)
-            _set_download_job(key, DownloadJobStatus(state = "complete"))
-            logger.info(f"Download complete: {repo_id}{f' [{variant}]' if variant else ''}")
+            proc.kill()
+        except ProcessLookupError:
+            pass
         except Exception as e:
-            logger.error(
-                f"Download failed for {repo_id}{f' [{variant}]' if variant else ''}: {e}",
-                exc_info = True,
-            )
-            _set_download_job(
-                key,
-                DownloadJobStatus(state = "error", error = str(e)),
-            )
+            logger.warning(f"Cancel SIGKILL for {label} failed: {e}")
+
+    worker_token = body.hf_token
+    def _watch() -> None:
+        hf_cache_scan.finalize_worker_exit(
+            _registry,
+            key,
+            proc,
+            hf_token = worker_token,
+            label = label,
+            log_prefix = "Download",
+            logger = logger,
+        )
 
     threading.Thread(
-        target = _worker,
-        name = f"hf-download-{repo_id}",
+        target = _watch,
+        name = f"hf-download-watch-{repo_id}",
         daemon = True,
     ).start()
 
-    return {"job_key": key, "state": "running"}
+    return {"job_key": key, "state": _registry.get_job(key).state}
+
+
+class CancelDownloadRequest(BaseModel):
+    repo_id: str = Field(..., description = "HuggingFace repo ID")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF variant label; omit for safetensors snapshots",
+    )
+
+
+@router.post("/download/cancel", status_code = 202)
+async def cancel_download_model(
+    body: CancelDownloadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Cancel an in-flight model download (SIGKILL; HF cache resumes on next download)."""
+    repo_id = body.repo_id.strip()
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(
+            status_code = 400, detail = f"Invalid repo_id: {repo_id!r}",
+        )
+    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    variant = (body.gguf_variant or "").strip() or None
+    key = _download_job_key(repo_id, variant)
+
+    proc = _registry.get_process(key)
+    if proc is None or proc.poll() is not None:
+        # The worker may be mid-spawn (claim→register window): arm a pending
+        # cancel so register_process kills it on arrival. Otherwise return
+        # whatever state we last recorded so the UI can settle.
+        if _registry.mark_pending_cancel(key):
+            return {"job_key": key, "state": "cancelling"}
+        return {"job_key": key, "state": _registry.get_job(key).state}
+
+    if not _registry.request_cancel(key, proc):
+        return {"job_key": key, "state": _registry.get_job(key).state}
+
+    # SIGKILL directly: ``requests`` (used by huggingface_hub) holds the
+    # GIL inside socket reads and ignores SIGTERM until the read returns,
+    # which on a slow chunk can take minutes. SIGKILL is uncatchable, so
+    # the process dies immediately. Partial ``.incomplete`` blobs in the
+    # HF cache survive the hard kill and resume via HTTP Range on the
+    # next download.
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception as e:
+        logger.warning(f"Cancel SIGKILL for {repo_id} failed: {e}")
+
+    return {"job_key": key, "state": "cancelling"}
 
 
 @router.get("/download-status", response_model = DownloadJobStatus)
@@ -2357,8 +2513,29 @@ async def get_download_status(
     current_subject: str = Depends(get_current_subject),
 ):
     """Return the latest state of a background download job."""
+    repo_id = resolve_cached_repo_id_case(repo_id.strip(), repo_type = "model")
     key = _download_job_key(repo_id, gguf_variant or None)
-    return _get_download_job(key)
+    return _job_status(key)
+
+
+@router.get("/transport-status")
+async def get_model_transport_status(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return last transport used for this repo + whether any partial blobs
+    exist + whether that partial supports byte-level resume.
+
+    ``resumable`` is True only when an HTTP partial exists. XET partials
+    are reported via ``has_partial`` but always have ``resumable=False``
+    because ``hf_xet`` rewrites the destination from scratch on every
+    call (network resume happens transparently via its chunk cache).
+    """
+    return {
+        "has_partial": hf_cache_scan.has_incomplete_blobs("model", repo_id),
+        "last_transport": hf_cache_scan.read_transport_marker("model", repo_id),
+        "resumable": hf_cache_scan.is_resumable_partial("model", repo_id),
+    }
 
 
 @router.get("/gguf-download-progress")
@@ -2366,6 +2543,7 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress by checking cached GGUF files for a specific variant.
@@ -2386,22 +2564,31 @@ async def get_gguf_download_progress(
         cache_dir = Path(hf_constants.HF_HUB_CACHE)
         target = f"models--{repo_id.replace('/', '--')}".lower()
         variant_lower = variant.lower().replace("-", "").replace("_", "")
+        if variant:
+            import asyncio
+            variant_hashes = await asyncio.to_thread(
+                _gguf_variant_blob_hashes, repo_id, variant, hf_token,
+            )
+        else:
+            variant_hashes = frozenset()
         downloaded_bytes = 0
         in_progress_bytes = 0
         for entry in cache_dir.iterdir():
-            if entry.name.lower() == target:
-                # Count completed .gguf files matching this variant in snapshots
-                for f in _iter_gguf_paths(entry):
-                    fname = f.name.lower().replace("-", "").replace("_", "")
-                    if not variant_lower or variant_lower in fname:
-                        downloaded_bytes += f.stat().st_size
-                # Check blobs for in-progress downloads (.incomplete files)
-                blobs_dir = entry / "blobs"
-                if blobs_dir.is_dir():
-                    for f in blobs_dir.iterdir():
-                        if f.is_file() and f.name.endswith(".incomplete"):
-                            in_progress_bytes += f.stat().st_size
-                break
+            if entry.name.lower() != target:
+                continue
+            for f in _iter_gguf_paths(entry):
+                fname = f.name.lower().replace("-", "").replace("_", "")
+                if not variant_lower or variant_lower in fname:
+                    downloaded_bytes += f.stat().st_size
+            blobs_dir = entry / "blobs"
+            if blobs_dir.is_dir():
+                for f in blobs_dir.iterdir():
+                    if not f.is_file() or not f.name.endswith(".incomplete"):
+                        continue
+                    blob_hash = f.name[: -len(".incomplete")]
+                    if variant_hashes and blob_hash not in variant_hashes:
+                        continue
+                    in_progress_bytes += f.stat().st_size
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
         progress = (
@@ -2460,7 +2647,8 @@ async def get_download_progress(
         "progress": 0,
         "cache_path": None,
     }
-    try:
+
+    def _compute():
         if not _is_valid_repo_id(repo_id):
             return _empty
 
@@ -2472,13 +2660,17 @@ async def get_download_progress(
         in_progress_bytes = 0
         cache_path: Optional[str] = None
 
+        # Walk every case-variant of the target dir (HF cache can keep
+        # both ``models--owner--name`` and ``models--owner--Name``
+        # side-by-side; only one usually has the live blobs).
         for entry in cache_dir.iterdir():
             if entry.name.lower() != target:
                 continue
-            cache_path = _resolve_hf_cache_realpath(entry)
+            if cache_path is None:
+                cache_path = _resolve_hf_cache_realpath(entry)
             blobs_dir = entry / "blobs"
             if not blobs_dir.is_dir():
-                break
+                continue
             for f in blobs_dir.iterdir():
                 if not f.is_file():
                     continue
@@ -2486,7 +2678,6 @@ async def get_download_progress(
                     in_progress_bytes += f.stat().st_size
                 else:
                     completed_bytes += f.stat().st_size
-            break
 
         downloaded_bytes = completed_bytes + in_progress_bytes
         if downloaded_bytes == 0:
@@ -2518,27 +2709,50 @@ async def get_download_progress(
             "progress": round(progress, 3),
             "cache_path": cache_path,
         }
+
+    try:
+        return await asyncio.to_thread(_compute)
     except Exception as e:
         logger.warning(f"Error checking download progress for {repo_id}: {e}")
         return _empty
 
 
-_repo_size_cache: dict[str, int] = {}
+_repo_size_cache: "OrderedDict[str, int]" = OrderedDict()
+_repo_size_neg_cache: "OrderedDict[str, float]" = OrderedDict()
+_REPO_SIZE_CACHE_MAX = 256
+_REPO_SIZE_NEG_TTL = 60.0
+_repo_size_cache_lock = threading.Lock()
 
 
 def _get_repo_size_cached(repo_id: str) -> int:
-    if repo_id in _repo_size_cache:
-        return _repo_size_cache[repo_id]
+    with _repo_size_cache_lock:
+        cached = _repo_size_cache.get(repo_id)
+        if cached is not None:
+            _repo_size_cache.move_to_end(repo_id)
+            return cached
+        neg_ts = _repo_size_neg_cache.get(repo_id)
+        if neg_ts is not None and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL:
+            return 0
     try:
         from huggingface_hub import model_info as hf_model_info
 
         info = hf_model_info(repo_id, token = None, files_metadata = True)
         total = sum(s.size for s in info.siblings if s.size)
-        _repo_size_cache[repo_id] = total
-        return total
     except Exception as e:
         logger.warning(f"Failed to get repo size for {repo_id}: {e}")
+        with _repo_size_cache_lock:
+            _repo_size_neg_cache[repo_id] = time.monotonic()
+            _repo_size_neg_cache.move_to_end(repo_id)
+            while len(_repo_size_neg_cache) > _REPO_SIZE_CACHE_MAX:
+                _repo_size_neg_cache.popitem(last = False)
         return 0
+    with _repo_size_cache_lock:
+        _repo_size_cache[repo_id] = total
+        _repo_size_cache.move_to_end(repo_id)
+        _repo_size_neg_cache.pop(repo_id, None)
+        while len(_repo_size_cache) > _REPO_SIZE_CACHE_MAX:
+            _repo_size_cache.popitem(last = False)
+    return total
 
 
 def _all_hf_cache_scans():
@@ -2623,98 +2837,327 @@ def _repo_has_gguf_files(repo_info) -> bool:
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
+_REPO_CLASSIFICATION_CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+_REPO_CLASSIFICATION_MAX = 512
+_REPO_CLASSIFICATION_LOCK = threading.Lock()
+
+_CLASSIFY_FANOUT_MAX = 8
+_CLASSIFY_REQUEST_TIMEOUT = 10.0
+
+
+def _classification_cache_key(repo_id: str, hf_token: Optional[str]) -> tuple[str, str]:
+    return (repo_id.lower(), "auth" if hf_token else "anon")
+
+
+def _classification_cache_get(key: tuple[str, str]) -> Optional[dict]:
+    with _REPO_CLASSIFICATION_LOCK:
+        cached = _REPO_CLASSIFICATION_CACHE.get(key)
+        if cached is None:
+            return None
+        _REPO_CLASSIFICATION_CACHE.move_to_end(key)
+        return cached
+
+
+def _classification_cache_set(key: tuple[str, str], value: dict) -> None:
+    with _REPO_CLASSIFICATION_LOCK:
+        _REPO_CLASSIFICATION_CACHE[key] = value
+        _REPO_CLASSIFICATION_CACHE.move_to_end(key)
+        while len(_REPO_CLASSIFICATION_CACHE) > _REPO_CLASSIFICATION_MAX:
+            _REPO_CLASSIFICATION_CACHE.popitem(last = False)
+
+
+def _fetch_repo_classification(
+    repo_id: str, hf_token: Optional[str] = None
+) -> dict:
+    cache_key = _classification_cache_key(repo_id, hf_token)
+    cached = _classification_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result: dict = {
+        "pipeline_tag": None,
+        "tags": [],
+        "library_name": None,
+    }
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = hf_token)
+        info = api.model_info(
+            repo_id, token = hf_token, timeout = _CLASSIFY_REQUEST_TIMEOUT,
+        )
+        result = {
+            "pipeline_tag": getattr(info, "pipeline_tag", None),
+            "tags": list(getattr(info, "tags", None) or []),
+            "library_name": getattr(info, "library_name", None),
+        }
+    except Exception as e:
+        logger.debug(
+            "Repo classification fetch failed for %s: %s",
+            repo_id,
+            hf_cache_scan.scrub_secrets(str(e), hf_token = hf_token),
+        )
+    _classification_cache_set(cache_key, result)
+    return result
+
+
+async def _classify_cached_repos(
+    repos: list[dict], hf_token: Optional[str]
+) -> None:
+    if not repos:
+        return
+    semaphore = asyncio.Semaphore(_CLASSIFY_FANOUT_MAX)
+
+    async def _classify_one(repo_id: str) -> dict:
+        async with semaphore:
+            return await asyncio.to_thread(
+                _fetch_repo_classification, repo_id, hf_token,
+            )
+
+    results = await asyncio.gather(
+        *[_classify_one(row["repo_id"]) for row in repos],
+        return_exceptions = True,
+    )
+    for row, res in zip(repos, results):
+        if isinstance(res, dict):
+            row["pipeline_tag"] = res.get("pipeline_tag")
+            row["tags"] = res.get("tags") or []
+            row["library_name"] = res.get("library_name")
+        else:
+            row["pipeline_tag"] = None
+            row["tags"] = []
+            row["library_name"] = None
+
+
+def _scan_cached_gguf() -> list[dict]:
+    """Synchronous HF-cache disk walk for GGUF repos. Runs in a worker thread
+    (see :func:`list_cached_gguf`) so the iterdir/stat calls don't block the
+    event loop."""
+    cache_scans = _all_hf_cache_scans()
+
+    seen_lower: dict[str, dict] = {}
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            try:
+                if repo_info.repo_type != "model":
+                    continue
+                repo_id = repo_info.repo_id
+                total_size = _repo_gguf_size_bytes(repo_info)
+                if total_size == 0:
+                    continue
+                key = repo_id.lower()
+                existing = seen_lower.get(key)
+                if existing is None or total_size > existing["size_bytes"]:
+                    seen_lower[key] = {
+                        "repo_id": repo_id,
+                        "size_bytes": total_size,
+                        "cache_path": str(repo_info.repo_path),
+                    }
+            except Exception as e:
+                repo_label = getattr(repo_info, "repo_id", "<unknown>")
+                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                continue
+    partial = hf_cache_scan.partial_repo_ids(
+        "model", (row["repo_id"] for row in seen_lower.values()),
+    )
+    for row in seen_lower.values():
+        row["partial"] = row["repo_id"] in partial
+    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cache_scans = _all_hf_cache_scans()
-
-        seen_lower: dict[str, dict] = {}
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                try:
-                    if repo_info.repo_type != "model":
-                        continue
-                    repo_id = repo_info.repo_id
-                    total_size = _repo_gguf_size_bytes(repo_info)
-                    if total_size == 0:
-                        continue
-                    key = repo_id.lower()
-                    existing = seen_lower.get(key)
-                    if existing is None or total_size > existing["size_bytes"]:
-                        seen_lower[key] = {
-                            "repo_id": repo_id,
-                            "size_bytes": total_size,
-                            "cache_path": str(repo_info.repo_path),
-                        }
-                except Exception as e:
-                    repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                    logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
-                    continue
-        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        cached = await asyncio.to_thread(_scan_cached_gguf)
+        await _classify_cached_repos(cached, hf_token)
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
         return {"cached": []}
 
 
+_WEIGHT_EXTENSIONS = (
+    ".safetensors",
+    ".bin",
+    ".pt",
+    ".pth",
+    ".ckpt",
+    ".h5",
+    ".msgpack",
+    ".npz",
+)
+# Repos with at least this many bytes of non-GGUF content are treated as
+# downloaded models even when no file extension matches the curated weight
+# list. A model snapshot is always materially larger than a tokenizer-only
+# repo, so this catches edge formats (e.g. `consolidated.*`) without surfacing
+# trivial metadata-only repos.
+_MIN_MODEL_PAYLOAD_BYTES = 1_000_000
+
+
+def _scan_cached_models() -> list[dict]:
+    """Synchronous HF-cache disk walk for non-GGUF model repos. Runs in a
+    worker thread (see :func:`list_cached_models`) to keep the iterdir/stat
+    calls off the event loop."""
+    cache_scans = _all_hf_cache_scans()
+
+    seen_lower: dict[str, dict] = {}
+    inspected = 0
+    skipped_gguf = 0
+    skipped_no_weights = 0
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            inspected += 1
+            try:
+                if str(repo_info.repo_type) != "model":
+                    continue
+                repo_id = repo_info.repo_id
+                if _repo_has_gguf_files(repo_info):
+                    skipped_gguf += 1
+                    continue
+                total_size = sum(
+                    int(f.size_on_disk or 0)
+                    for rev in repo_info.revisions
+                    for f in rev.files
+                )
+                if total_size == 0:
+                    continue
+                has_weights = any(
+                    f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                    for rev in repo_info.revisions
+                    for f in rev.files
+                )
+                # Fall back to a size threshold: model snapshots are always
+                # meaningfully large compared to tokenizer-only repos. This
+                # rescues edge layouts (consolidated.*, .pth, etc.) that
+                # the curated extension list might miss.
+                if not has_weights and total_size < _MIN_MODEL_PAYLOAD_BYTES:
+                    skipped_no_weights += 1
+                    continue
+                key = repo_id.lower()
+                existing = seen_lower.get(key)
+                if existing is None or total_size > existing["size_bytes"]:
+                    seen_lower[key] = {
+                        "repo_id": repo_id,
+                        "size_bytes": total_size,
+                        "cache_path": str(repo_info.repo_path),
+                    }
+            except Exception as e:
+                repo_label = getattr(repo_info, "repo_id", "<unknown>")
+                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                continue
+    partial = hf_cache_scan.partial_repo_ids(
+        "model", (row["repo_id"] for row in seen_lower.values()),
+    )
+    for row in seen_lower.values():
+        row["partial"] = row["repo_id"] in partial
+    cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    logger.info(
+        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
+        inspected, skipped_gguf, skipped_no_weights, len(cached),
+    )
+    return cached
+
+
 @router.get("/cached-models")
 async def list_cached_models(
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
-    _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
-
     try:
-        cache_scans = _all_hf_cache_scans()
-
-        seen_lower: dict[str, dict] = {}
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                try:
-                    if repo_info.repo_type != "model":
-                        continue
-                    repo_id = repo_info.repo_id
-                    if _repo_has_gguf_files(repo_info):
-                        continue
-                    total_size = sum(
-                        (f.size_on_disk or 0)
-                        for rev in repo_info.revisions
-                        for f in rev.files
-                    )
-                    if total_size == 0:
-                        continue
-                    has_weights = any(
-                        f.file_name.endswith(_WEIGHT_EXTENSIONS)
-                        for rev in repo_info.revisions
-                        for f in rev.files
-                    )
-                    if not has_weights:
-                        continue
-                    key = repo_id.lower()
-                    existing = seen_lower.get(key)
-                    if existing is None or total_size > existing["size_bytes"]:
-                        seen_lower[key] = {
-                            "repo_id": repo_id,
-                            "size_bytes": total_size,
-                        }
-                except Exception as e:
-                    repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                    logger.warning(f"Skipping cached model repo {repo_label}: {e}")
-                    continue
-        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        cached = await asyncio.to_thread(_scan_cached_models)
+        await _classify_cached_repos(cached, hf_token)
         return {"cached": cached}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
 
 
+_VARIANT_HASH_CACHE: "OrderedDict[tuple[str, str], frozenset[str]]" = OrderedDict()
+_VARIANT_HASH_MAX = 512
+_VARIANT_HASH_LOCK = threading.Lock()
+
+
+def _variant_hash_cache_get(key: tuple[str, str]) -> Optional[frozenset[str]]:
+    with _VARIANT_HASH_LOCK:
+        cached = _VARIANT_HASH_CACHE.get(key)
+        if cached is None:
+            return None
+        _VARIANT_HASH_CACHE.move_to_end(key)
+        return cached
+
+
+def _variant_hash_cache_set(key: tuple[str, str], value: frozenset[str]) -> None:
+    with _VARIANT_HASH_LOCK:
+        _VARIANT_HASH_CACHE[key] = value
+        _VARIANT_HASH_CACHE.move_to_end(key)
+        while len(_VARIANT_HASH_CACHE) > _VARIANT_HASH_MAX:
+            _VARIANT_HASH_CACHE.popitem(last = False)
+
+
+def _gguf_variant_blob_hashes(
+    repo_id: str, variant: str, hf_token: Optional[str] = None,
+) -> frozenset[str]:
+    key = (repo_id.lower(), variant.lower())
+    cached = _variant_hash_cache_get(key)
+    if cached is not None:
+        return cached
+    try:
+        from huggingface_hub import model_info as hf_model_info
+        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+    except Exception as e:
+        logger.warning(
+            "model_info failed resolving variant hashes for %s %s: %s",
+            repo_id, variant,
+            hf_cache_scan.scrub_secrets(str(e), hf_token = hf_token),
+        )
+        return frozenset()
+    hashes: set[str] = set()
+    for sibling in info.siblings:
+        fname = sibling.rfilename
+        if not fname.lower().endswith(".gguf") or "mmproj" in fname.lower():
+            continue
+        if _extract_quant_label(fname).lower() != variant.lower():
+            continue
+        sha = getattr(getattr(sibling, "lfs", None), "sha256", None)
+        if sha:
+            hashes.add(sha)
+    result = frozenset(hashes)
+    if result:
+        _variant_hash_cache_set(key, result)
+    return result
+
+
+def _delete_variant_incomplete_blobs(
+    repo_id: str, variant: str, hf_token: Optional[str],
+) -> int:
+    target_hashes = _gguf_variant_blob_hashes(repo_id, variant, hf_token)
+    if not target_hashes:
+        return 0
+    deleted = 0
+    for entry in hf_cache_scan.iter_repo_cache_dirs("model", repo_id):
+        blobs_dir = entry / "blobs"
+        if not blobs_dir.is_dir():
+            continue
+        for h in target_hashes:
+            incomplete = blobs_dir / f"{h}.incomplete"
+            if incomplete.exists():
+                try:
+                    incomplete.unlink()
+                    deleted += 1
+                except OSError as e:
+                    logger.warning(f"Failed to unlink {incomplete}: {e}")
+    return deleted
+
+
 @router.delete("/delete-cached")
 async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    hf_token: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
@@ -2757,6 +3200,23 @@ async def delete_cached_model(
     except Exception:
         pass
 
+    repo_key = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    if not _registry.begin_delete(repo_key):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Cancel the active download before deleting.",
+        )
+    try:
+        return await asyncio.to_thread(
+            _delete_cached_model_blocking, repo_id, variant, hf_token
+        )
+    finally:
+        _registry.end_delete(repo_key)
+
+
+def _delete_cached_model_blocking(
+    repo_id: str, variant: Optional[str], hf_token: Optional[str]
+) -> dict:
     try:
         cache_scans = _all_hf_cache_scans()
 
@@ -2772,6 +3232,10 @@ async def delete_cached_model(
                 break
 
         if target_repo is None:
+            if variant is None and hf_cache_scan.purge_partial_repo("model", repo_id):
+                return {"status": "deleted", "repo_id": repo_id}
+            if variant and _delete_variant_incomplete_blobs(repo_id, variant, hf_token) > 0:
+                return {"status": "deleted", "repo_id": repo_id, "variant": variant}
             raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
         # ── Per-variant GGUF deletion ────────────────────────────
@@ -2800,10 +3264,14 @@ async def delete_cached_model(
                         logger.warning(f"Failed to delete {f.file_name}: {e}")
 
             if deleted_count == 0:
+                if _delete_variant_incomplete_blobs(repo_id, variant, hf_token) > 0:
+                    return {"status": "deleted", "repo_id": repo_id, "variant": variant}
                 raise HTTPException(
                     status_code = 404,
                     detail = f"Variant {variant} not found in cache for {repo_id}",
                 )
+
+            _delete_variant_incomplete_blobs(repo_id, variant, hf_token)
 
             freed_mb = deleted_bytes / (1024 * 1024)
             logger.info(
@@ -2815,6 +3283,8 @@ async def delete_cached_model(
         # ── Full repo deletion ───────────────────────────────────
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
+            if hf_cache_scan.purge_partial_repo("model", repo_id):
+                return {"status": "deleted", "repo_id": repo_id}
             raise HTTPException(status_code = 404, detail = "No revisions found for model")
 
         delete_strategy = hf_cache.delete_revisions(*revision_hashes)
@@ -2823,6 +3293,8 @@ async def delete_cached_model(
             f"{delete_strategy.expected_freed_size_str} will be freed"
         )
         delete_strategy.execute()
+
+        hf_cache_scan.purge_partial_repo("model", repo_id)
 
         return {"status": "deleted", "repo_id": repo_id}
 

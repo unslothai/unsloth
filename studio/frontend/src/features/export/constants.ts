@@ -51,7 +51,7 @@ export function getEstimatedSize(
   quantLevels: string[],
 ) {
   const sizeOf = (v: string) =>
-    QUANT_OPTIONS.find((q) => q.value === v)?.size ?? "—";
+    QUANT_OPTIONS.find((q) => q.value === v)?.size ?? "N/A";
   if (method === "gguf" && quantLevels.length > 0) {
     if (quantLevels.length === 1) {
       return sizeOf(quantLevels[0]);
@@ -67,7 +67,7 @@ export function getEstimatedSize(
   if (method === "lora") {
     return "~100 MB";
   }
-  return "—";
+  return "N/A";
 }
 
 export const METHOD_LABELS: Record<TrainingMethod, string> = {

@@ -19,7 +19,15 @@ import { useEffect, useRef } from "react";
  * it as a dep guarantees we re-evaluate the fit check after a fetch returns,
  * even when the page-level filter rejected every new row (in which case the
  * DOM doesn't change and the MutationObserver wouldn't fire on its own).
+ *
+ * The auto-fire fallback is also bounded by `MAX_CONSECUTIVE_AUTOFIRES`: a
+ * hard backstop on no-overflow fires that never trips in normal use (callers
+ * pause auto-loading far sooner) but caps a runaway sweep of the full remote
+ * listing if that pause logic ever regresses. The counter resets on overflow,
+ * on a fresh enable, and when the list shrinks (a new search).
  */
+const MAX_CONSECUTIVE_AUTOFIRES = 40;
+
 export function useInfiniteScroll(
   fetchMore: () => void,
   signal: number,
@@ -32,6 +40,10 @@ export function useInfiniteScroll(
   useEffect(() => {
     fetchMoreRef.current = fetchMore;
   }, [fetchMore]);
+
+  const autoFireCountRef = useRef(0);
+  const prevSignalRef = useRef(signal);
+  const wasEnabledRef = useRef(false);
 
   // IntersectionObserver: fires when the sentinel scrolls into view.
   useEffect(() => {
@@ -61,16 +73,32 @@ export function useInfiniteScroll(
   // doesn't overflow, including the case where every fetched row was filtered
   // out by the page (so itemCount stalls but we still need more raw data).
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      wasEnabledRef.current = false;
+      return;
+    }
+    // A fresh enable (new search, or the user resuming after a paused sweep)
+    // or a shrinking list (results reset) clears the backstop so legitimate
+    // loading can refill the viewport.
+    if (!wasEnabledRef.current || signal < prevSignalRef.current) {
+      autoFireCountRef.current = 0;
+    }
+    wasEnabledRef.current = true;
+    prevSignalRef.current = signal;
+
     const root = scrollRef.current;
     if (!root) return;
 
     const tryFire = () => {
       const sentinel = sentinelRef.current;
       if (!sentinel?.isConnected) return;
-      if (root.scrollHeight <= root.clientHeight + 4) {
-        fetchMoreRef.current();
+      if (root.scrollHeight > root.clientHeight + 4) {
+        autoFireCountRef.current = 0;
+        return;
       }
+      if (autoFireCountRef.current >= MAX_CONSECUTIVE_AUTOFIRES) return;
+      autoFireCountRef.current += 1;
+      fetchMoreRef.current();
     };
 
     let frame: number | null = null;

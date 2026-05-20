@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfToken } from "@/stores/hf-token-store";
 import type { TrainingConfigState } from "../types/config";
 import type { TrainingStartRequest } from "../types/api";
 import {
@@ -52,7 +53,7 @@ export function buildTrainingStartPayload(
   return {
     model_name: config.selectedModel ?? "",
     training_type: toBackendTrainingType(config.trainingMethod),
-    hf_token: config.hfToken.trim() || null,
+    hf_token: getHfToken() || null,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
     trust_remote_code: config.trustRemoteCode ?? false,

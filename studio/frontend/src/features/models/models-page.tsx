@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import {
-  type CachedGgufRepo,
-  type CachedModelRepo,
-  listCachedGguf,
-  listCachedModels,
-  listLocalModels,
-} from "@/features/chat/api/chat-api";
-import { listLocalDatasets } from "@/features/training/api/datasets-api";
-import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import { useChatModelRuntime, useChatRuntimeStore } from "@/features/chat";
+import { useTrainingConfigStore } from "@/features/training";
+import type { ModelType } from "@/types/training";
 import {
   type HfSortDirection,
   type HfSortKey,
@@ -25,14 +18,20 @@ import {
   useOnlineStatus,
 } from "@/hooks";
 import { cachedModelInfo } from "@/lib/hf-cache";
+import { cn } from "@/lib/utils";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { detectCapabilities, detectLicense } from "./lib/capabilities";
+import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  type ChannelId,
+  type ChannelPreset,
+  findChannel,
+} from "./lib/channels";
 import { formatBytes } from "./lib/format";
+import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
   buildDiscoverRows,
-  buildLocalInventoryRows,
-  buildSummary,
-  localSourceLabel,
   matchesCapability,
   matchesFormat,
   toHfModelResult,
@@ -41,6 +40,9 @@ import { ModelInspector } from "./components/model-inspector";
 import { ModelsCatalog } from "./components/models-catalog";
 import { ModelsHeader } from "./components/models-header";
 import { ModelsToolbar } from "./components/models-toolbar";
+import { useHubInventory } from "./hooks/use-hub-inventory";
+import { useFilterStarvedPause } from "./hooks/use-filter-starved-pause";
+import { useSelectedModelView } from "./hooks/use-selected-model-view";
 import type {
   CachedInventoryRow,
   CapabilityFilter,
@@ -49,11 +51,25 @@ import type {
   ModelFormatFilter,
   ModelsTab,
   ResourceTypeFilter,
-  SelectedModelView,
 } from "./types";
+
+function partitionByMatch<T extends CachedInventoryRow | LocalInventoryRow>(
+  rows: T[],
+  tokens: readonly string[],
+): T[] {
+  if (tokens.length === 0) return rows;
+  const matches: T[] = [];
+  const rest: T[] = [];
+  for (const row of rows) {
+    if (inventoryRowMatches(row, tokens)) matches.push(row);
+    else rest.push(row);
+  }
+  return [...matches, ...rest];
+}
 
 export function ModelsPage() {
   const navigate = useNavigate();
+  const search = useSearch({ from: "/models" });
   const gpu = useGpuInfo();
   const online = useOnlineStatus();
   const { selectModel, ejectModel, loadingModel, loadProgress } =
@@ -66,28 +82,119 @@ export function ModelsPage() {
     (state) => state.activeGgufVariant,
   );
 
-  const [tab, setTab] = useState<ModelsTab>("discover");
+  const tab: ModelsTab = search.tab ?? "discover";
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<HfSortKey>("trendingScore");
   const [direction, setDirection] = useState<HfSortDirection>("desc");
   const [resourceType, setResourceType] =
     useState<ResourceTypeFilter>("models");
-  const [formatFilter, setFormatFilter] = useState<ModelFormatFilter>("all");
+  const [activeChannelId, setActiveChannelId] = useState<ChannelId | null>(null);
+  const activeChannel: ChannelPreset | null = useMemo(
+    () => findChannel(activeChannelId),
+    [activeChannelId],
+  );
+  const [discoverFormat, setDiscoverFormat] =
+    useState<ModelFormatFilter>("gguf");
+  const [downloadedFormat, setDownloadedFormat] =
+    useState<ModelFormatFilter>("all");
+  // When a channel is active, the channel's recipe drives the format on the
+  // discover tab. Manual format changes from the toolbar deactivate the
+  // channel so the user has direct control again.
+  const formatFilter =
+    tab === "discover"
+      ? (activeChannel?.format ?? discoverFormat)
+      : downloadedFormat;
+  const setFormatFilter = useCallback(
+    (next: ModelFormatFilter) => {
+      if (tab === "discover") {
+        setActiveChannelId(null);
+        setDiscoverFormat(next);
+      } else {
+        setDownloadedFormat(next);
+      }
+    },
+    [tab],
+  );
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const handleSelect = useCallback((id: string) => {
+    setSelectedId(id);
+    setMobileInspectorOpen(true);
+  }, []);
+  const handleTabChange = useCallback(
+    (next: ModelsTab) => {
+      setMobileInspectorOpen(false);
+      if (next === "downloaded") setActiveChannelId(null);
+      void navigate({
+        to: "/models",
+        search: (prev) => ({ ...prev, tab: next }),
+      });
+    },
+    [navigate],
+  );
+
+  const handleResourceTypeChange = useCallback(
+    (next: ResourceTypeFilter) => {
+      setResourceType((prev) => {
+        if (prev !== next) {
+          setDiscoverFormat("gguf");
+          setDownloadedFormat("all");
+          setCapabilityFilter("all");
+          setActiveChannelId(null);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleChannelSelect = useCallback((next: ChannelId | null) => {
+    setActiveChannelId(next);
+    setCapabilityFilter("all");
+    setQuery("");
+  }, []);
+
+  const handleSortChange = useCallback((next: HfSortKey) => {
+    setActiveChannelId(null);
+    setSortBy(next);
+    if (next === "trendingScore") setDirection("desc");
+  }, []);
 
   const debouncedQuery = useDebouncedValue(query);
+  const hfToken = useHfTokenStore((s) => s.token);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const isDiscoverTab = tab === "discover";
+  const effectiveSort: HfSortKey = activeChannel?.sort ?? sortBy;
+  const channelOption = useMemo(
+    () =>
+      activeChannel
+        ? {
+            owner: activeChannel.owner,
+            tags: activeChannel.tags,
+            query: activeChannel.query,
+            idSuffix: activeChannel.idSuffix,
+          }
+        : null,
+    [activeChannel],
+  );
   const modelSearch = useHfModelSearch(debouncedQuery, {
-    sortBy,
+    accessToken: debouncedHfToken || undefined,
+    sortBy: effectiveSort,
     sortDirection: direction,
-    pinUnslothFirst: sortBy === "trendingScore" && direction === "desc",
+    pinUnslothFirst:
+      effectiveSort === "trendingScore" &&
+      direction === "desc" &&
+      !activeChannel,
     enabled: isDiscoverTab && resourceType !== "datasets",
+    keepUnsupportedTags: true,
+    channel: channelOption,
   });
   const datasetSearch = useHfDatasetSearch(debouncedQuery, {
+    accessToken: debouncedHfToken || undefined,
     enabled: isDiscoverTab && resourceType === "datasets",
-    sortBy,
+    sortBy: effectiveSort,
     sortDirection: direction,
   });
   const isDatasetMode = resourceType === "datasets";
@@ -145,141 +252,21 @@ export function ModelsPage() {
     wasOfflineRef.current = !online;
   }, [online, retrySearch]);
 
-  const [cachedGguf, setCachedGguf] = useState<CachedGgufRepo[]>([]);
-  const [cachedModels, setCachedModels] = useState<CachedModelRepo[]>([]);
-  const [localRows, setLocalRows] = useState<LocalInventoryRow[]>([]);
-  const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
-  const [downloadedReady, setDownloadedReady] = useState(false);
+  const {
+    cachedRows: effectiveCachedRows,
+    localRows: effectiveLocalRows,
+    availableSet,
+    partialSet,
+    downloadedReady,
+    inventoryError,
+    refreshInventory,
+  } = useHubInventory(isDatasetMode);
   const [selectedRepoMetadata, setSelectedRepoMetadata] =
     useState<ReturnType<typeof toHfModelResult>>(null);
 
-  const refreshInventory = useCallback(() => {
-    void listCachedGguf()
-      .then(setCachedGguf)
-      .catch(() => {});
-    void listCachedModels()
-      .then(setCachedModels)
-      .catch(() => {});
-    void listLocalModels()
-      .then((response) => {
-        setLocalRows(buildLocalInventoryRows(response.models));
-      })
-      .catch(() => {});
-    void listLocalDatasets()
-      .then((response) => {
-        setLocalDatasets(response.datasets);
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    let pending = 4;
-    const done = () => {
-      pending -= 1;
-      if (pending === 0 && mounted) {
-        setDownloadedReady(true);
-      }
-    };
-
-    void listCachedGguf()
-      .then((rows) => {
-        if (mounted) setCachedGguf(rows);
-      })
-      .catch(() => {})
-      .finally(done);
-
-    void listCachedModels()
-      .then((rows) => {
-        if (mounted) setCachedModels(rows);
-      })
-      .catch(() => {})
-      .finally(done);
-
-    void listLocalModels()
-      .then((response) => {
-        if (mounted) setLocalRows(buildLocalInventoryRows(response.models));
-      })
-      .catch(() => {})
-      .finally(done);
-
-    void listLocalDatasets()
-      .then((response) => {
-        if (mounted) setLocalDatasets(response.datasets);
-      })
-      .catch(() => {})
-      .finally(done);
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const cachedRows = useMemo<CachedInventoryRow[]>(() => {
-    const rows: CachedInventoryRow[] = [
-      ...cachedGguf.map((row) => ({
-        kind: "cache" as const,
-        id: row.repo_id,
-        repoId: row.repo_id,
-        owner: row.repo_id.includes("/") ? row.repo_id.split("/")[0] : "Hub",
-        repo: row.repo_id.includes("/")
-          ? row.repo_id.split("/").slice(1).join("/")
-          : row.repo_id,
-        isGguf: true,
-        bytes: row.size_bytes,
-      })),
-      ...cachedModels.map((row) => ({
-        kind: "cache" as const,
-        id: row.repo_id,
-        repoId: row.repo_id,
-        owner: row.repo_id.includes("/") ? row.repo_id.split("/")[0] : "Hub",
-        repo: row.repo_id.includes("/")
-          ? row.repo_id.split("/").slice(1).join("/")
-          : row.repo_id,
-        isGguf: false,
-        bytes: row.size_bytes,
-      })),
-    ];
-
-    return rows.sort((a, b) => a.repoId.localeCompare(b.repoId));
-  }, [cachedGguf, cachedModels]);
-
-  const localDatasetRows = useMemo<LocalInventoryRow[]>(() => {
-    return localDatasets
-      .map((ds) => {
-        const repoId = ds.id.includes("/") ? ds.id : null;
-        const owner = repoId ? ds.id.split("/")[0] : "Local";
-        return {
-          kind: "local" as const,
-          id: ds.id,
-          repoId,
-          owner,
-          title: ds.label || ds.id,
-          source: "custom" as const,
-          sourceLabel: "Local dataset",
-          path: ds.path,
-          isGguf: false,
-          updatedAt: ds.updated_at ?? null,
-        };
-      })
-      .sort((a, b) => a.title.localeCompare(b.title));
-  }, [localDatasets]);
-
-  const effectiveCachedRows = isDatasetMode ? [] : cachedRows;
-  const effectiveLocalRows = isDatasetMode ? localDatasetRows : localRows;
-
-  const availableSet = useMemo(() => {
-    const set = new Set<string>();
-    for (const row of effectiveCachedRows) set.add(row.repoId.toLowerCase());
-    for (const row of effectiveLocalRows) {
-      if (row.repoId) set.add(row.repoId.toLowerCase());
-    }
-    return set;
-  }, [effectiveCachedRows, effectiveLocalRows]);
-
   const modelDiscoverRows = useMemo<DiscoverRow[]>(
-    () => buildDiscoverRows(results, availableSet),
-    [results, availableSet],
+    () => buildDiscoverRows(results, availableSet, partialSet),
+    [results, availableSet, partialSet],
   );
 
   const datasetDiscoverRows = useMemo<DiscoverRow[]>(() => {
@@ -295,6 +282,7 @@ export function ModelsPage() {
       if (ds.totalExamples)
         summaryParts.push(`${ds.totalExamples.toLocaleString()} rows`);
       else if (ds.sizeCategory) summaryParts.push(ds.sizeCategory);
+      const lower = ds.id.toLowerCase();
       return {
         id: ds.id,
         owner,
@@ -306,56 +294,78 @@ export function ModelsPage() {
           isGguf: false,
           tags: ds.plainTags,
         },
-        isAvailableOnDevice: false,
+        isAvailableOnDevice: availableSet.has(lower),
+        isPartialOnDevice: partialSet.has(lower),
         summary: summaryParts.join(" · ") || "Dataset",
         capabilities: [],
       };
     });
-  }, [isDatasetMode, datasetSearch.results]);
+  }, [isDatasetMode, datasetSearch.results, availableSet, partialSet]);
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
   const filteredDiscoverRows = useMemo(
     () =>
-      discoverRows.filter(
-        (row) =>
+      discoverRows.filter((row) => {
+        if (isDatasetMode) return true;
+        return (
           matchesFormat(row.result.isGguf, formatFilter) &&
-          matchesCapability(row.capabilities, capabilityFilter),
-      ),
-    [discoverRows, formatFilter, capabilityFilter],
+          matchesCapability(row.capabilities, capabilityFilter)
+        );
+      }),
+    [discoverRows, isDatasetMode, formatFilter, capabilityFilter],
   );
 
-  const inventoryNeedle = isDiscoverTab ? "" : query.trim().toLowerCase();
+  const inventoryTokens = useMemo(
+    () => (isDiscoverTab ? [] : tokenizeQuery(query)),
+    [isDiscoverTab, query],
+  );
+  // Format filter is a deliberate scope narrowing — hard-filter it out.
+  // The text query, by contrast, drives dim-not-filter on the On Device tab
+  // (see ModelsCatalog) so selection survives typing. Matching rows are
+  // partitioned to the top so the dim becomes a tail of the list, not noise
+  // the user has to scan past.
   const filteredCachedRows = useMemo(
     () =>
-      effectiveCachedRows.filter((row) => {
-        if (!isDatasetMode && !matchesFormat(row.isGguf, formatFilter))
-          return false;
-        if (!inventoryNeedle) return true;
-        return row.repoId.toLowerCase().includes(inventoryNeedle);
-      }),
-    [effectiveCachedRows, isDatasetMode, inventoryNeedle, formatFilter],
+      partitionByMatch(
+        effectiveCachedRows.filter(
+          (row) => isDatasetMode || matchesFormat(row.isGguf, formatFilter),
+        ),
+        inventoryTokens,
+      ),
+    [effectiveCachedRows, isDatasetMode, formatFilter, inventoryTokens],
   );
 
   const filteredLocalRows = useMemo(
     () =>
-      effectiveLocalRows.filter((row) => {
-        if (!isDatasetMode && !matchesFormat(row.isGguf, formatFilter))
-          return false;
-        if (!inventoryNeedle) return true;
-        const haystack = [
-          row.title,
-          row.owner,
-          row.sourceLabel,
-          row.path,
-          row.repoId ?? "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(inventoryNeedle);
-      }),
-    [effectiveLocalRows, isDatasetMode, inventoryNeedle, formatFilter],
+      partitionByMatch(
+        effectiveLocalRows.filter(
+          (row) => isDatasetMode || matchesFormat(row.isGguf, formatFilter),
+        ),
+        inventoryTokens,
+      ),
+    [effectiveLocalRows, isDatasetMode, formatFilter, inventoryTokens],
   );
+
+  const { filterPaused, handleKeepSearching } = useFilterStarvedPause({
+    isDiscoverTab,
+    scannedCount: discoverRows.length,
+    filteredCount: filteredDiscoverRows.length,
+    resetDeps: [
+      debouncedQuery,
+      resourceType,
+      formatFilter,
+      capabilityFilter,
+      effectiveSort,
+      direction,
+      activeChannelId,
+    ],
+  });
+
+  const handleClearFilters = useCallback(() => {
+    setFormatFilter("all");
+    setCapabilityFilter("all");
+  }, [setFormatFilter]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
@@ -365,7 +375,7 @@ export function ModelsPage() {
     // growing. Using the raw count guarantees the auto-fire effect re-runs
     // after each fetch lands so we don't dead-end on aggressive filters.
     discoverRows.length,
-    tab === "discover",
+    isDiscoverTab && !filterPaused,
   );
 
   useEffect(() => {
@@ -441,7 +451,10 @@ export function ModelsPage() {
     }
 
     setSelectedRepoMetadata(null);
-    void cachedModelInfo({ name: selectedHubRepoId })
+    void cachedModelInfo({
+      name: selectedHubRepoId,
+      ...(debouncedHfToken ? { accessToken: debouncedHfToken } : {}),
+    })
       .then((result) => {
         if (cancelled) return;
         setSelectedRepoMetadata(toHfModelResult(result));
@@ -454,120 +467,17 @@ export function ModelsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedHubRepoId, selectedResultFromFeed]);
+  }, [selectedHubRepoId, selectedResultFromFeed, debouncedHfToken]);
 
   const selectedHfResult = selectedResultFromFeed ?? selectedRepoMetadata;
 
-  const selectedModel = useMemo<SelectedModelView | null>(() => {
-    if (selectedDiscoverRow) {
-      return {
-        id: selectedDiscoverRow.id,
-        kind: "discover",
-        displayId: selectedDiscoverRow.id,
-        hubRepoId: selectedDiscoverRow.result.id,
-        owner: selectedDiscoverRow.owner,
-        title: selectedDiscoverRow.repo,
-        summary: selectedDiscoverRow.summary,
-        sourceLabel: selectedDiscoverRow.isAvailableOnDevice
-          ? "On device"
-          : "Hugging Face",
-        path: null,
-        isLocal: false,
-        isGguf: selectedDiscoverRow.result.isGguf,
-        isDownloaded: selectedDiscoverRow.isAvailableOnDevice,
-        capabilities: selectedDiscoverRow.capabilities,
-        license: detectLicense(selectedDiscoverRow.result.tags),
-        pipelineTag: selectedDiscoverRow.result.pipelineTag,
-        libraryName: selectedDiscoverRow.result.libraryName,
-        downloads: selectedDiscoverRow.result.downloads,
-        likes: selectedDiscoverRow.result.likes,
-        totalParams: selectedDiscoverRow.result.totalParams,
-        estimatedSizeBytes: selectedDiscoverRow.result.estimatedSizeBytes,
-        updatedAt: selectedDiscoverRow.result.updatedAt,
-        tags: selectedDiscoverRow.result.tags,
-      };
-    }
-
-    if (selectedCachedRow) {
-      return {
-        id: selectedCachedRow.repoId,
-        kind: "cache",
-        displayId: selectedCachedRow.repoId,
-        hubRepoId: selectedCachedRow.repoId,
-        owner: selectedCachedRow.owner,
-        title: selectedCachedRow.repo,
-        summary: selectedHfResult
-          ? buildSummary(selectedHfResult)
-          : selectedCachedRow.isGguf
-            ? "Cached GGUF repository ready for local inference."
-            : "Cached checkpoint repository ready for local inference.",
-        sourceLabel: "Hub cache",
-        path: null,
-        isLocal: false,
-        isGguf: selectedCachedRow.isGguf,
-        isDownloaded: true,
-        capabilities: detectCapabilities(
-          selectedHfResult?.tags,
-          selectedHfResult?.pipelineTag,
-          selectedCachedRow.repoId,
-        ),
-        license: detectLicense(selectedHfResult?.tags),
-        pipelineTag: selectedHfResult?.pipelineTag,
-        libraryName: selectedHfResult?.libraryName,
-        downloads: selectedHfResult?.downloads,
-        likes: selectedHfResult?.likes,
-        totalParams: selectedHfResult?.totalParams,
-        estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
-        cachedBytes: selectedCachedRow.bytes,
-        updatedAt: selectedHfResult?.updatedAt,
-        tags: selectedHfResult?.tags,
-      };
-    }
-
-    if (selectedLocalRow) {
-      const localDisplayId = selectedLocalRow.repoId ?? selectedLocalRow.id;
-      return {
-        id: selectedLocalRow.id,
-        kind: "local",
-        displayId: localDisplayId,
-        hubRepoId: selectedLocalRow.repoId,
-        owner: selectedLocalRow.owner,
-        title: selectedLocalRow.title,
-        summary: selectedHfResult
-          ? buildSummary(selectedHfResult)
-          : `${localSourceLabel(selectedLocalRow.source)} · ${
-              selectedLocalRow.isGguf ? "local GGUF" : "local checkpoint"
-            }`,
-        sourceLabel: selectedLocalRow.sourceLabel,
-        path: selectedLocalRow.path,
-        isLocal: true,
-        isGguf: selectedLocalRow.isGguf,
-        isDownloaded: true,
-        capabilities: detectCapabilities(
-          selectedHfResult?.tags,
-          selectedHfResult?.pipelineTag,
-          selectedLocalRow.repoId ?? selectedLocalRow.title,
-        ),
-        license: detectLicense(selectedHfResult?.tags),
-        pipelineTag: selectedHfResult?.pipelineTag,
-        libraryName: selectedHfResult?.libraryName,
-        downloads: selectedHfResult?.downloads,
-        likes: selectedHfResult?.likes,
-        totalParams: selectedHfResult?.totalParams,
-        estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
-        updatedAt: selectedHfResult?.updatedAt,
-        localUpdatedAt: selectedLocalRow.updatedAt,
-        tags: selectedHfResult?.tags,
-      };
-    }
-
-    return null;
-  }, [
-    selectedCachedRow,
+  const selectedModel = useSelectedModelView({
     selectedDiscoverRow,
-    selectedHfResult,
+    selectedCachedRow,
     selectedLocalRow,
-  ]);
+    selectedHfResult,
+    isDatasetMode,
+  });
 
   const isActive = useMemo(
     () =>
@@ -624,7 +534,6 @@ export function ModelsPage() {
   const ramLabel = gpu.available
     ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
     : "Unavailable";
-  const downloadedCount = effectiveCachedRows.length + effectiveLocalRows.length;
 
   async function handleLoad(opts: {
     ggufVariant?: string;
@@ -654,9 +563,36 @@ export function ModelsPage() {
     void navigate({ to: "/chat" });
   }
 
+  function handleTrain() {
+    if (!selectedModel) return;
+    const repoId = selectedModel.hubRepoId ?? selectedModel.id;
+    const store = useTrainingConfigStore.getState();
+    if (isDatasetMode) {
+      if (selectedModel.kind === "local" && selectedModel.path) {
+        store.selectLocalDataset(selectedModel.path);
+      } else {
+        store.selectHfDataset(repoId);
+      }
+    } else {
+      const caps = selectedModel.capabilities.map((c) => c.key);
+      const inferredType: ModelType = caps.includes("vision")
+        ? "vision"
+        : caps.includes("audio")
+          ? "audio"
+          : caps.includes("embedding")
+            ? "embeddings"
+            : "text";
+      if (store.modelType !== inferredType) {
+        store.setModelType(inferredType);
+      }
+      store.setSelectedModel(repoId);
+    }
+    void navigate({ to: "/studio" });
+  }
+
   return (
-    <div className="hub-page min-h-full bg-background">
-      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 px-5 py-5 sm:px-6 xl:px-8">
+    <div className="hub-page flex h-full min-h-0 flex-col bg-background">
+      <div className="mx-auto flex w-full max-w-[1180px] flex-1 min-h-0 flex-col gap-6 px-5 pt-8 pb-16 sm:px-9 sm:pt-10 sm:pb-24">
         <ModelsHeader
           cachedCount={effectiveCachedRows.length}
           localCount={effectiveLocalRows.length}
@@ -667,52 +603,87 @@ export function ModelsPage() {
           onEject={() => void ejectModel()}
         />
 
-        <section className="flex flex-col overflow-hidden rounded-[32px] border border-border bg-card shadow-[0_1px_2px_-1px_rgba(0,0,0,0.04)] dark:bg-card/60 dark:shadow-none">
-          <div className="hub-side-surface p-4">
+        <section className="elevated-card flex min-h-0 flex-1 flex-col overflow-hidden bg-card">
+          <div className="hub-side-surface shrink-0 px-4 pt-4 pb-6">
             <ModelsToolbar
               tab={tab}
-              onTabChange={setTab}
+              onTabChange={handleTabChange}
               query={query}
-              onQueryChange={setQuery}
-              isLoading={isLoading}
-              sortBy={sortBy}
-              onSortChange={(next) => {
-                setSortBy(next);
-                if (next === "trendingScore") setDirection("desc");
+              onQueryChange={(next) => {
+                if (activeChannelId) setActiveChannelId(null);
+                setQuery(next);
               }}
+              isLoading={isLoading}
+              sortBy={effectiveSort}
+              onSortChange={handleSortChange}
               resourceType={resourceType}
-              onResourceTypeChange={setResourceType}
+              onResourceTypeChange={handleResourceTypeChange}
               formatFilter={formatFilter}
               onFormatFilterChange={setFormatFilter}
               capabilityFilter={capabilityFilter}
               onCapabilityFilterChange={setCapabilityFilter}
+              activeChannelId={activeChannelId}
+              onChannelSelect={handleChannelSelect}
             />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[400px_minmax(0,1fr)] 2xl:grid-cols-[440px_minmax(0,1fr)]">
-            <div className="hub-side-surface min-w-0 border-b border-border lg:border-b-0 lg:border-r">
+          <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[400px_minmax(0,1fr)] 2xl:grid-cols-[440px_minmax(0,1fr)]">
+            <div
+              className={cn(
+                "hub-side-surface flex min-h-0 min-w-0 flex-1 flex-col border-b border-border lg:flex-initial lg:border-b-0 lg:border-r",
+                mobileInspectorOpen && "hidden lg:flex",
+              )}
+            >
               <ModelsCatalog
                 tab={tab}
                 discoverRows={filteredDiscoverRows}
                 cachedRows={filteredCachedRows}
                 localRows={filteredLocalRows}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={handleSelect}
                 isLoading={isLoading}
                 isLoadingMore={isLoadingMore}
                 downloadedReady={downloadedReady}
+                inventoryError={inventoryError}
                 query={query}
                 scrollRef={scrollRef}
                 sentinelRef={sentinelRef}
                 activeCheckpoint={activeCheckpoint}
                 searchError={searchError}
                 online={online}
+                isDataset={isDatasetMode}
+                inventoryTokens={inventoryTokens}
+                filterPaused={filterPaused}
+                scannedCount={discoverRows.length}
+                hasActiveFilters={
+                  formatFilter !== "all" || capabilityFilter !== "all"
+                }
+                onKeepSearching={handleKeepSearching}
+                onClearFilters={handleClearFilters}
                 onRetry={handleRetrySearch}
                 onInventoryChange={refreshInventory}
               />
             </div>
 
-            <div className="hub-side-surface">
+            <div
+              className={cn(
+                "hub-side-surface flex min-h-0 min-w-0 flex-1 flex-col lg:flex-initial",
+                !mobileInspectorOpen && "hidden lg:flex",
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => setMobileInspectorOpen(false)}
+                className="relative z-10 flex h-10 shrink-0 cursor-pointer select-none items-center gap-1.5 border-b border-border bg-transparent px-4 text-[12.5px] font-medium text-muted-foreground transition-colors hover:text-foreground lg:hidden"
+              >
+                <HugeiconsIcon
+                  icon={ArrowLeft01Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                Back to list
+              </button>
+              <div className="flex min-h-0 flex-1 flex-col">
               <ModelInspector
                 model={selectedModel}
                 isDataset={isDatasetMode}
@@ -729,8 +700,10 @@ export function ModelsPage() {
                 onLoad={handleLoad}
                 onLoadLocal={() => void handleLoadLocal()}
                 onUseInChat={handleUseInChat}
+                onTrain={handleTrain}
                 onInventoryChange={refreshInventory}
               />
+              </div>
             </div>
           </div>
         </section>

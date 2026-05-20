@@ -917,6 +917,222 @@ def _is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+# ── Chat template reader (no model load required) ────────────────────────────
+
+
+_CHAT_TEMPLATE_CACHE: Dict[str, Optional[str]] = {}
+
+
+def _gguf_skip_kv_value(f, vtype: int) -> None:
+    """Skip a GGUF KV value of a given type without reading it.
+
+    Mirrors LlamaCppBackend._gguf_skip_value but kept standalone so we can
+    parse a GGUF header without instantiating the inference backend.
+    """
+    import struct
+
+    type_sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+    sz = type_sizes.get(vtype)
+    if sz is not None:
+        f.seek(sz, 1)
+        return
+    if vtype == 8:  # STRING
+        slen = struct.unpack("<Q", f.read(8))[0]
+        f.seek(slen, 1)
+        return
+    if vtype == 9:  # ARRAY
+        atype = struct.unpack("<I", f.read(4))[0]
+        alen = struct.unpack("<Q", f.read(8))[0]
+        elem_sz = type_sizes.get(atype)
+        if elem_sz is not None:
+            f.seek(elem_sz * alen, 1)
+        elif atype == 8:
+            for _ in range(alen):
+                slen = struct.unpack("<Q", f.read(8))[0]
+                f.seek(slen, 1)
+        else:
+            for _ in range(alen):
+                _gguf_skip_kv_value(f, atype)
+
+
+def read_chat_template_from_gguf(gguf_path: str | Path) -> Optional[str]:
+    """Parse the `tokenizer.chat_template` KV string from a GGUF file header.
+
+    Reads only the header KV pairs (no tensor data), so this is fast even on
+    multi-GB GGUF shards. Returns None on any I/O or parse error.
+    """
+    import struct
+
+    try:
+        with open(gguf_path, "rb") as f:
+            magic = struct.unpack("<I", f.read(4))[0]
+            if magic != 0x46554747:  # b"GGUF" little-endian
+                return None
+            _version = struct.unpack("<I", f.read(4))[0]
+            _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+
+            for _ in range(kv_count):
+                try:
+                    key_len_bytes = f.read(8)
+                    if len(key_len_bytes) < 8:
+                        return None
+                    key_len = struct.unpack("<Q", key_len_bytes)[0]
+                    key_bytes = f.read(key_len)
+                    if len(key_bytes) < key_len:
+                        return None
+                    key = key_bytes.decode("utf-8")
+                    vtype = struct.unpack("<I", f.read(4))[0]
+                except (struct.error, UnicodeDecodeError):
+                    return None
+
+                if key == "tokenizer.chat_template" and vtype == 8:
+                    slen = struct.unpack("<Q", f.read(8))[0]
+                    return f.read(slen).decode("utf-8", errors = "replace")
+                try:
+                    _gguf_skip_kv_value(f, vtype)
+                except (struct.error, UnicodeDecodeError):
+                    return None
+    except Exception as exc:
+        logger.debug(f"Failed to read GGUF chat_template from {gguf_path}: {exc}")
+        return None
+    return None
+
+
+def _find_cached_gguf_for_repo(model_name: str) -> Optional[Path]:
+    """Return any downloaded non-mmproj GGUF shard for a HF GGUF repo, or None."""
+    try:
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is None or not repo_dir.exists():
+            return None
+        snapshots = repo_dir / "snapshots"
+        if not snapshots.is_dir():
+            return None
+        for snap in snapshots.iterdir():
+            for path in snap.rglob("*.gguf"):
+                if not path.is_file():
+                    continue
+                if _is_mmproj(path.name):
+                    continue
+                return path
+        return None
+    except Exception:
+        return None
+
+
+def _read_chat_template_from_tokenizer_config(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[str]:
+    """Read `chat_template` from a model's tokenizer_config.json.
+
+    Checks the local HF cache first, then falls back to the HuggingFace API.
+    Handles the ``LLM/tokenizer_config.json`` layout used by some audio LLMs.
+    """
+    candidate_paths = ["tokenizer_config.json", "LLM/tokenizer_config.json"]
+
+    try:
+        repo_dir = get_cache_path(model_name)
+        if repo_dir is not None and repo_dir.exists():
+            snapshots_dir = repo_dir / "snapshots"
+            if snapshots_dir.exists():
+                for snapshot in snapshots_dir.iterdir():
+                    for tok_path in candidate_paths:
+                        tok_file = snapshot / tok_path
+                        if tok_file.exists():
+                            try:
+                                tok_config = json.loads(tok_file.read_text())
+                            except (OSError, ValueError) as exc:
+                                logger.debug(
+                                    f"Skipping unreadable tokenizer_config "
+                                    f"at {tok_file}: {exc}"
+                                )
+                                continue
+                            tpl = tok_config.get("chat_template")
+                            if isinstance(tpl, str) and tpl:
+                                return tpl
+    except Exception as exc:
+        logger.debug(
+            f"Could not check local tokenizer_config cache for {model_name}: {exc}"
+        )
+
+    try:
+        import requests
+
+        token = hf_token or os.environ.get("HF_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        for tok_path in candidate_paths:
+            url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
+            try:
+                resp = requests.get(url, headers = headers, timeout = 15)
+            except requests.RequestException as exc:
+                logger.debug(
+                    f"Network error fetching {tok_path} for {model_name}: {exc}"
+                )
+                continue
+            if not resp.ok:
+                continue
+            try:
+                tok_config = resp.json()
+            except ValueError:
+                continue
+            tpl = tok_config.get("chat_template")
+            if isinstance(tpl, str) and tpl:
+                return tpl
+    except Exception as exc:
+        logger.debug(
+            f"Could not fetch tokenizer_config for {model_name}: {exc}"
+        )
+
+    return None
+
+
+def read_model_chat_template(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[str]:
+    """Best-effort fetch of a model's original chat template without loading it.
+
+    Resolution order:
+      1. Process-local cache (cheap re-reads on the same backend run).
+      2. GGUF header (`tokenizer.chat_template`) for any locally cached GGUF
+         shard belonging to this repo. Chat templates are shared across
+         quantization variants of the same model, so any non-mmproj shard
+         works.
+      3. ``tokenizer_config.json`` from the local HF cache, then the HF API.
+
+    Returns None if the template cannot be discovered. None is also cached
+    so we do not hammer the HF API on repeated misses.
+    """
+    if not model_name:
+        return None
+
+    if model_name in _CHAT_TEMPLATE_CACHE:
+        return _CHAT_TEMPLATE_CACHE[model_name]
+
+    template: Optional[str] = None
+
+    if is_local_path(model_name):
+        local = Path(normalize_path(model_name))
+        gguf_path: Optional[Path] = None
+        if local.is_file() and _is_gguf_filename(local.name):
+            gguf_path = local
+        elif local.is_dir():
+            for candidate in local.rglob("*.gguf"):
+                if candidate.is_file() and not _is_mmproj(candidate.name):
+                    gguf_path = candidate
+                    break
+        if gguf_path is not None:
+            template = read_chat_template_from_gguf(gguf_path)
+    else:
+        gguf_path = _find_cached_gguf_for_repo(model_name)
+        if gguf_path is not None:
+            template = read_chat_template_from_gguf(gguf_path)
+
+    if not template and not is_local_path(model_name):
+        template = _read_chat_template_from_tokenizer_config(model_name, hf_token)
+
+    _CHAT_TEMPLATE_CACHE[model_name] = template
+    return template
+
+
 def _iter_gguf_files(directory: Path, recursive: bool = False):
     if not directory.is_dir():
         return

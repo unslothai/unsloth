@@ -55,7 +55,7 @@ export function KeyRevealCard({
       </button>
       <div className="flex items-center justify-between gap-3 pt-0.5">
         <p className="text-[11px] text-muted-foreground">
-          Copy now — this won't be shown again.
+          Copy now. This won't be shown again.
         </p>
         <Button
           type="button"

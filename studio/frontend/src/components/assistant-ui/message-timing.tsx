@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import type { FC } from "react";
 
 const formatTimingMs = (ms: number | undefined): string => {
-  if (ms === undefined) return "—";
+  if (ms === undefined) return "N/A";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 };

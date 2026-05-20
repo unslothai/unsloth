@@ -3,3 +3,4 @@
 
 export { DashboardLayout } from "./dashboard-layout";
 export { DashboardGrid } from "./dashboard-grid";
+export { PageHeading } from "./page-heading";

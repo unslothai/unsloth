@@ -63,8 +63,8 @@ function SelectTrigger({
   children,
   icon,
   iconClassName,
-  iconStrokeWidth = 2,
-  animateRadius = true,
+  iconStrokeWidth = 1.5,
+  animateRadius = false,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
   size?: "sm" | "default";
@@ -98,10 +98,10 @@ function SelectTrigger({
       {children}
       <SelectPrimitive.Icon asChild>
         <HugeiconsIcon
-          icon={icon ?? UnfoldMoreIcon}
+          icon={icon ?? ArrowDown01Icon}
           strokeWidth={iconStrokeWidth}
           className={cn(
-            "text-muted-foreground size-4 pointer-events-none",
+            "text-muted-foreground size-3.5 pointer-events-none",
             iconClassName,
           )}
         />
@@ -113,8 +113,9 @@ function SelectTrigger({
 function SelectContent({
   className,
   children,
-  position = "item-aligned",
-  align = "center",
+  position = "popper",
+  align = "start",
+  sideOffset = 6,
   container,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content> & {
@@ -134,6 +135,7 @@ function SelectContent({
         )}
         position={position}
         align={align}
+        sideOffset={sideOffset}
         {...props}
       >
         <SelectScrollUpButton />

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,13 +23,6 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -48,7 +36,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
-  ArrowTurnBackwardIcon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
@@ -237,7 +224,7 @@ function InfoHint({ children }: { children: ReactNode }) {
         <button
           type="button"
           aria-label="More info"
-          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#383835] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#232528] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={InformationCircleIcon}
@@ -505,7 +492,6 @@ interface ChatSettingsPanelProps {
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
-  onReloadModel?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -513,65 +499,15 @@ export function ChatSettingsPanel({
   onOpenChange,
   params,
   onParamsChange,
-  onReloadModel,
 }: ChatSettingsPanelProps) {
   const isMobile = useIsMobile();
   const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
-  const hasModelContent = isGguf || Boolean(params.checkpoint);
-  const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
-  const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
-  const loadedSpeculativeType = useChatRuntimeStore(
-    (s) => s.loadedSpeculativeType,
-  );
-  const modelRequiresTrustRemoteCode = useChatRuntimeStore(
-    (s) => s.modelRequiresTrustRemoteCode,
-  );
-  const currentCheckpoint = params.checkpoint;
-  const currentModelIsMultimodal = useChatRuntimeStore((s) => {
-    if (s.loadedIsMultimodal) return true;
-    const m = s.models.find((m) => m.id === currentCheckpoint);
-    return (
-      Boolean(m?.isVision) ||
-      Boolean(m?.isAudio) ||
-      Boolean(m?.hasAudioInput) ||
-      m?.audioType === "audio_vlm"
-    );
-  });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  const ggufMaxContextLength = useChatRuntimeStore(
-    (s) => s.ggufMaxContextLength,
-  );
-  const ggufNativeContextLength = useChatRuntimeStore(
-    (s) => s.ggufNativeContextLength,
-  );
-  const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
-  const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
-  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
-  const setCustomContextLength = useChatRuntimeStore(
-    (s) => s.setCustomContextLength,
-  );
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
   );
   const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
 
-  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
-  const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
-  const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
-  const ctxDirty = customContextLength !== null;
-  const specDirty = speculativeType !== loadedSpeculativeType;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty;
-  const chatTemplateOverride = useChatRuntimeStore(
-    (s) => s.chatTemplateOverride,
-  );
-  const loadedChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.loadedChatTemplateOverride,
-  );
-  const setChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.setChatTemplateOverride,
-  );
-  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const [customPresets, setCustomPresets] = useState<Preset[]>(() =>
     loadSavedCustomPresets(),
   );
@@ -623,10 +559,6 @@ export function ChatSettingsPanel({
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
   const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
-  const trustRemoteCodeMissing =
-    Boolean(currentCheckpoint) &&
-    modelRequiresTrustRemoteCode &&
-    !(params.trustRemoteCode ?? false);
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
@@ -795,7 +727,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-[#232528] dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close configuration"
                 >
                   <HugeiconsIcon
@@ -818,189 +750,10 @@ export function ChatSettingsPanel({
       </div>
 
       <div className="px-[18px] pt-3">
-        {hasModelContent && (
-        <CollapsibleSection label="Model" defaultOpen={true} first>
-          <div className="flex flex-col gap-4 pt-1">
-            {isGguf && (
-              <>
-                <div className="space-y-3.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Context Length
-                    </span>
-                    <NumericValueInput
-                      value={
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (ggufContextLength ?? 0)
-                      }
-                      min={128}
-                      max={ctxMaxValue ?? undefined}
-                      step={1}
-                      onChange={(v) => {
-                        setCustomContextLength(
-                          v === (ggufContextLength ?? 0) ? null : v,
-                        );
-                      }}
-                      ariaLabel="Context Length"
-                      size={8}
-                    />
-                  </div>
-                  <Slider
-                    min={1024}
-                    max={ctxMaxValue ?? 4096}
-                    step={1024}
-                    value={[
-                      Math.min(
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (ggufContextLength ?? 4096),
-                        ctxMaxValue ?? 4096,
-                      ),
-                    ]}
-                    onValueChange={([v]) => {
-                      const snapped = Math.round(v);
-                      setCustomContextLength(
-                        snapped === (ggufContextLength ?? 0) ? null : snapped,
-                      );
-                    }}
-                    className="panel-slider"
-                  />
-                  {ggufMaxContextLength != null &&
-                    typeof ctxDisplayValue === "number" &&
-                    ctxDisplayValue > ggufMaxContextLength && (
-                      <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity (
-                        {ggufMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
-                      </p>
-                    )}
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      KV Cache Dtype
-                    </span>
-                    <InfoHint>
-                      Lower KV cache precision to save VRAM at the cost of some
-                      quality. f16/bf16 are full precision; q8_0/q5_1/q4_1 are
-                      quantized.
-                    </InfoHint>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Select
-                      value={kvCacheDtype ?? "f16"}
-                      onValueChange={(v) => {
-                        setKvCacheDtype(v === "f16" ? null : v);
-                      }}
-                    >
-                      <SelectTrigger
-                        animateRadius={false}
-                        icon={ArrowDown01Icon}
-                        iconClassName="size-3.5"
-                        className="grid h-7 w-[60px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-                        <SelectItem value="f16">f16</SelectItem>
-                        <SelectItem value="bf16">bf16</SelectItem>
-                        <SelectItem value="q8_0">q8_0</SelectItem>
-                        <SelectItem value="q5_1">q5_1</SelectItem>
-                        <SelectItem value="q4_1">q4_1</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                {!currentModelIsMultimodal && (
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                        Speculative Decoding
-                      </span>
-                      <InfoHint>
-                        N-gram speculation; faster generation with negligible
-                        VRAM overhead. Text-only models.
-                      </InfoHint>
-                    </div>
-                    <Switch
-                      className="panel-switch shrink-0"
-                      checked={speculativeType != null}
-                      onCheckedChange={(checked) => {
-                        setSpeculativeType(checked ? "default" : null);
-                      }}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-            {!isGguf && params.checkpoint && (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Enable custom code
-                    </span>
-                    <InfoHint>
-                      Run custom Python from the model repo (e.g. Nemotron).
-                      Only enable for trusted sources.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-                {trustRemoteCodeMissing && (
-                  <Alert className="rounded-[14px] border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
-                    <AlertTitle className="text-[12px] font-medium">
-                      Keep custom code enabled for this model
-                    </AlertTitle>
-                    <AlertDescription className="text-[11.5px] leading-[1.45] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </>
-            )}
-            <ChatTemplateFields />
-            {(modelSettingsDirty || templateDirty) && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                <Button
-                  type="button"
-                  onClick={() => onReloadModel?.()}
-                  size="sm"
-                  className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
-                >
-                  Apply
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setCustomContextLength(null);
-                    setKvCacheDtype(loadedKvCacheDtype);
-                    setSpeculativeType(loadedSpeculativeType);
-                    setChatTemplateOverride(loadedChatTemplateOverride);
-                  }}
-                  className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
-                >
-                  Reset
-                </Button>
-              </div>
-            )}
-          </div>
-        </CollapsibleSection>
-        )}
-
         <CollapsibleSection
           label="Preset"
           defaultOpen={true}
-          first={!hasModelContent}
+          first
         >
           <div className="flex flex-col gap-3 pt-1">
             <DropdownMenu>
@@ -1138,7 +891,7 @@ export function ChatSettingsPanel({
               max={2}
               step={0.01}
               onChange={set("temperature")}
-              info="Controls randomness. Lower values make output focused and deterministic; higher values increase variety and creativity."
+              info="Controls randomness. Lower values make output focused and deterministic. Higher values increase variety and creativity."
             />
             <ParamSlider
               label="Top P"
@@ -1177,7 +930,7 @@ export function ChatSettingsPanel({
               step={0.05}
               onChange={set("repetitionPenalty")}
               displayValue={params.repetitionPenalty === 1 ? "Off" : undefined}
-              info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off; higher values penalize more strongly."
+              info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off. Higher values penalize more strongly."
             />
             <ParamSlider
               label="Presence Penalty"
@@ -1197,7 +950,7 @@ export function ChatSettingsPanel({
                 max={32768}
                 step={128}
                 onChange={set("maxSeqLength")}
-                info="Maximum context window size in tokens — input prompt plus generated output combined. Capped by the model's trained limit."
+                info="Maximum context window size in tokens, input prompt plus generated output combined. Capped by the model's trained limit."
               />
             )}
             <ParamSlider
@@ -1329,7 +1082,7 @@ function MaxToolCallsSlider() {
       displayValue={
         sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined
       }
-      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
+      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use. Max removes the cap."
     />
   );
 }
@@ -1358,7 +1111,7 @@ function ToolCallTimeoutSlider() {
       onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
       displayValue={displayValue}
       valueSize={10}
-      info="Per-call wall-clock limit. Long-running tool executions are terminated when this elapses; the model continues with what completed."
+      info="Per-call wall-clock limit. Long-running tool executions are terminated when this elapses. The model continues with what completed."
     />
   );
 }
@@ -1389,116 +1142,3 @@ function AutoHealToolCallsToggle() {
   );
 }
 
-function ChatTemplateFields() {
-  const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
-  const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
-  const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  if (!defaultTemplate) return null;
-
-  const displayValue = override ?? defaultTemplate;
-  const isModified = override !== null;
-  const draftDirty = draft !== displayValue;
-
-  const openEditor = () => {
-    setDraft(displayValue);
-    setEditorOpen(true);
-  };
-  const saveEditor = () => {
-    setOverride(
-      draft.trim().length === 0 || draft === defaultTemplate ? null : draft,
-    );
-    setEditorOpen(false);
-  };
-
-  return (
-    <>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-medium tracking-nav text-nav-fg">
-            Chat Template
-          </span>
-          {isModified && (
-            <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  onClick={() => setOverride(null)}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
-                  aria-label="Revert chat template"
-                >
-                  <HugeiconsIcon
-                    icon={ArrowTurnBackwardIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="top"
-                sideOffset={6}
-                className="tooltip-compact"
-              >
-                Revert changes
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={openEditor}
-          aria-label="Edit chat template"
-          className="panel-text-surface mt-1 flex w-full h-20 overflow-hidden cursor-pointer items-start px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg corner-squircle focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/40"
-        >
-          <span className="block line-clamp-3 whitespace-pre-wrap break-words">
-            {displayValue}
-          </span>
-        </button>
-      </div>
-      <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
-        <DialogContent
-          className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-3xl"
-          overlayClassName="bg-background/35 supports-backdrop-filter:backdrop-blur-[1px]"
-        >
-          <DialogHeader>
-            <DialogTitle>Edit Chat Template</DialogTitle>
-            <DialogDescription>
-              Override the model's chat template. The change applies on the
-              next model reload.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <div className="space-y-0.5 px-0.5">
-              <div className="text-[11px] font-medium">Template editor</div>
-              <p className="text-[11px] text-muted-foreground">
-                Jinja syntax. Save matching the default clears the override.
-              </p>
-            </div>
-            <Textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto font-mono text-xs leading-5 corner-squircle focus-visible:border-input focus-visible:ring-0"
-              rows={14}
-              spellCheck={false}
-            />
-          </div>
-          <DialogFooter className="flex-wrap gap-2 sm:justify-between">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setEditorOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}

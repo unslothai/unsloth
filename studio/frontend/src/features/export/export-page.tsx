@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PageHeading } from "@/components/layout";
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,23 +25,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  listLocalModels,
-  type LocalModelInfo,
-  useTrainingConfigStore,
-} from "@/features/training";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { type LocalModelInfo, listLocalModels } from "@/features/training";
 import {
   useDebouncedValue,
   useHfModelSearch,
   useHfTokenValidation,
 } from "@/hooks";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import {
   AlertCircleIcon,
   FolderSearchIcon,
@@ -52,7 +51,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
 import { collapseAnim } from "./anim";
 import type { ModelCheckpoints } from "./api/export-api";
 import {
@@ -67,23 +65,18 @@ import {
 import { ExportDialog } from "./components/export-dialog";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
-import {
-  type ExportMethod,
-  GUIDE_STEPS,
-  getEstimatedSize,
-} from "./constants";
-import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { type ExportMethod, GUIDE_STEPS, getEstimatedSize } from "./constants";
 import { exportTourSteps } from "./tour";
 
-const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+const SEARCH_INPUT_REASONS = new Set([
+  "input-change",
+  "input-paste",
+  "input-clear",
+]);
 
 export function ExportPage() {
-  const { hfToken, setHfToken } = useTrainingConfigStore(
-    useShallow((s) => ({
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
-    })),
-  );
+  const hfToken = useHfTokenStore((s) => s.token);
+  const setHfToken = useHfTokenStore((s) => s.setToken);
 
   // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>([]);
@@ -96,8 +89,7 @@ export function ExportPage() {
     "checkpoint",
   );
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
-  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
-    useState(true);
+  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] = useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -174,7 +166,9 @@ export function ExportPage() {
       .catch((error) => {
         if (controller.signal.aborted) return;
         setLocalModelsError(
-          error instanceof Error ? error.message : "Failed to load local models",
+          error instanceof Error
+            ? error.message
+            : "Failed to load local models",
         );
       })
       .finally(() => {
@@ -188,7 +182,7 @@ export function ExportPage() {
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
-        ? models.find((m) => m.name === selectedModelIdx) ?? null
+        ? (models.find((m) => m.name === selectedModelIdx) ?? null)
         : null,
     [models, selectedModelIdx],
   );
@@ -199,16 +193,15 @@ export function ExportPage() {
   );
 
   // Derive training info from selected model's API metadata
-  const baseModelName = selectedModelData?.base_model ?? "—";
+  const baseModelName = selectedModelData?.base_model ?? "N/A";
   const isAdapter = !!selectedModelData?.peft_type;
   const isQuantized = !!selectedModelData?.is_quantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
   const trainingMethodLabel = selectedModelData?.peft_type
     ? "LoRA / QLoRA"
     : "Full Fine-tune";
-  const sourceBaseModelName = sourceMode === "model"
-    ? selectedSourceModel ?? "—"
-    : baseModelName;
+  const sourceBaseModelName =
+    sourceMode === "model" ? (selectedSourceModel ?? "N/A") : baseModelName;
 
   const {
     results: hfResults,
@@ -300,18 +293,15 @@ export function ExportPage() {
     }
   }, [isAdapter, isQuantized, exportMethod]);
 
-  const handleSourceModeSwitch = useCallback(
-    (next: "checkpoint" | "model") => {
-      setSourceMode(next);
-      if (next === "model") {
-        setExportMethod("gguf");
-      }
-      setSelectedSourceModel(null);
-      setLocalModelInput("");
-      setModelInput("");
-    },
-    [],
-  );
+  const handleSourceModeSwitch = useCallback((next: "checkpoint" | "model") => {
+    setSourceMode(next);
+    if (next === "model") {
+      setExportMethod("gguf");
+    }
+    setSelectedSourceModel(null);
+    setLocalModelInput("");
+    setModelInput("");
+  }, []);
 
   useEffect(() => {
     setSelectedSourceModel(null);
@@ -397,12 +387,14 @@ export function ExportPage() {
 
   // ---- Export handler ----
   const handleExport = useCallback(async () => {
-    const source = sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+    const source =
+      sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source) return;
 
-    const selectedCp = sourceMode === "checkpoint"
-      ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)
-      : null;
+    const selectedCp =
+      sourceMode === "checkpoint"
+        ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)
+        : null;
     if (sourceMode === "checkpoint" && !selectedCp) return;
     const checkpointPath = selectedCp?.path;
 
@@ -415,13 +407,15 @@ export function ExportPage() {
     // For other formats, nest under training-run/checkpoint
     const saveDir =
       exportMethod === "gguf"
-        ? `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-          .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
+        ? `${(
+            sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model"
+          ).replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
         : `${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
-    const repoId = pushToHub && hfUsername && modelName
-      ? `${hfUsername}/${modelName}`
-      : undefined;
+    const repoId =
+      pushToHub && hfUsername && modelName
+        ? `${hfUsername}/${modelName}`
+        : undefined;
     const token = pushToHub && hfToken ? hfToken : undefined;
 
     try {
@@ -490,9 +484,7 @@ export function ExportPage() {
       setExportOutputPath(lastOutputPath);
       setExportSuccess(true);
     } catch (err) {
-      setExportError(
-        err instanceof Error ? err.message : "Export failed",
-      );
+      setExportError(err instanceof Error ? err.message : "Export failed");
     } finally {
       try {
         await cleanupExport();
@@ -522,96 +514,101 @@ export function ExportPage() {
   ]);
 
   // ---- Render ----
-  return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-        <GuidedTour {...tour.tourProps} />
+  const body = (
+    <>
+      <GuidedTour {...tour.tourProps} />
 
-        <div className="mb-8 flex flex-col gap-0.5">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Export Model
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Export fine-tuned or base models for deployment
-          </p>
-        </div>
+      <header className="font-heading mb-8">
+        <PageHeading
+          title="Export Model"
+          subtitle="Export fine-tuned or base models for deployment"
+        />
+      </header>
 
-        <SectionCard
-          icon={<HugeiconsIcon icon={PackageIcon} className="size-5" />}
-          title="Export Configuration"
-          description="Select source, method, and quantization"
-          accent="emerald"
-          featured={true}
-          className="shadow-border ring-1 ring-border"
-        >
-          {/* Loading / error states */}
-          {loadingCheckpoints && (
-            <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
-              <Spinner className="size-4" />
-              Loading checkpoints…
-            </div>
-          )}
+      <SectionCard
+        icon={<HugeiconsIcon icon={PackageIcon} className="size-5" />}
+        title="Export Configuration"
+        description="Select source, method, and quantization"
+        accent="emerald"
+        featured={true}
+        className="shadow-border ring-1 ring-border"
+      >
+        {/* Loading / error states */}
+        {loadingCheckpoints && (
+          <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
+            <Spinner className="size-4" />
+            Loading checkpoints…
+          </div>
+        )}
 
-          {checkpointError && (
-            <div className="flex items-center gap-2 py-6 justify-center text-sm text-destructive">
-              <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
-              {checkpointError}
-            </div>
-          )}
+        {checkpointError && (
+          <div className="flex items-center gap-2 py-6 justify-center text-sm text-destructive">
+            <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
+            {checkpointError}
+          </div>
+        )}
 
-          {!loadingCheckpoints && !checkpointError && (
-            <>
-              {/* Top row: Dropdowns + metadata | Guide */}
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-end justify-between">
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      {sourceMode === "checkpoint" ? "Training Run" : "Model Source"}
-                      <Tooltip>
-                        <TooltipTrigger asChild={true}>
-                          <button
-                            type="button"
-                            className="text-foreground/70 hover:text-foreground"
-                          >
-                            <HugeiconsIcon
-                              icon={InformationCircleIcon}
-                              className="size-3"
-                            />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {sourceMode === "checkpoint"
-                            ? "Select the training run that produced the checkpoints you want to export."
-                            : "Select a Hugging Face model or local model path to export directly to GGUF."}
-                        </TooltipContent>
-                      </Tooltip>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleSourceModeSwitch(
-                          sourceMode === "checkpoint" ? "model" : "checkpoint",
-                        )
-                      }
-                      className="text-xs text-primary underline cursor-pointer leading-none"
-                    >
-                      {sourceMode === "checkpoint"
-                        ? "Use Hugging Face / Local Model"
-                        : "Use Training Checkpoints"}
-                    </button>
-                  </div>
+        {!loadingCheckpoints && !checkpointError && (
+          <>
+            {/* Top row: Dropdowns + metadata | Guide */}
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
+              <div className="flex flex-col gap-2">
+                <div className="flex items-end justify-between">
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    {sourceMode === "checkpoint"
+                      ? "Training Run"
+                      : "Model Source"}
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          className="text-foreground/70 hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            className="size-3"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {sourceMode === "checkpoint"
+                          ? "Select the training run that produced the checkpoints you want to export."
+                          : "Select a Hugging Face model or local model path to export directly to GGUF."}
+                      </TooltipContent>
+                    </Tooltip>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleSourceModeSwitch(
+                        sourceMode === "checkpoint" ? "model" : "checkpoint",
+                      )
+                    }
+                    className="text-xs text-primary underline cursor-pointer leading-none"
+                  >
+                    {sourceMode === "checkpoint"
+                      ? "Use Hugging Face / Local Model"
+                      : "Use Training Checkpoints"}
+                  </button>
+                </div>
 
-                  <AnimatePresence mode="wait" initial={false}>
+                <AnimatePresence mode="wait" initial={false}>
                   {sourceMode === "checkpoint" ? (
                     <motion.div
                       key="checkpoint"
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: "auto", opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+                      transition={{
+                        duration: 0.25,
+                        ease: [0.25, 0.1, 0.25, 1],
+                      }}
                       className="flex flex-col gap-2 overflow-visible"
                     >
-                      <div data-tour="export-training-run" className="flex flex-col gap-2">
+                      <div
+                        data-tour="export-training-run"
+                        className="flex flex-col gap-2"
+                      >
                         <Select
                           value={selectedModelIdx ?? ""}
                           onValueChange={setSelectedModelIdx}
@@ -632,13 +629,12 @@ export function ExportPage() {
                                 ? m.name.slice(0, tsMatch.index)
                                 : m.name;
                               const timeStr = tsMatch
-                                ? new Date(Number(tsMatch[1]) * 1000).toLocaleString(
-                                    undefined,
-                                    {
-                                      dateStyle: "medium",
-                                      timeStyle: "short",
-                                    },
-                                  )
+                                ? new Date(
+                                    Number(tsMatch[1]) * 1000,
+                                  ).toLocaleString(undefined, {
+                                    dateStyle: "medium",
+                                    timeStyle: "short",
+                                  })
                                 : null;
                               return (
                                 <SelectItem key={m.name} value={m.name}>
@@ -661,7 +657,10 @@ export function ExportPage() {
                         </Select>
                       </div>
 
-                      <div data-tour="export-checkpoint" className="flex flex-col gap-2">
+                      <div
+                        data-tour="export-checkpoint"
+                        className="flex flex-col gap-2"
+                      >
                         <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                           Checkpoint
                           <Tooltip>
@@ -698,11 +697,11 @@ export function ExportPage() {
                           <SelectTrigger className="w-full">
                             <SelectValue
                               placeholder={
-                                !selectedModelIdx
-                                  ? "Select a training run first"
-                                  : checkpointsForModel.length === 0
+                                selectedModelIdx
+                                  ? checkpointsForModel.length === 0
                                     ? "No checkpoints found"
                                     : "Select a checkpoint…"
+                                  : "Select a training run first"
                               }
                             />
                           </SelectTrigger>
@@ -729,7 +728,10 @@ export function ExportPage() {
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: "auto", opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+                      transition={{
+                        duration: 0.25,
+                        ease: [0.25, 0.1, 0.25, 1],
+                      }}
                       className="flex flex-col gap-2 overflow-visible"
                     >
                       <div className="flex gap-2">
@@ -760,7 +762,9 @@ export function ExportPage() {
                                 items={hfResultIds}
                                 filteredItems={hfResultIds}
                                 filter={null}
-                                value={modelInput || selectedSourceModel || null}
+                                value={
+                                  modelInput || selectedSourceModel || null
+                                }
                                 onValueChange={handleHfSourceModelSelect}
                                 onInputValueChange={handleHfSourceInputChange}
                                 itemToStringValue={(id) => id}
@@ -779,7 +783,10 @@ export function ExportPage() {
                                   }}
                                 >
                                   <InputGroupAddon>
-                                    <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                                    <HugeiconsIcon
+                                      icon={Search01Icon}
+                                      className="size-4"
+                                    />
                                   </InputGroupAddon>
                                 </ComboboxInput>
                                 <ComboboxContent anchor={hfComboboxAnchorRef}>
@@ -788,11 +795,17 @@ export function ExportPage() {
                                       <Spinner className="size-4" /> Searching…
                                     </div>
                                   ) : (
-                                    <ComboboxEmpty>No models found</ComboboxEmpty>
+                                    <ComboboxEmpty>
+                                      No models found
+                                    </ComboboxEmpty>
                                   )}
                                   <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                     {(id: string) => (
-                                      <ComboboxItem key={id} value={id} className="gap-2">
+                                      <ComboboxItem
+                                        key={id}
+                                        value={id}
+                                        className="gap-2"
+                                      >
                                         <span className="block min-w-0 flex-1 truncate">
                                           {id}
                                         </span>
@@ -851,7 +864,10 @@ export function ExportPage() {
                             </label>
                             <InputGroup>
                               <InputGroupAddon>
-                                <HugeiconsIcon icon={Key01Icon} className="size-4" />
+                                <HugeiconsIcon
+                                  icon={Key01Icon}
+                                  className="size-4"
+                                />
                               </InputGroupAddon>
                               <InputGroupInput
                                 type="password"
@@ -863,7 +879,9 @@ export function ExportPage() {
                               />
                             </InputGroup>
                             {isCheckingToken && (
-                              <p className="text-xs text-muted-foreground">Checking token…</p>
+                              <p className="text-xs text-muted-foreground">
+                                Checking token…
+                              </p>
                             )}
                           </div>
                         </>
@@ -895,15 +913,24 @@ export function ExportPage() {
                                     : "./models/my-model"
                                 }
                                 className="w-full"
-                                onBlur={() => applyLocalSourceModel(localModelInputRef.current)}
+                                onBlur={() =>
+                                  applyLocalSourceModel(
+                                    localModelInputRef.current,
+                                  )
+                                }
                                 onKeyDown={(event) => {
                                   if (event.key !== "Enter") return;
                                   event.preventDefault();
-                                  applyLocalSourceModel(localModelInputRef.current);
+                                  applyLocalSourceModel(
+                                    localModelInputRef.current,
+                                  );
                                 }}
                               >
                                 <InputGroupAddon>
-                                  <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                                  <HugeiconsIcon
+                                    icon={FolderSearchIcon}
+                                    className="size-4"
+                                  />
                                 </InputGroupAddon>
                               </ComboboxInput>
                               <ComboboxContent anchor={localComboboxAnchorRef}>
@@ -916,7 +943,9 @@ export function ExportPage() {
                                     {localModelsError}
                                   </div>
                                 ) : (
-                                  <ComboboxEmpty>No local models found</ComboboxEmpty>
+                                  <ComboboxEmpty>
+                                    No local models found
+                                  </ComboboxEmpty>
                                 )}
                                 <ComboboxList className="p-1 !max-h-none !overflow-visible">
                                   {(id: string) => {
@@ -928,7 +957,11 @@ export function ExportPage() {
                                           ? "Custom Folders"
                                           : "Local dir";
                                     return (
-                                      <ComboboxItem key={id} value={id} className="gap-2">
+                                      <ComboboxItem
+                                        key={id}
+                                        value={id}
+                                        className="gap-2"
+                                      >
                                         <span className="block min-w-0 flex-1 truncate">
                                           {model?.display_name ?? id}
                                         </span>
@@ -947,7 +980,9 @@ export function ExportPage() {
                               Scanning local models...
                             </p>
                           ) : localModelsError ? (
-                            <p className="text-[10px] text-red-500">{localModelsError}</p>
+                            <p className="text-[10px] text-red-500">
+                              {localModelsError}
+                            </p>
                           ) : (
                             <p className="text-[10px] text-muted-foreground">
                               {exportableLocalModels.length > 0
@@ -965,112 +1000,129 @@ export function ExportPage() {
                       </div>
                     </motion.div>
                   )}
-                  </AnimatePresence>
+                </AnimatePresence>
 
-                  {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
-                      <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                        Training Info
-                      </span>
-                      <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Base Model</span>
-                          <span className="font-medium">{baseModelName}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Method</span>
-                          <span className="font-medium">
-                            {trainingMethodLabel}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Checkpoints</span>
-                          <span className="font-medium">
-                            {checkpointsForModel.length}
-                          </span>
-                        </div>
-                        {isAdapter && (
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">LoRA Rank</span>
-                            <span className="font-medium">{loraRank}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-2.5">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Quick Guide
-                  </span>
-                  <ol className="flex flex-col gap-3">
-                    {exportGuideSteps.map((step, i) => (
-                      <li
-                        key={step}
-                        className="flex items-start gap-2 text-xs text-muted-foreground"
-                      >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-semibold">
-                          {i + 1}
+                {sourceMode === "checkpoint" && (
+                  <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
+                    <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Training Info
+                    </span>
+                    <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          Base Model
                         </span>
-                        {step}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
+                        <span className="font-medium">{baseModelName}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Method</span>
+                        <span className="font-medium">
+                          {trainingMethodLabel}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          Checkpoints
+                        </span>
+                        <span className="font-medium">
+                          {checkpointsForModel.length}
+                        </span>
+                      </div>
+                      {isAdapter && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">
+                            LoRA Rank
+                          </span>
+                          <span className="font-medium">{loraRank}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <MethodPicker
-                value={exportMethod}
-                onChange={handleMethodChange}
-                disabledMethods={
-                  !isAdapter && isQuantized
-                    ? ["merged", "lora", "gguf"]
-                    : !isAdapter || sourceMode === "model"
-                      ? ["merged", "lora"]
-                      : []
-                }
-                disabledReason={
-                  !isAdapter && isQuantized
-                    ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                    : sourceMode === "model"
-                      ? "Only GGUF export is available for direct model export"
-                      : !isAdapter
-                        ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
-                        : undefined
-                }
-              />
+              <div className="flex flex-col gap-2.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Quick Guide
+                </span>
+                <ol className="flex flex-col gap-3">
+                  {exportGuideSteps.map((step, i) => (
+                    <li
+                      key={step}
+                      className="flex items-start gap-2 text-xs text-muted-foreground"
+                    >
+                      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-semibold">
+                        {i + 1}
+                      </span>
+                      {step}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
 
-              <AnimatePresence>
-                {exportMethod === "gguf" && (
-                  <motion.div {...collapseAnim} className="overflow-visible">
-                    <QuantPicker value={quantLevels} onChange={setQuantLevels} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
+            <MethodPicker
+              value={exportMethod}
+              onChange={handleMethodChange}
+              disabledMethods={
+                !isAdapter && isQuantized
+                  ? ["merged", "lora", "gguf"]
+                  : !isAdapter || sourceMode === "model"
+                    ? ["merged", "lora"]
+                    : []
+              }
+              disabledReason={
+                !isAdapter && isQuantized
+                  ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                  : sourceMode === "model"
+                    ? "Only GGUF export is available for direct model export"
+                    : isAdapter
+                      ? undefined
+                      : "Not available for full fine-tune checkpoints (no LoRA adapters)"
+              }
+            />
 
-              <Separator />
-              <div className="flex items-center justify-end">
-                {/* TODO: unhide once estimated size comes from the backend API */}
-                {/* <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <AnimatePresence>
+              {exportMethod === "gguf" && (
+                <motion.div {...collapseAnim} className="overflow-visible">
+                  <QuantPicker value={quantLevels} onChange={setQuantLevels} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <Separator />
+            <div className="flex items-center justify-end">
+              {/* TODO: unhide once estimated size comes from the backend API */}
+              {/* <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <HugeiconsIcon
                     icon={InformationCircleIcon}
                     className="size-3.5"
                   />
                   <span>Est. size: {estimatedSize} · Free disk space: 120 GB</span>
                 </div> */}
-                <Button
-                  data-tour="export-cta"
-                  disabled={!canExport}
-                  onClick={() => { setExportSuccess(false); setExportError(null); setDialogOpen(true); }}
-                >
-                  Export Model
-                </Button>
-              </div>
-            </>
-          )}
-        </SectionCard>
-      </main>
+              <Button
+                data-tour="export-cta"
+                disabled={!canExport}
+                onClick={() => {
+                  setExportSuccess(false);
+                  setExportError(null);
+                  setDialogOpen(true);
+                }}
+              >
+                Export Model
+              </Button>
+            </div>
+          </>
+        )}
+      </SectionCard>
+    </>
+  );
+
+  return (
+    <>
+      <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+        <main className="mx-auto max-w-7xl px-5 pb-20 pt-8 sm:px-9 sm:pt-10">{body}</main>
+      </div>
 
       <ExportDialog
         open={dialogOpen}
@@ -1097,6 +1149,6 @@ export function ExportPage() {
         exportSuccess={exportSuccess}
         exportOutputPath={exportOutputPath}
       />
-    </div>
+    </>
   );
 }

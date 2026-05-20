@@ -15,7 +15,9 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { TransportToggle } from "@/features/models/components/transport-toggle";
 import { useSettingsDialogStore } from "@/features/settings";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -24,7 +26,7 @@ import { SettingsSection } from "../components/settings-section";
 
 // Keys cleared by "Reset all local preferences".
 //
-// NEVER include auth / session keys here — resetting them would log the user
+// NEVER include auth / session keys here. Resetting them would log the user
 // out, which is not what users expect from a "reset preferences" button.
 //
 // Explicitly EXCLUDED:
@@ -63,7 +65,7 @@ const PREFS_KEYS: string[] = [
 ];
 
 // Set to true from resetAllPrefs so the unmount-commit effect skips writing
-// back the in-memory draft — otherwise the cleanup would re-persist the old
+// back the in-memory draft. Otherwise the cleanup would re-persist the old
 // HF token into localStorage after it was just cleared, and the subsequent
 // reload would read the re-written value.
 let resetInProgress = false;
@@ -94,8 +96,8 @@ export function GeneralTab() {
             : "",
     }),
   });
-  const hfToken = useChatRuntimeStore((s) => s.hfToken);
-  const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
+  const hfToken = useHfTokenStore((s) => s.token);
+  const setHfToken = useHfTokenStore((s) => s.setToken);
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
@@ -116,9 +118,9 @@ export function GeneralTab() {
     return () => {
       if (resetInProgress) return;
       const trimmed = draftRef.current.trim();
-      const current = useChatRuntimeStore.getState().hfToken;
+      const current = useHfTokenStore.getState().token;
       if (trimmed !== current) {
-        useChatRuntimeStore.getState().setHfToken(trimmed);
+        useHfTokenStore.getState().setToken(trimmed);
       }
     };
   }, []);
@@ -171,6 +173,15 @@ export function GeneralTab() {
           description="Generate a short title from the first message."
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Downloads">
+        <SettingsRow
+          label="Transport"
+          description="HTTP can resume a download where it left off after a cancel. Xet is usually faster on a fresh download but starts over if you cancel partway."
+        >
+          <TransportToggle />
         </SettingsRow>
       </SettingsSection>
 

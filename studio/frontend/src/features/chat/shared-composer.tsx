@@ -17,6 +17,7 @@ import { isTauri } from "@/lib/api-base";
 import { useAui } from "@assistant-ui/react";
 import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
+import { getHfToken } from "@/stores/hf-token-store";
 import { loadModel, validateModel } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
@@ -222,10 +223,19 @@ function PendingImageThumb({
   );
 }
 
+type CompareModelConfig = {
+  kvCacheDtype: string | null;
+  speculativeType: string | null;
+  customContextLength: number | null;
+  chatTemplateOverride: string | null;
+  trustRemoteCode?: boolean;
+};
+
 type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  config?: CompareModelConfig;
 };
 
 export function SharedComposer({
@@ -368,35 +378,66 @@ export function SharedComposer({
     const isGeneralizedCompare = hasCompareHandles && Boolean(model1?.id || model2?.id);
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
-      const maxSeqLength = store.params.maxSeqLength;
-      const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride =
-        chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+      const fallbackMaxSeqLength = store.params.maxSeqLength;
+      const fallbackTrustRemoteCode = store.params.trustRemoteCode ?? false;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
         return parts[parts.length - 1] || id;
       }
 
-      // Helper: load a model and update store checkpoint
+      function resolveSelectionLoad(sel: CompareModelSelection): {
+        maxSeqLength: number;
+        trustRemoteCode: boolean;
+        chatTemplateOverride: string | null;
+        cacheTypeKv: string | null;
+        speculativeType: string | null;
+      } {
+        const config = sel.config;
+        const trustRemoteCode =
+          config?.trustRemoteCode ?? fallbackTrustRemoteCode;
+        const trimmedTemplate = config?.chatTemplateOverride?.trim();
+        const chatTemplateOverride =
+          trimmedTemplate && trimmedTemplate.length > 0
+            ? (config?.chatTemplateOverride ?? null)
+            : null;
+        const isGgufLoad =
+          (sel.ggufVariant ?? null) !== null ||
+          sel.id.toLowerCase().endsWith(".gguf");
+        const customContextLength = config?.customContextLength ?? null;
+        const maxSeqLength =
+          customContextLength != null
+            ? customContextLength
+            : isGgufLoad
+              ? 0
+              : fallbackMaxSeqLength;
+        return {
+          maxSeqLength,
+          trustRemoteCode,
+          chatTemplateOverride,
+          cacheTypeKv: config?.kvCacheDtype ?? null,
+          speculativeType: config?.speculativeType ?? null,
+        };
+      }
+
       async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
+        const load = resolveSelectionLoad(sel);
         if (!isAlreadyActive) {
           const validation = await validateModel({
             model_path: sel.id,
-            hf_token: currentStore.hfToken || null,
-            max_seq_length: maxSeqLength,
+            hf_token: getHfToken() || null,
+            max_seq_length: load.maxSeqLength,
             load_in_4bit: true,
             is_lora: sel.isLora,
             gguf_variant: sel.ggufVariant ?? null,
-            trust_remote_code: trustRemoteCode,
-            chat_template_override: effectiveChatTemplateOverride,
+            trust_remote_code: load.trustRemoteCode,
+            chat_template_override: load.chatTemplateOverride,
           });
-          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+          if (validation.requires_trust_remote_code && !load.trustRemoteCode) {
             throw new Error(
               `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
             );
@@ -404,13 +445,15 @@ export function SharedComposer({
         }
         const resp = await loadModel({
           model_path: sel.id,
-          hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          hf_token: getHfToken() || null,
+          max_seq_length: load.maxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: trustRemoteCode,
-          chat_template_override: effectiveChatTemplateOverride,
+          trust_remote_code: load.trustRemoteCode,
+          chat_template_override: load.chatTemplateOverride,
+          cache_type_kv: load.cacheTypeKv,
+          speculative_type: load.speculativeType,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(

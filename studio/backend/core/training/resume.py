@@ -25,6 +25,13 @@ def has_resume_state(path_value: Optional[str]) -> bool:
     return get_resume_checkpoint_path(path_value) is not None
 
 
+def artifacts_present(path_value: Optional[str]) -> bool:
+    if not path_value:
+        return False
+    path = resolve_output_dir(path_value)
+    return _is_under_outputs(path) and path.is_dir()
+
+
 def _checkpoint_step(path: Path) -> int:
     try:
         return int(path.name.removeprefix("checkpoint-"))

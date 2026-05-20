@@ -1,25 +1,53 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LruMap } from "@/lib/lru-map";
+import { defaultUrlTransform, type UrlTransform } from "streamdown";
+
 export type ReadmeKind = "model" | "dataset";
 
-const cache = new Map<string, Promise<string | null>>();
+export interface FetchedReadme {
+  markdown: string;
+  branch: "main" | "master";
+}
+
+const cache = new LruMap<string, Promise<FetchedReadme | null>>(64);
+
+function readmePrefix(kind: ReadmeKind): string {
+  return kind === "dataset" ? "datasets/" : "";
+}
+
+export function readmeBaseUrl(
+  repoId: string,
+  kind: ReadmeKind,
+  branch: "main" | "master" = "main",
+): string {
+  return `https://huggingface.co/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+}
 
 async function fetchReadmeOnce(
   repoId: string,
   kind: ReadmeKind,
-): Promise<string | null> {
-  const prefix = kind === "dataset" ? "datasets/" : "";
-  for (const branch of ["main", "master"]) {
+  token: string | null,
+): Promise<FetchedReadme | null> {
+  const prefix = readmePrefix(kind);
+  const headers: HeadersInit = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let transient = false;
+  for (const branch of ["main", "master"] as const) {
     try {
       const url = `https://huggingface.co/${prefix}${repoId}/raw/${branch}/README.md`;
-      const res = await fetch(url, { mode: "cors" });
+      const res = await fetch(url, { mode: "cors", headers });
       if (res.ok) {
-        return await res.text();
+        return { markdown: await res.text(), branch };
       }
+      if (res.status !== 404) transient = true;
     } catch {
-      // try next branch
+      transient = true;
     }
+  }
+  if (transient) {
+    throw new Error(`Failed to fetch README for ${repoId}`);
   }
   return null;
 }
@@ -27,12 +55,36 @@ async function fetchReadmeOnce(
 export function fetchReadme(
   repoId: string,
   kind: ReadmeKind = "model",
-): Promise<string | null> {
-  const key = `${kind}::${repoId}`;
-  if (!cache.has(key)) {
-    cache.set(key, fetchReadmeOnce(repoId, kind));
+  token: string | null = null,
+): Promise<FetchedReadme | null> {
+  const key = `${kind}::${repoId}::${token ?? ""}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const promise = fetchReadmeOnce(repoId, kind, token).catch(() => {
+    cache.delete(key);
+    return null;
+  });
+  cache.set(key, promise);
+  return promise;
+}
+
+const ABSOLUTE_URL_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|data:|mailto:|tel:)/i;
+
+function resolveAgainstBase(src: string, baseUrl: string): string {
+  if (!src) return src;
+  if (ABSOLUTE_URL_RE.test(src)) return src;
+  try {
+    return new URL(src, baseUrl).toString();
+  } catch {
+    return src;
   }
-  return cache.get(key)!;
+}
+
+// Resolves relative asset URLs against the repo base, then delegates to
+// defaultUrlTransform so unsafe schemes (javascript:, etc.) stay stripped.
+export function createReadmeUrlTransform(baseUrl: string): UrlTransform {
+  return (url, key, node) =>
+    defaultUrlTransform(resolveAgainstBase(url, baseUrl), key, node);
 }
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
@@ -87,38 +139,13 @@ export function stripChromeHeadings(markdown: string): string {
   return out.join("\n");
 }
 
-export function extractDescription(markdown: string): string | null {
-  const { body } = stripFrontmatter(markdown);
-  const lines = body.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    if (line.startsWith("#")) continue;
-    if (/^!\[.*?\]\(/.test(line)) continue;
-    if (/^<(img|a|div|p|span)\b/i.test(line)) continue;
-    if (/^\[!\[/.test(line)) continue;
-    if (line.startsWith(">")) continue;
-    if (line.startsWith("|")) continue;
-    if (line.startsWith("---")) continue;
-    const cleaned = line
-      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-      .replace(/<[^>]+>/g, "")
-      .replace(/[*_`]+/g, "")
-      .trim();
-    if (cleaned.length >= 24) {
-      return cleaned;
-    }
-  }
-  return null;
-}
-
 export function extractFrontmatterValue(
   frontmatter: string | null,
   key: string,
 ): string | null {
   if (!frontmatter) return null;
-  const re = new RegExp(`^${key}:\\s*(.+?)\\s*$`, "im");
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${escapedKey}:\\s*(.+?)\\s*$`, "im");
   const match = re.exec(frontmatter);
   if (!match) return null;
   let value = match[1];

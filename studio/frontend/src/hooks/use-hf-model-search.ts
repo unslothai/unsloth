@@ -12,6 +12,10 @@ import {
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
 import { usePlatformStore } from "@/config/env";
+import {
+  EMBEDDING_TAGS,
+  estimateSizeFromDtypes,
+} from "@/features/models/lib/hf-model-meta";
 
 export type HfSortKey =
   | "trendingScore"
@@ -33,6 +37,7 @@ export interface HfModelResult {
   pipelineTag?: string;
   updatedAt?: string;
   libraryName?: string;
+  quantMethod?: string;
 }
 
 /** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
@@ -60,12 +65,220 @@ const EXCLUDED_TAGS_MLX = new Set([
   "ctranslate2",
 ]);
 
-// Embedding / sentence-transformer models ship with onnx/openvino as additional
-// export formats — they should not be excluded by the tag check above.
-const EMBEDDING_TAGS = new Set([
-  "sentence-transformers",
-  "feature-extraction",
+const UNSUPPORTED_PIPELINE_TAGS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+  "text-to-video",
+  "video-to-video",
+  "image-to-video",
+  "video-text-to-text",
+  "video-classification",
+  "unconditional-image-generation",
+  "text-to-3d",
+  "image-to-3d",
+  "image-segmentation",
+  "object-detection",
+  "depth-estimation",
+  "mask-generation",
+  "zero-shot-image-classification",
+  "zero-shot-object-detection",
+  "image-classification",
+  "keypoint-detection",
+  "image-feature-extraction",
+  "robotics",
+  "reinforcement-learning",
+  "graph-ml",
+  "tabular-classification",
+  "tabular-regression",
+  "time-series-forecasting",
 ]);
+
+const UNSUPPORTED_LIBRARY_TAGS: ReadonlySet<string> = new Set([
+  "diffusers",
+  "stable-diffusion",
+  "stable-diffusion-xl",
+  "flux",
+  "controlnet",
+  "lora-diffusers",
+]);
+
+const FORMAT_TAG_LABEL: Record<string, string> = {
+  gptq: "GPTQ quantization",
+  awq: "AWQ quantization",
+  exl2: "EXL2 quantization",
+  mlx: "MLX-format weights",
+  onnx: "ONNX-format weights",
+  openvino: "OpenVINO-format weights",
+  coreml: "Core ML-format weights",
+  tflite: "TensorFlow Lite-format weights",
+  ctranslate2: "CTranslate2-format weights",
+};
+
+const FORMAT_ALIAS_TAGS: Record<string, string> = {
+  "auto-gptq": "gptq",
+};
+
+const FORMAT_NAME_PATTERNS: ReadonlyArray<{ key: string; pattern: RegExp }> = [
+  { key: "awq", pattern: /(?:^|[-_./])awq(?:\d+(?:bit)?)?(?:$|[-_./])/i },
+  { key: "gptq", pattern: /(?:^|[-_./])gptq(?:\d+(?:bit)?)?(?:$|[-_./])/i },
+  { key: "exl2", pattern: /(?:^|[-_./])exl2(?:$|[-_./])/i },
+  { key: "mlx", pattern: /(?:^|[-_./])mlx(?:$|[-_./])/i },
+  { key: "onnx", pattern: /(?:^|[-_./])onnx(?:$|[-_./])/i },
+  { key: "openvino", pattern: /(?:^|[-_./])openvino(?:$|[-_./])/i },
+  { key: "coreml", pattern: /(?:^|[-_./])coreml(?:$|[-_./])/i },
+  { key: "tflite", pattern: /(?:^|[-_./])tflite(?:$|[-_./])/i },
+  { key: "ctranslate2", pattern: /(?:^|[-_./])ctranslate2(?:$|[-_./])/i },
+];
+
+function detectFormatKey(
+  modelId: string | null | undefined,
+  lowerTags: ReadonlySet<string>,
+): string | null {
+  for (const tag of lowerTags) {
+    if (FORMAT_TAG_LABEL[tag]) return tag;
+    const alias = FORMAT_ALIAS_TAGS[tag];
+    if (alias) return alias;
+  }
+  if (modelId) {
+    for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
+      if (pattern.test(modelId)) return key;
+    }
+  }
+  return null;
+}
+
+/**
+ * `config.quantization_config.quant_method` values Unsloth can load natively.
+ * Anything matching one of these stays unflagged regardless of the model name
+ * or tags — this is the authoritative signal because it comes from the model's
+ * own config.json. See
+ * https://huggingface.co/docs/transformers/quantization/overview.
+ */
+const SUPPORTED_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "bitsandbytes",
+  "bnb",
+  "bnb_4bit",
+  "bnb_8bit",
+]);
+
+/**
+ * `quant_method` values that Unsloth's runtime cannot load today. Maps to the
+ * label rendered to the user. Methods not in this map and not in
+ * `SUPPORTED_QUANT_METHODS` are treated as "unknown" and *not* flagged, so a
+ * brand-new method (or a publisher typo) never produces a false negative
+ * support claim.
+ */
+const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
+  awq: "AWQ quantization",
+  gptq: "GPTQ quantization",
+  exl2: "EXL2 quantization",
+  "compressed-tensors": "compressed-tensors quantization",
+  aqlm: "AQLM quantization",
+  eetq: "EETQ quantization",
+  hqq: "HQQ quantization",
+  fbgemm_fp8: "FBGEMM FP8 quantization",
+  finegrained_fp8: "fine-grained FP8 quantization",
+  quark: "Quark quantization",
+  vptq: "VPTQ quantization",
+  spqr: "SpQR quantization",
+  higgs: "HIGGS quantization",
+  sinq: "SINQ quantization",
+  torchao: "torchao quantization",
+  quanto: "optimum-quanto quantization",
+  auto_round: "AutoRound quantization",
+  autoround: "AutoRound quantization",
+  metal: "Metal-kernel quantization",
+  fouroversix: "Four Over Six quantization",
+  fp_quant: "FP-Quant quantization",
+};
+
+function normalizeQuantMethod(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.toLowerCase().trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export type UnslothSupportStatus = "supported" | "unsupported";
+
+export interface UnslothSupport {
+  status: UnslothSupportStatus;
+  reason: string | null;
+}
+
+/**
+ * Classify a Hugging Face model as supported by Unsloth on the active device.
+ * The Hub uses this to render a non-blocking notice; the training picker
+ * filters out unsupported models via separate task/format filters.
+ */
+export function classifyUnslothSupport({
+  modelId,
+  pipelineTag,
+  tags,
+  libraryName,
+  deviceType,
+  quantMethod,
+}: {
+  modelId?: string | null;
+  pipelineTag?: string | null;
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  deviceType?: string | null;
+  quantMethod?: string | null;
+}): UnslothSupport {
+  const pipeline = pipelineTag?.toLowerCase().trim() || null;
+  const lowerTags = new Set(
+    (tags ?? []).map((tag) => tag.toLowerCase().trim()).filter(Boolean),
+  );
+  const library = libraryName?.toLowerCase().trim() || null;
+  const formatTags =
+    deviceType?.toLowerCase() === "mac"
+      ? EXCLUDED_TAGS_MLX
+      : EXCLUDED_TAGS_GPU;
+  const normalizedQuant = normalizeQuantMethod(quantMethod);
+
+  if (normalizedQuant) {
+    if (SUPPORTED_QUANT_METHODS.has(normalizedQuant)) {
+      return { status: "supported", reason: null };
+    }
+    if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
+      return {
+        status: "unsupported",
+        reason: `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`,
+      };
+    }
+  }
+
+  if (pipeline && UNSUPPORTED_PIPELINE_TAGS.has(pipeline)) {
+    return {
+      status: "unsupported",
+      reason: `Pipeline task: ${pipeline}.`,
+    };
+  }
+  for (const tag of lowerTags) {
+    if (UNSUPPORTED_LIBRARY_TAGS.has(tag)) {
+      return {
+        status: "unsupported",
+        reason: `Library: ${tag}.`,
+      };
+    }
+  }
+  if (library && UNSUPPORTED_LIBRARY_TAGS.has(library)) {
+    return {
+      status: "unsupported",
+      reason: `Library: ${library}.`,
+    };
+  }
+  const formatKey = detectFormatKey(modelId, lowerTags);
+  if (formatKey && formatTags.has(formatKey)) {
+    const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
+    return {
+      status: "unsupported",
+      reason: `Detected ${label}.`,
+    };
+  }
+  return { status: "supported", reason: null };
+}
 
 // HF rejects direction=1 (asc) for trendingScore — only descending is supported.
 const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
@@ -99,27 +312,13 @@ function makeSortFetch(
 
 const withPopularitySort = makeSortFetch("downloads", "desc");
 
-/** Bytes per parameter for each dtype. */
-const DTYPE_BYTES: Record<string, number> = {
-  F64: 8, F32: 4, F16: 2, BF16: 2,
-  I64: 8, I32: 4, I16: 2, I8: 1, U8: 1,
-  // Quantized types (4-bit)
-  NF4: 0.5, FP4: 0.5, INT4: 0.5, GPTQ: 0.5,
-};
-
-function estimateSizeFromDtypes(
-  params: Record<string, number> | undefined,
-): number | undefined {
-  if (!params) return undefined;
-  let total = 0;
-  for (const [dtype, count] of Object.entries(params)) {
-    const bpp = DTYPE_BYTES[dtype.toUpperCase()] ?? 2; // default BF16
-    total += count * bpp;
-  }
-  return total > 0 ? total : undefined;
-}
-
-function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
+function makeMapModel(
+  excludeGguf: boolean,
+  excludedTags: ReadonlySet<string>,
+  keepUnsupportedTags: boolean,
+  idSuffix: string,
+) {
+  const suffixLower = idSuffix.toLowerCase();
   return (raw: unknown): HfModelResult | null => {
     const m = raw as {
       name: string;
@@ -132,9 +331,17 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       safetensors?: { total: number; parameters?: Record<string, number> };
       gguf?: { total?: number; architecture?: string };
       tags?: string[];
+      config?: { quantization_config?: { quant_method?: string } };
     };
+    if (suffixLower && !m.name?.toLowerCase().endsWith(suffixLower)) {
+      return null;
+    }
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
-    if (!isEmbedding && m.tags?.some((t) => excludedTags.has(t))) {
+    if (
+      !keepUnsupportedTags &&
+      !isEmbedding &&
+      m.tags?.some((t) => excludedTags.has(t))
+    ) {
       return null;
     }
     const isGguf =
@@ -160,6 +367,7 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       pipelineTag: m.task ?? m.pipeline_tag,
       updatedAt: updatedAtIso,
       libraryName: m.library_name,
+      quantMethod: m.config?.quantization_config?.quant_method,
     };
   };
 }
@@ -332,6 +540,15 @@ async function* priorityThenListingIterator(
   }
 }
 
+export interface HfModelSearchChannel {
+  owner?: string;
+  tags?: readonly string[];
+  /** Free-text query injected into the HF listModels search.query field. */
+  query?: string;
+  /** Strict client-side filter: drop results whose id doesn't end with this. */
+  idSuffix?: string;
+}
+
 export function useHfModelSearch(
   query: string,
   options?: {
@@ -343,6 +560,8 @@ export function useHfModelSearch(
     sortDirection?: HfSortDirection;
     pinUnslothFirst?: boolean;
     enabled?: boolean;
+    keepUnsupportedTags?: boolean;
+    channel?: HfModelSearchChannel | null;
   },
 ) {
   const {
@@ -354,7 +573,14 @@ export function useHfModelSearch(
     sortDirection = "desc",
     pinUnslothFirst = true,
     enabled = true,
+    keepUnsupportedTags = false,
+    channel = null,
   } = options ?? {};
+
+  const channelOwner = channel?.owner ?? null;
+  const channelTagsKey = channel?.tags ? channel.tags.join("|") : "";
+  const channelQuery = channel?.query ?? "";
+  const channelIdSuffix = channel?.idSuffix ?? "";
 
   // Parse publisher detection once and share between the iterator factory
   // and the secondary sort gate (avoids duplicating the regex + logic).
@@ -372,6 +598,28 @@ export function useHfModelSearch(
 
   const createIter = useCallback(
     () => {
+      // Channel scoping bypasses the unsloth-merge iterator: listings get a
+      // hard owner/tag filter so the sidebar shows just that curated slice.
+      // The user's text query (if any) is forwarded as a free-text filter
+      // within the channel.
+      if (channelOwner || channelTagsKey || channelQuery) {
+        const channelTags = channelTagsKey ? channelTagsKey.split("|") : undefined;
+        // User text query takes precedence over channel.query (so typing inside
+        // a channel still refines the slice). Without user input, the channel's
+        // own query (e.g. "bnb-4bit") narrows the listing server-side.
+        const queryString = trimmed || channelQuery || undefined;
+        return listModels({
+          search: {
+            ...(queryString ? { query: queryString } : {}),
+            ...(channelOwner ? { owner: channelOwner } : {}),
+            ...(channelTags ? { tags: channelTags } : {}),
+          },
+          additionalFields: ALL_FIELDS,
+          fetch: makeSortFetch(sortBy, sortDirection),
+          sort: sortBy,
+          ...(accessToken ? { credentials: { accessToken } } : {}),
+        }) as AsyncGenerator<unknown>;
+      }
       if (!trimmed) {
         // No query: show priority models first (with full metadata), then general unsloth listing
         if (priorityIds && priorityIds.length > 0) {
@@ -416,6 +664,9 @@ export function useHfModelSearch(
       priorityIds,
       sortBy,
       sortDirection,
+      channelOwner,
+      channelTagsKey,
+      channelQuery,
     ],
   );
 
@@ -423,24 +674,32 @@ export function useHfModelSearch(
   const excludedTags =
     deviceType === "mac" ? EXCLUDED_TAGS_MLX : EXCLUDED_TAGS_GPU;
   const mapModel = useMemo(
-    () => makeMapModel(excludeGguf, excludedTags),
-    [excludeGguf, excludedTags],
+    () =>
+      makeMapModel(
+        excludeGguf,
+        excludedTags,
+        keepUnsupportedTags,
+        channelIdSuffix,
+      ),
+    [excludeGguf, excludedTags, keepUnsupportedTags, channelIdSuffix],
   );
   const search = useHfPaginatedSearch(createIter, mapModel, { enabled });
 
   // Secondary sort: only when there's no user query. With a query, the merged
   // iterator already floats a small number of unsloth results to the top —
   // re-sorting all loaded results would bury the user's actual search matches.
+  // Channel scoping has its own ordering, so the re-sort is also disabled there.
+  const channelActive = Boolean(channelOwner || channelTagsKey);
   const results = useMemo(
     () =>
-      !pinUnslothFirst || isPublisherQuery || trimmed
+      !pinUnslothFirst || isPublisherQuery || trimmed || channelActive
         ? search.results
         : [...search.results].sort((a, b) => {
             const aFirst = a.id.startsWith("unsloth/") ? 0 : 1;
             const bFirst = b.id.startsWith("unsloth/") ? 0 : 1;
             return aFirst - bFirst;
           }),
-    [search.results, isPublisherQuery, trimmed],
+    [search.results, isPublisherQuery, trimmed, channelActive, pinUnslothFirst],
   );
 
   return { ...search, results };

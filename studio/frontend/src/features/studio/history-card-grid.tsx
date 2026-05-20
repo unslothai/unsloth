@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { TrainingRunSummary } from "@/features/training";
 import {
   deleteTrainingRun,
@@ -175,6 +176,7 @@ export function HistoryCardGrid({
   const [error, setError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteRunArtifacts, setDeleteRunArtifacts] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory } = useTrainingActions();
@@ -275,20 +277,23 @@ export function HistoryCardGrid({
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
+    const targetRun = runs.find((r) => r.id === deleteTarget) ?? null;
+    const alsoDeleteArtifacts =
+      !!targetRun && targetRun.artifacts_available && deleteRunArtifacts;
     setDeleteError(null);
     try {
-      await deleteTrainingRun(deleteTarget);
+      await deleteTrainingRun(deleteTarget, {
+        deleteArtifacts: alsoDeleteArtifacts,
+      });
       emitTrainingRunDeleted(deleteTarget);
-      // Re-fetch preserving visible count so offsets stay consistent for "Load more"
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
-      fetchRuns(0, false, limit).catch(() => {
-        // Refresh failed — card is already removed, no stale display
-      });
+      fetchRuns(0, false, limit).catch(() => {});
     } catch {
       setDeleteError("Failed to delete training run. Please try again.");
     }
     setDeleteTarget(null);
+    setDeleteRunArtifacts(false);
   };
 
   const handleResume = async (runId: string) => {
@@ -340,7 +345,10 @@ export function HistoryCardGrid({
             ? statusBadge.resumed_later
             : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
-          const canResume = run.can_resume && !wasContinued;
+          const artifactsMissing =
+            !run.artifacts_available && run.status !== "running";
+          const canResume =
+            run.can_resume && !wasContinued && !artifactsMissing;
           const isResuming = resumeTarget === run.id;
           return (
             <div
@@ -348,10 +356,7 @@ export function HistoryCardGrid({
               tabIndex={0}
               key={run.id}
               className={cn(
-                "group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
-                isRunning
-                  ? "border-blue-400/50 dark:border-blue-500/30"
-                  : "border-border/60",
+                "elevated-card group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 bg-card p-4 text-left transition-colors hover:bg-accent/30",
                 canResume && "gap-2",
               )}
               onClick={() => onSelectRun(run.id)}
@@ -363,14 +368,24 @@ export function HistoryCardGrid({
               }}
             >
               <div className="flex items-center justify-between pr-6">
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                    badge.className,
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                      badge.className,
+                    )}
+                  >
+                    {isRunning && <Spinner className="size-2.5" />}
+                    {badge.label}
+                  </span>
+                  {artifactsMissing && (
+                    <span
+                      className="inline-flex items-center rounded-full border border-border/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                      title="Adapter files were deleted from disk"
+                    >
+                      Files deleted
+                    </span>
                   )}
-                >
-                  {isRunning && <Spinner className="size-2.5" />}
-                  {badge.label}
                 </span>
                 <span className="text-[10px] text-muted-foreground">
                   {formatRelativeTime(run.started_at)}
@@ -470,17 +485,46 @@ export function HistoryCardGrid({
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) {
+            setDeleteTarget(null);
+            setDeleteRunArtifacts(false);
+          }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete training run?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this training run and all its metrics.
-              This action cannot be undone.
+              The run and all its metrics will be removed from history. This
+              cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {(() => {
+            const targetRun = deleteTarget
+              ? runs.find((r) => r.id === deleteTarget)
+              : null;
+            if (!targetRun?.artifacts_available) return null;
+            return (
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border/60 bg-muted/40 p-3 text-xs leading-relaxed">
+                <Checkbox
+                  checked={deleteRunArtifacts}
+                  onCheckedChange={(checked) =>
+                    setDeleteRunArtifacts(checked === true)
+                  }
+                  className="mt-0.5"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium text-foreground">
+                    Also delete adapter files on disk
+                  </span>
+                  <span className="text-muted-foreground">
+                    Removes the folder from outputs. The model will disappear
+                    from the chat picker. Leave unchecked to keep the files.
+                  </span>
+                </span>
+              </label>
+            );
+          })()}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

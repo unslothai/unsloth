@@ -2,3 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ModelsPage } from "./models-page";
+export { extractParamLabel, formatBytes } from "./lib/format";
+export {
+  bumpInventoryVersion,
+  getInventoryVersion,
+  subscribeInventory,
+  useInventoryVersion,
+} from "./inventory-events";

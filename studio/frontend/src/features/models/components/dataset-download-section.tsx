@@ -1,54 +1,84 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Spinner } from "@/components/ui/spinner";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  cancelDatasetDownload,
+  getDatasetTransportStatus,
   getDatasetDownloadProgress,
   getDatasetDownloadStatus,
   startDatasetDownload,
 } from "@/features/chat/api/chat-api";
-import { cn } from "@/lib/utils";
-import {
-  CheckmarkCircle02Icon,
-  Download01Icon,
-} from "@hugeicons/core-free-icons";
+import { deleteCachedDataset } from "@/features/training/api/datasets-api";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrainIcon } from "@/components/icons/train-icon";
+import { DotTag } from "./dot-tag";
+import { PathInfoButton } from "./path-info-button";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import { fetchDatasetSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
-
-interface ProgressState {
-  expectedBytes: number;
-  downloadedBytes: number;
-  fraction: number;
-}
+import { useDownloadJob } from "../hooks/use-download-job";
+import {
+  CardDivider,
+  DeleteConfirmDialog,
+  DownloadActionButton,
+  DownloadCard,
+} from "./download-card";
+import type { InventoryHint } from "./download-types";
 
 export function DatasetDownloadSection({
   repoId,
   isDownloaded,
+  isPartial = false,
+  cachePath,
+  onTrain,
   onChange,
 }: {
   repoId: string;
   isDownloaded: boolean;
-  onChange?: () => void;
+  isPartial?: boolean;
+  cachePath?: string | null;
+  onTrain?: () => void;
+  onChange?: (hint?: InventoryHint) => void;
 }) {
-  const [progress, setProgress] = useState<ProgressState | null>(null);
   const [totalBytes, setTotalBytes] = useState<number | null>(null);
-  const pollRef = useRef<number | null>(null);
+  const hfToken = useHfTokenStore((s) => s.token);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current != null) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
+  const job = useDownloadJob({
+    repoId,
+    label: () => repoId,
+    toastId: () => `dataset-download-${repoId}`,
+    startErrorTitle: "Failed to start dataset download",
+    errorTitle: "Dataset download failed",
+    getProgress: () => getDatasetDownloadProgress(repoId),
+    getStatus: () => getDatasetDownloadStatus(repoId),
+    start: (_variant, useXet) =>
+      startDatasetDownload({
+        repo_id: repoId,
+        hf_token: hfToken || undefined,
+        use_xet: useXet,
+      }),
+    cancel: () => cancelDatasetDownload({ repo_id: repoId }),
+    getTransportStatus: () => getDatasetTransportStatus(repoId),
+    onComplete: (_variant, bytes) =>
+      onChange?.({ kind: "dataset", repoId, bytes: bytes || undefined }),
+    onCancelled: () => onChange?.(),
+  });
+
+  const progress = job.progress;
+  const cancelling = job.cancelling;
 
   useEffect(() => {
-    setProgress(null);
     setTotalBytes(null);
-    stopPolling();
-
     let cancelled = false;
 
     void getDatasetDownloadProgress(repoId)
@@ -71,181 +101,136 @@ export function DatasetDownloadSection({
     return () => {
       cancelled = true;
     };
-  }, [repoId, stopPolling]);
+  }, [repoId]);
 
-  useEffect(() => {
-    return () => stopPolling();
-  }, [stopPolling]);
-
-  const startDownload = useCallback(async () => {
-    stopPolling();
-    setProgress({ expectedBytes: 0, downloadedBytes: 0, fraction: 0 });
-
-    const toastId = `dataset-download-${repoId}`;
-    toast(`Downloading ${repoId}`, {
-      id: toastId,
-      description: "Starting download…",
-      duration: Number.POSITIVE_INFINITY,
-    });
-
+  const handleConfirmDelete = useCallback(async () => {
+    setDeleting(true);
     try {
-      await startDatasetDownload({ repo_id: repoId });
+      await deleteCachedDataset(repoId);
+      toast.success(`Deleted ${repoId}`);
+      setDeleteOpen(false);
+      onChange?.();
     } catch (err) {
-      setProgress(null);
-      toast.error("Failed to start dataset download", {
-        id: toastId,
+      toast.error("Failed to delete dataset", {
         description: err instanceof Error ? err.message : undefined,
-        duration: 4000,
       });
-      return;
+    } finally {
+      setDeleting(false);
     }
-
-    const tick = async () => {
-      try {
-        const [progressResp, status] = await Promise.all([
-          getDatasetDownloadProgress(repoId),
-          getDatasetDownloadStatus(repoId),
-        ]);
-
-        const next: ProgressState = {
-          expectedBytes: progressResp.expected_bytes,
-          downloadedBytes: progressResp.downloaded_bytes,
-          fraction: progressResp.progress,
-        };
-        setProgress(next);
-
-        const percent = Math.round(Math.min(progressResp.progress, 1) * 100);
-        const downloadedLabel = formatBytes(progressResp.downloaded_bytes);
-        const totalLabel =
-          progressResp.expected_bytes > 0
-            ? formatBytes(progressResp.expected_bytes)
-            : null;
-        toast(`Downloading ${repoId}`, {
-          id: toastId,
-          description: totalLabel
-            ? `${downloadedLabel} / ${totalLabel} · ${percent}%`
-            : `${downloadedLabel} · ${percent}%`,
-          duration: Number.POSITIVE_INFINITY,
-        });
-
-        if (status.state === "complete") {
-          stopPolling();
-          setProgress(null);
-          toast.success(`Downloaded ${repoId}`, {
-            id: toastId,
-            description: undefined,
-            duration: 3000,
-          });
-          onChange?.();
-        } else if (status.state === "error") {
-          stopPolling();
-          setProgress(null);
-          toast.error("Dataset download failed", {
-            id: toastId,
-            description: status.error ?? undefined,
-            duration: 5000,
-          });
-        }
-      } catch {
-        // transient; next tick will retry
-      }
-    };
-
-    void tick();
-    pollRef.current = window.setInterval(() => {
-      void tick();
-    }, 750);
-  }, [repoId, onChange, stopPolling]);
+  }, [repoId, onChange]);
 
   const downloading = progress !== null;
+  const canDelete =
+    (isDownloaded || isPartial) && !downloading && !cancelling && !deleting;
+  const progressPercent =
+    progress != null ? Math.round(Math.min(progress.fraction, 1) * 100) : null;
 
   return (
-    <div className="download-card">
-      <div className="flex items-center">
-        <div className="flex h-9 min-w-0 flex-1 items-center pl-3">
-          <span className="flex items-center gap-2.5 text-[12px] text-muted-foreground">
-            <span className="font-medium text-amber-600 dark:text-amber-400">
-              Dataset
-            </span>
-            {totalBytes && totalBytes > 0 && (
-              <span className="tabular-nums">{formatBytes(totalBytes)}</span>
-            )}
-            {isDownloaded && (
-              <span className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
-                <HugeiconsIcon
-                  icon={CheckmarkCircle02Icon}
-                  strokeWidth={2.5}
-                  className="size-3"
-                />
-                On device
-              </span>
-            )}
-          </span>
-        </div>
-        <div
-          aria-hidden="true"
-          className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] dark:bg-white/[0.04]"
+    <DownloadCard
+      job={job}
+      progress={downloading ? progress : null}
+      dialogs={
+        <DeleteConfirmDialog
+          open={deleteOpen}
+          onOpenChange={(o) => {
+            if (!o && !deleting) setDeleteOpen(false);
+          }}
+          title="Delete cached dataset?"
+          deleting={deleting}
+          onConfirm={() => void handleConfirmDelete()}
+          description={
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{repoId}</span> and
+              its downloaded files
+              {totalBytes && totalBytes > 0
+                ? ` (${formatBytes(totalBytes)})`
+                : ""}{" "}
+              from disk. You can re-download it later.
+            </>
+          }
         />
+      }
+    >
+      <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
+        <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+          {isDownloaded && <DotTag tone="success" label="On device" />}
+          {!isDownloaded && isPartial && !downloading && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <DotTag tone="warning" label="Partial" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={4}>
+                Partial download. Click Resume to continue.
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {totalBytes && totalBytes > 0 && (
+            <span className="tabular-nums">{formatBytes(totalBytes)}</span>
+          )}
+        </span>
+        <div className="ml-auto flex items-center gap-0.5">
+          {canDelete && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Delete ${repoId}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteOpen(true);
+                  }}
+                  className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-rose-500/10 hover:text-rose-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-rose-500/15 dark:hover:text-rose-400"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={4}>
+                Delete from device
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {isDownloaded && cachePath && (
+            <PathInfoButton
+              path={cachePath}
+              title="On-device location"
+              description={`Where ${repoId} lives on disk.`}
+            />
+          )}
+        </div>
+      </div>
+      <CardDivider />
+      {isDownloaded && !downloading ? (
         <button
           type="button"
-          disabled={downloading || isDownloaded}
-          onClick={() => void startDownload()}
-          className={cn(
-            "inline-flex h-9 w-24 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12.5px] font-medium tracking-tight transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]",
-            isDownloaded
-              ? "cursor-default text-emerald-700 dark:text-emerald-400"
-              : "text-foreground",
-            downloading && "opacity-70",
-          )}
+          onClick={() => onTrain?.()}
+          className="hub-action-btn w-28"
         >
-          {downloading ? (
-            <>
-              <Spinner className="size-3.5" />
-              Downloading…
-            </>
-          ) : isDownloaded ? (
-            <>
-              <HugeiconsIcon
-                icon={CheckmarkCircle02Icon}
-                strokeWidth={2}
-                className="size-3.5"
-              />
-              On device
-            </>
-          ) : (
-            <>
-              <HugeiconsIcon
-                icon={Download01Icon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              Download
-            </>
-          )}
+          <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
+          Train
         </button>
-      </div>
-      {downloading && progress && (
-        <div className="flex flex-col gap-1.5">
-          <div className="h-1 overflow-hidden rounded-full bg-border/40">
-            <div
-              className="h-full rounded-full bg-foreground/80 transition-[width] duration-300"
-              style={{
-                width: `${Math.round(Math.min(progress.fraction, 1) * 100)}%`,
-              }}
-            />
-          </div>
-          <div className="flex items-center justify-between text-[10.5px] text-muted-foreground tabular-nums">
-            <span>
-              {formatBytes(progress.downloadedBytes)}
-              {progress.expectedBytes > 0 &&
-                ` / ${formatBytes(progress.expectedBytes)}`}
-            </span>
-            <span>
-              {Math.round(Math.min(progress.fraction, 1) * 100)}%
-            </span>
-          </div>
-        </div>
+      ) : (
+        <DownloadActionButton
+          downloading={downloading}
+          cancelling={cancelling}
+          isPartial={isPartial}
+          progressPercent={progressPercent}
+          disabled={cancelling || deleting}
+          onClick={() => {
+            if (downloading) {
+              void job.cancelDownload(null);
+              return;
+            }
+            void job.requestStartDownload(null, totalBytes ?? 0);
+          }}
+        />
       )}
-    </div>
+    </DownloadCard>
   );
 }

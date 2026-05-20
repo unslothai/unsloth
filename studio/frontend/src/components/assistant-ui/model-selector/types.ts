@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ReactNode } from "react";
+import type { PerModelConfig } from "@/features/chat/model-config/per-model-config";
 
 export interface ModelOption {
   id: string;
@@ -16,6 +17,7 @@ export interface LoraModelOption extends ModelOption {
   updatedAt?: number;
   source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
+  runDisplayName?: string;
 }
 
 export interface ModelSelectorChangeMeta {
@@ -24,6 +26,15 @@ export interface ModelSelectorChangeMeta {
   ggufVariant?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  config?: PerModelConfig;
+}
+
+export interface ModelPickTarget {
+  id: string;
+  displayName: string;
+  meta: ModelSelectorChangeMeta;
+  isGguf: boolean;
+  supportsTrustRemoteCode: boolean;
 }
 
 export interface DeletedModelRef {

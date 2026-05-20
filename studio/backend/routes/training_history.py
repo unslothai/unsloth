@@ -6,12 +6,13 @@ Training history API routes — browse, view, and delete past training runs.
 """
 
 import json
+import shutil
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
-from core.training.resume import can_resume_run
+from core.training.resume import artifacts_present, can_resume_run
 from models import (
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
@@ -27,10 +28,18 @@ from storage.studio_db import (
     list_runs,
     update_run_display_name,
 )
+from utils.paths import outputs_root, resolve_output_dir
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _summary_from_row(row: dict) -> TrainingRunSummary:
+    payload = {k: v for k, v in row.items() if k != "config_json"}
+    payload["can_resume"] = can_resume_run(row)
+    payload["artifacts_available"] = artifacts_present(row.get("output_dir"))
+    return TrainingRunSummary(**payload)
 
 
 @router.get("/runs", response_model = TrainingRunListResponse)
@@ -42,10 +51,7 @@ async def list_training_runs(
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
     return TrainingRunListResponse(
-        runs = [
-            TrainingRunSummary(**{**r, "can_resume": can_resume_run(r)})
-            for r in result["runs"]
-        ],
+        runs = [_summary_from_row(r) for r in result["runs"]],
         total = result["total"],
     )
 
@@ -69,12 +75,7 @@ async def get_training_run_detail(
     metrics_data = get_run_metrics(run_id)
 
     return TrainingRunDetailResponse(
-        run = TrainingRunSummary(
-            **{
-                **{k: v for k, v in run.items() if k != "config_json"},
-                "can_resume": can_resume_run(run),
-            }
-        ),
+        run = _summary_from_row(run),
         config = config,
         metrics = TrainingRunMetrics(**metrics_data),
     )
@@ -100,20 +101,19 @@ async def update_training_run(
     refreshed = get_run(run_id)
     if refreshed is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
-    return TrainingRunSummary(
-        **{
-            **{k: v for k, v in refreshed.items() if k != "config_json"},
-            "can_resume": can_resume_run(refreshed),
-        }
-    )
+    return _summary_from_row(refreshed)
 
 
 @router.delete("/runs/{run_id}", response_model = TrainingRunDeleteResponse)
 async def delete_training_run(
     run_id: str,
+    delete_artifacts: bool = Query(
+        False,
+        description = "Also remove the run's on-disk adapter directory.",
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete a training run and its metrics (CASCADE)."""
+    """Delete a training run from history (optionally its on-disk adapter directory)."""
     run = get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
@@ -121,9 +121,58 @@ async def delete_training_run(
         raise HTTPException(
             status_code = 409, detail = "Cannot delete a running training run"
         )
-    logger.info("Deleting training run %s", run_id)
+
+    logger.info(
+        "Deleting training run %s (delete_artifacts=%s)", run_id, delete_artifacts
+    )
+
+    if delete_artifacts:
+        output_dir = run.get("output_dir")
+        if output_dir:
+            _delete_run_output_dir(run_id, output_dir)
+
     delete_run(run_id)
     return TrainingRunDeleteResponse(
         status = "deleted",
         message = f"Run {run_id} deleted",
     )
+
+
+def _delete_run_output_dir(run_id: str, output_dir: str) -> None:
+    try:
+        resolved = resolve_output_dir(output_dir).resolve()
+        outputs_base = outputs_root().resolve()
+    except (OSError, ValueError):
+        logger.warning(
+            "Cannot resolve output_dir for run %s; skipping disk cleanup: %s",
+            run_id,
+            output_dir,
+        )
+        return
+
+    try:
+        resolved.relative_to(outputs_base)
+    except ValueError:
+        logger.warning(
+            "Refusing to delete output_dir outside outputs_root for run %s: %s",
+            run_id,
+            resolved,
+        )
+        return
+
+    if not resolved.exists():
+        return
+
+    if not resolved.is_dir():
+        logger.warning(
+            "Run %s output path is not a directory; skipping: %s", run_id, resolved
+        )
+        return
+
+    try:
+        shutil.rmtree(resolved)
+        logger.info("Deleted adapter directory for run %s: %s", run_id, resolved)
+    except OSError:
+        logger.exception(
+            "Failed to delete adapter directory for run %s: %s", run_id, resolved
+        )

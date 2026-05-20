@@ -14,39 +14,7 @@ import {
   type CapabilityKey,
 } from "./capabilities";
 import { ownerOf, repoOf } from "./format";
-
-const EXCLUDED_TAGS = new Set([
-  "gptq",
-  "awq",
-  "exl2",
-  "mlx",
-  "onnx",
-  "openvino",
-  "coreml",
-  "tflite",
-  "ctranslate2",
-]);
-
-const EMBEDDING_TAGS = new Set([
-  "sentence-transformers",
-  "feature-extraction",
-]);
-
-const DTYPE_BYTES: Record<string, number> = {
-  F64: 8,
-  F32: 4,
-  F16: 2,
-  BF16: 2,
-  I64: 8,
-  I32: 4,
-  I16: 2,
-  I8: 1,
-  U8: 1,
-  NF4: 0.5,
-  FP4: 0.5,
-  INT4: 0.5,
-  GPTQ: 0.5,
-};
+import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 
 export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   value: CapabilityFilter;
@@ -78,18 +46,6 @@ export const RESOURCE_TYPE_OPTIONS: ReadonlyArray<{
   { value: "models", label: "Models" },
   { value: "datasets", label: "Datasets" },
 ];
-
-function estimateSizeFromDtypes(
-  params: Record<string, number> | undefined,
-): number | undefined {
-  if (!params) return undefined;
-  let total = 0;
-  for (const [dtype, count] of Object.entries(params)) {
-    const bytesPerParam = DTYPE_BYTES[dtype.toUpperCase()] ?? 2;
-    total += count * bytesPerParam;
-  }
-  return total > 0 ? total : undefined;
-}
 
 export function formatPipelineTag(tag: string | undefined): string | null {
   if (!tag) return null;
@@ -142,13 +98,10 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
     safetensors?: { total?: number; parameters?: Record<string, number> };
     gguf?: { total?: number; architecture?: string };
     tags?: string[];
+    config?: { quantization_config?: { quant_method?: string } };
   };
 
   if (!model.name) return null;
-  const isEmbedding = model.tags?.some((tag) => EMBEDDING_TAGS.has(tag));
-  if (!isEmbedding && model.tags?.some((tag) => EXCLUDED_TAGS.has(tag))) {
-    return null;
-  }
 
   const isGguf =
     Boolean(model.tags?.some((tag) => tag.toLowerCase() === "gguf")) ||
@@ -171,26 +124,32 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
     pipelineTag: model.task ?? model.pipeline_tag,
     updatedAt,
     libraryName: model.library_name,
+    quantMethod: model.config?.quantization_config?.quant_method,
   };
 }
 
 export function buildDiscoverRows(
   results: HfModelResult[],
   availableSet: Set<string>,
+  partialSet: Set<string>,
 ): DiscoverRow[] {
-  return results.map((result) => ({
-    id: result.id,
-    owner: ownerOf(result.id),
-    repo: repoOf(result.id),
-    result,
-    isAvailableOnDevice: availableSet.has(result.id.toLowerCase()),
-    summary: buildSummary(result),
-    capabilities: detectCapabilities(
-      result.tags,
-      result.pipelineTag,
-      result.id,
-    ),
-  }));
+  return results.map((result) => {
+    const lower = result.id.toLowerCase();
+    return {
+      id: result.id,
+      owner: ownerOf(result.id),
+      repo: repoOf(result.id),
+      result,
+      isAvailableOnDevice: availableSet.has(lower),
+      isPartialOnDevice: partialSet.has(lower),
+      summary: buildSummary(result),
+      capabilities: detectCapabilities(
+        result.tags,
+        result.pipelineTag,
+        result.id,
+      ),
+    };
+  });
 }
 
 export function matchesFormat(
@@ -242,10 +201,7 @@ export function formatLocalUpdated(value?: number | null): string {
   return formatter.format(new Date(normalized));
 }
 
-export function isGgufLike(value: string | undefined | null): boolean {
-  if (!value) return false;
-  return value.toLowerCase().endsWith(".gguf") || /-GGUF(?:$|-)/i.test(value);
-}
+export { isGgufLike } from "./hf-model-meta";
 
 function getLocalHubId(model: LocalModelInfo): string | null {
   const candidate = model.model_id?.trim();
@@ -263,7 +219,6 @@ export function buildLocalInventoryRows(
   models: LocalModelInfo[],
 ): LocalInventoryRow[] {
   return models
-    .filter((model) => model.source !== "hf_cache")
     .map((model) => {
       const repoId = getLocalHubId(model);
       const owner = repoId ? ownerOf(repoId) : localSourceLabel(model.source);
@@ -283,6 +238,7 @@ export function buildLocalInventoryRows(
           isGgufLike(model.model_id) ||
           isGgufLike(model.display_name),
         updatedAt: normalizeTimestamp(model.updated_at),
+        partial: model.partial ?? false,
       };
     })
     .sort((a, b) => {
@@ -308,4 +264,18 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
     default:
       return 4;
   }
+}
+
+const LANGUAGE_TAG_PREFIX = "language:";
+
+export function parseLanguageTags(
+  tags: readonly string[] | null | undefined,
+): string[] {
+  const langs: string[] = [];
+  for (const tag of tags ?? []) {
+    if (!tag.startsWith(LANGUAGE_TAG_PREFIX)) continue;
+    const code = tag.slice(LANGUAGE_TAG_PREFIX.length);
+    if (code && !langs.includes(code)) langs.push(code);
+  }
+  return langs;
 }

@@ -48,6 +48,7 @@ import {
   buildModelVramMap,
 } from "@/lib/vram";
 import { useTrainingConfigStore } from "@/features/training";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import type { TrainingMethod } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -74,8 +75,6 @@ export function ModelSelectionStep() {
     ensureModelDefaultsLoaded,
     trainingMethod,
     setTrainingMethod,
-    hfToken,
-    setHfToken,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       modelType: s.modelType,
@@ -84,10 +83,10 @@ export function ModelSelectionStep() {
       ensureModelDefaultsLoaded: s.ensureModelDefaultsLoaded,
       trainingMethod: s.trainingMethod,
       setTrainingMethod: s.setTrainingMethod,
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
     })),
   );
+  const hfToken = useHfTokenStore((s) => s.token);
+  const setHfToken = useHfTokenStore((s) => s.setToken);
 
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
@@ -177,7 +176,7 @@ export function ModelSelectionStep() {
         {(tokenValidationError ?? hfSearchError) && (
           <p className="text-xs text-destructive">
             {tokenValidationError ?? hfSearchError}
-            {" — "}
+            {". "}
             <a
               href="https://huggingface.co/settings/tokens"
               target="_blank"

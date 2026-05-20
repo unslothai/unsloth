@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, hfTokenHeader } from "@/features/auth";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -73,6 +73,7 @@ export interface ModelConfigResponse {
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
+  chat_template?: string | null;
 }
 
 export interface LocalModelInfo {
@@ -82,6 +83,7 @@ export interface LocalModelInfo {
   source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
+  partial?: boolean;
 }
 
 interface LocalModelListResponse {
@@ -129,8 +131,10 @@ export async function getModelConfig(
   hfToken?: string,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
+  const response = await authFetch(`/api/models/config/${encoded}`, {
+    signal,
+    headers: hfTokenHeader(hfToken),
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

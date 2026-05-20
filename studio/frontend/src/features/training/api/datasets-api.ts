@@ -122,3 +122,43 @@ export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
   }
   return res.json();
 }
+
+export interface CachedDatasetRepo {
+  repo_id: string;
+  size_bytes: number;
+  cache_path?: string;
+  partial?: boolean;
+}
+
+export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
+  const res = await authFetch("/api/datasets/cached");
+  if (!res.ok) {
+    if (res.status === 404) {
+      console.warn(
+        "GET /api/datasets/cached returned 404 — backend may need a restart to expose the cached-datasets endpoint.",
+      );
+    } else {
+      console.warn(
+        "GET /api/datasets/cached failed with status",
+        res.status,
+      );
+    }
+    return [];
+  }
+  const data = (await res.json().catch(() => null)) as
+    | { cached?: CachedDatasetRepo[] }
+    | null;
+  return data?.cached ?? [];
+}
+
+export async function deleteCachedDataset(repoId: string): Promise<void> {
+  const res = await authFetch("/api/datasets/cached", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo_id: repoId }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `Failed to delete dataset (${res.status})`);
+  }
+}

@@ -402,6 +402,47 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
         conn.close()
 
 
+def get_run_ids_by_output_dir(output_dir: str) -> list[str]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM training_runs WHERE output_dir = ?", (output_dir,)
+        ).fetchall()
+        return [row[0] for row in rows]
+    finally:
+        conn.close()
+
+
+def get_display_names_by_output_dirs(
+    output_dirs: list[str],
+) -> dict[str, str]:
+    if not output_dirs:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(output_dirs))
+        rows = conn.execute(
+            f"""
+            SELECT r.output_dir, r.display_name
+            FROM training_runs r
+            WHERE r.output_dir IN ({placeholders})
+              AND r.display_name IS NOT NULL
+              AND r.display_name != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM training_runs newer
+                  WHERE newer.output_dir = r.output_dir
+                    AND newer.display_name IS NOT NULL
+                    AND newer.display_name != ''
+                    AND newer.started_at > r.started_at
+              )
+            """,
+            output_dirs,
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+    finally:
+        conn.close()
+
+
 def get_run_metrics(id: str) -> dict:
     """Return metric arrays for a run, using paired step arrays per metric."""
     conn = get_connection()

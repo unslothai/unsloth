@@ -6,6 +6,7 @@ import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import { getAuthToken } from "@/features/auth/session";
 import { apiUrl } from "@/lib/api-base";
+import { getHfToken } from "@/stores/hf-token-store";
 import {
   generateAudio,
   listCachedGguf,
@@ -296,7 +297,7 @@ async function autoLoadSmallestModel(): Promise<{
   blockedByTrustRemoteCode: boolean;
 }> {
   const store = useChatRuntimeStore.getState();
-  const hfToken = store.hfToken || null;
+  const hfToken = getHfToken() || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",

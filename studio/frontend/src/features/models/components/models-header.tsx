@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HfTokenIndicator } from "@/components/hf-token-indicator";
+import { PageHeading } from "@/components/layout";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useSettingsDialogStore } from "@/features/settings";
 import { cn } from "@/lib/utils";
 import {
-  AiSecurity03Icon,
   ChipIcon,
   Database02Icon,
   Logout01Icon,
@@ -19,45 +18,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-
-function HfTokenIndicator() {
-  const hfToken = useChatRuntimeStore((s) => s.hfToken);
-  const openDialog = useSettingsDialogStore((s) => s.openDialog);
-  const hasToken = Boolean(hfToken && hfToken.trim());
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={() => openDialog("general")}
-          aria-label={
-            hasToken
-              ? "Hugging Face token configured"
-              : "Set Hugging Face token"
-          }
-          className={cn(
-            "inline-flex items-center justify-center px-2.5 py-1 text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            hasToken
-              ? "tag-soft text-muted-foreground hover:text-foreground/80"
-              : "rounded-[11px] bg-[#b42323] text-white hover:bg-[#9e1e1e] dark:bg-[#5e1a1a] dark:hover:bg-[#4d1414]",
-          )}
-        >
-          <HugeiconsIcon
-            icon={AiSecurity03Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
-        {hasToken
-          ? "Hugging Face token set"
-          : "No Hugging Face token, click to set"}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 function StatPill({
   icon,
@@ -108,15 +68,11 @@ export function ModelsHeader({
   onEject: () => void;
 }) {
   return (
-    <header className="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h1 className="text-[26px] font-semibold leading-[1.1] tracking-[-0.025em] text-foreground">
-          Hub
-        </h1>
-        <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-          Discover, download, and run inference models locally.
-        </p>
-      </div>
+    <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <PageHeading
+        title="Hub"
+        subtitle="Discover, download, and run inference models locally."
+      />
 
       <div className="flex flex-wrap items-center gap-1.5">
         <HfTokenIndicator />

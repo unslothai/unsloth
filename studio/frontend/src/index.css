@@ -58,37 +58,42 @@
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
 	--background: oklch(1 0 0);
-	--foreground: oklch(0.2686 0 0);
+	--foreground: #232528;
 	--card: oklch(1 0 0);
-	--card-foreground: oklch(0.1281 0.0179 169.2764);
+	--card-foreground: #232528;
 	--popover: oklch(1 0 0);
-	--popover-foreground: oklch(0.1281 0.0179 169.2764);
-	--primary: #17b88b;
+	--popover-foreground: #232528;
+	--primary: #11b686;
 	--primary-foreground: oklch(1 0 0);
 	--secondary: oklch(0.9596 0.0275 167.8295);
 	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
 	--muted: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
-	--accent: oklch(0.9596 0.0275 167.8295);
-	--accent-foreground: oklch(0.2868 0.0649 159.9823);
+	/* Neutral accent — drives Select-item hover / focus highlight
+	   across the app. Was previously a green-tinted oklch which leaked
+	   the Unsloth primary green into dropdown menus and made selections
+	   look "selected with a brand colour". Kept neutral on both themes
+	   so menus on Train and Hub read the same. */
+	--accent: oklch(0.961 0 0);
+	--accent-foreground: oklch(0.2 0 0);
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
-	--ring: #17b88b;
-	--chart-1: #17b88b;
+	--ring: #11b686;
+	--chart-1: #11b686;
 	--chart-2: oklch(0.694 0.1395 136.6059);
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
 	--radius: 1.1rem;
 	--sidebar: var(--background);
-	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
-	--sidebar-primary: #17b88b;
+	--sidebar-foreground: #232528;
+	--sidebar-primary: #11b686;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--sidebar-border: oklch(0.945 0.0101 164.8536);
-	--sidebar-ring: #17b88b;
+	--sidebar-ring: #11b686;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -123,7 +128,7 @@
 	--tracking-normal: -0.01em;
 
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
-	--nav-fg: #383835;
+	--nav-fg: #232528;
 	--nav-fg-muted: #858279;
 	--nav-surface-hover: #f0f0f0;
 	--nav-icon-idle: #8f8f8f;
@@ -159,6 +164,17 @@
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover: #ededec;
 
+	/* Hub model format + status accents. One token per identity drives
+	   both dots and text (chips, inspector pill, catalog row markers) so
+	   the palette stays coherent across light/dark. Pink (not violet) is
+	   chosen for checkpoints to read clearly distinct from GGUF blue at
+	   a glance on white surfaces. */
+	--format-gguf: #60a5fa;
+	--format-checkpoint: #f472b6;
+	--status-warning: #eab308;
+	--status-danger: #ef4444;
+	--status-success: #11b686;
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
@@ -174,43 +190,44 @@
 }
 
 .dark {
-	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
-	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
-	   drifted ~3% darker and shifted the neutral hue. */
-	--background: #000000;
+	/* Soft, neutral elevation steps. Sidebar is no longer pitch-black so it
+	   reads as a quiet panel (#1a1b1d), page sits one tick above (#1f2024),
+	   and cards lift clearly to #2a2b2f so they don't fade into the page.
+	   Borders at #3a3b40 give visible hairlines on every surface. */
+	--background: #1f2023;
 	--foreground: #ececee;
-	--card: #2d2e32;
+	--card: #2a2b2f;
 	--card-foreground: #ececee;
-	--popover: #2d2e32;
+	--popover: #34353a;
 	--popover-foreground: #ececee;
-	--primary: #17b88b;
+	--primary: #11b686;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #2e3035;
+	--secondary: #2a2b2f;
 	--secondary-foreground: #ececee;
-	--muted: #2e3035;
-	--muted-foreground: #999999;
-	--accent: #2e3035;
+	--muted: #2a2b2f;
+	--muted-foreground: #9c9da0;
+	--accent: #2a2b2f;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
-	--border: #3a3d42;
-	--input: #3a3d42;
-	--ring: #17b88b;
+	--border: #3a3b40;
+	--input: #3a3b40;
+	--ring: #11b686;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	--sidebar: #000000;
+	--sidebar: var(--background);
 	--sidebar-foreground: #ffffff;
-	--sidebar-primary: #17b88b;
+	--sidebar-primary: #11b686;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2f2f31;
+	--sidebar-accent: #2a2b2f;
 	--sidebar-accent-foreground: #ececee;
-	--sidebar-border: #161616;
-	--sidebar-ring: #17b88b;
+	--sidebar-border: rgba(255, 255, 255, 0.05);
+	--sidebar-ring: #11b686;
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -259,7 +276,16 @@
 	   hover restores full --foreground for affordance. */
 	--chat-icon-fg: #d8d8d8;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #2d2e32;
+	--chat-icon-bg-hover: #2a2b2f;
+
+	/* Lighter dark-mode siblings of the format + status accents — same
+	   identity, raised value so dots, chip borders and inspector text all
+	   stay legible on dark surfaces. */
+	--format-gguf: #60a5fa;
+	--format-checkpoint: #f472b6;
+	--status-warning: #fbbf24;
+	--status-danger: #ef4444;
+	--status-success: #11b686;
 }
 
 @theme inline {
@@ -343,6 +369,12 @@
 	--color-chat-icon-fg: var(--chat-icon-fg);
 	--color-chat-icon-fg-hover: var(--chat-icon-fg-hover);
 	--color-chat-icon-bg-hover: var(--chat-icon-bg-hover);
+
+	--color-format-gguf: var(--format-gguf);
+	--color-format-checkpoint: var(--format-checkpoint);
+	--color-status-warning: var(--status-warning);
+	--color-status-danger: var(--status-danger);
+	--color-status-success: var(--status-success);
 
 	--animate-pulse: pulse var(--duration) ease-out infinite;
 
@@ -492,7 +524,7 @@
 	.group\/run-item:hover .sidebar-nav-btn,
 	.group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
-		color: #000 !important;
+		color: #232528 !important;
 	}
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
@@ -707,41 +739,72 @@
 	}
 
 	.download-card {
-		@apply flex w-full max-w-[560px] flex-col gap-2 rounded-[18px] p-1.5;
-		background-color: #ffffff;
-		border: 1px solid rgba(17, 24, 39, 0.08);
-		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
+		@apply flex w-full flex-col gap-2 rounded-[22px] p-2;
+		background-color: rgba(17, 24, 39, 0.03);
+		border: 1px solid rgba(17, 24, 39, 0.055);
+		box-shadow: none;
 	}
 	.dark .download-card {
-		background-color: rgba(255, 255, 255, 0.03);
-		border: 1px solid rgba(255, 255, 255, 0.04);
+		background-color: rgba(255, 255, 255, 0.035);
+		border: 1px solid rgba(255, 255, 255, 0.055);
 		box-shadow: none;
 	}
 
+	/* Filled-control surface — Hub search, Hub filter triggers, Train
+	   number/text inputs, Train Selects, picker search bars. The same
+	   visual identity the Hub search has always had:
+	     - Resting: subtle 3% bg + 5% border
+	     - Hover / open: 5% bg + 8% border
+	     - Focus: 4% bg + 15% border (no solid colour swap)
+	     - box-shadow: none on focus to neutralise shadcn's
+	       focus-visible green ring (--ring is the brand primary).
+	   `!important` is used on focus box-shadow only — Tailwind's
+	   `focus-visible:ring-…` utility composes via `--tw-ring-shadow`
+	   into the final box-shadow at the same specificity as ours, and
+	   without bumping ours we'd lose the cascade tie inconsistently
+	   depending on which utility was applied last to the element. */
 	.field-soft {
-		@apply border border-foreground/15 bg-transparent;
+		background-color: rgba(17, 24, 39, 0.03);
+		border: 1px solid rgba(17, 24, 39, 0.05);
+		box-shadow: none;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+	.field-soft:hover,
+	.field-soft[data-state="open"] {
+		background-color: rgba(17, 24, 39, 0.05);
+		border-color: rgba(17, 24, 39, 0.08);
+	}
+	.field-soft:focus,
+	.field-soft:focus-visible,
+	.field-soft:focus-within {
+		background-color: rgba(17, 24, 39, 0.04);
+		border-color: rgba(17, 24, 39, 0.15);
+		box-shadow: none !important;
+		outline: none;
 	}
 	.dark .field-soft {
-		@apply border-border bg-white/[0.035];
+		background-color: rgba(255, 255, 255, 0.04);
+		border-color: rgba(255, 255, 255, 0.06);
 	}
-	.field-soft:hover {
-		@apply bg-muted/50;
+	.dark .field-soft:hover,
+	.dark .field-soft[data-state="open"] {
+		background-color: rgba(255, 255, 255, 0.05);
+		border-color: rgba(255, 255, 255, 0.08);
 	}
-	.dark .field-soft:hover {
-		@apply bg-white/[0.06];
+	.dark .field-soft:focus,
+	.dark .field-soft:focus-visible,
+	.dark .field-soft:focus-within {
+		background-color: rgba(255, 255, 255, 0.07);
+		border-color: rgba(255, 255, 255, 0.15);
 	}
+
 
 	html:not(.dark) .hub-page {
 		background-color: #ffffff;
 	}
 
-	html:not(.dark) .hub-page > div > section {
-		background-color: #f8f8f8;
-		border: 1px solid rgba(0, 0, 0, 0.06);
-		box-shadow:
-			0 2px 6px rgba(0, 0, 0, 0.03),
-			0 10px 30px rgba(0, 0, 0, 0.06);
-	}
 	html:not(.dark) .hub-page > div > section .border-b,
 	html:not(.dark) .hub-page > div > section .border-r,
 	html:not(.dark) .hub-page > div > section .border-t.border-border {
@@ -766,52 +829,13 @@
 		background-color: rgba(17, 24, 39, 0.04);
 	}
 
-	html:not(.dark) .hub-page .field-soft {
-		background-color: #ffffff;
-		border: 1px solid rgba(17, 24, 39, 0.09);
-		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
-		transition:
-			background-color 160ms ease,
-			border-color 160ms ease;
-	}
-	html:not(.dark) .hub-page .field-soft:hover,
-	html:not(.dark) .hub-page .field-soft[data-state="open"] {
-		background-color: #f7f7f8;
-	}
-
-	html:not(.dark) .hub-page input.field-soft {
-		background-color: #ffffff;
-		border: 1px solid rgba(17, 24, 39, 0.09);
-		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
-	}
-	html:not(.dark) .hub-page input.field-soft:hover {
-		background-color: #fafafa;
-		border-color: rgba(17, 24, 39, 0.14);
-	}
-	html:not(.dark) .hub-page input.field-soft:focus {
-		background-color: #ffffff;
-		border-color: rgba(17, 24, 39, 0.2);
-	}
-
 	html.dark .hub-page {
-		background-color: #000000;
+		background-color: #1f2023;
 	}
 
-	html.dark .hub-page > div > section {
-		background-color: #1c1d1f !important;
-		background-image: radial-gradient(
-			ellipse 130% 90% at 50% 0%,
-			rgba(255, 255, 255, 0.006),
-			rgba(255, 255, 255, 0) 100%
-		);
-		border: 1px solid rgba(255, 255, 255, 0.06);
-		box-shadow:
-			0 1px 2px rgba(0, 0, 0, 0.25),
-			0 8px 24px -8px rgba(0, 0, 0, 0.35);
-	}
 	html.dark .hub-page > div > section [class*="bg-card"],
 	html.dark .hub-page > div > section [class*="bg-background"] {
-		background-color: #25272b;
+		background-color: #34353a;
 	}
 	html.dark .hub-page > div > section .border-b,
 	html.dark .hub-page > div > section .border-r,
@@ -832,42 +856,16 @@
 			border-color 160ms ease;
 	}
 	html.dark .hub-page .tag-soft {
-		border: 1px solid rgba(255, 255, 255, 0.28);
-		color: rgba(255, 255, 255, 0.7);
+		border: 1px solid rgba(255, 255, 255, 0.06);
+		color: rgba(255, 255, 255, 0.55);
 	}
 	html.dark .hub-page .tag-meta {
-		border: 1px solid rgba(255, 255, 255, 0.08);
+		border: 1px solid rgba(255, 255, 255, 0.06);
+		color: rgba(255, 255, 255, 0.55);
 	}
 	html.dark .hub-page .tag-soft:hover,
 	html.dark .hub-page .tag-meta:hover {
-		background-color: rgba(255, 255, 255, 0.05);
-	}
-
-	html.dark .hub-page .field-soft {
-		background-color: rgba(255, 255, 255, 0.03);
-		border: 1px solid rgba(255, 255, 255, 0.04);
-		box-shadow: none;
-		transition:
-			background-color 160ms ease,
-			border-color 160ms ease;
-	}
-	html.dark .hub-page .field-soft:hover,
-	html.dark .hub-page .field-soft[data-state="open"] {
-		background-color: rgba(255, 255, 255, 0.06);
-	}
-
-	html.dark .hub-page input.field-soft {
-		background-color: rgba(255, 255, 255, 0.03) !important;
-		border: 1px solid rgba(255, 255, 255, 0.04) !important;
-		box-shadow: none;
-	}
-	html.dark .hub-page input.field-soft:hover {
-		background-color: rgba(255, 255, 255, 0.05) !important;
-		border-color: rgba(255, 255, 255, 0.06) !important;
-	}
-	html.dark .hub-page input.field-soft:focus {
-		background-color: rgba(255, 255, 255, 0.07) !important;
-		border-color: rgba(255, 255, 255, 0.1) !important;
+		background-color: rgba(255, 255, 255, 0.04);
 	}
 
 	.menu-instant {
@@ -892,27 +890,16 @@
 		background-color: #2e2f31 !important;
 	}
 
-	.view-repo-link > span {
-		position: absolute;
-		inset: 0;
+	/* Flat SectionCard (Lab > Train): suppress consumer-supplied chrome
+	   utilities so cards blend into the surrounding surface without box-in-box. */
+	[data-section-flat="true"] {
+		box-shadow: none !important;
+		--tw-ring-shadow: 0 0 transparent !important;
+		--tw-shadow: 0 0 transparent !important;
+		border: 0 !important;
+		background-color: transparent !important;
 	}
-	.view-repo-link > span > p {
-		position: absolute;
-		inset: 0;
-		margin: 0;
-	}
-	.view-repo-link [data-streamdown="link"] {
-		position: absolute;
-		inset: 0;
-		display: block;
-		font-size: 0;
-		color: transparent;
-		text-decoration: none;
-		background: transparent;
-		border: 0;
-		padding: 0;
-		cursor: pointer;
-	}
+
 
 	[data-streamdown="link-safety-modal"] {
 		background-color: rgba(0, 0, 0, 0.35) !important;
@@ -926,23 +913,33 @@
 		-webkit-user-select: none;
 	}
 
-	html:not(.dark) .hub-page .tab-toggle {
+	html:not(.dark) .hub-page .tab-toggle,
+	html:not(.dark) .tab-toggle {
+		background-color: rgba(17, 24, 39, 0.05);
+		border: 0;
+		box-shadow: none;
+	}
+	html.dark .hub-page .tab-toggle,
+	html.dark .tab-toggle {
+		background-color: rgba(255, 255, 255, 0.045);
+		border: 0;
+		box-shadow: none;
+	}
+	html:not(.dark) .hub-page .tab-toggle-pill,
+	html:not(.dark) .tab-toggle-pill {
 		background-color: #ffffff;
-		border: 1px solid rgba(17, 24, 39, 0.09);
-		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.03);
+		border: 0;
+		box-shadow:
+			0 1px 2px rgba(17, 24, 39, 0.08),
+			0 4px 10px -3px rgba(17, 24, 39, 0.06);
 	}
-	html.dark .hub-page .tab-toggle {
-		background-color: rgba(255, 255, 255, 0.03);
-		border: 1px solid rgba(255, 255, 255, 0.04);
-	}
-	html:not(.dark) .hub-page .tab-toggle-pill {
-		background-color: #ffffff;
-		border: 1px solid rgba(17, 24, 39, 0.06);
-		box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
-	}
-	html.dark .hub-page .tab-toggle-pill {
-		background-color: rgba(255, 255, 255, 0.13);
-		border: 1px solid rgba(255, 255, 255, 0.16);
+	html.dark .hub-page .tab-toggle-pill,
+	html.dark .tab-toggle-pill {
+		background-color: rgba(255, 255, 255, 0.1);
+		border: 0;
+		box-shadow:
+			0 1px 2px rgba(0, 0, 0, 0.14),
+			0 4px 10px -3px rgba(0, 0, 0, 0.1);
 	}
 
 	html:not(.dark) .hub-page .catalog-row {
@@ -971,6 +968,271 @@
 		background-color: rgba(255, 255, 255, 0.07);
 	}
 
+	/* Picker rows reuse the exact catalog-row palette so the model selector
+	   popover (chat header dropdown, compare picker) reads as a small lift
+	   of the hub catalog instead of a separately-themed surface. Same
+	   transparent background, same near-imperceptible hover tint, same
+	   slightly stronger selected tint. */
+	html:not(.dark) .picker-row {
+		background-color: transparent;
+		transition: background-color 160ms ease;
+	}
+	html:not(.dark) .picker-row:hover {
+		background-color: rgba(17, 24, 39, 0.035);
+	}
+	html:not(.dark) .picker-row[data-selected="true"],
+	html:not(.dark) .picker-row[aria-expanded="true"] {
+		background-color: rgba(17, 24, 39, 0.06);
+	}
+	html.dark .picker-row {
+		background-color: transparent;
+		transition: background-color 160ms ease;
+	}
+	html.dark .picker-row:hover {
+		background-color: rgba(255, 255, 255, 0.035);
+	}
+	html.dark .picker-row[data-selected="true"],
+	html.dark .picker-row[aria-expanded="true"] {
+		background-color: rgba(255, 255, 255, 0.07);
+	}
+
+	/* Picker popover scoping — softens the scrollbar inside the model
+	   picker popover to match the hub catalog (the default global
+	   scrollbar is much more opaque and reads as visual noise in a small
+	   menu surface). Mirrors the `.hub-page` overrides further below. */
+	html:not(.dark) .picker-scope * {
+		scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
+	}
+	html.dark .picker-scope * {
+		scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
+	}
+	html:not(.dark) .picker-scope *::-webkit-scrollbar-thumb {
+		background: oklch(0.5 0 0 / 0.22);
+	}
+	html.dark .picker-scope *::-webkit-scrollbar-thumb {
+		background: oklch(0.55 0 0 / 0.16);
+	}
+
+	/* Hub avatar tile — applied to every avatar in the Hub (provider logos,
+	   remote HF profile pictures, and the colored-initial fallback). Gives
+	   the tile a very subtle 3D pop: a hairline ring traces the perimeter, a
+	   soft drop shadow lifts it off the surface, and a faint inset top
+	   highlight catches "light" at the upper edge for an App Store icon vibe.
+	   Light theme leans on shadow + ring; dark theme uses a stronger shadow
+	   and a near-invisible ring since shadows are harder to see on dark. */
+	.hub-avatar-tile {
+		box-shadow: 0 0 0 0.5px rgba(17, 24, 39, 0.06);
+	}
+	.dark .hub-avatar-tile {
+		box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+	}
+
+	/* Verified badge: solid badge shape with a check-shaped hole punched
+	   through, so whatever sits behind shows through the check. The badge
+	   fill follows currentColor (so `text-primary` makes it Unsloth green;
+	   any text-* utility recolors it). Use as: `<span class="verified-badge
+	   size-4 text-primary" />`. */
+	.verified-badge {
+		display: inline-block;
+		background-color: currentColor;
+		mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><mask id='c'><rect width='24' height='24' fill='white'/><path d='m8.75 12.5 2.5 2.5 4.25-5.25' stroke='black' stroke-width='1.85' stroke-linecap='round' stroke-linejoin='round' fill='none'/></mask></defs><path d='M8.603 3.799A4.49 4.49 0 0 1 12 2.25c1.357 0 2.573.6 3.397 1.549a4.49 4.49 0 0 1 3.498 1.307 4.491 4.491 0 0 1 1.307 3.497A4.49 4.49 0 0 1 21.75 12a4.49 4.49 0 0 1-1.549 3.397 4.491 4.491 0 0 1-1.307 3.497 4.491 4.491 0 0 1-3.497 1.307A4.49 4.49 0 0 1 12 21.75a4.49 4.49 0 0 1-3.397-1.549 4.49 4.49 0 0 1-3.498-1.306 4.491 4.491 0 0 1-1.307-3.498A4.49 4.49 0 0 1 2.25 12c0-1.357.6-2.573 1.549-3.397a4.49 4.49 0 0 1 1.307-3.497 4.49 4.49 0 0 1 3.497-1.307Z' fill='white' mask='url(%23c)'/></svg>") center / contain no-repeat;
+		-webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><mask id='c'><rect width='24' height='24' fill='white'/><path d='m8.75 12.5 2.5 2.5 4.25-5.25' stroke='black' stroke-width='1.85' stroke-linecap='round' stroke-linejoin='round' fill='none'/></mask></defs><path d='M8.603 3.799A4.49 4.49 0 0 1 12 2.25c1.357 0 2.573.6 3.397 1.549a4.49 4.49 0 0 1 3.498 1.307 4.491 4.491 0 0 1 1.307 3.497A4.49 4.49 0 0 1 21.75 12a4.49 4.49 0 0 1-1.549 3.397 4.491 4.491 0 0 1-1.307 3.497 4.491 4.491 0 0 1-3.497 1.307A4.49 4.49 0 0 1 12 21.75a4.49 4.49 0 0 1-3.397-1.549 4.49 4.49 0 0 1-3.498-1.306 4.491 4.491 0 0 1-1.307-3.498A4.49 4.49 0 0 1 2.25 12c0-1.357.6-2.573 1.549-3.397a4.49 4.49 0 0 1 1.307-3.497 4.49 4.49 0 0 1 3.497-1.307Z' fill='white' mask='url(%23c)'/></svg>") center / contain no-repeat;
+	}
+
+
+	@keyframes hub-loading-strip-1 {
+		0%   { left: -35%; right: 100%; }
+		60%  { left: 100%; right: -90%; }
+		100% { left: 100%; right: -90%; }
+	}
+	@keyframes hub-loading-strip-2 {
+		0%   { left: -200%; right: 100%; }
+		60%  { left: 107%; right: -8%; }
+		100% { left: 107%; right: -8%; }
+	}
+	.hub-loading-bar {
+		pointer-events: none;
+		position: relative;
+		overflow: hidden;
+		height: 2px;
+		background-color: rgba(17, 24, 39, 0.06);
+	}
+	html.dark .hub-loading-bar {
+		background-color: rgba(255, 255, 255, 0.06);
+	}
+	.hub-loading-bar::before,
+	.hub-loading-bar::after {
+		content: "";
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		background: rgba(17, 24, 39, 0.55);
+		will-change: left, right;
+	}
+	html.dark .hub-loading-bar::before,
+	html.dark .hub-loading-bar::after {
+		background: rgba(255, 255, 255, 0.65);
+	}
+	.hub-loading-bar::before {
+		animation: hub-loading-strip-1 2.1s cubic-bezier(0.65, 0.815, 0.735, 0.395) infinite;
+	}
+	.hub-loading-bar::after {
+		animation: hub-loading-strip-2 2.1s cubic-bezier(0.165, 0.84, 0.44, 1) infinite;
+		animation-delay: 1.15s;
+	}
+
+	/* Inspector action pills (Download / Run / Train / Cancel) for the hub
+	   inspector card. Centralized so all three sections (GGUF, safetensors,
+	   datasets) stay in lock-step on type scale, padding, hover surface, and
+	   the 16px icon size — mirrors the pattern used for `.sidebar-nav-btn`.
+	   Width and disabled tint are layered inline by callers (some buttons
+	   are w-24 in a pair, some are w-28 standalone). Raw CSS rather than
+	   @apply so the cascade is explicit and predictable. */
+	.hub-action-btn {
+		display: inline-flex;
+		height: 2.25rem;
+		cursor: pointer;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		white-space: nowrap;
+		border-radius: 9999px;
+		background-color: transparent;
+		padding-left: 0.75rem;
+		padding-right: 0.75rem;
+		font-size: 13px;
+		font-weight: 500;
+		line-height: 18px;
+		letter-spacing: -0.025em;
+		color: var(--foreground);
+		transition: color 150ms, background-color 150ms;
+	}
+	.hub-action-btn:hover:not(:disabled) {
+		background-color: rgba(17, 24, 39, 0.04);
+	}
+	.dark .hub-action-btn:hover:not(:disabled) {
+		background-color: rgba(255, 255, 255, 0.05);
+	}
+	.hub-action-btn:disabled {
+		cursor: not-allowed;
+	}
+	/* Every glyph inside a hub action button — explicit icon, spinner, or
+	   embedded SVG — locks to 16px so swapping icons or replacing the
+	   spinner can't drift the layout. */
+	.hub-action-btn svg {
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+	}
+
+	/* Primary "Run" action — confirms loading/running a model. Pill shape
+	   (rounded-full) so it reads as the unmistakable CTA in a row of
+	   ghost actions, and emerald-500 so it matches the live-model
+	   indicator dot used elsewhere in the app. Same h-9 geometry, 13px
+	   medium type, tracking-tight, and 16px icon slot as .hub-action-btn
+	   so the height aligns with adjacent ghost buttons. */
+	.run-action-btn {
+		display: inline-flex;
+		height: 2.25rem;
+		cursor: pointer;
+		align-items: center;
+		justify-content: center;
+		gap: 0.4rem;
+		white-space: nowrap;
+		border-radius: 9999px;
+		background-color: #10b981; /* emerald-500 */
+		padding-left: 1rem;
+		padding-right: 1rem;
+		font-size: 13px;
+		font-weight: 600;
+		line-height: 18px;
+		letter-spacing: -0.025em;
+		color: white;
+		transition: background-color 150ms, transform 150ms;
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.18),
+			0 1px 2px rgba(16, 185, 129, 0.22);
+	}
+	.run-action-btn:hover:not(:disabled) {
+		background-color: #059669; /* emerald-600 */
+	}
+	.run-action-btn:active:not(:disabled) {
+		transform: scale(0.98);
+	}
+	.run-action-btn:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+	.run-action-btn svg {
+		width: 0.9rem;
+		height: 0.9rem;
+		flex-shrink: 0;
+	}
+
+	/* Spinner-default / cancel-on-hover swap inside `.hub-action-btn`.
+	   Two glyphs occupy the same 16×16 slot; the button's :hover toggles
+	   their opacities so the percentage label beside them never shifts. */
+	.hub-cta-indicator {
+		position: relative;
+		display: inline-flex;
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+	}
+	.hub-cta-indicator-spinner,
+	.hub-cta-indicator-cancel {
+		transition: opacity 150ms;
+	}
+	.hub-cta-indicator-cancel {
+		position: absolute;
+		opacity: 0;
+	}
+	.hub-action-btn:hover .hub-cta-indicator-spinner {
+		opacity: 0;
+	}
+	.hub-action-btn:hover .hub-cta-indicator-cancel {
+		opacity: 1;
+	}
+
+	/* Hover-revealed inline action overlay (used for the row-end trash on
+	   downloaded models and datasets in the inspector). Wrapper 28×28 with a
+	   16px glyph — same icon size as `.hub-action-btn` so the destructive
+	   affordance reads consistently with the primary actions. Relies on a
+	   `.group/dl` ancestor for the hover scope (the download-card row). */
+	.hub-row-action {
+		position: absolute;
+		right: 0.25rem;
+		top: 50%;
+		display: inline-flex;
+		width: 1.75rem;
+		height: 1.75rem;
+		transform: translateY(-50%);
+		align-items: center;
+		justify-content: center;
+		border-radius: 8px;
+		color: var(--muted-foreground);
+		opacity: 0;
+		cursor: pointer;
+		transition: opacity 150ms, color 150ms;
+	}
+	.group\/dl:hover .hub-row-action,
+	.hub-row-action:focus-visible {
+		opacity: 1;
+	}
+	.hub-row-action:hover {
+		color: rgb(225 29 72);
+	}
+	.dark .hub-row-action:hover {
+		color: rgb(251 113 133);
+	}
+	.hub-row-action svg {
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+	}
+
 	.app-user-menu [data-slot="dropdown-menu-item"] {
 		height: 32px;
 		padding: 0 0.625rem !important;
@@ -992,13 +1254,13 @@
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus {
 		background-color: var(--nav-surface-hover);
-		color: #000;
+		color: #232528;
 	}
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus {
 		color: #fff;
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus * {
-		color: #000 !important;
+		color: #232528 !important;
 	}
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus * {
 		color: #fff !important;
@@ -1031,6 +1293,157 @@
 
 	.dark .shadow-border {
 		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+	}
+
+	/* Shared "elevated card" identity — used by the Train wizard
+	   sections, the Train run-preview / history cards, and the Hub
+	   page's big container. Light theme pairs a 1px warm-gray rim
+	   (#ebeae6) with a wide near-invisible warm halo (#f5f5f4 spread
+	   60px out) so the box reads as both subtly outlined and gently
+	   lifted on the white app background. Dark theme drops both —
+	   the bg-card vs. page-background contrast is enough definition
+	   on its own, and any pale rim or halo would look out of place. */
+	.elevated-card {
+		border: 1px solid #ebeae6;
+		border-radius: 20px;
+		box-shadow: 0 0 60px 8px #f5f5f4;
+	}
+	@media (min-width: 640px) {
+		.elevated-card {
+			border-radius: 28px;
+		}
+	}
+	@media (min-width: 1024px) {
+		.elevated-card {
+			border-radius: 32px;
+		}
+	}
+	.dark .elevated-card {
+		border-color: transparent;
+		box-shadow: none;
+	}
+
+	/* Page-title halo. A faint warm haze that hugs the page title
+	   and subtitle glyphs themselves (not the wrapper rectangle), so
+	   the text reads as gently lifted from the white background.
+	   Layered text-shadows mimic a wide, spread-out glow since
+	   text-shadow has no spread parameter. Light theme only — on
+	   dark the page background already provides enough separation. */
+	.page-title-halo {
+		text-shadow:
+			0 0 24px #e4e3df,
+			0 0 56px #ebeae6,
+			0 0 96px #efeeea;
+	}
+	.dark .page-title-halo {
+		text-shadow: none;
+	}
+
+	/* Section-title icon chip on the Train page. The per-section color
+	   is supplied via the inline CSS variable --chip-color; this rule
+	   computes the 12% background tint and applies the full-saturation
+	   foreground from a single source. Keeps JSX free of opacity-hex
+	   string concatenation (`${color}1f`) and centralises the recipe
+	   so re-tuning the tint is a one-file edit. */
+	.train-section-chip {
+		background-color: color-mix(
+			in srgb,
+			var(--chip-color, transparent) 12%,
+			transparent
+		);
+		color: var(--chip-color, currentColor);
+	}
+
+	/* Form field label — used by every labelled control across the
+	   app (Train wizard, dataset selectors, Hub controls). Small,
+	   uppercase, slightly looser tracking, muted. Single source of
+	   truth so theme tweaks ripple everywhere. */
+	.field-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+		font-size: 11px;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: color-mix(in srgb, var(--muted-foreground) 70%, transparent);
+	}
+
+	/* Form control trigger — used by Select triggers, Combobox inputs,
+	   and Inputs across the app. Encodes the single source of truth for
+	   sizing, radius, font, weight, and selected-value colour so every
+	   labelled control reads as one family on Train, Hub, and elsewhere.
+	   Declared after the Tailwind utility layer so it wins shadcn's
+	   `rounded-4xl` / `text-sm` defaults via natural cascade order, no
+	   `!important` needed. Height (2.25rem) matches shadcn's default so
+	   it composes rather than fights for that property. Placeholder text
+	   stays muted via shadcn's higher-specificity `[data-placeholder]`
+	   rule; the rule below only sets the resting (selected) colour. */
+	.field-trigger {
+		height: 2.25rem;
+		border-radius: 12px;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--foreground);
+	}
+
+	/* "Filter"-style trigger (Hub format / capability / sort dropdowns).
+	   Type styling tracks the Discover / On-Device switch buttons:
+	   regular-weight muted text at 12.5px, vertically centred against
+	   the search Input via matching py-1 + 20px line-height. The
+	   visual chassis (subtle fill + border) is inherited from
+	   `.field-soft` — kept on so the filters read as discrete
+	   clickable controls rather than text-only labels. */
+	.hub-page .field-trigger.field-filter {
+		color: var(--muted-foreground);
+		font-weight: 400;
+		padding-top: 0.25rem;
+		padding-bottom: 0.25rem;
+		line-height: 1.25rem;
+	}
+	.hub-page .field-trigger.field-filter:hover {
+		color: var(--foreground);
+	}
+
+	/* Pill variant — used for free-text inputs (search fields, numeric
+	   inputs, dataset/model picker search). 9999px radius reads as a
+	   fully-rounded pill matching the Hub search input. Selects keep
+	   their rectangular 12px radius because their content has a
+	   chevron and reads as a button. */
+	.field-pill {
+		border-radius: 9999px;
+	}
+
+	/* Slider-active edit hint. Applied to .slider-field wrappers so the
+	   associated .panel-number-input visually mirrors its own hover
+	   state while the user is interacting with the slider — same fill
+	   as `hover:bg-*` on the input itself. Uses `:has()` (supported in
+	   all current evergreen browsers) so no JS state is required. */
+	.slider-field:has(.panel-slider:hover) .panel-number-input,
+	.slider-field:has(.panel-slider:focus-within) .panel-number-input,
+	.slider-field:has(.panel-slider:active) .panel-number-input {
+		background-color: rgba(0, 0, 0, 0.04);
+	}
+	.dark .slider-field:has(.panel-slider:hover) .panel-number-input,
+	.dark .slider-field:has(.panel-slider:focus-within) .panel-number-input,
+	.dark .slider-field:has(.panel-slider:active) .panel-number-input {
+		background-color: rgba(255, 255, 255, 0.04);
+	}
+
+	/* Hide native number-input spinner buttons across the app. The
+	   browser-default arrows render with their own dark/light chrome
+	   that clashes with our filled-control surface and breaks the
+	   colour cohesion (especially the dark-grey block in dark theme).
+	   Users still change values via typing, ↑/↓ arrow keys, scroll
+	   wheel, or the paired slider where one exists. */
+	input[type="number"]::-webkit-inner-spin-button,
+	input[type="number"]::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+	input[type="number"] {
+		-moz-appearance: textfield;
+		appearance: textfield;
 	}
 
 	.menu-soft-surface,

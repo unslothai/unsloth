@@ -22,6 +22,7 @@ import {
   unloadModel,
   validateModel,
 } from "../api/chat-api";
+import { getHfToken } from "@/stores/hf-token-store";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -118,10 +119,12 @@ function toLoraSummary(lora: {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  run_display_name?: string | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
     parseTrailingEpoch(lora.display_name) ?? parseTrailingEpoch(idTail);
+  const runDisplayName = lora.run_display_name?.trim() || undefined;
 
   return {
     id: lora.adapter_path,
@@ -130,6 +133,7 @@ function toLoraSummary(lora: {
     updatedAt,
     source: lora.source ?? undefined,
     exportType: lora.export_type ?? undefined,
+    runDisplayName,
   };
 }
 
@@ -459,7 +463,7 @@ export function useChatModelRuntime() {
           const rollbackMaxSeqLength = previousIsGguf
             ? (stateBeforeUnload.ggufContextLength ?? 0)
             : maxSeqLength;
-          const hfToken = stateBeforeUnload.hfToken || null;
+          const hfToken = getHfToken() || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =

@@ -21,7 +21,6 @@ export interface TrainingConfigState {
   modelType: ModelType | null;
   selectedModel: string | null;
   trainingMethod: TrainingMethod;
-  hfToken: string;
   datasetSource: DatasetSource;
   datasetFormat: DatasetFormat;
   dataset: string | null;
@@ -75,6 +74,7 @@ export interface TrainingConfigState {
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
+  datasetCheckFailed: boolean;
   trustRemoteCode: boolean;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
@@ -93,7 +93,6 @@ export interface TrainingConfigActions {
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
-  setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (dataset: string | null) => void;
   selectLocalDataset: (file: string | null) => void;

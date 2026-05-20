@@ -182,3 +182,9 @@ export async function authFetch(
 export function logout(): void {
   clearAuthTokens();
 }
+
+export function hfTokenHeader(
+  token?: string | null,
+): Record<string, string> {
+  return token ? { "X-HF-Token": token } : {};
+}

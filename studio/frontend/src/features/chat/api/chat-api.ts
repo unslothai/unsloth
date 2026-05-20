@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, hfTokenHeader } from "@/features/auth";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -106,9 +106,19 @@ export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
   cache_path: string;
+  partial?: boolean;
+  pipeline_tag?: string | null;
+  tags?: string[];
+  library_name?: string | null;
 }
 
-export type DownloadJobState = "idle" | "running" | "complete" | "error";
+export type DownloadJobState =
+  | "idle"
+  | "running"
+  | "complete"
+  | "error"
+  | "cancelled"
+  | "cancelling";
 
 export interface DownloadJobStatus {
   state: DownloadJobState;
@@ -119,8 +129,21 @@ export async function startModelDownload(payload: {
   repo_id: string;
   gguf_variant?: string | null;
   hf_token?: string | null;
+  use_xet?: boolean;
 }): Promise<{ job_key: string; state: DownloadJobState }> {
   const response = await authFetch("/api/models/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(response);
+}
+
+export async function cancelModelDownload(payload: {
+  repo_id: string;
+  gguf_variant?: string | null;
+}): Promise<{ job_key: string; state: DownloadJobState }> {
+  const response = await authFetch("/api/models/download/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -141,8 +164,20 @@ export async function getModelDownloadStatus(
 export async function startDatasetDownload(payload: {
   repo_id: string;
   hf_token?: string | null;
+  use_xet?: boolean;
 }): Promise<{ repo_id: string; state: DownloadJobState }> {
   const response = await authFetch("/api/datasets/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(response);
+}
+
+export async function cancelDatasetDownload(payload: {
+  repo_id: string;
+}): Promise<{ repo_id: string; state: DownloadJobState }> {
+  const response = await authFetch("/api/datasets/download/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -158,17 +193,44 @@ export async function getDatasetDownloadStatus(
   return parseJsonOrThrow<DownloadJobStatus>(response);
 }
 
+export type TransportMarker = "http" | "xet" | null;
+
+export interface TransportStatus {
+  has_partial: boolean;
+  last_transport: TransportMarker;
+  resumable: boolean;
+}
+
+export async function getModelTransportStatus(
+  repoId: string,
+): Promise<TransportStatus> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/models/transport-status?${params}`);
+  return parseJsonOrThrow<TransportStatus>(response);
+}
+
+export async function getDatasetTransportStatus(
+  repoId: string,
+): Promise<TransportStatus> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/datasets/transport-status?${params}`);
+  return parseJsonOrThrow<TransportStatus>(response);
+}
+
 export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
+  hfToken?: string | null,
 ): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(`/api/models/gguf-download-progress?${params}`, {
+    headers: hfTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 
@@ -232,6 +294,7 @@ export interface LocalModelInfo {
   source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
+  partial?: boolean;
 }
 
 interface LocalModelListResponse {
@@ -246,8 +309,12 @@ export async function listLocalModels(): Promise<LocalModelListResponse> {
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
-export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
-  const response = await authFetch("/api/models/cached-gguf");
+export async function listCachedGguf(
+  hfToken?: string | null,
+): Promise<CachedGgufRepo[]> {
+  const response = await authFetch("/api/models/cached-gguf", {
+    headers: hfTokenHeader(hfToken),
+  });
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
 }
@@ -255,17 +322,31 @@ export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
 export interface CachedModelRepo {
   repo_id: string;
   size_bytes: number;
+  cache_path?: string;
+  partial?: boolean;
+  pipeline_tag?: string | null;
+  tags?: string[];
+  library_name?: string | null;
 }
 
-export async function listCachedModels(): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models");
+export async function listCachedModels(
+  hfToken?: string | null,
+): Promise<CachedModelRepo[]> {
+  const response = await authFetch("/api/models/cached-models", {
+    headers: hfTokenHeader(hfToken),
+  });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+  hfToken?: string | null,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
+  if (hfToken) payload.hf_token = hfToken;
   const response = await authFetch("/api/models/delete-cached", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
@@ -274,12 +355,19 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
   await parseJsonOrThrow<unknown>(response);
 }
 
+export interface DeleteFineTunedModelResult {
+  status: string;
+  path: string;
+  deleted_run_ids: string[];
+}
+
 export async function deleteFineTunedModel(args: {
   modelPath: string;
   source: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
   ggufVariant?: string;
-}): Promise<void> {
+  deleteRunRecord?: boolean;
+}): Promise<DeleteFineTunedModelResult> {
   const response = await authFetch("/api/models/delete-finetuned", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
@@ -288,9 +376,10 @@ export async function deleteFineTunedModel(args: {
       source: args.source,
       export_type: args.exportType ?? null,
       gguf_variant: args.ggufVariant ?? null,
+      delete_run_record: args.deleteRunRecord ?? false,
     }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  return parseJsonOrThrow<DeleteFineTunedModelResult>(response);
 }
 
 export interface ScanFolderInfo {
@@ -363,14 +452,43 @@ export async function browseFolders(
   return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 
+const GGUF_VARIANTS_TTL_MS = 30 * 1000;
+interface GgufVariantsCacheEntry {
+  ts: number;
+  promise: Promise<GgufVariantsResponse>;
+}
+const ggufVariantsCache = new Map<string, GgufVariantsCacheEntry>();
+
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
 ): Promise<GgufVariantsResponse> {
+  const key = `${repoId}::${hfToken ?? ""}`;
+  const now = Date.now();
+  const hit = ggufVariantsCache.get(key);
+  if (hit && now - hit.ts < GGUF_VARIANTS_TTL_MS) {
+    return hit.promise;
+  }
   const params = new URLSearchParams({ repo_id: repoId });
-  if (hfToken) params.set("hf_token", hfToken);
-  const response = await authFetch(`/api/models/gguf-variants?${params}`);
-  return parseJsonOrThrow<GgufVariantsResponse>(response);
+  const promise = (async () => {
+    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+      headers: hfTokenHeader(hfToken),
+    });
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
+  })();
+  ggufVariantsCache.set(key, { ts: now, promise });
+  promise.catch(() => ggufVariantsCache.delete(key));
+  return promise;
+}
+
+export function invalidateGgufVariantsCache(repoId?: string): void {
+  if (!repoId) {
+    ggufVariantsCache.clear();
+    return;
+  }
+  for (const key of ggufVariantsCache.keys()) {
+    if (key.startsWith(`${repoId}::`)) ggufVariantsCache.delete(key);
+  }
 }
 
 function parseSseEvent(rawEvent: string): string[] {

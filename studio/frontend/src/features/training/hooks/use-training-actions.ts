@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { getHfToken } from "@/stores/hf-token-store";
 import { useCallback } from "react";
 import { toast } from "sonner";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -69,7 +70,7 @@ export function useTrainingActions() {
       if (datasetName) {
         const check = await checkDatasetFormat({
           datasetName,
-          hfToken: config.hfToken.trim() || null,
+          hfToken: getHfToken() || null,
           subset: config.datasetSubset,
           split: config.datasetSplit,
           isVlm,
@@ -185,14 +186,13 @@ export function useTrainingActions() {
 
       primeNativeNotificationPermission().catch(() => undefined);
 
-      const config = useTrainingConfigStore.getState();
       const savedConfig = detail.config as Partial<TrainingStartRequest>;
       const payload = {
         ...savedConfig,
         hf_token:
           typeof savedConfig.hf_token === "string"
             ? savedConfig.hf_token
-            : config.hfToken.trim() || null,
+            : getHfToken() || null,
         wandb_token: null,
         resume_from_checkpoint: outputDir,
       } as TrainingStartRequest;

@@ -117,8 +117,8 @@ export function SettingsDialog() {
                       "relative flex h-[32px] items-center gap-2.5 rounded-[8px] px-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
-                        ? "text-black dark:text-white"
-                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white",
+                        ? "text-[#232528] dark:text-white"
+                        : "text-[#232528] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-[#232528] dark:hover:text-white",
                     )}
                   >
                     {active && (
@@ -158,7 +158,7 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#232528] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-[#232528] dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Close settings"
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

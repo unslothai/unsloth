@@ -8,7 +8,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
@@ -17,14 +16,19 @@ import {
   Logout01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   DeletedModelRef,
   LoraModelOption,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { ModelConfigPage } from "./model-selector/model-config-page";
+import type { PerModelConfig } from "@/features/chat/model-config/per-model-config";
+import { savePerModelConfig } from "@/features/chat/model-config/per-model-config";
+import { touchRecentModel } from "@/features/chat/model-config/recent-models";
 
 export type {
   DeletedModelRef,
@@ -78,8 +82,8 @@ function ModelSelectorTrigger({
         className={cn(
           "flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "ghost" && "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2a2b2f]",
+          variant === "ghost" && "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2a2b2f]",
           variant === "muted" && "rounded-[10px] bg-muted hover:bg-muted/80",
           size === "sm" && "h-8 px-3 text-xs",
           size === "default" && "h-9 px-3.5 text-sm",
@@ -91,7 +95,7 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+          <span className="min-w-0 flex-1 truncate font-heading text-[16px] font-medium leading-tight text-[#232528] dark:text-white">
             {currentModel?.name ?? "Select model"}
           </span>
           {currentModel?.description && (
@@ -112,66 +116,99 @@ function ModelSelectorTrigger({
   );
 }
 
-function ModelSelectorContent({
-  models,
+type PickerTab = "hub" | "lora";
+
+function PickerTabToggle({
+  tab,
+  onTabChange,
+}: {
+  tab: PickerTab;
+  onTabChange: (tab: PickerTab) => void;
+}) {
+  return (
+    <div
+      className="menu-trigger tab-toggle relative mb-2 inline-flex h-9 w-full items-center rounded-full"
+      role="radiogroup"
+      aria-label="Model source"
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
+          tab === "lora" ? "translate-x-full" : "translate-x-0",
+        )}
+      />
+      <button
+        type="button"
+        role="radio"
+        aria-checked={tab === "hub"}
+        onClick={() => onTabChange("hub")}
+        className={cn(
+          "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+          tab === "hub"
+            ? "text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        On Device
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={tab === "lora"}
+        onClick={() => onTabChange("lora")}
+        className={cn(
+          "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+          tab === "lora"
+            ? "text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        Fine-tuned
+      </button>
+    </div>
+  );
+}
+
+function ModelSelectorListView({
   loraModels,
   value,
-  onSelect,
+  onPick,
   onEject,
-  onFoldersChange,
   onPickLocalModel,
-  onModelsChange,
-  deleteDisabled,
-  className,
-  dataTour,
+  tab,
+  onTabChange,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
   value?: string;
-  onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onPick: (target: ModelPickTarget) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void;
-  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
-  deleteDisabled?: boolean;
-  className?: string;
-  dataTour?: string;
+  tab: PickerTab;
+  onTabChange: (tab: PickerTab) => void;
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
 
   return (
-    <PopoverContent
-      align="start"
-      data-tour={dataTour}
-      className={cn(
-        "menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
-        className,
-      )}
-    >
+    <>
       {chatOnly ? (
-        <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
+        <HubModelPicker value={value} onPick={onPick} />
       ) : (
-        <Tabs defaultValue="hub" className="w-full">
-          <TabsList className="mb-2 w-full">
-            <TabsTrigger value="hub" className="flex-1">Downloaded</TabsTrigger>
-            <TabsTrigger value="lora" className="flex-1">Fine-tuned</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-          </TabsContent>
-
-          <TabsContent value="lora" className="m-0">
+        <>
+          <PickerTabToggle tab={tab} onTabChange={onTabChange} />
+          {tab === "hub" ? (
+            <HubModelPicker value={value} onPick={onPick} />
+          ) : (
             <LoraModelPicker
               loraModels={loraModels}
               value={value}
-              onSelect={onSelect}
-              onModelsChange={onModelsChange}
-              deleteDisabled={deleteDisabled}
+              onPick={onPick}
             />
-          </TabsContent>
-        </Tabs>
+          )}
+        </>
       )}
 
       {onPickLocalModel ? (
@@ -200,7 +237,7 @@ function ModelSelectorContent({
           </button>
         </div>
       ) : null}
-    </PopoverContent>
+    </>
   );
 }
 
@@ -239,11 +276,9 @@ export function ModelSelector({
       all.set(model.id, model);
     }
     for (const lora of loraModels) {
-      // Strip "/ suffix" from display name (e.g. "foo_123/foo" → "foo_123")
       const displayName = lora.name.includes("/")
         ? lora.name.split("/")[0].trim()
         : lora.name;
-      // Show type tag instead of base model name
       const isLocal = lora.source === "local";
       const isTraining = lora.source === "training";
       const isExported = lora.source === "exported";
@@ -279,27 +314,64 @@ export function ModelSelector({
     return found ?? { id: selected, name: selected };
   }, [selected, optionById, activeGgufVariant]);
 
-  function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
-    if (onValueChange) {
-      onValueChange(id, meta);
-    } else {
-      setUncontrolled(id);
-    }
-    setOpen(false);
-  }
+  const [view, setView] = useState<"list" | "config">("list");
+  const [target, setTarget] = useState<ModelPickTarget | null>(null);
+  const [pickerTab, setPickerTab] = useState<PickerTab>("hub");
 
-  function handleEject() {
+  const resetView = useCallback(() => {
+    setView("list");
+    setTarget(null);
+  }, []);
+
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        resetView();
+        setPickerTab("hub");
+      }
+      setOpen(next);
+    },
+    [resetView, setOpen],
+  );
+
+  const handlePick = useCallback((next: ModelPickTarget) => {
+    setTarget(next);
+    setView("config");
+  }, []);
+
+  const handleEject = useCallback(() => {
     onEject?.();
-    setOpen(false);
-  }
+    handleOpenChange(false);
+  }, [handleOpenChange, onEject]);
 
-  function handlePickLocalModel() {
-    setOpen(false);
+  const handlePickLocalModel = useCallback(() => {
+    handleOpenChange(false);
     void onPickLocalModel?.();
-  }
+  }, [handleOpenChange, onPickLocalModel]);
+
+  const handleRun = useCallback(
+    (config: PerModelConfig, remember: boolean) => {
+      if (!target) return;
+      if (remember) {
+        savePerModelConfig(target.id, target.meta.ggufVariant ?? null, config);
+      }
+      touchRecentModel({
+        id: target.id,
+        ggufVariant: target.meta.ggufVariant ?? null,
+      });
+      const meta: ModelSelectorChangeMeta = { ...target.meta, config };
+      if (onValueChange) {
+        onValueChange(target.id, meta);
+      } else {
+        setUncontrolled(target.id);
+      }
+      handleOpenChange(false);
+    },
+    [handleOpenChange, onValueChange, target],
+  );
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <ModelSelectorTrigger
         currentModel={currentModel}
         isLoaded={isLoaded}
@@ -308,22 +380,49 @@ export function ModelSelector({
         className={className}
         dataTour={triggerDataTour}
       />
-      <ModelSelectorContent
-        models={models}
-        loraModels={loraModels}
-        value={selected}
-        onSelect={handleSelect}
-        onEject={onEject ? handleEject : undefined}
-        onFoldersChange={onFoldersChange}
-        onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        onModelsChange={onModelsChange}
-        deleteDisabled={deleteDisabled}
-        className={contentClassName}
-        dataTour={contentDataTour}
-      />
+      <PopoverContent
+        align="start"
+        data-tour={contentDataTour}
+        className={cn(
+          "menu-soft-surface picker-scope ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 rounded-[20px] p-3 overflow-hidden",
+          contentClassName,
+        )}
+      >
+        {view === "list" ? (
+          <div
+            key="list"
+            className="animate-in fade-in-0 slide-in-from-left-2 duration-150"
+          >
+            <ModelSelectorListView
+              models={models}
+              loraModels={loraModels}
+              value={selected}
+              onPick={handlePick}
+              onEject={onEject ? handleEject : undefined}
+              onFoldersChange={onFoldersChange}
+              onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
+              tab={pickerTab}
+              onTabChange={setPickerTab}
+            />
+          </div>
+        ) : target ? (
+          <div
+            key={`config-${target.id}-${target.meta.ggufVariant ?? ""}`}
+            className="animate-in fade-in-0 slide-in-from-right-3 duration-150"
+          >
+            <ModelConfigPage
+              target={target}
+              onBack={resetView}
+              onCancel={() => handleOpenChange(false)}
+              onRun={handleRun}
+              onDeleted={onModelsChange}
+              deleteDisabled={deleteDisabled}
+            />
+          </div>
+        ) : null}
+      </PopoverContent>
     </Popover>
   );
 }
 
 ModelSelector.Trigger = ModelSelectorTrigger;
-ModelSelector.Content = ModelSelectorContent;

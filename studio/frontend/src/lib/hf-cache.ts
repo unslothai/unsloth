@@ -21,10 +21,22 @@ const MAX_CONCURRENT = 3;
 
 // Extend ModelEntry with the additional fields we always request so callers
 // do not need unsafe casts to access safetensors/tags.
+export interface HfQuantizationConfig {
+  quant_method?: string;
+  bits?: number;
+}
+
+export interface HfConfig {
+  architectures?: string[];
+  model_type?: string;
+  quantization_config?: HfQuantizationConfig;
+}
+
 export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
   gguf?: { total?: number; architecture?: string };
   tags?: string[];
+  config?: HfConfig;
 };
 
 
@@ -65,14 +77,16 @@ function release() {
 // ── Public API ──────────────────────────────────────────────────
 
 // Always request the superset of fields any consumer needs so a single
-// cache entry covers all callers. "gguf" isn't in the SDK's expand whitelist
-// but the HF API supports it; the SDK's pick() is dynamic, so passing it as
-// a runtime string yields the field. Cast hides it from the TS type only.
-export const ALL_FIELDS: ("safetensors" | "tags")[] = [
+// cache entry covers all callers. "gguf"/"config" are real HF API fields the
+// SDK's expand whitelist omits; the SDK's pick() resolves them at runtime.
+// `satisfies` validates the member names, then the cast adapts to the SDK type.
+type HfExpandField = "safetensors" | "tags" | "gguf" | "config";
+export const ALL_FIELDS = [
   "safetensors",
   "tags",
   "gguf",
-] as ("safetensors" | "tags")[];
+  "config",
+] satisfies HfExpandField[] as ("safetensors" | "tags")[];
 
 function isStale(key: string): boolean {
   const hit = cache.get(key);

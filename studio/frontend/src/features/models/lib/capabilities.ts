@@ -79,7 +79,7 @@ const COMMON_LANGUAGE_TAGS = new Set([
   "en", "fr", "de", "es", "it", "pt", "nl", "ru", "pl", "uk", "tr", "cs",
   "sv", "no", "da", "fi", "el", "ro", "bg", "hu", "hr", "sr", "sl", "sk",
   "zh", "ja", "ko", "ar", "he", "fa", "hi", "bn", "ta", "te", "th", "vi",
-  "id", "ms", "tl", "sw", "ur", "uk", "ca", "eu", "is", "lv", "lt", "et",
+  "id", "ms", "tl", "sw", "ur", "ca", "eu", "is", "lv", "lt", "et",
 ]);
 
 function lower(values: string[] | undefined): Set<string> {
@@ -97,9 +97,12 @@ export function detectCapabilities(
   const lowerId = modelId.toLowerCase();
   const out: Capability[] = [];
 
-  const hasAny = (set: Set<string>) =>
-    [...set].some((t) => tagSet.has(t)) ||
-    (pipeline ? set.has(pipeline) : false);
+  const hasAny = (set: Set<string>) => {
+    for (const t of set) {
+      if (tagSet.has(t)) return true;
+    }
+    return pipeline ? set.has(pipeline) : false;
+  };
 
   if (
     hasAny(VISION_TAGS) ||

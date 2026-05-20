@@ -50,11 +50,15 @@ export async function getTrainingRun(
 
 export async function deleteTrainingRun(
   runId: string,
-  signal?: AbortSignal,
+  options?: { deleteArtifacts?: boolean; signal?: AbortSignal },
 ): Promise<TrainingRunDeleteResponse> {
+  const deleteArtifacts = options?.deleteArtifacts ?? false;
+  const params = new URLSearchParams({
+    delete_artifacts: deleteArtifacts ? "true" : "false",
+  });
   const response = await authFetch(
-    `/api/train/runs/${encodeURIComponent(runId)}`,
-    { method: "DELETE", signal },
+    `/api/train/runs/${encodeURIComponent(runId)}?${params.toString()}`,
+    { method: "DELETE", signal: options?.signal },
   );
   return parseJson<TrainingRunDeleteResponse>(response);
 }

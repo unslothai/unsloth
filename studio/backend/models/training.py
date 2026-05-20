@@ -236,6 +236,7 @@ class TrainingRunSummary(BaseModel):
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
     resumed_later: bool = False
+    artifacts_available: bool = False
 
 
 class TrainingRunUpdateRequest(BaseModel):

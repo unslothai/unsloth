@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PageHeading } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -398,57 +399,44 @@ export function DataRecipesPage(): ReactElement {
 
   const isBusy = creatingRecipe || Boolean(loadingTemplateId);
 
-  return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto w-full max-w-7xl px-6 py-8">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Data Recipes
-            </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Create and manage local recipe workflows.
-            </p>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <Button type="button" disabled={isBusy}>
-                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                New Recipe
-                <HugeiconsIcon icon={ArrowDown01Icon} className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onSelect={() => {
-                  openNewRecipe().catch(() => undefined);
-                }}
-              >
-                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                Start Empty
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  setLearningDialogOpen(true);
-                }}
-              >
-                <HugeiconsIcon icon={CookBookIcon} className="size-4" />
-                Start from Learning Recipe
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+  const content = (
+    <>
+      <header className="font-heading flex items-start justify-between gap-4">
+        <PageHeading
+          title="Data Recipes"
+          subtitle="Create and manage local recipe workflows."
+        />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild={true}>
+            <Button type="button" disabled={isBusy}>
+              <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+              New Recipe
+              <HugeiconsIcon icon={ArrowDown01Icon} className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onSelect={() => {
+                openNewRecipe().catch(() => undefined);
+              }}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+              Start Empty
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                setLearningDialogOpen(true);
+              }}
+            >
+              <HugeiconsIcon icon={CookBookIcon} className="size-4" />
+              Start from Learning Recipe
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </header>
 
-        {!ready ? (
-          <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
-            <p className="text-sm font-medium text-foreground">
-              Loading recipes
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Fetching your saved recipes and learning templates.
-            </p>
-          </div>
-        ) : recipes.length === 0 ? (
+      {ready ? (
+        recipes.length === 0 ? (
           <Empty className="mt-8 border border-dashed border-border/70">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -527,8 +515,23 @@ export function DataRecipesPage(): ReactElement {
               </div>
             ))}
           </div>
-        )}
-      </main>
+        )
+      ) : (
+        <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
+          <p className="text-sm font-medium text-foreground">Loading recipes</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Fetching your saved recipes and learning templates.
+          </p>
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <>
+      <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+        <main className="mx-auto w-full max-w-7xl px-5 pb-20 pt-8 sm:px-9 sm:pt-10">{content}</main>
+      </div>
 
       <Dialog open={learningDialogOpen} onOpenChange={setLearningDialogOpen}>
         <DialogContent
@@ -549,6 +552,6 @@ export function DataRecipesPage(): ReactElement {
           />
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }

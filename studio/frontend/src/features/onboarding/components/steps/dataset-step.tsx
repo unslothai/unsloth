@@ -46,6 +46,7 @@ import {
   HfDatasetSubsetSplitSelectors,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useHfTokenStore } from "@/stores/hf-token-store";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -68,8 +69,6 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
 
 export function DatasetStep() {
   const {
-    hfToken,
-    setHfToken,
     datasetSource,
     selectHfDataset,
     selectLocalDataset,
@@ -88,8 +87,6 @@ export function DatasetStep() {
     modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
       datasetSource: s.datasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
@@ -108,6 +105,8 @@ export function DatasetStep() {
       modelType: s.modelType,
     })),
   );
+  const hfToken = useHfTokenStore((s) => s.token);
+  const setHfToken = useHfTokenStore((s) => s.setToken);
 
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
@@ -209,7 +208,7 @@ export function DatasetStep() {
             {(tokenValidationError ?? hfSearchError) && (
               <p className="text-xs text-destructive">
                 {tokenValidationError ?? hfSearchError}
-                {" — "}
+                {". "}
                 <a
                   href="https://huggingface.co/settings/tokens"
                   target="_blank"

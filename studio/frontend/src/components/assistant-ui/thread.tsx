@@ -777,7 +777,7 @@ const AssistantMessage: FC = () => {
       className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
-      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#232528] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
         <MessagePrimitive.Parts
           components={{
@@ -947,7 +947,7 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#232528] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
         <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">

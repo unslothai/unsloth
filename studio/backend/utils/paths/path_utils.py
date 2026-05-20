@@ -15,7 +15,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
-_CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
+# Key is (repo_type, model_name) so model and dataset lookups don't collide.
+_CACHE_CASE_RESOLUTION_MEMO: dict[tuple[str, str], str] = {}
 
 # Lightweight instrumentation counters for operational visibility.
 _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
@@ -144,12 +145,19 @@ def _hf_hub_cache_dir() -> Path:
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
-def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
+def resolve_cached_repo_id_case(
+    model_name: str,
+    use_memo: bool = True,
+    repo_type: str = "model",
+) -> str:
     """Resolve repo_id to the exact casing already present in local HF cache.
 
     Policy: prefer the requested/canonical repo_id, but if a case-variant already
     exists in local HF cache, reuse that exact cached spelling. This avoids
     duplicate downloads while preserving user intent whenever possible.
+
+    ``repo_type`` selects the HF cache subtree (``models--`` or ``datasets--``);
+    callers routing through case-sensitive job keys must pass it correctly.
     """
     _CACHE_CASE_RESOLUTION_STATS["calls"] += 1
 
@@ -162,28 +170,30 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["fallbacks"] += 1
         return model_name
 
-    expected_dir = f"models--{model_name.replace('/', '--')}"
+    prefix = f"{repo_type}s--"
+    expected_dir = f"{prefix}{model_name.replace('/', '--')}"
+    memo_key = (repo_type, model_name)
 
     # Always check the exact-case path first so a newly-appeared exact match
     # wins over any previously memoized variant.
     exact_path = cache_dir / expected_dir
     if exact_path.is_dir():
         if use_memo:
-            _CACHE_CASE_RESOLUTION_MEMO[model_name] = model_name
+            _CACHE_CASE_RESOLUTION_MEMO[memo_key] = model_name
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
 
     # Validate memoized entries still exist on disk before returning them.
     # This prevents stale results when cache dirs are deleted/recreated.
     if use_memo:
-        cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
+        cached = _CACHE_CASE_RESOLUTION_MEMO.get(memo_key)
         if cached is not None:
-            cached_path = cache_dir / f"models--{cached.replace('/', '--')}"
+            cached_path = cache_dir / f"{prefix}{cached.replace('/', '--')}"
             if cached_path.is_dir():
                 _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
                 return cached
             # Stale entry -- drop it and re-scan below.
-            _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
+            _CACHE_CASE_RESOLUTION_MEMO.pop(memo_key, None)
 
     expected_lower = expected_dir.lower()
     try:
@@ -193,9 +203,9 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
                 continue
             if entry.name.lower() != expected_lower:
                 continue
-            if not entry.name.startswith("models--"):
+            if not entry.name.startswith(prefix):
                 continue
-            repo_part = entry.name[len("models--") :]
+            repo_part = entry.name[len(prefix) :]
             if not repo_part:
                 continue
             candidates.append(repo_part.replace("--", "/"))
@@ -207,7 +217,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
                 _CACHE_CASE_RESOLUTION_STATS["tie_breaks"] += 1
             _CACHE_CASE_RESOLUTION_STATS["variant_hits"] += 1
             if use_memo:
-                _CACHE_CASE_RESOLUTION_MEMO[model_name] = resolved
+                _CACHE_CASE_RESOLUTION_MEMO[memo_key] = resolved
             return resolved
     except Exception as exc:
         _CACHE_CASE_RESOLUTION_STATS["errors"] += 1

@@ -5,6 +5,7 @@ import {
   type DeletedModelRef,
   type LoraModelOption,
   type ModelOption,
+  type ModelSelectorChangeMeta,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -19,7 +20,11 @@ import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useSidebar } from "@/components/ui/sidebar";
-import { CustomizeIcon } from "@hugeicons/core-free-icons";
+import {
+  ColumnDeleteIcon,
+  LayoutAlignRightIcon,
+  LayoutTwoColumnIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -136,7 +141,26 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  config?: NonNullable<ModelSelectorChangeMeta["config"]>;
 };
+
+function applyPickerConfigToRuntime(
+  config: NonNullable<ModelSelectorChangeMeta["config"]>,
+): void {
+  useChatRuntimeStore.setState({
+    kvCacheDtype: config.kvCacheDtype,
+    speculativeType: config.speculativeType,
+    customContextLength: config.customContextLength,
+    chatTemplateOverride: config.chatTemplateOverride,
+  });
+  if (typeof config.trustRemoteCode === "boolean") {
+    const state = useChatRuntimeStore.getState();
+    state.setParams({
+      ...state.params,
+      trustRemoteCode: config.trustRemoteCode,
+    });
+  }
+}
 
 function modelMatchesDeleted(
   model: { id: string; ggufVariant?: string | null },
@@ -364,10 +388,7 @@ function GeneralCompareHeader({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   value: string;
-  onValueChange: (
-    id: string,
-    meta: { isLora: boolean; ggufVariant?: string },
-  ) => void;
+  onValueChange: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -487,13 +508,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               models={models}
               loraModels={loraModels}
               value={model1.id}
-              onValueChange={(id, meta) =>
+              onValueChange={(id, meta) => {
                 setModel1({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
-                })
-              }
+                  config: meta.config,
+                });
+              }}
               onFoldersChange={onFoldersChange}
               onModelsChange={handleModelsChange}
               deleteDisabled={deleteDisabled}
@@ -512,13 +534,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               models={models}
               loraModels={loraModels}
               value={model2.id}
-              onValueChange={(id, meta) =>
+              onValueChange={(id, meta) => {
                 setModel2({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
-                })
-              }
+                  config: meta.config,
+                });
+              }}
               onFoldersChange={onFoldersChange}
               onModelsChange={handleModelsChange}
               deleteDisabled={deleteDisabled}
@@ -686,22 +709,17 @@ export function ChatPage(): ReactElement {
   const handleCheckpointChange = useCallback(
     (
       value: string,
-      meta?: {
-        isLora: boolean;
-        ggufVariant?: string;
-        isDownloaded?: boolean;
-        expectedBytes?: number;
-      },
+      meta?: ModelSelectorChangeMeta,
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
-      if (
-        !value ||
-        (value === currentCheckpoint &&
-          (meta?.ggufVariant ?? null) === (currentVariant ?? null))
-      )
-        return;
+      const sameModel =
+        value === currentCheckpoint &&
+        (meta?.ggufVariant ?? null) === (currentVariant ?? null);
+      if (!value) return;
+      const forceReload = sameModel && meta?.config != null;
+      if (sameModel && !forceReload) return;
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -729,12 +747,16 @@ export function ChatPage(): ReactElement {
             duration: 6000,
           });
         }
+        if (meta?.config) {
+          applyPickerConfigToRuntime(meta.config);
+        }
         await selectModel({
           id: value,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
+          forceReload,
         });
       })();
     },
@@ -781,8 +803,13 @@ export function ChatPage(): ReactElement {
 
   const exitCompare = useCallback(() => {
     const saved = viewBeforeCompareRef.current;
-    if (!saved) return;
     viewBeforeCompareRef.current = null;
+    if (!saved) {
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      useChatRuntimeStore.getState().setContextUsage(null);
+      navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+      return;
+    }
     navigate({ to: "/chat", search: saved });
     // Restore context usage from the active thread's last assistant message.
     const threadId =
@@ -802,6 +829,14 @@ export function ChatPage(): ReactElement {
         });
     }
   }, [navigate]);
+
+  const toggleCompare = useCallback(() => {
+    if (view.mode === "compare") {
+      exitCompare();
+    } else {
+      enterCompare();
+    }
+  }, [view.mode, enterCompare, exitCompare]);
 
   const models = useMemo<ModelOption[]>(
     () =>
@@ -870,6 +905,7 @@ export function ChatPage(): ReactElement {
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      runDisplayName: lora.runDisplayName,
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
@@ -1067,18 +1103,51 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={toggleCompare}
+                  className="-mr-1.5 flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-[#232528] dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={
+                    view.mode === "compare"
+                      ? "Exit compare mode"
+                      : "Compare models"
+                  }
+                  aria-pressed={view.mode === "compare"}
+                  data-tour="chat-compare"
+                >
+                  <HugeiconsIcon
+                    icon={
+                      view.mode === "compare"
+                        ? ColumnDeleteIcon
+                        : LayoutTwoColumnIcon
+                    }
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent
+                side="bottom"
+                sideOffset={6}
+                className="tooltip-compact"
+              >
+                {view.mode === "compare" ? "Exit compare" : "Compare models"}
+              </TooltipContent>
+            </Tooltip>
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild>
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-[#232528] dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open configuration"
                     data-tour="chat-settings"
                   >
                     <HugeiconsIcon
-                      icon={CustomizeIcon}
+                      icon={LayoutAlignRightIcon}
                       strokeWidth={1.75}
                       className="size-icon"
                     />
@@ -1120,18 +1189,6 @@ export function ChatPage(): ReactElement {
         onOpenChange={setSettingsOpen}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
-        onReloadModel={() => {
-          const state = useChatRuntimeStore.getState();
-          if (state.params.checkpoint) {
-            selectModel({
-              id: state.params.checkpoint,
-              ggufVariant: state.activeGgufVariant ?? undefined,
-              forceReload: true,
-              isDownloaded: true,
-              loadingDescription: "Reloading with updated chat template.",
-            });
-          }
-        }}
       />
     </div>
   );

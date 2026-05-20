@@ -3,18 +3,41 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
-import { useEffect, useState } from "react";
+import { useHfTokenStore } from "@/stores/hf-token-store";
+import { useEffect, useMemo, useState } from "react";
+import type { ComponentProps } from "react";
 import { Streamdown } from "streamdown";
 import {
+  createReadmeUrlTransform,
   fetchReadme,
+  readmeBaseUrl,
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
 
-const PLUGINS = { code, math, mermaid } as const;
+type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
+
+const README_ALLOWED_TAGS: NonNullable<
+  ComponentProps<typeof Streamdown>["allowedTags"]
+> = {
+  audio: ["src", "controls", "preload", "loop", "muted"],
+  video: [
+    "src",
+    "controls",
+    "preload",
+    "loop",
+    "muted",
+    "poster",
+    "width",
+    "height",
+    "playsinline",
+  ],
+  source: ["src", "type", "media"],
+  track: ["src", "kind", "srclang", "label", "default"],
+};
+
+const READMEX_NEEDS_MATH = /\$\$|\\\(|\\\[/;
+const READMEX_NEEDS_MERMAID = /```mermaid\b/;
 
 const PROSE = cn(
   "max-w-none text-[13.5px] leading-[1.7] text-foreground/85",
@@ -29,10 +52,27 @@ const PROSE = cn(
   "[&_blockquote]:border-l-2 [&_blockquote]:border-border/60 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
   "[&_table]:my-3 [&_table]:text-[12.5px]",
   "[&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:border-b [&_th]:border-border/60",
-  "[&_td]:px-2 [&_td]:py-1.5 [&_td]:border-b [&_td]:border-border/60/40",
+  "[&_td]:px-2 [&_td]:py-1.5 [&_td]:border-b [&_td]:border-border/40",
   "[&_img]:rounded-[10px] [&_img]:my-2 [&_img]:max-w-full",
-  "[&_hr]:my-4 [&_hr]:border-border/60/40",
+  "[&_audio]:my-1 [&_audio]:max-w-full [&_audio]:h-9 [&_audio]:align-middle",
+  "[&_video]:my-2 [&_video]:max-w-full [&_video]:rounded-[10px]",
+  "[&_hr]:my-4 [&_hr]:border-border/40",
 );
+
+async function loadPlugins(needs: {
+  math: boolean;
+  mermaid: boolean;
+}): Promise<ReadmePlugins> {
+  const [codeModule, mathModule, mermaidModule] = await Promise.all([
+    import("@streamdown/code"),
+    needs.math ? import("@streamdown/math") : Promise.resolve(null),
+    needs.mermaid ? import("@streamdown/mermaid") : Promise.resolve(null),
+  ]);
+  const plugins: ReadmePlugins = { code: codeModule.code };
+  if (mathModule) plugins.math = mathModule.math;
+  if (mermaidModule) plugins.mermaid = mermaidModule.mermaid;
+  return plugins;
+}
 
 export function ModelReadme({
   repoId,
@@ -41,24 +81,43 @@ export function ModelReadme({
   repoId: string;
   kind?: "model" | "dataset";
 }) {
+  const hfToken = useHfTokenStore((s) => s.token);
   const [body, setBody] = useState<string | null>(null);
+  const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [plugins, setPlugins] = useState<ReadmePlugins | null>(null);
+
+  const urlTransform = useMemo(
+    () => (baseUrl ? createReadmeUrlTransform(baseUrl) : undefined),
+    [baseUrl],
+  );
 
   useEffect(() => {
     let canceled = false;
     setLoading(true);
     setError(null);
     setBody(null);
-    fetchReadme(repoId, kind)
-      .then((markdown) => {
+    setBaseUrl(null);
+    setPlugins(null);
+    fetchReadme(repoId, kind, hfToken || null)
+      .then((fetched) => {
         if (canceled) return;
-        if (markdown == null) {
+        if (fetched == null) {
           setError("No model card available.");
           return;
         }
-        const { body } = stripFrontmatter(markdown);
-        setBody(stripChromeHeadings(body).trim());
+        const { body } = stripFrontmatter(fetched.markdown);
+        const cleaned = stripChromeHeadings(body).trim();
+        setBaseUrl(readmeBaseUrl(repoId, kind, fetched.branch));
+        setBody(cleaned);
+
+        void loadPlugins({
+          math: READMEX_NEEDS_MATH.test(cleaned),
+          mermaid: READMEX_NEEDS_MERMAID.test(cleaned),
+        }).then((next) => {
+          if (!canceled) setPlugins(next);
+        });
       })
       .catch((err) => {
         if (canceled) return;
@@ -72,7 +131,7 @@ export function ModelReadme({
     return () => {
       canceled = true;
     };
-  }, [repoId, kind]);
+  }, [repoId, kind, hfToken]);
 
   if (loading) {
     return (
@@ -99,7 +158,13 @@ export function ModelReadme({
 
   return (
     <div className={PROSE}>
-      <Streamdown mode="static" plugins={PLUGINS} controls={false}>
+      <Streamdown
+        mode="static"
+        plugins={plugins ?? undefined}
+        controls={false}
+        allowedTags={README_ALLOWED_TAGS}
+        urlTransform={urlTransform}
+      >
         {body}
       </Streamdown>
     </div>

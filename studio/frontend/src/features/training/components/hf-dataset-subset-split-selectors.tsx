@@ -90,29 +90,27 @@ export function HfDatasetSubsetSplitSelectors({
   return (
     <>
       {showPlaceholderDropdowns && (
-        <>
-          <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-            <SelectorDropdown
-              variant={variant}
-              label="Subset"
-              tooltip="Select which subset (config) of the dataset to use."
-              value={null}
-              onChange={setDatasetSubset}
-              options={[]}
-              placeholder="Select a subset..."
-              disabled={true}
-            />
-            <SelectorDropdown
-              variant={variant}
-              label="Train Split"
-              tooltip="Select which split to use for training."
-              value={null}
-              onChange={setDatasetSplit}
-              options={[]}
-              placeholder="Select a split..."
-              disabled={true}
-            />
-          </div>
+        <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+          <SelectorDropdown
+            variant={variant}
+            label="Subset"
+            tooltip="Select which subset (config) of the dataset to use."
+            value={null}
+            onChange={setDatasetSubset}
+            options={[]}
+            placeholder="Select a subset..."
+            disabled={true}
+          />
+          <SelectorDropdown
+            variant={variant}
+            label="Train Split"
+            tooltip="Select which split to use for training."
+            value={null}
+            onChange={setDatasetSplit}
+            options={[]}
+            placeholder="Select a split..."
+            disabled={true}
+          />
           <SelectorDropdown
             variant={variant}
             label="Evaluation Split"
@@ -124,7 +122,7 @@ export function HfDatasetSubsetSplitSelectors({
             allowNone
             disabled={true}
           />
-        </>
+        </div>
       )}
 
       {isLoading && (
@@ -152,63 +150,70 @@ export function HfDatasetSubsetSplitSelectors({
         </div>
       )}
 
-      {showDropdowns && (
-        <>
-          {variant === "studio" ? (
-            <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-              <SelectorDropdown
-                variant={variant}
-                label="Subset"
-                tooltip="Select which subset (config) of the dataset to use."
-                value={datasetSubset}
-                onChange={setDatasetSubset}
-                options={hfSubsets}
-                placeholder="Select a subset..."
-              />
-              <SelectorDropdown
-                variant={variant}
-                label="Train Split"
-                tooltip="Select which split to use for training."
-                value={datasetSplit}
-                onChange={setDatasetSplit}
-                options={hfSplits}
-                placeholder="Select a split..."
-              />
-            </div>
-          ) : (
-            <>
-              <SelectorDropdown
-                variant={variant}
-                label="Subset"
-                tooltip="Select which subset (config) of the dataset to use."
-                value={datasetSubset}
-                onChange={setDatasetSubset}
-                options={hfSubsets}
-                placeholder="Select a subset..."
-              />
-              <SelectorDropdown
-                variant={variant}
-                label="Train Split"
-                tooltip="Select which split to use for training."
-                value={datasetSplit}
-                onChange={setDatasetSplit}
-                options={hfSplits}
-                placeholder="Select a split..."
-              />
-            </>
-          )}
-          <SelectorDropdown
-            variant={variant}
-            label="Evaluation Split"
-            tooltip="Select which split to use for evaluation. None means no evaluation during training."
-            value={datasetEvalSplit}
-            onChange={setDatasetEvalSplit}
-            options={hfSplits}
-            placeholder="None"
-            allowNone
-          />
-        </>
-      )}
+      {showDropdowns &&
+        (variant === "studio" ? (
+          <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+            <SelectorDropdown
+              variant={variant}
+              label="Subset"
+              tooltip="Select which subset (config) of the dataset to use."
+              value={datasetSubset}
+              onChange={setDatasetSubset}
+              options={hfSubsets}
+              placeholder="Select a subset..."
+            />
+            <SelectorDropdown
+              variant={variant}
+              label="Train Split"
+              tooltip="Select which split to use for training."
+              value={datasetSplit}
+              onChange={setDatasetSplit}
+              options={hfSplits}
+              placeholder="Select a split..."
+            />
+            <SelectorDropdown
+              variant={variant}
+              label="Evaluation Split"
+              tooltip="Select which split to use for evaluation. None means no evaluation during training."
+              value={datasetEvalSplit}
+              onChange={setDatasetEvalSplit}
+              options={hfSplits}
+              placeholder="None"
+              allowNone
+            />
+          </div>
+        ) : (
+          <>
+            <SelectorDropdown
+              variant={variant}
+              label="Subset"
+              tooltip="Select which subset (config) of the dataset to use."
+              value={datasetSubset}
+              onChange={setDatasetSubset}
+              options={hfSubsets}
+              placeholder="Select a subset..."
+            />
+            <SelectorDropdown
+              variant={variant}
+              label="Train Split"
+              tooltip="Select which split to use for training."
+              value={datasetSplit}
+              onChange={setDatasetSplit}
+              options={hfSplits}
+              placeholder="Select a split..."
+            />
+            <SelectorDropdown
+              variant={variant}
+              label="Evaluation Split"
+              tooltip="Select which split to use for evaluation. None means no evaluation during training."
+              value={datasetEvalSplit}
+              onChange={setDatasetEvalSplit}
+              options={hfSplits}
+              placeholder="None"
+              allowNone
+            />
+          </>
+        ))}
     </>
   );
 }
@@ -283,24 +288,19 @@ function SelectorDropdown({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+    <div className="flex min-w-0 flex-col gap-2">
+      <span className="field-label">
         {label}
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
-              className="text-foreground/70 hover:text-foreground"
+              className="text-muted-foreground/50 hover:text-foreground"
             >
-              <HugeiconsIcon
-                icon={InformationCircleIcon}
-                className="size-3"
-              />
+              <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
             </button>
           </TooltipTrigger>
-          <TooltipContent>
-            {tooltip}
-          </TooltipContent>
+          <TooltipContent>{tooltip}</TooltipContent>
         </Tooltip>
       </span>
       <Select
@@ -308,13 +308,11 @@ function SelectorDropdown({
         onValueChange={(v) => onChange(v === "_none" ? null : v)}
         disabled={disabled}
       >
-        <SelectTrigger className="w-full min-w-0">
+        <SelectTrigger className="field-trigger field-soft w-full min-w-0">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>
-          {allowNone && (
-            <SelectItem value="_none">None</SelectItem>
-          )}
+          {allowNone && <SelectItem value="_none">None</SelectItem>}
           {options.map((opt) => (
             <SelectItem key={opt} value={opt}>
               {opt}

@@ -12,9 +12,18 @@ const ModelsPage = lazy(() =>
   })),
 );
 
+export interface ModelsSearch {
+  tab?: "discover" | "downloaded";
+}
+
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/models",
   beforeLoad: () => requireAuth(),
   component: ModelsPage,
+  validateSearch: (search: Record<string, unknown>): ModelsSearch => {
+    const raw = search.tab;
+    if (raw === "discover" || raw === "downloaded") return { tab: raw };
+    return {};
+  },
 });

@@ -14,7 +14,6 @@ import {
   redirect,
   useRouterState,
 } from "@tanstack/react-router";
-import { AnimatePresence, motion } from "motion/react";
 import { Suspense, useEffect } from "react";
 import { AppProvider } from "../provider";
 
@@ -84,25 +83,24 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
-          <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
+          <SidebarInset
+            className={
+              isChatRoute
+                ? "overflow-hidden"
+                : "overflow-y-auto [scrollbar-gutter:stable]"
+            }
+          >
             <Navbar />
             <div
               className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
             >
-              <AnimatePresence initial={false} mode="wait">
-                <motion.div
-                  key={pathname}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
-                >
-                  <Suspense fallback={null}>
-                    <Outlet />
-                  </Suspense>
-                </motion.div>
-              </AnimatePresence>
+              <div
+                className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
+              >
+                <Suspense fallback={null}>
+                  <Outlet />
+                </Suspense>
+              </div>
             </div>
           </SidebarInset>
         </SidebarProvider>

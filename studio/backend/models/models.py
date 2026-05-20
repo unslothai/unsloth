@@ -95,6 +95,13 @@ class ModelDetails(BaseModel):
     model_size_bytes: Optional[int] = Field(
         None, description = "Total size of model weight files in bytes"
     )
+    chat_template: Optional[str] = Field(
+        None,
+        description = (
+            "Original Jinja chat template for the model, fetched without loading"
+            " (GGUF header or tokenizer_config.json). Null if not discoverable."
+        ),
+    )
 
 
 class LoRAInfo(BaseModel):
@@ -108,6 +115,10 @@ class LoRAInfo(BaseModel):
     source: Optional[str] = Field(None, description = "'training' or 'exported'")
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
+    )
+    run_display_name: Optional[str] = Field(
+        None,
+        description = "User-set name of the training run that produced this adapter, if any.",
     )
 
 
@@ -141,6 +152,9 @@ class GgufVariantDetail(BaseModel):
     size_bytes: int = Field(0, description = "File size in bytes")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
+    )
+    partial: bool = Field(
+        False, description = "Whether this variant has an in-progress (.incomplete) blob in cache"
     )
 
 
@@ -176,6 +190,10 @@ class LocalModelInfo(BaseModel):
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",
+    )
+    partial: bool = Field(
+        False,
+        description = "True when this hf_cache entry has incomplete blobs",
     )
 
 

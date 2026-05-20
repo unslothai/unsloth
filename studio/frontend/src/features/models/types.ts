@@ -19,6 +19,7 @@ export interface DiscoverRow {
   repo: string;
   result: HfModelResult;
   isAvailableOnDevice: boolean;
+  isPartialOnDevice: boolean;
   summary: string;
   capabilities: Capability[];
 }
@@ -31,6 +32,11 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   bytes: number;
+  cachePath?: string | null;
+  partial?: boolean;
+  pipelineTag?: string | null;
+  tags?: string[];
+  libraryName?: string | null;
 }
 
 export interface LocalInventoryRow {
@@ -44,6 +50,7 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   updatedAt: number | null;
+  partial?: boolean;
 }
 
 export type InventoryRow = CachedInventoryRow | LocalInventoryRow;
@@ -58,9 +65,11 @@ export interface SelectedModelView {
   summary: string;
   sourceLabel: string;
   path: string | null;
+  localSource?: LocalModelInfo["source"];
   isLocal: boolean;
   isGguf: boolean;
   isDownloaded: boolean;
+  isPartial?: boolean;
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;
@@ -73,4 +82,5 @@ export interface SelectedModelView {
   updatedAt?: string;
   localUpdatedAt?: number | null;
   tags?: string[];
+  quantMethod?: string;
 }

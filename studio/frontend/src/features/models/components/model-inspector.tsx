@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn, formatCompact } from "@/lib/utils";
-import { Streamdown } from "streamdown";
 import {
   Calendar03Icon,
-  CheckmarkCircle02Icon,
   Copy01Icon,
   CpuIcon,
   CubeIcon,
@@ -22,7 +19,6 @@ import {
   LayersLogoIcon,
   LicenseIcon,
   PackageIcon,
-  PlayIcon,
   RamMemoryIcon,
   Share05Icon,
   Tick02Icon,
@@ -30,19 +26,27 @@ import {
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { DatasetDownloadSection } from "./dataset-download-section";
+import { LocalDatasetCard } from "./local-dataset-card";
+import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { CapabilityPill } from "./shared";
-import { DownloadSection } from "./download-section";
-import { ACCENT_RING, ACCENT_TEXT, pickAccent } from "../lib/accent";
+import { DownloadSection, type InventoryHint } from "./download-section";
 import {
   type DatasetSizeInfo,
   fetchDatasetSize,
 } from "../lib/dataset-size";
 import { formatBytes, formatRelativeShort } from "../lib/format";
-import { formatLocalUpdated, formatPipelineTag } from "../lib/view-models";
+import {
+  formatLocalUpdated,
+  formatPipelineTag,
+  parseLanguageTags,
+} from "../lib/view-models";
 import type { SelectedModelView } from "../types";
+import { classifyUnslothSupport } from "@/hooks";
+import { usePlatformStore } from "@/config/env";
 
 function ViewRepositoryButton({
   repoId,
@@ -55,16 +59,19 @@ function ViewRepositoryButton({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="view-repo-link relative inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="View repository"
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
           <HugeiconsIcon
             icon={Share05Icon}
             strokeWidth={1.75}
-            className="pointer-events-none size-4"
+            className="size-4"
           />
-          <span aria-label="View repository">
-            <Streamdown mode="static">{`[View repository](${url})`}</Streamdown>
-          </span>
-        </span>
+        </a>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
         Open on Hugging Face
@@ -74,25 +81,12 @@ function ViewRepositoryButton({
 }
 
 function CopyRepoButton({ repoId }: { repoId: string }) {
-  const [copied, setCopied] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
+  const { copied, copy } = useCopyFeedback();
 
   const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(repoId);
-      setCopied(true);
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      timeoutRef.current = setTimeout(() => setCopied(false), 1500);
-    } catch {}
+    await copy(repoId);
   };
 
   return (
@@ -150,73 +144,31 @@ function StatGrid({ children }: { children: React.ReactNode }) {
   );
 }
 
-function LocalLoadPanel({
-  isActive,
-  isLoading,
-  loadingPhase,
-  sourceLabel,
-  path,
-  onLoad,
+function StatusChip({
+  tone,
+  label,
+  className,
 }: {
-  isActive: boolean;
-  isLoading: boolean;
-  loadingPhase?: "downloading" | "starting";
-  sourceLabel: string;
-  path: string;
-  onLoad: () => void;
+  tone: "success" | "warning" | "danger";
+  label: string;
+  className?: string;
 }) {
+  const toneClass =
+    tone === "danger"
+      ? "border-red-500/35 text-red-700 dark:border-red-400/40 dark:text-red-300"
+      : tone === "warning"
+        ? "border-amber-500/40 text-amber-700 dark:border-amber-400/45 dark:text-amber-300"
+        : "border-emerald-500/40 text-emerald-700 dark:border-emerald-400/45 dark:text-emerald-300";
   return (
-    <div className="rounded-[14px] border border-border bg-muted/30 p-3">
-      <div className="flex flex-col gap-2.5">
-        <div className="space-y-0.5">
-          <p className="text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-            Load
-          </p>
-          <p className="text-[12.5px] leading-5 text-muted-foreground">
-            This model exists on the device via {sourceLabel}. Loading it does
-            not trigger a new Hub download.
-          </p>
-        </div>
-        <div className="rounded-[10px] bg-background/80 px-3 py-2 text-[11.5px] leading-5 text-muted-foreground break-all">
-          {path}
-        </div>
-        <Button
-          variant={isActive ? "secondary" : "dark"}
-          className="h-9 rounded-[10px]"
-          disabled={isActive || isLoading}
-          onClick={onLoad}
-        >
-          {isLoading ? (
-            <>
-              <HugeiconsIcon
-                icon={CpuIcon}
-                strokeWidth={1.75}
-                className="size-4 animate-pulse"
-              />
-              {loadingPhase === "downloading" ? "Preparing…" : "Loading…"}
-            </>
-          ) : isActive ? (
-            <>
-              <HugeiconsIcon
-                icon={CheckmarkCircle02Icon}
-                strokeWidth={2}
-                className="size-4"
-              />
-              Loaded
-            </>
-          ) : (
-            <>
-              <HugeiconsIcon
-                icon={PlayIcon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              Load local model
-            </>
-          )}
-        </Button>
-      </div>
-    </div>
+    <span
+      className={cn(
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-[7px] border bg-transparent px-1.5 text-[11px] font-medium leading-none",
+        toneClass,
+        className,
+      )}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -233,6 +185,7 @@ export function ModelInspector({
   onLoad,
   onLoadLocal,
   onUseInChat,
+  onTrain,
   onInventoryChange,
   isDataset = false,
 }: {
@@ -252,8 +205,10 @@ export function ModelInspector({
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
   onLoadLocal: () => void;
   onUseInChat: () => void;
-  onInventoryChange?: () => void;
+  onTrain?: () => void;
+  onInventoryChange?: (hint?: InventoryHint) => void;
 }) {
+  const deviceType = usePlatformStore((s) => s.deviceType);
   const datasetRepoId =
     isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const [datasetSize, setDatasetSize] = useState<DatasetSizeInfo | null>(null);
@@ -285,7 +240,7 @@ export function ModelInspector({
 
   if (!model) {
     return (
-      <div className="flex h-[calc(100dvh-205px)] flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
         <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
@@ -311,27 +266,24 @@ export function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
+  const unslothSupport = classifyUnslothSupport({
+    modelId: model.hubRepoId ?? model.id,
+    pipelineTag: model.pipelineTag,
+    tags: model.tags,
+    libraryName: model.libraryName,
+    deviceType,
+    quantMethod: model.quantMethod,
+  });
 
-  const accent = pickAccent(model.capabilities);
-
-  const languages = (() => {
-    const tags = model.tags ?? [];
-    const langs: string[] = [];
-    for (const t of tags) {
-      if (t.startsWith("language:")) {
-        const code = t.slice("language:".length);
-        if (code && !langs.includes(code)) langs.push(code);
-      }
-    }
-    return langs;
-  })();
+  const languages = parseLanguageTags(model.tags);
 
   return (
-    <div className="flex h-[calc(100dvh-205px)] flex-col">
-      <div className="shrink-0 px-6 pb-2 pt-4">
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <div className="shrink-0 px-6 pb-2 pt-0">
         <div className="flex items-center gap-3.5">
           <OwnerAvatar
             owner={model.owner}
+            repoName={model.title}
             className="size-[52px] rounded-[14px] text-[16px]"
           />
           <div className="min-w-0 flex-1">
@@ -349,34 +301,38 @@ export function ModelInspector({
                 </div>
               )}
             </div>
-            <p className="mt-0.5 min-w-0 truncate text-[14px] leading-[22px] text-muted-foreground">
-              {model.owner}
-            </p>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[14px] leading-[22px] text-muted-foreground">
+              <span className="truncate">{model.owner}</span>
+              {model.owner.toLowerCase() === "unsloth" && (
+                <span
+                  aria-label="Verified Unsloth"
+                  className="verified-badge size-4 shrink-0 text-primary"
+                />
+              )}
+            </div>
           </div>
         </div>
 
-        {(isDataset || isActive || !isDataset || model.capabilities.length > 0) && (
-          <div className="mt-4 flex flex-wrap items-center gap-1.5">
-            {isDataset && (
-              <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400">
-                Dataset
-              </span>
-            )}
-            {!isDataset && (
-              <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] font-medium text-foreground">
-                <HugeiconsIcon
-                  icon={CubeIcon}
-                  strokeWidth={1.75}
-                  className="size-3 text-muted-foreground"
-                />
-                {taskLabel}
-              </span>
-            )}
-            {model.capabilities.map((capability) => (
-              <CapabilityPill key={capability.key} capability={capability} />
-            ))}
-          </div>
-        )}
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          {isDataset && (
+            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400">
+              Dataset
+            </span>
+          )}
+          {!isDataset && (
+            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
+              <HugeiconsIcon
+                icon={CubeIcon}
+                strokeWidth={1.75}
+                className="size-3 text-muted-foreground"
+              />
+              {taskLabel}
+            </span>
+          )}
+          {model.capabilities.map((capability) => (
+            <CapabilityPill key={capability.key} capability={capability} />
+          ))}
+        </div>
 
       </div>
 
@@ -385,34 +341,60 @@ export function ModelInspector({
           <DatasetDownloadSection
             repoId={model.hubRepoId}
             isDownloaded={model.isDownloaded}
+            isPartial={model.isPartial ?? false}
+            cachePath={model.path}
+            onTrain={onTrain}
             onChange={onInventoryChange}
+          />
+        </div>
+      )}
+      {isDataset && model.isLocal && model.path && (
+        <div className="shrink-0 px-6 pt-3">
+          <LocalDatasetCard
+            sourceLabel={model.sourceLabel}
+            source={model.localSource ?? "custom"}
+            path={model.path}
+            onTrain={onTrain}
           />
         </div>
       )}
       {!isDataset && (
         <div className="shrink-0 px-6 pt-3">
           {model.isLocal ? (
-            <LocalLoadPanel
+            <LocalOnDeviceCard
+              repoId={model.hubRepoId}
+              sourceLabel={model.sourceLabel}
+              source={model.localSource ?? "custom"}
+              path={model.path ?? model.displayId}
+              isGguf={model.isGguf}
               isActive={isActive}
               isLoading={isLoadingThisModel}
               loadingPhase={loadingPhase}
-              sourceLabel={model.sourceLabel}
-              path={model.path ?? model.displayId}
+              unsupportedReason={
+                unslothSupport.status === "unsupported"
+                  ? (unslothSupport.reason ?? "Unsupported format")
+                  : null
+              }
               onLoad={onLoadLocal}
+              onUseInChat={onUseInChat}
+              onTrain={!model.isGguf ? onTrain : undefined}
+              onChange={onInventoryChange}
             />
           ) : (
             <DownloadSection
               repoId={model.id}
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
+              isPartial={model.isPartial ?? false}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
               isLoadingThisModel={isLoadingThisModel}
-              loadingPhase={loadingPhase}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
+              cachePath={model.path}
               onLoad={onLoad}
               onUseInChat={onUseInChat}
+              onTrain={onTrain}
               onChange={onInventoryChange}
             />
           )}
@@ -499,6 +481,79 @@ export function ModelInspector({
             icon={LicenseIcon}
           />
         </StatGrid>
+        {(() => {
+          const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+          const showVram = !isDataset && vramInfo && !model.isGguf;
+          if (!showUnsupported && !showVram) return null;
+          return (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              {showUnsupported && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0} className="inline-flex outline-none">
+                      <StatusChip tone="danger" label="May not be supported" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="bottom"
+                    sideOffset={6}
+                    className="tooltip-compact max-w-xs"
+                  >
+                    This model may not be supported yet.
+                    {unslothSupport.reason && (
+                      <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+                        {unslothSupport.reason}
+                      </span>
+                    )}
+                    <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+                      Still downloadable to your Hugging Face cache, shared with
+                      every framework that reads it.
+                    </span>
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {showVram && vramInfo && (() => {
+                const vramTone =
+                  vramInfo.status === "exceeds"
+                    ? "danger"
+                    : vramInfo.status === "tight"
+                      ? "warning"
+                      : "success";
+                const vramLabel =
+                  vramInfo.status === "exceeds"
+                    ? `Over VRAM budget · ~${vramInfo.est} GB`
+                    : vramInfo.status === "tight"
+                      ? `Tight fit · ~${vramInfo.est} GB`
+                      : `Likely fits · ~${vramInfo.est} GB`;
+                const vramDetail =
+                  vramInfo.status === "exceeds"
+                    ? "A 4-bit load is likely to exceed the current GPU budget. Higher-precision loads need even more."
+                    : vramInfo.status === "tight"
+                      ? "A 4-bit load should fit, with limited headroom for context and activations."
+                      : "A 4-bit load should fit comfortably on the current GPU.";
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} className="inline-flex outline-none">
+                        <StatusChip tone={vramTone} label={vramLabel} />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="bottom"
+                      sideOffset={6}
+                      className="tooltip-compact max-w-xs"
+                    >
+                      Estimated 4-bit memory load is around {vramInfo.est} GB.
+                      <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+                        {vramDetail}
+                      </span>
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })()}
+            </div>
+          );
+        })()}
       </div>
 
       <div
@@ -511,28 +566,8 @@ export function ModelInspector({
 
       <div
         ref={descScrollRef}
-        className="min-h-0 flex-1 space-y-7 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
       >
-        {!isDataset && vramInfo && !model.isGguf && (
-          <div
-            className={cn(
-              "rounded-[12px] border px-3 py-2.5 text-[12px] leading-5",
-              vramInfo.status === "exceeds"
-                ? "border-red-500/20 bg-red-500/8 text-red-700 dark:text-red-300"
-                : vramInfo.status === "tight"
-                  ? "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                  : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-            )}
-          >
-            Estimated memory load is about {vramInfo.est} GB.{" "}
-            {vramInfo.status === "exceeds"
-              ? "This is likely above the current GPU budget."
-              : vramInfo.status === "tight"
-                ? "This should fit, but with limited headroom."
-                : "This should fit comfortably on the current GPU."}
-          </div>
-        )}
-
         {model.hubRepoId && (
           <ModelReadme
             repoId={model.hubRepoId}

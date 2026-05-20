@@ -60,7 +60,7 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
           </TooltipContent>
         </Tooltip>
         <span className="text-[11px] text-muted-foreground/70">
-          — select one or more
+          select one or more
         </span>
       </div>
       <div className="flex flex-wrap gap-2 py-1 pl-1">

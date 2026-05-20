@@ -3,6 +3,7 @@
 
 import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS, LR_DEFAULT_CPT, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS, TARGET_MODULES } from "@/config/training";
 import { authFetch } from "@/features/auth";
+import { getHfToken } from "@/stores/hf-token-store";
 import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
@@ -60,7 +61,6 @@ const initialState: TrainingConfigState = {
   modelType: null,
   selectedModel: null,
   trainingMethod: "qlora",
-  hfToken: "",
   datasetSource: "huggingface",
   datasetFormat: "auto",
   dataset: null,
@@ -87,6 +87,7 @@ const initialState: TrainingConfigState = {
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,
+  datasetCheckFailed: false,
   maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
 };
@@ -126,6 +127,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isCheckingDataset",
   "isDatasetImage",
   "isDatasetAudio",
+  "datasetCheckFailed",
   "trainOnCompletions",
   "maxPositionEmbeddings",
 ]);
@@ -293,7 +295,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsError: null,
         });
 
-        void getModelConfig(modelName, controller.signal, get().hfToken || undefined)
+        void getModelConfig(modelName, controller.signal, getHfToken() || undefined)
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
@@ -415,12 +417,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         _datasetCheckController?.abort();
         const controller = new AbortController();
         _datasetCheckController = controller;
-        set({ isCheckingDataset: true });
+        set({ isCheckingDataset: true, datasetCheckFailed: false });
 
         const state = get();
         checkDatasetFormat({
           datasetName,
-          hfToken: state.hfToken.trim() || null,
+          hfToken: getHfToken() || null,
           subset: state.datasetSubset,
           split,
           isVlm: state.isVisionModel,
@@ -433,6 +435,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isDatasetImage: isImage,
               isDatasetAudio: isAudio,
               isCheckingDataset: false,
+              datasetCheckFailed: false,
             };
             if (!_trainOnCompletionsManuallySet) {
               const { isVisionModel, isAudioModel } = get();
@@ -452,7 +455,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
           .catch(() => {
             if (controller.signal.aborted) return;
-            set({ isDatasetImage: null, isCheckingDataset: false });
+            set({
+              isDatasetImage: null,
+              isCheckingDataset: false,
+              datasetCheckFailed: true,
+            });
           });
       };
 
@@ -472,6 +479,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         isDatasetImage: null,
         isDatasetAudio: false,
         isCheckingDataset: false,
+        datasetCheckFailed: false,
       });
 
       return {
@@ -540,8 +548,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ),
           );
         },
-        setHfToken: (hfToken) =>
-          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();
@@ -553,6 +559,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             uploadedFile: null,
             ...resetDatasetState(),
           });
+          if (dataset) {
+            runDatasetCheck(dataset, "train");
+          }
         },
         selectLocalDataset: (uploadedFile) => {
           _datasetCheckController?.abort();
@@ -603,6 +612,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            datasetCheckFailed: false,
           });
         },
         setDatasetSubset: (datasetSubset) => {
@@ -617,6 +627,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            datasetCheckFailed: false,
           });
         },
         setDatasetSplit: (datasetSplit) => {
@@ -626,6 +637,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            datasetCheckFailed: false,
           });
 
           const state = get();
@@ -693,6 +705,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            datasetCheckFailed: false,
           });
         },
         setUploadedEvalFile: (uploadedEvalFile) => set({
@@ -771,13 +784,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 10,
+      version: 11,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
           s.datasetSubset = s.datasetConfig;
         }
         delete s.datasetConfig;
+        delete s.hfToken;
         if (version < 3 && s.modelDefaultsAppliedFor == null) {
           s.modelDefaultsAppliedFor = null;
         }

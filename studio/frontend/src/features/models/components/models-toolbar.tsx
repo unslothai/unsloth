@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -10,10 +16,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
+  AiChipIcon,
+  Database02Icon,
   Search01Icon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { HfSortKey } from "@/hooks";
@@ -24,9 +37,13 @@ import type {
   ResourceTypeFilter,
 } from "../types";
 import {
+  CHANNEL_PRESETS,
+  type ChannelId,
+  findChannel,
+} from "../lib/channels";
+import {
   CAPABILITY_FILTER_OPTIONS,
   FORMAT_FILTER_OPTIONS,
-  RESOURCE_TYPE_OPTIONS,
 } from "../lib/view-models";
 
 const SORT_OPTIONS: ReadonlyArray<{
@@ -54,6 +71,8 @@ export function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilter,
   onCapabilityFilterChange,
+  activeChannelId,
+  onChannelSelect,
 }: {
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
@@ -68,24 +87,27 @@ export function ModelsToolbar({
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   capabilityFilter: CapabilityFilter;
   onCapabilityFilterChange: (value: CapabilityFilter) => void;
+  activeChannelId: ChannelId | null;
+  onChannelSelect: (id: ChannelId | null) => void;
 }) {
+  const activeChannel = findChannel(activeChannelId);
   const isDataset = resourceType === "datasets";
   const triggerBase = cn(
-    "menu-trigger field-soft h-9 rounded-[12px] text-[12.5px] text-muted-foreground transition-colors",
+    "field-trigger menu-trigger field-soft transition-colors",
     "focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-border",
   );
   return (
     <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
       <div
         className={cn(
-          "menu-trigger tab-toggle relative inline-flex h-9 w-[240px] shrink-0 items-center rounded-full p-0.5",
+          "menu-trigger tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[240px]",
         )}
       >
         <span
           aria-hidden="true"
           className={cn(
             "tab-toggle-pill",
-            "pointer-events-none absolute left-0.5 top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full transition-transform duration-200 ease-out",
+            "pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
             tab === "downloaded" ? "translate-x-full" : "translate-x-0",
           )}
         />
@@ -93,7 +115,7 @@ export function ModelsToolbar({
           type="button"
           onClick={() => onTabChange("discover")}
           className={cn(
-            "relative z-10 inline-flex h-8 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
             tab === "discover"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
@@ -105,7 +127,7 @@ export function ModelsToolbar({
           type="button"
           onClick={() => onTabChange("downloaded")}
           className={cn(
-            "relative z-10 inline-flex h-8 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
             tab === "downloaded"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
@@ -115,62 +137,90 @@ export function ModelsToolbar({
         </button>
       </div>
 
-      <Select
-        value={resourceType}
-        onValueChange={(value) =>
-          onResourceTypeChange(value as ResourceTypeFilter)
-        }
+      <div className="flex items-center gap-2 lg:contents">
+      <div
+        className="menu-trigger tab-toggle relative inline-flex h-9 shrink-0 items-center rounded-full"
+        role="radiogroup"
+        aria-label="Resource type"
       >
-        <SelectTrigger
-          animateRadius={false}
-          icon={ArrowDown01Icon}
-          iconStrokeWidth={1.25}
-          iconClassName="size-3.5"
+        <span
+          aria-hidden="true"
           className={cn(
-            triggerBase,
-            "w-[112px] lg:w-[88px] xl:w-[128px] 2xl:w-[168px]",
+            "tab-toggle-pill",
+            "pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
+            resourceType === "datasets" ? "translate-x-full" : "translate-x-0",
           )}
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent
-          position="popper"
-          side="bottom"
-          align="start"
-          sideOffset={8}
-          avoidCollisions={false}
-          className="menu-instant menu-soft-surface rounded-[14px] ring-0"
-        >
-          {RESOURCE_TYPE_OPTIONS.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={resourceType === "models"}
+              aria-label="Models"
+              onClick={() => onResourceTypeChange("models")}
+              className={cn(
+                "relative z-10 inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
+                resourceType === "models"
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={AiChipIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            Models
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={resourceType === "datasets"}
+              aria-label="Datasets"
+              onClick={() => onResourceTypeChange("datasets")}
+              className={cn(
+                "relative z-10 inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
+                resourceType === "datasets"
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={Database02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            Datasets
+          </TooltipContent>
+        </Tooltip>
+      </div>
 
-      <div className="relative flex-1">
+      <div className="relative min-w-0 flex-1">
         <HugeiconsIcon
           icon={Search01Icon}
           strokeWidth={1.8}
-          className="pointer-events-none absolute left-3 top-1/2 size-[18px] -translate-y-1/2 text-muted-foreground"
+          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          placeholder={
-            tab === "discover"
-              ? "Search Hugging Face: model, family, or publisher"
-              : "Search cached or local models"
-          }
-          className={cn(
-            "field-soft h-9 rounded-full pl-10 pr-10 text-[13.5px] placeholder:text-muted-foreground/80",
-            "focus-visible:bg-background dark:focus-visible:bg-white/[0.06]",
-          )}
+          placeholder="Search Hugging Face"
+          className="field-soft h-9 rounded-full pl-10 pr-10 text-[12.5px] placeholder:text-muted-foreground/80"
         />
         {tab === "discover" && isLoading && (
           <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         )}
+      </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -183,23 +233,27 @@ export function ModelsToolbar({
           >
             <SelectTrigger
               animateRadius={false}
-              icon={ArrowDown01Icon}
-              iconStrokeWidth={1.25}
-              iconClassName="size-3.5"
-              className={cn(triggerBase, "min-w-[124px]")}
+              className={cn(triggerBase, "field-filter min-w-[124px]")}
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent
-            position="popper"
-            side="bottom"
-            align="start"
-            sideOffset={8}
-            avoidCollisions={false}
-            className="menu-instant menu-soft-surface rounded-[14px] ring-0"
-          >
+              position="popper"
+              side="bottom"
+              align="start"
+              sideOffset={8}
+              avoidCollisions={false}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              className="menu-instant menu-soft-surface rounded-[14px] ring-0"
+            >
               {FORMAT_FILTER_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
+                  {option.value === "gguf" && (
+                    <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-gguf" />
+                  )}
+                  {option.value === "checkpoint" && (
+                    <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-checkpoint" />
+                  )}
                   {option.label}
                 </SelectItem>
               ))}
@@ -216,10 +270,7 @@ export function ModelsToolbar({
           >
             <SelectTrigger
               animateRadius={false}
-              icon={ArrowDown01Icon}
-              iconStrokeWidth={1.25}
-              iconClassName="size-3.5"
-              className={cn(triggerBase, "min-w-[136px]")}
+              className={cn(triggerBase, "field-filter min-w-[136px]")}
             >
               <SelectValue />
             </SelectTrigger>
@@ -229,6 +280,7 @@ export function ModelsToolbar({
             align="start"
             sideOffset={8}
             avoidCollisions={false}
+            onCloseAutoFocus={(e) => e.preventDefault()}
             className="menu-instant menu-soft-surface rounded-[14px] ring-0"
           >
               {CAPABILITY_FILTER_OPTIONS.map((option) => (
@@ -247,10 +299,7 @@ export function ModelsToolbar({
           >
             <SelectTrigger
               animateRadius={false}
-              icon={ArrowDown01Icon}
-              iconStrokeWidth={1.25}
-              iconClassName="size-3.5"
-              className={cn(triggerBase, "min-w-[140px]")}
+              className={cn(triggerBase, "field-filter min-w-[140px]")}
             >
               <SelectValue />
             </SelectTrigger>
@@ -260,6 +309,7 @@ export function ModelsToolbar({
             align="start"
             sideOffset={8}
             avoidCollisions={false}
+            onCloseAutoFocus={(e) => e.preventDefault()}
             className="menu-instant menu-soft-surface rounded-[14px] ring-0"
           >
               {SORT_OPTIONS.map((option) => (
@@ -269,6 +319,73 @@ export function ModelsToolbar({
               ))}
             </SelectContent>
           </Select>
+        )}
+
+        {tab === "discover" && !isDataset && (
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Curated channels"
+                    className={cn(
+                      triggerBase,
+                      "field-filter inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+                    )}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="verified-badge size-4 text-primary"
+                    />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                {activeChannel ? activeChannel.label : "Curated channels"}
+              </TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={8}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              className="menu-instant menu-soft-surface min-w-[220px] rounded-[14px] ring-0 p-1"
+            >
+              <DropdownMenuItem
+                onSelect={() => onChannelSelect(null)}
+                className="relative flex w-full cursor-pointer items-center gap-2.5 rounded-xl corner-squircle py-2 pr-8 pl-3 text-sm select-none"
+              >
+                All models
+                {activeChannelId === null && (
+                  <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="size-4"
+                    />
+                  </span>
+                )}
+              </DropdownMenuItem>
+              {CHANNEL_PRESETS.map((preset) => (
+                <DropdownMenuItem
+                  key={preset.id}
+                  onSelect={() => onChannelSelect(preset.id)}
+                  className="relative flex w-full cursor-pointer items-center gap-2.5 rounded-xl corner-squircle py-2 pr-8 pl-3 text-sm select-none"
+                >
+                  {preset.label}
+                  {activeChannelId === preset.id && (
+                    <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                      <HugeiconsIcon
+                        icon={Tick02Icon}
+                        strokeWidth={2}
+                        className="size-4"
+                      />
+                    </span>
+                  )}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
 
       </div>
