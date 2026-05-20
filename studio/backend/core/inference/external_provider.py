@@ -433,6 +433,12 @@ class ExternalProviderClient:
                 if response.status_code != 200:
                     error_body = await response.aread()
                     error_text = error_body.decode("utf-8", errors = "replace")
+                    error_text = _friendly_provider_error_text(
+                        self.provider_type,
+                        response.status_code,
+                        error_text,
+                        model = model,
+                    )
                     logger.error(
                         "External provider returned %d: %s",
                         response.status_code,
@@ -2933,11 +2939,30 @@ class ExternalProviderClient:
             response.raise_for_status()
             data = response.json()
             # OpenAI format: {"data": [{"id": "...", ...}, ...]}
-            models = data.get("data", [])
+            # Some local servers (Ollama with no models) return data: null.
+            models = data.get("data") or []
+            if not models and self.provider_type == "ollama":
+                models = await self._list_ollama_native_models()
             return models
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
+        """Fallback when Ollama's /v1/models returns an empty or null catalog."""
+        root = self.base_url.removesuffix("/v1").rstrip("/")
+        response = await _http_client.get(
+            f"{root}/api/tags",
+            headers = self._auth_headers(),
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return [
+            {"id": entry.get("name", "").strip(), "owned_by": "ollama"}
+            for entry in (payload.get("models") or [])
+            if isinstance(entry, dict) and entry.get("name", "").strip()
+        ]
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """
@@ -3085,6 +3110,32 @@ class ExternalProviderClient:
 
     async def close(self) -> None:
         """No-op — the underlying client is shared across requests."""
+
+
+def _friendly_provider_error_text(
+    provider_type: str,
+    status_code: int,
+    raw_message: str,
+    *,
+    model: str | None = None,
+) -> str:
+    """Rewrite common provider errors into actionable Studio copy."""
+    if status_code == 404 and model:
+        lowered = raw_message.lower()
+        if "not found" in lowered or "not_found" in lowered:
+            if provider_type == "ollama":
+                return (
+                    f"Model '{model}' is not installed in Ollama. "
+                    f"Run `ollama pull {model}` in a terminal, then retry."
+                )
+            if provider_type in ("vllm", "llama_cpp"):
+                label = "vLLM" if provider_type == "vllm" else "llama.cpp"
+                return (
+                    f"Model '{model}' is not available on the {label} server. "
+                    "Check that the server is running and the model is loaded, "
+                    "then retry."
+                )
+    return raw_message
 
 
 def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
