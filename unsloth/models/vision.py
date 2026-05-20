@@ -66,6 +66,7 @@ from unsloth_zoo.hf_utils import (
 )
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
+from ._csm_generation import patch_csm_depth_decoder_generate
 
 from unsloth_zoo.utils import Version
 from transformers import __version__ as transformers_version
@@ -1310,6 +1311,8 @@ class FastBaseModel:
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
+        if hasattr(model, "generate"):
+            patch_csm_depth_decoder_generate(model)
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0" and hasattr(
             model, "generate"
         ):
