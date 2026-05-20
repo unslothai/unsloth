@@ -48,6 +48,7 @@ import {
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
@@ -768,6 +769,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
+      if (
+        isExternalRequest &&
+        !useExternalProvidersStore.getState().connectionsEnabled
+      ) {
+        toast.error("Connections are disabled.", {
+          description:
+            "Turn on Enable connections in Settings > Connections to use hosted models.",
+        });
+        throw new Error("Connections disabled.");
+      }
       const externalProvider = isExternalRequest
         ? loadExternalProviders().find(
             (provider) => provider.id === externalSelection.providerId,
