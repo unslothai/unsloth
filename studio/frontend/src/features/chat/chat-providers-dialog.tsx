@@ -493,7 +493,7 @@ export function ChatProvidersSettings({
     try {
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
-        isCustomProvider && !supportsRemoteModelCatalog(providerType),
+        supportsRemoteModelCatalog(providerType),
       );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;

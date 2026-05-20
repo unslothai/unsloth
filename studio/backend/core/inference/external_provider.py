@@ -3112,6 +3112,13 @@ class ExternalProviderClient:
         """No-op — the underlying client is shared across requests."""
 
 
+def _provider_display_name(provider_type: str) -> str:
+    from core.inference.providers import get_provider_info
+
+    info = get_provider_info(provider_type) or {}
+    return str(info.get("display_name") or provider_type)
+
+
 def _friendly_provider_error_text(
     provider_type: str,
     status_code: int,
@@ -3124,12 +3131,13 @@ def _friendly_provider_error_text(
         lowered = raw_message.lower()
         if "not found" in lowered or "not_found" in lowered:
             if provider_type == "ollama":
+                label = _provider_display_name(provider_type)
                 return (
-                    f"Model '{model}' is not installed in Ollama. "
+                    f"Model '{model}' is not installed in {label}. "
                     f"Run `ollama pull {model}` in a terminal, then retry."
                 )
             if provider_type in ("vllm", "llama_cpp"):
-                label = "vLLM" if provider_type == "vllm" else "llama.cpp"
+                label = _provider_display_name(provider_type)
                 return (
                     f"Model '{model}' is not available on the {label} server. "
                     "Check that the server is running and the model is loaded, "
