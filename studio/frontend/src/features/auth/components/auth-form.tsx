@@ -79,6 +79,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const username = HIDDEN_LOGIN_USERNAME;
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -104,12 +105,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
 
+          // Server truth wins; keep localStorage in sync both ways.
+          if (result.requires_password_change !== mustChangePassword()) {
+            setMustChangePassword(result.requires_password_change);
+          }
+
           // Redirect between login ↔ change-password based on server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change && !mustChangePassword()) {
+          if (mode === "change-password" && !result.requires_password_change) {
             navigate({ to: "/login" });
             return;
           }
@@ -162,14 +168,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const blockedByState =
     initialized === false ||
     (mode === "login" && requiresPasswordChange) ||
-    (mode === "change-password" && !requiresPasswordChange && !mustChangePassword());
+    (mode === "change-password" && !requiresPasswordChange);
 
   let helperText: string | null = null;
   if (initialized === false) {
     helperText = "Auth is still bootstrapping the default admin account.";
   } else if (isLoginMode && requiresPasswordChange) {
     helperText = "Sign in once with the seeded credentials to change the password.";
-  } else if (!isLoginMode && !requiresPasswordChange && !mustChangePassword()) {
+  } else if (!isLoginMode && !requiresPasswordChange) {
     helperText = "Password already updated. Use the login screen.";
   }
   const title = isLoginMode ? "Welcome back" : "Setup your account";
@@ -182,6 +188,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
+  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
+  // reuse that password; the Current password input is only rendered for the
+  // admin-forced must_change_password path where no bootstrap is available.
+  const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const invalidChangePasswordForm =
     !isLoginMode &&
     (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
@@ -237,7 +247,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           storeAuthTokens(
             bootstrapToken.access_token,
             bootstrapToken.refresh_token,
-            bootstrapToken.must_change_password,
           );
           setMustChangePassword(bootstrapToken.must_change_password);
           accessToken = bootstrapToken.access_token;
@@ -274,11 +283,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       } else {
         setMustChangePassword(token.must_change_password);
       }
-      storeAuthTokens(
-        token.access_token,
-        token.refresh_token,
-        token.must_change_password,
-      );
+      storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
       let msg = err instanceof Error ? err.message : "Auth failed.";
@@ -341,12 +346,42 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         {!isLoginMode && (
           <>
+            {!hasBootstrapPassword && (
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current password</Label>
+                <div className="relative">
+                  <Input
+                    id="current-password"
+                    type={showPassword ? "text" : "password"}
+                    className="pr-10"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="new-password">New password</Label>
               <div className="relative">
                 <Input
                   id="new-password"
-                  type={showPassword ? "text" : "password"}
+                  type={showNewPassword ? "text" : "password"}
                   className="pr-10"
                   autoComplete="new-password"
                   value={newPassword}
@@ -359,9 +394,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                   variant="ghost"
                   size="icon"
                   className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
-                  onClick={() => setShowPassword((prev) => !prev)}
+                  onClick={() => setShowNewPassword((prev) => !prev)}
                 >
-                  {showPassword ? (
+                  {showNewPassword ? (
                     <EyeOff className="h-4 w-4" />
                   ) : (
                     <Eye className="h-4 w-4" />

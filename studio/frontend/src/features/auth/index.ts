@@ -3,8 +3,9 @@
 
 export { LoginPage } from "./login-page";
 export { ChangePasswordPage } from "./change-password-page";
-export { authFetch, refreshSession, hfTokenHeader } from "./api";
+export { authFetch, logout, refreshSession, hfTokenHeader } from "./api";
 export {
+  clearAuthTokens,
   getAuthToken,
   getPostAuthRoute,
   hasAuthToken,

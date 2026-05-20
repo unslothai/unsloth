@@ -16,7 +16,11 @@ export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-st
 export { uploadTrainingDataset } from "./api/datasets-api";
 export { listLocalModels } from "./api/models-api";
 export type { LocalModelInfo } from "./api/models-api";
-export type { TrainingPhase, TrainingViewData, TrainingSeriesPoint } from "./types/runtime";
+export type {
+  TrainingPhase,
+  TrainingViewData,
+  TrainingSeriesPoint,
+} from "./types/runtime";
 export type {
   TrainingRunSummary,
   TrainingRunListResponse,

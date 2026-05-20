@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -13,6 +14,8 @@ import sys
 import tempfile
 import time
 import types
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -131,6 +134,26 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+def _stream_for_subprocess(stream):
+    """Return *stream* if it has a real OS file descriptor, else None.
+
+    subprocess.run on Windows refuses to inherit std handles unless
+    they're passed explicitly (otherwise close_fds=True forces
+    bInheritHandles=False, and a CREATE_NO_WINDOW child ends up with
+    no stdio at all). When sys.stdout / sys.stderr is a real fd-backed
+    stream we want to hand it through; when it's been captured by a
+    test harness (pytest's capsys, an in-memory wrapper, etc) we fall
+    back to None so subprocess uses its default.
+    """
+    if stream is None:
+        return None
+    try:
+        stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    return stream
 
 
 def _studio_venv_python() -> Optional[Path]:
@@ -998,10 +1021,43 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             powershell_args.extend(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
             )
-        powershell_args.extend(["-ExecutionPolicy", "Bypass", "-File", str(script)])
+        # Use -Command + `*>&1` instead of -File so setup.ps1's
+        # Write-Host output (PowerShell Information stream / #6) is
+        # merged into the success stream and reaches the parent's
+        # stdout. With -File, Information stream output is dropped
+        # whenever stdout is a pipe, which is exactly the situation
+        # CI hits with `unsloth studio update --local 2>&1 | tee
+        # logs/update.log`. Single-quote escaping handles paths that
+        # contain apostrophes.
+        script_pwsh_literal = str(script).replace("'", "''")
+        powershell_args.extend(
+            [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"& '{script_pwsh_literal}' *>&1",
+            ]
+        )
+        # Explicitly hand stdin/stdout/stderr to the child so the
+        # CI tee actually sees setup.ps1's output. Without this,
+        # subprocess.run on Windows uses close_fds=True (default,
+        # since Python 3.7) which sets bInheritHandles=False on
+        # CreateProcess. With CREATE_NO_WINDOW also set (via
+        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
+        # child has neither a console nor any inherited std
+        # handles, so PowerShell's Write-Host -- and even
+        # [Console]::Out.WriteLine -- writes to nothing. Passing
+        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
+        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
+        # explicitly inheritable, which works alongside
+        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
+        # CI was the smoking gun (run 25533694490 and 25534292239).
         result = subprocess.run(
             powershell_args,
             env = env,
+            stdin = _stream_for_subprocess(sys.stdin),
+            stdout = _stream_for_subprocess(sys.stdout),
+            stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
     else:
@@ -1009,6 +1065,170 @@ def _run_setup_script(*, verbose: bool = False) -> None:
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
+
+
+_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
+_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+
+
+def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
+    """Re-run installer with --shortcuts-only to refresh launchers post-update."""
+    env = {**os.environ}
+    if verbose:
+        env["UNSLOTH_VERBOSE"] = "1"
+
+    is_windows = platform.system() == "Windows"
+    installer_name = "install.ps1" if is_windows else "install.sh"
+    installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
+
+    # Prefer local checkout, fall back to package dir, then network fetch.
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    candidates: list[Path] = []
+    if local_repo:
+        candidates.append(Path(local_repo) / installer_name)
+    candidates.append(_PACKAGE_ROOT / installer_name)
+
+    args = ["--shortcuts-only"]
+    if verbose:
+        args.append("--verbose")
+
+    if is_windows:
+        ps_argv: list[str] = ["powershell.exe"]
+        if _should_hide_windows_subprocesses():
+            ps_argv.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
+
+        for script in candidates:
+            try:
+                if script.is_file():
+                    quoted = str(script).replace("'", "''")
+                    argv = list(ps_argv)
+                    argv.extend(
+                        [
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-Command",
+                            f"& '{quoted}' {' '.join(args)} *>&1",
+                        ]
+                    )
+                    result = subprocess.run(
+                        argv,
+                        env = env,
+                        check = False,
+                        **_windows_hidden_subprocess_kwargs(),
+                    )
+                    if result.returncode != 0:
+                        typer.echo(
+                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
+                        )
+                    return
+            except OSError:
+                continue
+
+        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
+        try:
+            request = urllib.request.Request(
+                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+            )
+            with urllib.request.urlopen(request, timeout = 30) as response:
+                installer = response.read().decode("utf-8", errors = "replace")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            typer.echo(
+                f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+            )
+            return
+
+        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
+        # stdin `$args` is empty so that triggers the full installer flow
+        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
+        installer = re.sub(
+            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
+            "",
+            installer,
+        )
+        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
+        marker_args = " ".join(args)
+        wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
+
+        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
+        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
+        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
+        # in install.ps1. -File reads the BOM and decodes correctly. The
+        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
+        ps1_fd, ps1_path = tempfile.mkstemp(
+            prefix = "unsloth-studio-refresh-",
+            suffix = ".ps1",
+        )
+        try:
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
+            argv = list(ps_argv)
+            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
+            try:
+                result = subprocess.run(
+                    argv,
+                    env = env,
+                    check = False,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
+                    )
+            except OSError as exc:
+                typer.echo(
+                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
+                )
+        finally:
+            try:
+                os.unlink(ps1_path)
+            except OSError:
+                pass
+        return
+
+    for script in candidates:
+        try:
+            if script.is_file():
+                result = subprocess.run(
+                    ["bash", str(script), *args],
+                    env = env,
+                    check = False,
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  install.sh exited {result.returncode}"
+                    )
+                return
+        except OSError:
+            continue
+
+    # PyPI installs lack install.sh: fetch upstream.
+    try:
+        request = urllib.request.Request(
+            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+        )
+        with urllib.request.urlopen(request, timeout = 30) as response:
+            installer = response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        typer.echo(
+            f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+        )
+        return
+
+    try:
+        result = subprocess.run(
+            ["bash", "-s", "--", *args],
+            input = installer,
+            env = env,
+            check = False,
+        )
+        if result.returncode != 0:
+            typer.echo(
+                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
+            )
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
 
 @studio_app.command(hidden = True)
@@ -1040,6 +1260,9 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
+    # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
+    # subprocess resolves the same install root the user originally chose.
+    _ensure_studio_env_exported()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -1052,7 +1275,88 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _run_setup_script(verbose = verbose)
+    _release_self_exe_lock_windows()
+    try:
+        _run_setup_script(verbose = verbose)
+    except BaseException:
+        # Restore unsloth.exe from .deleteme if setup failed before pip
+        # produced a replacement; otherwise the user has no CLI for recovery.
+        _restore_self_exe_lock_windows()
+        raise
+    # On Windows clear the .deleteme orphan now that pip wrote a fresh
+    # unsloth.exe; on next update os.replace would overwrite it anyway,
+    # but leaving a stale binary around invites cross-version restore
+    # confusion from _restore_self_exe_lock_windows.
+    _cleanup_self_exe_lock_windows()
+    # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
+    # so a Tauri-initiated update doesn't create duplicate shortcuts.
+    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+        if verbose:
+            typer.echo("  refresh-launcher  skipped (Tauri update)")
+        return
+    _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _release_self_exe_lock_windows() -> None:
+    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    if not exe.exists():
+        return
+    stale = exe.with_suffix(".exe.deleteme")
+    try:
+        # os.replace is atomic-overwrite on Windows; os.rename would raise
+        # FileExistsError if a prior aborted update left a .deleteme behind.
+        os.replace(exe, stale)
+    except OSError as e:
+        # Not fatal; setup.ps1 retries from a sibling process.
+        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+
+
+def _restore_self_exe_lock_windows() -> None:
+    """If setup failed before pip wrote a working unsloth.exe, restore .deleteme."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    stale = exe.with_suffix(".exe.deleteme")
+    if not stale.exists():
+        return
+    # Treat a missing or zero-byte exe as "pip didn't produce a usable
+    # replacement"; otherwise leave the new binary alone.
+    if exe.exists():
+        try:
+            if exe.stat().st_size > 0:
+                return
+        except OSError:
+            return
+    try:
+        os.replace(stale, exe)
+    except OSError as e:
+        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+
+
+def _cleanup_self_exe_lock_windows() -> None:
+    """Remove the .deleteme orphan after a successful update on Windows."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
+    try:
+        stale.unlink(missing_ok = True)
+    except OSError:
+        pass
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
@@ -1068,8 +1372,10 @@ def desktop_capabilities(
 ):
     payload = {
         "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
+        "supports_desktop_backend_ownership": True,
         "version": "unknown",
     }
     try:

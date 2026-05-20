@@ -117,9 +117,14 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
+        _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -139,9 +144,14 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
+        _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -194,6 +204,11 @@ from models.inference import (
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
     AnthropicUsage,
+    CreateOpenAIContainerBody,
+    DeleteOpenAIContainerBody,
+    ListOpenAIContainersResponse,
+    OpenAIContainerRequest,
+    OpenAIContainerSummary,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -204,6 +219,11 @@ from core.inference.anthropic_compat import (
 )
 from auth.authentication import get_current_subject
 
+from core.inference.key_exchange import decrypt_api_key
+from core.inference.providers import get_provider_info, get_base_url
+from core.inference.external_provider import ExternalProviderClient
+from storage import providers_db
+
 import io
 import wave
 import base64
@@ -213,6 +233,57 @@ from datetime import date as _date
 router = APIRouter()
 # Studio-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
+
+
+def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
+    """Classify reasoning/tool capabilities via the GGUF classifier so
+    flags match across backends. gpt-oss is overridden because Harmony
+    routes reasoning and tools through tokenizer channels, not template
+    markup."""
+    model_id = getattr(backend, "active_model_name", None)
+    flags = (
+        detect_reasoning_flags(
+            chat_template,
+            model_identifier = model_id,
+            log_source = "safetensors",
+        )
+        if chat_template
+        else {
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+            "supports_tools": False,
+        }
+    )
+    # Our safetensors loop only parses <tool_call>{json}</tool_call>
+    # and <function=name>...</function>. Llama uses <|python_tag|>,
+    # Mistral uses [TOOL_CALLS]; advertising tools for those would
+    # enable a pill the parser cannot honour. GGUF is unaffected --
+    # llama-server normalises every format into structured deltas.
+    if (
+        flags.get("supports_tools")
+        and chat_template
+        and "<tool_call>" not in chat_template
+        and "<function=" not in chat_template
+    ):
+        logger.info(
+            "safetensors: template advertises tools but uses an "
+            "emission format the loop cannot parse; suppressing "
+            "supports_tools"
+        )
+        flags["supports_tools"] = False
+
+    # gpt-oss: keep reasoning on, drop tools (Harmony channel, not
+    # <tool_call> XML this loop parses).
+    try:
+        if hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model():
+            flags["supports_reasoning"] = True
+            flags["reasoning_style"] = "reasoning_effort"
+            flags["supports_tools"] = False
+    except Exception:
+        logger.debug("gpt_oss_check_failed", exc_info = True)
+    return flags
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -396,6 +467,62 @@ def _validate_native_mmproj_companion(
         ) from exc
 
 
+def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
+    """Lowercase + strip a settings string, mapping blank/None to None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        return stripped or None
+    return value
+
+
+def _request_matches_loaded_settings(
+    request: LoadRequest, llama_backend: LlamaCppBackend
+) -> bool:
+    """True iff every runtime setting on the request matches the loaded
+    server. Caller has already checked model+variant+is_loaded. See #5401."""
+    # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask
+    # an Auto-vs-explicit slider flip.
+    if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
+        llama_backend.cache_type_kv
+    ):
+        return False
+    # Vision loads silently drop speculative decoding (llama_cpp.py gates
+    # spec on ``not is_vision``), so treat the request as ``off`` against
+    # the backend's ``None`` to avoid forcing a redundant reload.
+    if llama_backend.is_vision:
+        req_mode = "off"
+    else:
+        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    backend_mode = llama_backend.requested_spec_mode or "auto"
+    if req_mode != backend_mode:
+        return False
+    # spec_draft_n_max only matters when an MTP variant is engaged; None
+    # means "platform default" and matches whatever the backend chose.
+    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
+        if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
+            return False
+    if (request.chat_template_override or None) != (
+        llama_backend.chat_template_override or None
+    ):
+        return False
+    # llama_extra_args=None means "inherit"; only an explicit list that
+    # differs forces a reload. On the inherit path, refuse to match if
+    # stored extras contain any shadow flag, so the reload path can
+    # strip them instead of leaving a stale override in effect.
+    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    if request.llama_extra_args is None:
+        if backend_extra and strip_shadowing_flags(backend_extra) != backend_extra:
+            return False
+    else:
+        if list(request.llama_extra_args) != backend_extra:
+            return False
+    return True
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
@@ -451,6 +578,11 @@ async def load_model(
             extra_llama_args = validate_extra_args(request.llama_extra_args)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
+        # Re-narrow []-from-None back to None so the inheritance path
+        # below can tell "caller omitted" from "caller explicit []".
+        extra_llama_args: Optional[list[str]] = (
+            None if request.llama_extra_args is None else extra_llama_args
+        )
 
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
@@ -469,6 +601,9 @@ async def load_model(
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
+                # Also require runtime settings to match so Apply changes
+                # aren't silently dropped (#5401).
+                and _request_matches_loaded_settings(request, llama_backend)
             ):
                 logger.info(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
@@ -506,8 +641,10 @@ async def load_model(
                     reasoning_style = llama_backend.reasoning_style,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
+                    supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
-                    speculative_type = llama_backend.speculative_type,
+                    speculative_type = llama_backend.requested_spec_mode,
+                    spec_draft_n_max = llama_backend.spec_draft_n_max,
                 )
         else:
             if (
@@ -527,21 +664,10 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
-                # Non-GGUF: only advertise reasoning for gpt-oss Harmony,
-                # which emits reasoning via channels at the tokenizer level.
-                # Template-level chat_template_kwargs (enable_thinking /
-                # preserve_thinking / tools) are not yet forwarded through
-                # the transformers generation path, so avoid advertising
-                # controls the server cannot honour outside GGUF.
-                _sf_supports_reasoning = False
-                _sf_reasoning_style = "enable_thinking"
-                if hasattr(backend, "_is_gpt_oss_model"):
-                    try:
-                        if backend._is_gpt_oss_model():
-                            _sf_supports_reasoning = True
-                            _sf_reasoning_style = "reasoning_effort"
-                    except Exception:
-                        pass
+                # Classify via the same path as GGUF.
+                _sf_flags = _detect_safetensors_features(backend, _chat_template)
+                _sf_supports_reasoning = _sf_flags["supports_reasoning"]
+                _sf_reasoning_style = _sf_flags["reasoning_style"]
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -562,19 +688,21 @@ async def load_model(
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
-                    reasoning_always_on = False,
-                    supports_preserve_thinking = False,
-                    supports_tools = False,
+                    reasoning_always_on = _sf_flags["reasoning_always_on"],
+                    supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+                    supports_tools = _sf_flags["supports_tools"],
                     chat_template = _chat_template,
                 )
 
-        # Create config using clean factory method
-        # is_lora is auto-detected from adapter_config.json on disk/HF
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+        # is_lora auto-detected from adapter_config.json on disk/HF.
+        # DNS-probe wrap so offline loads skip 30-60s of soft-failed
+        # network checks before the worker starts.
+        with _hf_offline_if_dns_dead():
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
 
         if not config:
             raise HTTPException(
@@ -603,6 +731,73 @@ async def load_model(
                 )
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
 
+            # Inherit llama_extra_args from the previous load when the
+            # request omits the field (the chat-settings Apply path
+            # does not round-trip them; explicit [] still clears).
+            # Inheritance is gated on (model_identifier, hf_variant)
+            # to refuse cross-model pickup, and shadowing flags are
+            # stripped so an inherited override can't win the last-wins
+            # CLI parse against a freshly-supplied first-class field.
+            if request.llama_extra_args is None and llama_backend.extra_args:
+                source = llama_backend.extra_args_source
+                # Compare against the resolved variant, not the request
+                # field: callers commonly omit gguf_variant for local
+                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
+                # variant`` is the variant load_model was actually
+                # invoked with (see the HF / local branches below), so
+                # both sides of the comparison key off the same string.
+                resolved_variant = config.gguf_variant
+                same_source = bool(
+                    source
+                    and source[0]
+                    and source[0].lower() == model_identifier.lower()
+                    and (source[1] or "").lower() == (resolved_variant or "").lower()
+                )
+                if not same_source:
+                    logger.info(
+                        "Not inheriting llama_extra_args: stored args came "
+                        "from %s, loading %s",
+                        source,
+                        (model_identifier, resolved_variant),
+                    )
+                    # Cross-model: clear explicitly so the backend
+                    # doesn't inherit via "no opinion" semantics.
+                    extra_llama_args = []
+                else:
+                    # Strip only the groups whose first-class field
+                    # was actually set by the caller, so an inherited
+                    # --chat-template-file survives an Apply that omits
+                    # chat_template_override.
+                    fields_set = getattr(request, "model_fields_set", set())
+                    stripped = strip_shadowing_flags(
+                        llama_backend.extra_args,
+                        strip_context = "max_seq_length" in fields_set,
+                        strip_cache = "cache_type_kv" in fields_set,
+                        strip_spec = (
+                            "speculative_type" in fields_set
+                            or "spec_draft_n_max" in fields_set
+                        ),
+                        strip_template = "chat_template_override" in fields_set,
+                    )
+                    try:
+                        extra_llama_args = validate_extra_args(stripped)
+                    except ValueError:
+                        # Should not happen on already-validated args; degrade
+                        # to no-extras rather than 400 if managed flags changed.
+                        logger.warning(
+                            "Stored llama_extra_args failed revalidation; "
+                            "loading without them: %s",
+                            stripped,
+                        )
+                        extra_llama_args = []
+                    else:
+                        if extra_llama_args:
+                            logger.info(
+                                "Inheriting llama_extra_args from previous "
+                                "load (same model, shadow-stripped): %s",
+                                extra_llama_args,
+                            )
+
             # Route to HF mode or local mode based on config
             # Run in a thread so the event loop stays free for progress
             # polling and other requests during the (potentially long)
@@ -622,6 +817,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -635,12 +831,17 @@ async def load_model(
                     llama_backend.load_model,
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
+                    # Pass the resolved variant so _extra_args_source
+                    # is keyed off the same string the inheritance
+                    # check at the top of /load uses (#5401 followup).
+                    hf_variant = config.gguf_variant,
                     model_identifier = config.identifier,
                     is_vision = config.is_vision,
                     n_ctx = request.max_seq_length,
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -679,7 +880,7 @@ async def load_model(
                 display_name = model_log_label
                 if native_grant_backed
                 else config.display_name,
-                is_vision = config.is_vision,
+                is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
@@ -699,7 +900,8 @@ async def load_model(
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -821,19 +1023,8 @@ async def load_model(
         except Exception:
             pass
 
-        # Non-GGUF: gpt-oss Harmony surfaces reasoning via tokenizer-level
-        # channels; other safetensors reasoning/tools/preserve-thinking
-        # knobs are not forwarded to tokenizer.apply_chat_template yet, so
-        # we only advertise support for the Harmony case here.
-        _sf_supports_reasoning = False
-        _sf_reasoning_style = "enable_thinking"
-        if hasattr(backend, "_is_gpt_oss_model"):
-            try:
-                if backend._is_gpt_oss_model():
-                    _sf_supports_reasoning = True
-                    _sf_reasoning_style = "reasoning_effort"
-            except Exception:
-                pass
+        # Classify reasoning/tool flags via the GGUF sniffer.
+        _sf_flags = _detect_safetensors_features(backend, _chat_template)
 
         return LoadResponse(
             status = "loaded",
@@ -851,11 +1042,11 @@ async def load_model(
             requires_trust_remote_code = bool(
                 inference_config.get("trust_remote_code", False)
             ),
-            supports_reasoning = _sf_supports_reasoning,
-            reasoning_style = _sf_reasoning_style,
-            reasoning_always_on = False,
-            supports_preserve_thinking = False,
-            supports_tools = False,
+            supports_reasoning = _sf_flags["supports_reasoning"],
+            reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_always_on = _sf_flags["reasoning_always_on"],
+            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+            supports_tools = _sf_flags["supports_tools"],
             chat_template = _chat_template,
         )
 
@@ -1139,6 +1330,24 @@ async def get_status(
     try:
         llama_backend = get_llama_cpp_backend()
 
+        # MTP probe + freshness check (both cached). Drive the UI banner.
+        try:
+            _bin = type(llama_backend)._find_llama_server_binary()
+            _caps = type(llama_backend).probe_server_capabilities(_bin)
+            _supports_mtp = bool(_caps.get("supports_mtp", False))
+        except Exception:
+            _bin = None
+            _supports_mtp = True  # fail open
+        try:
+            from utils.llama_cpp_freshness import check_prebuilt_freshness
+
+            _freshness = check_prebuilt_freshness(_bin)
+        except Exception:
+            _freshness = {}
+        _stale = bool(_freshness.get("stale"))
+        _installed_tag = _freshness.get("installed_tag")
+        _latest_tag = _freshness.get("latest_tag")
+
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
@@ -1180,7 +1389,12 @@ async def get_status(
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
             )
 
         # Otherwise, report Unsloth backend status
@@ -1204,18 +1418,8 @@ async def get_status(
             else None
         )
 
-        # Non-GGUF: only gpt-oss Harmony is wired through the transformers
-        # generation path. Other template-level reasoning / tool kwargs
-        # are not yet forwarded, so we do not advertise them here.
-        supports_reasoning = False
-        reasoning_style = "enable_thinking"
-        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
-            try:
-                if backend._is_gpt_oss_model():
-                    supports_reasoning = True
-                    reasoning_style = "reasoning_effort"
-            except Exception:
-                pass
+        # Non-GGUF: classify from the loaded template.
+        _sf_flags = _detect_safetensors_features(backend, chat_template)
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -1235,12 +1439,16 @@ async def get_status(
             requires_trust_remote_code = bool(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
-            supports_reasoning = supports_reasoning,
-            reasoning_style = reasoning_style,
-            reasoning_always_on = False,
-            supports_preserve_thinking = False,
-            supports_tools = False,
+            supports_reasoning = _sf_flags["supports_reasoning"],
+            reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_always_on = _sf_flags["reasoning_always_on"],
+            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+            supports_tools = _sf_flags["supports_tools"],
             chat_template = chat_template,
+            llama_cpp_supports_mtp = _supports_mtp,
+            llama_cpp_prebuilt_stale = _stale,
+            llama_cpp_installed_tag = _installed_tag,
+            llama_cpp_latest_tag = _latest_tag,
         )
 
     except Exception as e:
@@ -1464,6 +1672,346 @@ def _extract_content_parts(
     return system_prompt, chat_messages, first_image_b64
 
 
+# ── External provider proxy ──────────────────────────────────────
+
+
+def _build_external_messages(
+    messages: list,
+    supports_vision: bool,
+) -> list[dict]:
+    """
+    Convert ChatMessage list to OpenAI-compatible dicts for external providers.
+
+    - Vision providers: preserve multimodal content arrays (image_url parts intact).
+    - Non-vision providers: flatten to text-only (images silently dropped).
+    """
+    result = []
+    for msg in messages:
+        if isinstance(msg.content, str):
+            # Skip assistant messages with empty content (some providers reject them)
+            if msg.role == "assistant" and not msg.content.strip():
+                continue
+            result.append({"role": msg.role, "content": msg.content})
+        elif isinstance(msg.content, list):
+            if supports_vision:
+                parts = []
+                for part in msg.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text})
+                    elif part.type == "image_url":
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part.image_url.url},
+                            }
+                        )
+                result.append({"role": msg.role, "content": parts})
+            else:
+                # Non-vision provider — strip images, keep text only
+                text = "\n".join(p.text for p in msg.content if p.type == "text")
+                result.append({"role": msg.role, "content": text})
+    return result
+
+
+async def _proxy_to_external_provider(
+    payload: ChatCompletionRequest,
+    request: Request,
+) -> StreamingResponse:
+    """
+    Proxy a chat completion request to an external LLM provider.
+
+    Resolves provider config (from DB or registry), decrypts the API key,
+    and streams the response back in OpenAI SSE format.
+    """
+    # Resolve provider type and base URL
+    provider_type = payload.provider_type
+    base_url = payload.provider_base_url
+
+    if payload.provider_id:
+        config = providers_db.get_provider(payload.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {payload.provider_id}",
+            )
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        provider_type = provider_type or config["provider_type"]
+        base_url = base_url or config["base_url"]
+
+    if not provider_type:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Either provider_id or provider_type is required for external provider routing.",
+        )
+
+    # Fall back to registry default base URL
+    if not base_url:
+        base_url = get_base_url(provider_type)
+    if not base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {provider_type}",
+        )
+
+    api_key = ""
+    if payload.encrypted_api_key:
+        try:
+            api_key = decrypt_api_key(payload.encrypted_api_key)
+        except Exception as exc:
+            logger.warning("external_provider.decrypt_failed", error = str(exc))
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+            )
+
+    model = payload.external_model or payload.model
+    if model == "default":
+        raise HTTPException(
+            status_code = 400,
+            detail = "external_model is required when using an external provider.",
+        )
+
+    # Build messages preserving multimodal content for vision-capable providers
+    from core.inference.providers import get_provider_info as _get_provider_info
+
+    _pinfo = _get_provider_info(provider_type) or {}
+    _supports_vision = _pinfo.get("supports_vision", False)
+    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+    async def _stream():
+        gen = client.stream_chat_completion(
+            messages = chat_messages,
+            model = model,
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_tokens = payload.max_tokens,
+            presence_penalty = payload.presence_penalty,
+            top_k = payload.top_k,
+            enable_thinking = payload.enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
+            enabled_tools = payload.enabled_tools,
+            enable_prompt_caching = payload.enable_prompt_caching,
+            openai_code_exec_container_id = payload.openai_code_exec_container_id,
+            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
+            stream = payload.stream,
+        )
+        try:
+            sent_done = False
+            async for line in gen:
+                yield f"{line}\n\n"
+                if "[DONE]" in line:
+                    sent_done = True
+            if not sent_done:
+                yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("external_provider.stream_error", error = str(exc))
+        finally:
+            try:
+                await gen.aclose()
+            except RuntimeError:
+                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+            await client.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── OpenAI shell-tool container management ───────────────────────
+
+
+def _resolve_openai_cloud_client(
+    body: OpenAIContainerRequest,
+) -> ExternalProviderClient:
+    """
+    Decrypt the API key + validate the base URL points at OpenAI cloud,
+    then build an ExternalProviderClient for the three container CRUD
+    endpoints below. The shell tool only exists on api.openai.com, so
+    rejecting non-cloud bases up front prevents confusing 404s on
+    ollama / llama.cpp / vLLM / custom presets.
+    """
+    base_url = body.provider_base_url or get_base_url("openai")
+    if not base_url or "api.openai.com" not in base_url:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "OpenAI container management is only available on the "
+                "managed cloud (api.openai.com). The provider's base URL "
+                f"points at {base_url!r}."
+            ),
+        )
+    try:
+        api_key = decrypt_api_key(body.encrypted_api_key)
+    except Exception as exc:
+        logger.warning("external_provider.decrypt_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 400,
+            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
+        )
+    return ExternalProviderClient(
+        provider_type = "openai",
+        base_url = base_url,
+        api_key = api_key,
+    )
+
+
+def _summarize_container(raw: dict) -> OpenAIContainerSummary:
+    expires = raw.get("expires_after")
+    expires_minutes: Optional[int] = None
+    if isinstance(expires, dict):
+        minutes = expires.get("minutes")
+        if isinstance(minutes, int):
+            expires_minutes = minutes
+    return OpenAIContainerSummary(
+        id = str(raw.get("id") or ""),
+        name = raw.get("name"),
+        created_at = raw.get("created_at")
+        if isinstance(raw.get("created_at"), int)
+        else None,
+        last_active_at = raw.get("last_active_at")
+        if isinstance(raw.get("last_active_at"), int)
+        else None,
+        expires_after_minutes = expires_minutes,
+        status = raw.get("status") if isinstance(raw.get("status"), str) else None,
+    )
+
+
+@router.post(
+    "/external/openai/containers/list",
+    response_model = ListOpenAIContainersResponse,
+)
+async def list_openai_containers(
+    body: OpenAIContainerRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> ListOpenAIContainersResponse:
+    """List the user's OpenAI shell-tool containers."""
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            raw = await client.list_openai_containers()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers list: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+        # OpenAI keeps expired containers in /v1/containers indefinitely
+        # with status="expired" — they're effectively dead but still
+        # listed. Hide them so the picker only shows usable containers.
+        return ListOpenAIContainersResponse(
+            containers = [
+                _summarize_container(c)
+                for c in raw
+                if isinstance(c, dict) and c.get("status") != "expired"
+            ],
+        )
+    finally:
+        await client.close()
+
+
+@router.post(
+    "/external/openai/containers/create",
+    response_model = OpenAIContainerSummary,
+)
+async def create_openai_container(
+    body: CreateOpenAIContainerBody,
+    current_subject: str = Depends(get_current_subject),
+) -> OpenAIContainerSummary:
+    """Create a named container with the user-chosen idle TTL."""
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            raw = await client.create_openai_container(
+                name = body.name,
+                ttl_minutes = body.ttl_minutes,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers create: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code = 502,
+                detail = "OpenAI returned an unexpected container payload.",
+            )
+        return _summarize_container(raw)
+    finally:
+        await client.close()
+
+
+@router.post("/external/openai/containers/delete", status_code = 204)
+async def delete_openai_container(
+    body: DeleteOpenAIContainerBody,
+    current_subject: str = Depends(get_current_subject),
+) -> None:
+    """Delete a named container by id."""
+    logger.info(
+        "openai_container_delete.request subject=%s container_id=%s base_url=%s",
+        current_subject,
+        body.container_id,
+        body.provider_base_url,
+    )
+    client = _resolve_openai_cloud_client(body)
+    try:
+        try:
+            await client.delete_openai_container(body.container_id)
+            logger.info(
+                "openai_container_delete.success container_id=%s",
+                body.container_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            logger.warning(
+                "openai_container_delete.openai_rejected container_id=%s status=%s body=%s",
+                body.container_id,
+                exc.response.status_code if exc.response else None,
+                detail,
+            )
+            raise HTTPException(
+                status_code = exc.response.status_code if exc.response else 502,
+                detail = f"OpenAI rejected /containers delete: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "openai_container_delete.transport_error container_id=%s error=%s",
+                body.container_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code = 502,
+                detail = f"Failed to reach OpenAI: {exc}",
+            )
+    finally:
+        await client.close()
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -1476,13 +2024,21 @@ async def openai_chat_completions(
     Supports multimodal messages: ``content`` may be a plain string or a
     list of content parts (``text`` / ``image_url``).
 
-    Streaming (default):  returns SSE chunks matching OpenAI's format.
-    Non-streaming:        returns a single ChatCompletion JSON object.
+    Non-streaming (default): returns a single ChatCompletion JSON object.
+    Streaming:               returns SSE chunks matching OpenAI's format.
+
+    ``stream`` defaults to ``false`` to match OpenAI's spec; clients opt
+    into SSE by sending ``stream: true``.
 
     Automatically routes to the correct backend:
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # ── External provider routing ────────────────────────────────
+    # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
+    if payload.provider_id or payload.provider_type:
+        return await _proxy_to_external_provider(payload, request)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
@@ -1696,6 +2252,9 @@ async def openai_chat_completions(
 
         cancel_event = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
+        # parity). Naive curl / .NET / System.Text.Json clients omitting
+        # the field used to get SSE here and choke on deserialization (#5047).
         if payload.stream:
             return await _openai_passthrough_stream(
                 request,
@@ -1730,40 +2289,11 @@ async def openai_chat_completions(
                 detail = "Audio input is not supported for GGUF chat models yet.",
             )
 
-        # Reject images if this GGUF model doesn't support vision
-        image_b64 = extracted_image_b64 or payload.image_base64
-        if image_b64 and not llama_backend.is_vision:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
-            )
-
-        # Convert image to PNG for llama-server (stb_image has limited format support)
-        if image_b64:
-            try:
-                import base64 as _b64
-                from io import BytesIO as _BytesIO
-                from PIL import Image as _Image
-
-                raw = _b64.b64decode(image_b64)
-                # Normalize to RGB so PNG encoding succeeds regardless of
-                # source mode (RGBA, P, L, CMYK, I, F, ...). Previously
-                # we only converted RGBA, which left CMYK/I/F to raise at
-                # img.save(PNG).
-                img = _Image.open(_BytesIO(raw)).convert("RGB")
-                buf = _BytesIO()
-                img.save(buf, format = "PNG")
-                image_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
-                raise HTTPException(
-                    status_code = 400, detail = f"Failed to process image: {e}"
-                )
-
-        # Build message list with system prompt prepended
-        gguf_messages = []
-        if system_prompt:
-            gguf_messages.append({"role": "system", "content": system_prompt})
-        gguf_messages.extend(chat_messages)
+        gguf_messages, has_gguf_image = _openai_messages_for_gguf_chat(
+            payload,
+            llama_backend.is_vision,
+        )
+        image_b64 = None
 
         cancel_event = threading.Event()
 
@@ -1777,7 +2307,7 @@ async def openai_chat_completions(
         use_tools = (
             _effective_enable_tools(payload)
             and llama_backend.supports_tools
-            and not image_b64
+            and not has_gguf_image
         )
 
         if use_tools:
@@ -2239,6 +2769,300 @@ async def openai_chat_completions(
         except Exception as e:
             raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
 
+    # Classify capability flags from the loaded template.
+    _sf_model_info = backend.models.get(backend.active_model_name, {})
+    _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
+    _sf_features = _detect_safetensors_features(backend, _sf_tpl)
+
+    cancel_event = threading.Event()
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    # ── Safetensors tool-calling path ─────────────────────────
+    # Mirrors the GGUF agentic loop's event shape. Disabled for
+    # vision turns (untested overlap with image render slot) and
+    # for gpt-oss (Harmony uses dedicated channels, not <tool_call>
+    # XML -- gpt-oss tools still work via the GGUF path).
+    _sf_is_gptoss = False
+    try:
+        _sf_is_gptoss = bool(
+            hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model()
+        )
+    except Exception:
+        _sf_is_gptoss = False
+
+    _sf_tool_budget = (
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else 25
+    )
+
+    _sf_use_tools = (
+        _effective_enable_tools(payload)
+        and _sf_features.get("supports_tools", False)
+        and image is None
+        and not _sf_is_gptoss
+        and _sf_tool_budget > 0
+    )
+
+    if _sf_use_tools:
+        from core.inference.tools import ALL_TOOLS
+
+        if payload.enabled_tools is not None:
+            _sf_tools_to_use = [
+                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
+            ]
+        else:
+            _sf_tools_to_use = ALL_TOOLS
+
+        _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
+        _sf_has_web = "web_search" in _sf_tool_names
+        _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
+
+        _sf_date_line = f"The current date is {_date.today().isoformat()}."
+        _sf_model_size_b = _extract_model_size_b(model_name)
+        _sf_is_small_model = _sf_model_size_b is not None and _sf_model_size_b < 9
+
+        if _sf_is_small_model:
+            _sf_web_tips = "Do not repeat the same search query."
+        else:
+            _sf_web_tips = (
+                "When you search and find a relevant URL in the results, "
+                "fetch its full content by calling web_search with the url parameter. "
+                "Do not repeat the same search query. If a search returns "
+                "no useful results, try rephrasing or fetching a result URL directly."
+            )
+        _sf_code_tips = (
+            "Use code execution for math, calculations, data processing, "
+            "or to parse and analyze information from tool results."
+        )
+
+        if _sf_has_web and _sf_has_code:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "tools rather than answering from memory. "
+                + _sf_web_tips
+                + " "
+                + _sf_code_tips
+            )
+        elif _sf_has_code:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "code execution rather than answering from memory. " + _sf_code_tips
+            )
+        elif _sf_has_web:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "web search for up-to-date or uncertain factual "
+                "information rather than answering from memory. " + _sf_web_tips
+            )
+        else:
+            _sf_nudge = ""
+
+        _sf_system_prompt = system_prompt
+        if _sf_nudge:
+            _sf_nudge += _TOOL_ACTION_NUDGE
+            if _sf_system_prompt:
+                _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
+            else:
+                _sf_system_prompt = _sf_nudge
+
+        # Strip stale tool-call XML from prior assistant turns.
+        _sf_chat_messages = []
+        for _msg in chat_messages:
+            if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                _sf_chat_messages.append(
+                    {
+                        **_msg,
+                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
+                    }
+                )
+            else:
+                _sf_chat_messages.append(_msg)
+
+        def sf_generate_with_tools():
+            return backend.generate_chat_completion_with_tools(
+                messages = _sf_chat_messages,
+                tools = _sf_tools_to_use,
+                system_prompt = _sf_system_prompt or "",
+                temperature = payload.temperature,
+                top_p = payload.top_p,
+                top_k = payload.top_k,
+                min_p = payload.min_p,
+                max_tokens = payload.max_tokens,
+                repetition_penalty = payload.repetition_penalty,
+                cancel_event = cancel_event,
+                enable_thinking = payload.enable_thinking,
+                reasoning_effort = payload.reasoning_effort,
+                preserve_thinking = payload.preserve_thinking,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True,
+                max_tool_iterations = _sf_tool_budget,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                session_id = payload.session_id,
+                use_adapter = payload.use_adapter,
+            )
+
+        _sf_tool_sentinel = object()
+        _sf_cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _sf_tracker = _TrackedCancel(cancel_event, *_sf_cancel_keys)
+        _sf_tracker.__enter__()
+
+        async def sf_tool_stream():
+            try:
+                first_chunk = ChatCompletionChunk(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(role = "assistant"),
+                            finish_reason = None,
+                        )
+                    ],
+                )
+                yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                gen = sf_generate_with_tools()
+                prev_text = ""
+                while True:
+                    if cancel_event.is_set():
+                        backend.reset_generation_state()
+                        break
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        backend.reset_generation_state()
+                        return
+
+                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    if event is _sf_tool_sentinel:
+                        break
+
+                    if event["type"] == "status":
+                        if not event["text"]:
+                            prev_text = ""
+                        status_data = json.dumps(
+                            {
+                                "type": "tool_status",
+                                "content": event["text"],
+                            }
+                        )
+                        yield f"data: {status_data}\n\n"
+                        continue
+
+                    if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_start":
+                            prev_text = ""
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
+
+                    # Diff cumulative cleaned text against last snapshot.
+                    raw_cumulative = event.get("text", "")
+                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    new_text = clean_cumulative[len(prev_text) :]
+                    prev_text = clean_cumulative
+                    if not new_text:
+                        continue
+                    chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(content = new_text),
+                                finish_reason = None,
+                            )
+                        ],
+                    )
+                    yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                final_chunk = ChatCompletionChunk(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(),
+                            finish_reason = "stop",
+                        )
+                    ],
+                )
+                yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except asyncio.CancelledError:
+                cancel_event.set()
+                backend.reset_generation_state()
+                raise
+            except Exception:
+                backend.reset_generation_state()
+                # Generic wire message; full trace stays in the log
+                # (CWE-209: transformers/torch errors may leak paths).
+                logger.exception("safetensors tool stream error")
+                error_chunk = {
+                    "error": {
+                        "message": "An internal error occurred.",
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+            finally:
+                _sf_tracker.__exit__(None, None, None)
+
+        if payload.stream:
+            return StreamingResponse(
+                sf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        # Non-streaming JSON: drain the loop, build one ChatCompletion.
+        try:
+
+            def _drain_to_text():
+                full_text = ""
+                gen = sf_generate_with_tools()
+                for event in gen:
+                    if cancel_event.is_set():
+                        break
+                    if event.get("type") == "content":
+                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                return full_text
+
+            content_text = await asyncio.to_thread(_drain_to_text)
+            response = ChatCompletion(
+                id = completion_id,
+                created = created,
+                model = model_name,
+                choices = [
+                    CompletionChoice(
+                        message = CompletionMessage(content = content_text),
+                        finish_reason = "stop",
+                    )
+                ],
+            )
+            return JSONResponse(content = response.model_dump())
+        except Exception:
+            backend.reset_generation_state()
+            # CWE-209: generic detail; full trace in log.
+            logger.exception("safetensors tool completion error")
+            raise HTTPException(
+                status_code = 500,
+                detail = "An internal error occurred.",
+            )
+        finally:
+            _sf_tracker.__exit__(None, None, None)
+
     # Shared generation kwargs
     gen_kwargs = dict(
         messages = chat_messages,
@@ -2251,9 +3075,14 @@ async def openai_chat_completions(
         max_new_tokens = payload.max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
     )
-
-    # Choose generation path (adapter-controlled or standard)
-    cancel_event = threading.Event()
+    # Forward reasoning kwargs; the worker/template wrapper peels off
+    # any the template doesn't accept.
+    if payload.enable_thinking is not None:
+        gen_kwargs["enable_thinking"] = payload.enable_thinking
+    if payload.reasoning_effort is not None:
+        gen_kwargs["reasoning_effort"] = payload.reasoning_effort
+    if payload.preserve_thinking is not None:
+        gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
     if payload.use_adapter is not None:
 
@@ -2269,9 +3098,6 @@ async def openai_chat_completions(
             return backend.generate_chat_response(
                 cancel_event = cancel_event, **gen_kwargs
             )
-
-    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    created = int(time.time())
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
@@ -3045,6 +3871,17 @@ async def _responses_stream(
             ),
         )
 
+    # Direct pass-through bypasses the openai_chat_completions image gate.
+    if not llama_backend.is_vision and any(
+        isinstance(m.content, list)
+        and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image provided but current GGUF model does not support vision.",
+        )
+
     body = _build_openai_passthrough_body(
         chat_req, backend_ctx = llama_backend.context_length
     )
@@ -3426,10 +4263,10 @@ def _normalize_anthropic_openai_images(
                 buf = io.BytesIO()
                 img.save(buf, format = "PNG")
                 png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
+            except Exception:
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Failed to process image: {e}",
+                    detail = "Failed to process image.",
                 )
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
@@ -3465,6 +4302,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
+    openai_messages = _drop_empty_assistant_sentinels(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the
     # Anthropic endpoint matches the behavior of /v1/chat/completions.
@@ -4190,6 +5028,19 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
+    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            has_content = bool(m.get("content"))
+            has_tool_calls = bool(m.get("tool_calls"))
+            if not has_content and not has_tool_calls:
+                continue
+        out.append(m)
+    return out
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -4206,7 +5057,9 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     ``image_url`` content part so vision + function-calling requests work
     transparently.
     """
-    messages = [m.model_dump(exclude_none = True) for m in payload.messages]
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
 
     if not payload.image_base64:
         return messages
@@ -4221,10 +5074,10 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         buf = _BytesIO()
         img.save(buf, format = "PNG")
         png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code = 400,
-            detail = f"Failed to process image: {e}",
+            detail = "Failed to process image.",
         )
 
     data_url = f"data:image/png;base64,{png_b64}"
@@ -4245,6 +5098,47 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         messages.append({"role": "user", "content": [image_part]})
 
     return messages
+
+
+def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:
+    """Build llama-server messages for the standard GGUF chat path.
+
+    llama-server accepts OpenAI multimodal content parts directly. Preserve
+    all per-turn ``image_url`` parts so multi-image chat history keeps each
+    image attached to its original turn.
+    """
+    messages = _drop_empty_assistant_sentinels(
+        [m.model_dump(exclude_none = True) for m in payload.messages]
+    )
+    has_message_image = any(
+        isinstance(msg.get("content"), list)
+        and any(part.get("type") == "image_url" for part in msg["content"])
+        for msg in messages
+    )
+    if payload.image_base64 and not has_message_image:
+        # Legacy bytes can be any format; the normalizer below sniffs and
+        # re-encodes to PNG, so the declared mime is rewritten anyway.
+        image_part = {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{payload.image_base64}",
+            },
+        }
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            existing = msg.get("content")
+            if isinstance(existing, str):
+                msg["content"] = [{"type": "text", "text": existing}, image_part]
+            elif isinstance(existing, list):
+                existing.append(image_part)
+            else:
+                msg["content"] = [image_part]
+            break
+        else:
+            messages.append({"role": "user", "content": [image_part]})
+    has_image = _normalize_anthropic_openai_images(messages, is_vision)
+    return messages, has_image
 
 
 def _extract_response_format(payload):

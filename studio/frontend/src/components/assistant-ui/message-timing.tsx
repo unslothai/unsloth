@@ -38,9 +38,22 @@ export const MessageTiming: FC<{
   )?.custom as { serverTimings?: Record<string, number> } | undefined;
   const st = serverTimings?.serverTimings;
 
+  // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op
+  // turns, blowing the rate up to Infinity. Require >=1 token AND a
+  // non-zero decode window AND a finite rate. Fast cached single-token
+  // responses (sub-10ms) are legitimate and must stay visible.
+  const hasPredicted =
+    (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) > 0;
+  const predictedRate =
+    hasPredicted &&
+    st?.predicted_per_second != null &&
+    Number.isFinite(st.predicted_per_second)
+      ? st.predicted_per_second
+      : undefined;
+
   // Badge text: show tok/s if available, otherwise total time
-  const badgeText = st?.predicted_per_second != null
-    ? `${st.predicted_per_second.toFixed(1)} tok/s`
+  const badgeText = predictedRate != null
+    ? `${predictedRate.toFixed(1)} tok/s`
     : formatTimingMs(timing.totalStreamTime);
 
   return (
@@ -85,7 +98,7 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {st?.predicted_ms != null && (
+              {hasPredicted && st?.predicted_ms != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Generation</span>
                   <span className="font-mono tabular-nums">
@@ -93,11 +106,11 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {st?.predicted_per_second != null && (
+              {predictedRate != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Speed</span>
                   <span className="font-mono tabular-nums">
-                    {st.predicted_per_second.toFixed(1)} tok/s
+                    {predictedRate.toFixed(1)} tok/s
                   </span>
                 </div>
               )}

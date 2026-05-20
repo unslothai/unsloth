@@ -43,7 +43,21 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  /**
+   * Speculative decoding mode for GGUF models. Canonical values:
+   * "auto" (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for
+   * sub-3B), "mtp" (force draft-mtp only on both GPU and CPU), "ngram"
+   * (force ngram-mod only), "mtp+ngram" (force ngram-mod + draft-mtp
+   * chain on both platforms), or "off". Legacy values "default" /
+   * "draft-mtp" / "ngram-mod" / "ngram-simple" are still accepted by
+   * the backend.
+   */
   speculative_type?: string | null;
+  /**
+   * Override --spec-draft-n-max for MTP speculative decoding. Only
+   * applied when speculative_type resolves to "mtp" or "mtp+ngram".
+   */
+  spec_draft_n_max?: number | null;
 }
 
 export interface ValidateModelResponse {
@@ -120,7 +134,9 @@ export interface LoadModelResponse {
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
+  /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -157,7 +173,9 @@ export interface InferenceStatusResponse {
   native_context_length?: number | null;
   cache_type_kv?: string | null;
   chat_template_override?: string | null;
+  /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
 }
 
 export interface AudioGenerationResponse {
@@ -176,27 +194,43 @@ export interface AudioGenerationResponse {
   }>;
 }
 
+export type OpenAIMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: OpenAIMessageContent;
 }
 
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;
-  temperature: number;
-  top_p: number;
+  /** Reasoning-class OpenAI models reject these — caller may omit. */
+  temperature?: number;
+  top_p?: number;
   max_tokens: number;
-  top_k: number;
-  min_p: number;
-  repetition_penalty: number;
-  presence_penalty: number;
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
+  presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
-  reasoning_effort?: "low" | "medium" | "high" | null;
+  reasoning_effort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "max"
+    | "xhigh"
+    | null;
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
@@ -205,6 +239,31 @@ export interface OpenAIChatCompletionsRequest {
   tool_call_timeout?: number;
   session_id?: string;
   cancel_id?: string;
+  provider_id?: string;
+  provider_type?: string;
+  external_model?: string;
+  encrypted_api_key?: string;
+  provider_base_url?: string | null;
+  enable_prompt_caching?: boolean | null;
+  /**
+   * OpenAI shell-tool container id captured from the prior response in
+   * this chat thread. When set and the Code pill is on, the backend
+   * routes the next /v1/responses call with
+   * `environment.type="container_reference"` so filesystem state
+   * persists across turns. Unset → backend uses
+   * `environment.type="container_auto"` and OpenAI creates a fresh
+   * container. Only meaningful for OpenAI cloud + gpt-5.5 family.
+   */
+  openai_code_exec_container_id?: string | null;
+  /**
+   * Anthropic code_execution container id captured from the prior
+   * response in this chat thread. When set and the Code pill is on,
+   * the backend forwards a top-level `container` field on
+   * /v1/messages so filesystem state persists across turns. Unset →
+   * Anthropic auto-creates a fresh container. Only meaningful for
+   * the Anthropic provider with `code_execution` in `enabled_tools`.
+   */
+  anthropic_code_exec_container_id?: string | null;
 }
 
 export interface OpenAIChatDelta {

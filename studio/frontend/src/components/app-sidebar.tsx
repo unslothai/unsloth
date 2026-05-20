@@ -54,6 +54,7 @@ import {
 } from "@/features/chat";
 import { UserAvatar, useEffectiveProfile } from "@/features/profile";
 import { useSettingsDialogStore } from "@/features/settings";
+import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -76,6 +77,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   LayoutAlignLeftIcon,
+  Logout01Icon,
   PencilEdit02Icon,
   PowerIcon,
   Search01Icon,
@@ -93,7 +95,7 @@ import {
 } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/studio")) return "studio";
@@ -566,6 +568,9 @@ export function AppSidebar() {
                           className="group/recent-item relative"
                         >
                           <SidebarMenuButton
+                            data-testid="recent-thread"
+                            data-thread-type={item.type}
+                            data-thread-id={item.id}
                             isActive={activeThreadId === item.id}
                             className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium"
                             onClick={() => {
@@ -864,6 +869,23 @@ export function AppSidebar() {
                       className="size-icon"
                     />
                     <span>Help</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={async () => {
+                      try {
+                        await logout();
+                      } catch {
+                        clearAuthTokens();
+                      }
+                      void navigate({ to: "/login" });
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={Logout01Icon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                    <span>Log out</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                     <HugeiconsIcon

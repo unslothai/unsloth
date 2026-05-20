@@ -1486,14 +1486,14 @@
 	}
 
 	.composer-pill-btn {
-		@apply flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
 
 	.composer-input {
-		@apply mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.composer-action-wrapper {
@@ -1683,6 +1683,46 @@
 	}
 }
 
+/* Lighter shadow + tighter vertical padding than Sonner's defaults; !important because Sonner injects its base rules at runtime. */
+[data-sonner-toast][data-styled='true'] {
+	padding: 10px 16px !important;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
+.dark [data-sonner-toast][data-styled='true'] {
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Selectable toast text; non-selectable toast buttons. */
+[data-sonner-toast],
+[data-sonner-toast] [data-content],
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+/* Text cursor only on actual text nodes, so the toast container does
+   not pretend to be an input. */
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	cursor: text;
+}
+
+[data-sonner-toast] button,
+[data-sonner-toast] [data-button],
+[data-sonner-toast] [data-cancel],
+[data-sonner-toast] [data-close-button] {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: pointer;
+}
+
 /* Flat scrollbar chrome */
 * {
 	scrollbar-width: thin;
@@ -1830,4 +1870,51 @@ html.dark .hub-page *::-webkit-scrollbar-thumb {
 ::view-transition-new(root) {
 	animation: none;
 	mix-blend-mode: normal;
+}
+
+/* Override sonner top: 0 and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+	top: 8px !important;
+	background: var(--popover) !important;
+	color: var(--popover-foreground) !important;
+	border-color: var(--border) !important;
+}
+[data-sonner-toast][data-styled="true"] [data-close-button] svg {
+	stroke-width: 2.25;
+}
+[data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
+	background: var(--muted) !important;
+	color: var(--popover-foreground) !important;
+	border-color: var(--border) !important;
+}
+
+/*
+ * prefers-reduced-motion: honour the OS-level "reduce motion" preference.
+ * Tailwind animate-in/out, Radix open/close transforms, infinite shine/pulse
+ * keyframes, and Framer Motion layout transitions all ignore the media query
+ * by default. Forcing every animation/transition to ~0ms collapses zoom-ins,
+ * slide-ins, and continuous shimmers to a single frame without removing the
+ * end state. Hover colour changes become instant rather than fading, which is
+ * the documented WCAG outcome (motion is "minimised, not removed").
+ *
+ * .animate-spin is the exception: loading spinners are essential progress
+ * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * startup / update screens, the <Spinner /> primitive). Freezing them
+ * removes the only visual signal that work is in flight, so they keep
+ * animating but at a slower, less aggressive 1.5s cadence.
+ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+
+	.animate-spin {
+		animation-duration: 1.5s !important;
+		animation-iteration-count: infinite !important;
+	}
 }

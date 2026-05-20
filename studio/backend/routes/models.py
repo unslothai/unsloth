@@ -32,6 +32,22 @@ def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
 
 
+def _safe_is_dir(path) -> bool:
+    """``Path.is_dir()`` that returns ``False`` instead of raising.
+
+    On Python >= 3.12 ``is_dir()``'s ``os.stat`` only suppresses
+    "not found"-class errors and now propagates ``PermissionError``
+    (EACCES); on Python <= 3.11 it returned ``False``. The folder-scan
+    endpoints probe well-known system locations (e.g. a root-owned,
+    mode-700 ``/usr/share/ollama/.ollama/models``) and must treat an
+    un-stat-able path as "not a directory", never 500.
+    """
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
 # Add backend directory to path
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -916,7 +932,7 @@ async def get_recommended_folders(
             return
         if resolved in seen:
             return
-        if Path(resolved).is_dir() and os.access(resolved, os.R_OK | os.X_OK):
+        if _safe_is_dir(resolved) and os.access(resolved, os.R_OK | os.X_OK):
             seen.add(resolved)
             folders.append(resolved)
 
@@ -1090,7 +1106,7 @@ def _build_browse_allowlist() -> list[Path]:
             resolved = p.resolve()
         except OSError:
             return
-        if resolved.is_dir():
+        if _safe_is_dir(resolved):
             candidates.append(resolved)
 
     _add(Path.home())
@@ -1423,7 +1439,7 @@ async def browse_folders(
             return
         if resolved in seen_sug:
             return
-        if Path(resolved).is_dir():
+        if _safe_is_dir(resolved):
             seen_sug.add(resolved)
             suggestions.append(resolved)
 
