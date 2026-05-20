@@ -450,10 +450,14 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
-export async function clearBackendChats(): Promise<void> {
+export async function clearBackendChats(
+  options: { notify?: boolean } = {},
+): Promise<void> {
   const response = await authFetch("/api/chat", { method: "DELETE" });
   await parseJsonOrThrow<unknown>(response);
-  notifyChatHistoryUpdated();
+  if (options.notify !== false) {
+    notifyChatHistoryUpdated();
+  }
 }
 
 export async function buildBackendChatExport(): Promise<{

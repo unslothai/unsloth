@@ -60,9 +60,7 @@ import {
   saveStoredChatMessage,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
-import {
-  isChatThreadDeleted,
-} from "./utils/chat-thread-tombstones";
+import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
@@ -332,7 +330,9 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     OPEN_DOCUMENT_TEXT_MIME,
   ].join(",");
 
-  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+  async *add({
+    file,
+  }: { file: File }): AsyncGenerator<PendingAttachment, void> {
     const id = crypto.randomUUID();
     this.active.add(id);
     const attachment = {
@@ -364,7 +364,10 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
       this.active.delete(id);
       this.content.delete(id);
       if (!this.sending.has(id)) {
-        yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+        yield {
+          ...attachment,
+          status: { type: "incomplete", reason: "error" },
+        };
       }
     }
   }
@@ -610,7 +613,7 @@ function createStudioDbAdapter(
     async list() {
       let threads: ThreadRecord[];
       try {
-        threads = await listStoredChatThreads({ modelType });
+        threads = await listStoredChatThreads({ modelType, pairId });
       } catch (error) {
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;

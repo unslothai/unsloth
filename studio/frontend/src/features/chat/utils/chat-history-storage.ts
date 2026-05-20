@@ -10,6 +10,7 @@ import {
   batchListChatMessages,
   listChatMessages,
   listChatThreads,
+  notifyChatHistoryUpdated,
   saveChatMessage,
   saveChatThread,
   syncChatMessages,
@@ -66,6 +67,18 @@ function markLegacyChatImportDone(): void {
   }
 }
 
+function matchesThreadListArgs(
+  thread: ThreadRecord,
+  args: ThreadListArgs,
+): boolean {
+  return (
+    !isChatThreadDeleted(thread.id) &&
+    (!args.pairId || thread.pairId === args.pairId) &&
+    (!args.modelType || thread.modelType === args.modelType) &&
+    (args.includeArchived !== false || !thread.archived)
+  );
+}
+
 async function listLegacyThreads(
   args: ThreadListArgs,
 ): Promise<ThreadRecord[]> {
@@ -74,10 +87,8 @@ async function listLegacyThreads(
     : args.modelType
       ? db.threads.where("modelType").equals(args.modelType)
       : db.threads.toCollection();
-  return (await legacyQuery.toArray()).filter(
-    (thread) =>
-      !isChatThreadDeleted(thread.id) &&
-      (args.includeArchived !== false || !thread.archived),
+  return (await legacyQuery.toArray()).filter((thread) =>
+    matchesThreadListArgs(thread, args),
   );
 }
 
@@ -220,10 +231,12 @@ async function backfillLegacyThreadFields(
       legacyThread.anthropicCodeExecContainerId;
   }
   if (Object.keys(patch).length === 0) return backendThread;
-  return (await updateChatThread(backendThread.id, patch)) ?? {
-    ...backendThread,
-    ...patch,
-  };
+  return (
+    (await updateChatThread(backendThread.id, patch)) ?? {
+      ...backendThread,
+      ...patch,
+    }
+  );
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
@@ -261,11 +274,9 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
       const backendMessages = await listChatMessages(thread.id).catch(() => []);
       const merged = mergeMessages(backendMessages, legacyMessages);
       if (merged.shouldSync) {
-        await syncChatMessages(
-          thread.id,
-          sortMessages(merged.messages),
-          { pruneMissing: false },
-        );
+        await syncChatMessages(thread.id, sortMessages(merged.messages), {
+          pruneMissing: false,
+        });
       }
     }
 
@@ -412,7 +423,9 @@ export async function listStoredChatThreads(
   for (const thread of backendThreads ?? []) {
     if (!isChatThreadDeleted(thread.id)) byId.set(thread.id, thread);
   }
-  return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
+  return Array.from(byId.values())
+    .filter((thread) => matchesThreadListArgs(thread, args))
+    .sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export async function listStoredChatThreadsWithMessages(
@@ -472,17 +485,17 @@ export async function updateStoredChatThread(
 }
 
 export async function deleteStoredChatThreads(
-  threadIds: string[],
+  idsToDelete: string[],
 ): Promise<void> {
-  if (threadIds.length === 0) return;
-  await deleteChatThreads(threadIds);
+  if (idsToDelete.length === 0) return;
+  await deleteChatThreads(idsToDelete);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
-      await db.messages.where("threadId").anyOf(threadIds).delete();
-      await db.threads.bulkDelete(threadIds);
+      await db.messages.where("threadId").anyOf(idsToDelete).delete();
+      await db.threads.bulkDelete(idsToDelete);
     })
     .catch(() => undefined);
-  markChatThreadsDeleted(threadIds);
+  markChatThreadsDeleted(idsToDelete);
 }
 
 export async function countStoredChats(): Promise<number> {
@@ -492,6 +505,8 @@ export async function countStoredChats(): Promise<number> {
 export interface ClearStoredChatsResult {
   backend: "cleared" | "failed" | "skipped";
   legacy: "cleared" | "failed" | "skipped";
+  deletedThreadIds: string[];
+  failedThreadIds: string[];
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
@@ -501,13 +516,22 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     listChatThreads().catch(() => []),
     db.threads.toArray().catch(() => []),
   ]);
-  const threadIds = [...backendThreads, ...legacyThreads].map(
-    (thread) => thread.id,
+  const backendThreadIds = new Set(backendThreads.map((thread) => thread.id));
+  const legacyThreadIds = new Set(legacyThreads.map((thread) => thread.id));
+  const allThreadIds = Array.from(
+    new Set([...backendThreadIds, ...legacyThreadIds]),
   );
 
-  const result: ClearStoredChatsResult = { backend: "skipped", legacy: "skipped" };
+  const result: ClearStoredChatsResult = {
+    backend: "skipped",
+    legacy: "skipped",
+    deletedThreadIds: [],
+    failedThreadIds: [],
+  };
   try {
-    await clearBackendChats();
+    // Defer the history refresh until Dexie clear and tombstone state are
+    // finalized, so listeners never observe the composite clear mid-flight.
+    await clearBackendChats({ notify: false });
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";
@@ -525,10 +549,18 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     console.error("clearStoredChats: legacy Dexie clear failed", error);
   }
 
-  // Tombstone everything we knew about, so even partial failures hide the
-  // residual rows from the sidebar. Callers that want hard guarantees
-  // should retry on `failed` outcomes.
-  markChatThreadsDeleted(threadIds);
+  result.deletedThreadIds = allThreadIds.filter((id) => {
+    const backendDeleted =
+      !backendThreadIds.has(id) || result.backend === "cleared";
+    const legacyDeleted =
+      !legacyThreadIds.has(id) || result.legacy === "cleared";
+    return backendDeleted && legacyDeleted;
+  });
+  const deleted = new Set(result.deletedThreadIds);
+  result.failedThreadIds = allThreadIds.filter((id) => !deleted.has(id));
+
+  markChatThreadsDeleted(result.deletedThreadIds);
+  notifyChatHistoryUpdated();
 
   if (result.backend === "failed" && result.legacy === "failed") {
     throw new Error("clearStoredChats: both backend and legacy clear failed");
