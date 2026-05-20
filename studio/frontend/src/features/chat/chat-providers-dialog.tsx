@@ -172,6 +172,14 @@ function emptyCatalogHint(providerType: string): {
   );
 }
 
+function shouldAppendOpenAiVersionPath(providerType: string): boolean {
+  return (
+    providerType === "ollama" ||
+    providerType === "llama_cpp" ||
+    providerType === "vllm"
+  );
+}
+
 function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
   if (providerType === "anthropic") {
     return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
@@ -268,6 +276,26 @@ export function ChatProvidersSettings({
     isManualModelList ||
     remoteAllowsManual ||
     availableModels.length > 0;
+  const missingModelCatalogBaseUrl =
+    supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
+  const missingModelCatalogApiKey =
+    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+  const loadModelsDisabled =
+    modelsLoading ||
+    mutatingProvider ||
+    isManualModelList ||
+    missingModelCatalogBaseUrl ||
+    missingModelCatalogApiKey;
+  const loadModelsTitle =
+    isManualModelList && isCustomProvider
+      ? "This connection uses manual model IDs"
+      : isCuratedModelList
+        ? "Full catalog is not fetched for this provider"
+        : missingModelCatalogBaseUrl
+          ? "Enter a Base URL before loading models"
+          : missingModelCatalogApiKey
+            ? "Enter an API key before loading models"
+            : undefined;
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
     if (!query) {
@@ -293,6 +321,7 @@ export function ChatProvidersSettings({
     if (!entry) {
       if (isCustomProviderType(providerType)) {
         setCustomProviderName(customProviderDisplayName(providerType));
+        setBaseUrlDraft("");
       }
       return;
     }
@@ -305,6 +334,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setBaseUrlDraft("");
   }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
@@ -441,7 +471,10 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
   }
 
-  function parseOptionalBaseUrl(input: string): string | null {
+  function parseOptionalBaseUrl(
+    input: string,
+    options: { appendOpenAiVersionPath?: boolean } = {},
+  ): string | null {
     const trimmed = input.trim();
     if (!trimmed) return null;
     let parsed: URL;
@@ -453,12 +486,19 @@ export function ChatProvidersSettings({
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("Base URL must use http or https.");
     }
+    if (options.appendOpenAiVersionPath) {
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      if (!pathname) {
+        parsed.pathname = "/v1";
+      }
+    }
     return parsed.toString().replace(/\/+$/, "");
   }
 
   function parseBaseUrlForProvider(
     input: string,
     required: boolean,
+    providerTypeForUrl: string,
   ): string | null {
     const trimmed = input.trim();
     if (!trimmed) {
@@ -467,7 +507,9 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    return parseOptionalBaseUrl(trimmed);
+    return parseOptionalBaseUrl(trimmed, {
+      appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
+    });
   }
 
   async function loadModels() {
@@ -494,6 +536,7 @@ export function ChatProvidersSettings({
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
         supportsRemoteModelCatalog(providerType),
+        providerType,
       );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;
@@ -602,7 +645,11 @@ export function ChatProvidersSettings({
     }
     setMutatingProvider(true);
     try {
-      const baseUrl = parseBaseUrlForProvider(baseUrlDraft, isCustomProvider);
+      const baseUrl = parseBaseUrlForProvider(
+        baseUrlDraft,
+        isCustomProvider,
+        providerType,
+      );
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -714,6 +761,7 @@ export function ChatProvidersSettings({
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
         isEditingCustomProvider,
+        existing.providerType,
       );
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
@@ -1148,16 +1196,8 @@ export function ChatProvidersSettings({
                         ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
                         : "h-8 shrink-0 px-3"
                     }
-                    disabled={
-                      modelsLoading || mutatingProvider || isManualModelList
-                    }
-                    title={
-                      isManualModelList && isCustomProvider
-                        ? "This connection uses manual model IDs"
-                        : isCuratedModelList
-                          ? "Full catalog is not fetched for this provider"
-                          : undefined
-                    }
+                    disabled={loadModelsDisabled}
+                    title={loadModelsTitle}
                     onClick={() => void loadModels()}
                   >
                     {modelsLoading ? (
