@@ -37,6 +37,7 @@ import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
 import {
+  loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -101,7 +102,7 @@ class VisionImageAdapter implements AttachmentAdapter {
     let externalSupportsVision: boolean | null = null;
     let externalModelLabel: string | null = null;
     if (externalSelection !== null) {
-      const providers = loadExternalProviders();
+      const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
       const provider = providers.find(
         (p) => p.id === externalSelection.providerId,
       );
