@@ -4,7 +4,7 @@
 # registry key. Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME
 # at install time (read back from share\studio.conf).
 #
-# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/uninstall.ps1 | iex
+# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\uninstall.ps1
 
 function Uninstall-UnslothStudio {

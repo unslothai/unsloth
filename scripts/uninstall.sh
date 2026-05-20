@@ -5,7 +5,7 @@
 # Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME at
 # install time (read back from studio.conf).
 #
-# Usage: curl -fsSL https://unsloth.ai/uninstall.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
 
 set -e
 

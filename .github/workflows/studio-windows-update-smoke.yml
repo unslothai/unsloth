@@ -23,7 +23,7 @@ on:
   pull_request:
     paths:
       - 'install.ps1'
-      - 'uninstall.ps1'
+      - 'scripts/uninstall.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
@@ -268,21 +268,22 @@ jobs:
           echo "post-update Studio /api/health OK"
 
       - name: Uninstall and verify clean
-        # Round-trip through uninstall.ps1 against the default install
-        # tree at %USERPROFILE%\.unsloth\studio. Catches regressions
-        # where install.ps1 starts writing under a new key (registry,
-        # Start Menu, %APPDATA%) and uninstall.ps1 has not been updated
-        # to match. Skips gracefully if uninstall.ps1 has not landed yet
-        # (lets this workflow merge before #5513).
+        # Round-trip through scripts/uninstall.ps1 against the default
+        # install tree at %USERPROFILE%\.unsloth\studio. Catches
+        # regressions where install.ps1 starts writing under a new key
+        # (registry, Start Menu, %APPDATA%) and scripts/uninstall.ps1 has
+        # not been updated to match. Skips gracefully if
+        # scripts/uninstall.ps1 has not landed yet (lets this workflow
+        # merge before #5513).
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          if (-not (Test-Path "$PWD\uninstall.ps1")) {
-            Write-Host "uninstall.ps1 not present in this tree; skipping round-trip"
+          if (-not (Test-Path "$PWD\scripts\uninstall.ps1")) {
+            Write-Host "scripts/uninstall.ps1 not present in this tree; skipping round-trip"
             "" | Set-Content logs/uninstall.log
             exit 0
           }
-          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
           $leak = 0
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth\studio",
@@ -296,8 +297,8 @@ jobs:
           }
           if ($leak -gt 0) { exit 1 }
           # Idempotency.
-          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Select-Object -Last 5
-          pwsh -NoProfile -File "$PWD\uninstall.ps1" *>&1 | Select-Object -Last 5
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Select-Object -Last 5
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Select-Object -Last 5
           Write-Host "PASS: windows install -> update -> uninstall round-trip clean"
 
       - name: Upload update logs
