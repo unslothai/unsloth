@@ -35,6 +35,7 @@ import {
 } from "../presets/preset-policy";
 import {
   isMultimodalResponse,
+  type LoadModelResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import type {
@@ -79,6 +80,29 @@ function stripTrailingEpoch(input: string): string {
   return cleaned || input;
 }
 
+function shortModelLabel(idOrName: string): string {
+  const slash = idOrName.lastIndexOf("/");
+  return slash >= 0 ? idOrName.slice(slash + 1) : idOrName;
+}
+
+function resolveModelDisplayName(
+  modelId: string,
+  models: readonly ChatModelSummary[],
+  loras: readonly ChatLoraSummary[],
+  backendLabel?: string | null,
+): string {
+  const model = models.find(
+    (entry) => entry.id.toLowerCase() === modelId.toLowerCase(),
+  );
+  if (model?.name) return model.name;
+  const lora = loras.find(
+    (entry) => entry.id.toLowerCase() === modelId.toLowerCase(),
+  );
+  if (lora?.name) return lora.name;
+  const fallback = backendLabel?.trim() || modelId;
+  return shortModelLabel(fallback);
+}
+
 function describeModel(model: {
   is_lora?: boolean;
   is_vision?: boolean;
@@ -109,7 +133,7 @@ function toChatModelSummary(model: {
 }): ChatModelSummary {
   return {
     id: model.id,
-    name: model.name || model.id,
+    name: model.name || shortModelLabel(model.id),
     description: describeModel(model),
     isLora: Boolean(model.is_lora),
     isVision: Boolean(model.is_vision),
@@ -464,12 +488,16 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.loadingDescription;
       const isDownloaded =
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
-      const model = models.find((entry) => entry.id === modelId);
-      const lora = loras.find((entry) => entry.id === modelId);
+      const model = models.find(
+        (entry) => entry.id.toLowerCase() === modelId.toLowerCase(),
+      );
+      const lora = loras.find(
+        (entry) => entry.id.toLowerCase() === modelId.toLowerCase(),
+      );
       const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
-      const displayName = model?.name || lora?.name || modelId;
+      const displayName = resolveModelDisplayName(modelId, models, loras);
       const loadAttemptId = ++loadAttemptRef.current;
       primeNativeNotificationPermission().catch(() => undefined);
       const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
@@ -521,7 +549,7 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       try {
-        async function performLoad(): Promise<void> {
+        async function performLoad(): Promise<LoadModelResponse> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
           const currentCheckpoint =
@@ -752,6 +780,7 @@ export function useChatModelRuntime() {
               }
             }
             await refresh();
+            return loadResponse;
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
@@ -1045,11 +1074,19 @@ export function useChatModelRuntime() {
         progressInterval = setInterval(pollProgress, 2000);
 
         try {
-          await performLoad();
+          const loadResponse = await performLoad();
+          const { models: loadedModels, loras: loadedLoras } =
+            useChatRuntimeStore.getState();
+          const loadedDisplayName = resolveModelDisplayName(
+            modelId,
+            loadedModels,
+            loadedLoras,
+            loadResponse.display_name || loadResponse.model,
+          );
           if (loadToastDismissedRef.current) {
-            toast.success(`${displayName} loaded`);
+            toast.success(`${loadedDisplayName} loaded`);
           } else {
-            toast.success(`${displayName} loaded`, {
+            toast.success(`${loadedDisplayName} loaded`, {
               id: toastId,
               description: undefined,
               cancel: undefined,
@@ -1062,7 +1099,7 @@ export function useChatModelRuntime() {
           notifyNative({
             key: `model-loaded:${notificationModelKey}`,
             title: "Model ready",
-            body: `${safeModelName} is loaded and ready to chat.`,
+            body: `${safeNotificationLabel(loadedDisplayName, "The model")} is loaded and ready to chat.`,
             requestPermission: false,
           }).catch(() => undefined);
         } catch (err) {
