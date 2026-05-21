@@ -1357,6 +1357,17 @@ class ExternalProviderClient:
             body.get("max_tokens"),
         )
 
+        # TEMP DEBUG (branch debug/anthropic-tool-call-trace): dump the full
+        # payload — messages, system, tools — exactly as sent to Anthropic.
+        print(
+            "\n[ANTHROPIC-DEBUG] ===== REQUEST BODY SENT TO ANTHROPIC =====\n"
+            + _json.dumps(body, indent = 2, default = str)
+            + f"\n[ANTHROPIC-DEBUG] 'tools' key present: {'tools' in body} "
+            + f"| tool count: {len(body.get('tools') or [])}"
+            + "\n[ANTHROPIC-DEBUG] ===========================================\n",
+            flush = True,
+        )
+
         _finish_reason_map = {
             "end_turn": "stop",
             "max_tokens": "length",
@@ -1586,6 +1597,17 @@ class ExternalProviderClient:
                             event = _json.loads(data_str)
                         except _json.JSONDecodeError:
                             continue
+
+                        # TEMP DEBUG (branch debug/anthropic-tool-call-trace):
+                        # dump every raw SSE event. A real tool call arrives as
+                        # content_block_start with content_block.type ==
+                        # "tool_use"/"server_tool_use". A hallucinated one
+                        # arrives only as content_block_delta/text_delta text.
+                        print(
+                            "[ANTHROPIC-DEBUG] event: "
+                            + _json.dumps(event, default = str),
+                            flush = True,
+                        )
 
                         event_type = event.get("type")
                         if event_type == "content_block_delta":
