@@ -2034,8 +2034,14 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
-    $output = Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
-    $torchInstallExit = $LASTEXITCODE
+    if ($script:UnslothVerbose) {
+        Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install torch torchvision torchaudio --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
     if ($torchInstallExit -ne 0) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
         Write-Host $output -ForegroundColor Yellow
