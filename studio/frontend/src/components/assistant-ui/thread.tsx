@@ -549,7 +549,11 @@ const ReasoningToggle: FC = () => {
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const externalSelection = parseExternalModelId(checkpoint);
   const selectedExternalProvider =
     externalSelection != null
@@ -768,7 +772,11 @@ const WebSearchToggle: FC = () => {
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const externalSelection = parseExternalModelId(checkpoint);
   const selectedExternalProvider =
     externalSelection != null
@@ -916,6 +924,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
               tooltip="Dictate"
+              aria-label="Dictate"
               variant="ghost"
               className="size-8 rounded-full text-muted-foreground"
             >
@@ -927,6 +936,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.StopDictation asChild={true}>
             <TooltipIconButton
               tooltip="Stop dictation"
+              aria-label="Stop dictation"
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
@@ -994,6 +1004,24 @@ const GeneratingIndicator: FC = () => {
   return <span className="text-sm text-muted-foreground">Generating...</span>;
 };
 
+// Placeholder when stop fires before any visible content (e.g. mid-think).
+const CancelledIndicator: FC = () => {
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 &&
+      message.status?.type === "incomplete" &&
+      message.status?.reason === "cancelled",
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
+      Cancelled.
+    </span>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -1002,6 +1030,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
+        <CancelledIndicator />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,

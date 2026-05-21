@@ -78,6 +78,7 @@ def _loaded_backend(**overrides):
     backend._requested_n_ctx = 8192
     backend._cache_type_kv = None
     backend._speculative_type = None
+    backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
     backend._is_vision = False
     backend._extra_args = None
