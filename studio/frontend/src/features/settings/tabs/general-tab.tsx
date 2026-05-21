@@ -14,13 +14,14 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatRuntimeStore } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 
 // Keys cleared by "Reset all local preferences".
 //
@@ -173,6 +174,8 @@ export function GeneralTab() {
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
+
+      <StudioVersionSection />
 
       {!chatOnly && (
         <SettingsSection title="Getting started">

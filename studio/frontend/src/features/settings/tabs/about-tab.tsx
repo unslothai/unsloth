@@ -18,6 +18,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 import {
   type UpdateInstallSource,
   UpdateStudioInstructions,
@@ -41,31 +42,6 @@ function isUpdateInstallSource(value: unknown): value is UpdateInstallSource {
     typeof value === "string" &&
     UPDATE_INSTALL_SOURCES.has(value as UpdateInstallSource)
   );
-}
-
-async function fetchStudioVersions(): Promise<{
-  packageVersion: string | null;
-  studioVersion: string | null;
-}> {
-  try {
-    const token = getAuthToken();
-    const headers = new Headers();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    const res = await fetch(apiUrl("/api/health"), { headers });
-    if (!res.ok) {
-      return { packageVersion: null, studioVersion: null };
-    }
-    const data = (await res.json()) as ApiObject;
-    const packageVersion = data.version;
-    const studioVersion = data.studio_version;
-    return {
-      packageVersion:
-        typeof packageVersion === "string" ? packageVersion : null,
-      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-    };
-  } catch {
-    return { packageVersion: null, studioVersion: null };
-  }
 }
 
 async function fetchInstallSource(): Promise<UpdateInstallSource> {
@@ -97,26 +73,12 @@ export function AboutTab() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const [shutdownOpen, setShutdownOpen] = useState(false);
-  const [packageVersion, setPackageVersion] = useState("dev");
-  const [studioVersion, setStudioVersion] = useState("dev");
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
   >("loading");
 
   useEffect(() => {
     let canceled = false;
-
-    fetchStudioVersions().then((nextVersions) => {
-      if (canceled) {
-        return;
-      }
-      if (nextVersions.packageVersion) {
-        setPackageVersion(nextVersions.packageVersion);
-      }
-      if (nextVersions.studioVersion) {
-        setStudioVersion(nextVersions.studioVersion);
-      }
-    });
 
     fetchInstallSource().then((nextInstallSource) => {
       if (!canceled) {
@@ -138,18 +100,7 @@ export function AboutTab() {
         </p>
       </header>
 
-      <SettingsSection title="Studio">
-        <SettingsRow label="Studio Version">
-          <code className="font-mono text-xs text-muted-foreground">
-            {studioVersion}
-          </code>
-        </SettingsRow>
-        <SettingsRow label="Package Version">
-          <code className="font-mono text-xs text-muted-foreground">
-            {packageVersion}
-          </code>
-        </SettingsRow>
-      </SettingsSection>
+      <StudioVersionSection />
 
       <SettingsSection title="Updates">
         <div className="py-2">
