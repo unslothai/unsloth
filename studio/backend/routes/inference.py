@@ -864,7 +864,13 @@ async def load_model(
             # GGUF audio input is not wired through the chat path yet, so do not
             # advertise has_audio_input for GGUF models until uploaded audio is
             # actually forwarded to llama-server.
-            _gguf_audio = llama_backend.detect_audio_type()
+            # Run on the threadpool: detect_audio_type fires several sequential
+            # sync httpx.Client.post() calls to llama-server's /tokenize and
+            # /detokenize endpoints. Without this wrap they block the FastAPI
+            # event loop -- /api/inference/load-progress polling stalls and
+            # the UI freezes on the load spinner even though llama-server is
+            # healthy (issue #5642, related #5635).
+            _gguf_audio = await asyncio.to_thread(llama_backend.detect_audio_type)
             _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
             llama_backend._is_audio = _gguf_is_audio
             llama_backend._audio_type = _gguf_audio
