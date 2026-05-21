@@ -142,6 +142,9 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description = "Whether a newer version of this variant is available on HF"
+    )
 
 
 class GgufVariantsResponse(BaseModel):
@@ -177,6 +180,24 @@ class LocalModelInfo(BaseModel):
         None,
         description = "Unix timestamp of latest observed update",
     )
+
+
+class UpdateRequest(BaseModel):
+    """Request to update a model"""
+
+    repo_id: str = Field(..., description = "HuggingFace repo ID")
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+
+
+class UpdateResponse(BaseModel):
+    """Response after updating a model"""
+
+    model_path: str = Field(..., description = "Updated model path")
 
 
 class LocalModelListResponse(BaseModel):
