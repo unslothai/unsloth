@@ -1336,6 +1336,20 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+        elif host.has_rocm:
+            hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
+            hip_url = assets.get(hip_asset)
+            if hip_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = hip_asset,
+                        url = hip_url,
+                        source_label = "upstream",
+                        install_kind = "windows-hip",
+                    )
+                )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
         cpu_url = assets.get(cpu_asset)
         if cpu_url:
