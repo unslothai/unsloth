@@ -513,60 +513,99 @@ jobs:
                               parts.append(delta["content"])
               return "".join(parts), events
 
+          _STUDIO_TOOL_TYPES = {
+              "tool_start", "tool_end", "tool_use", "tool_result",
+          }
+
           def _tool_invoked(events):
-              """Inspect SSE event payloads for *strong* evidence that
-              a server-side tool actually executed. Returns True iff any
-              event payload contains a marker that fires only when a
-              real tool call ran:
+              """Inspect SSE event payloads for *strong, structural*
+              evidence that a server-side tool actually executed.
+              Returns True iff some event satisfies one of:
 
-                - `"tool_calls"`            (OpenAI chat tool call delta)
-                - `"tool_call"`             (OpenAI responses tool call)
-                - `"tool_use"`              (Anthropic tool invocation)
-                - `"tool_result"`           (Anthropic tool result)
-                - `"tool_start"`            (GGUF agentic loop: only
-                                            fires per entry of
-                                            `for tc in tool_calls`)
-                - `"tool_end"`              (GGUF agentic loop: paired
-                                            with tool_start)
-                - `"function_call"`         (OpenAI legacy function call)
-                - `"role": "tool"`          (tool-role message reply)
+                * Studio / Anthropic envelope: `ev["type"]` is one of
+                  tool_start / tool_end / tool_use / tool_result.
+                * OpenAI chat completion chunk: some choice has a
+                  non-null/non-empty `delta.tool_calls` or
+                  `message.tool_calls`, or `finish_reason == "tool_calls"`,
+                  or `delta.role == "tool"` / `message.role == "tool"`,
+                  or `delta.function_call` / `message.function_call` is
+                  present.
+                * OpenAI Responses API: some output item has type
+                  `tool_call` / `function_call` / `tool_use`.
 
-              Deliberately omitted:
+              Deliberately structural rather than substring-based: the
+              previous revision (commit ec753581) did `any(m in blob
+              for m in markers)` and false-positived on model content
+              text -- if the assistant's chat content contained any of
+              the marker substrings (e.g. literally typed "use the
+              tool_calls feature" or quoted JSON in its narration), the
+              substring matched and the test reported tool_invoked=True
+              despite no real tool execution. That mismatch was
+              observed in the failing Linux Studio GGUF CI run
+              26242445342 on sha ec753581: 3 deterministic attempts
+              all showed tool_invoked=True with tool_output_contains=
+              False and no tool_end envelope anywhere, indicating the
+              model never actually triggered the agentic loop.
 
-                - `"tool_status"` — Studio's GGUF tool stream yields an
-                  *iteration-boundary* status event every loop turn
-                  (including empty `{"type":"tool_status","content":""}`
-                  resets) regardless of whether any tool was actually
-                  invoked, so it cannot distinguish "tool ran" from
-                  "tool stream initialised but model never produced a
-                  tool_call". Trusting it would re-introduce a
-                  false-green: the model can answer from prompt context
-                  alone (echo back `hello-bash-tool`, compute
-                  `123*456` mentally) and the test would silently
-                  green. Address of chatgpt-codex-connector P1 review on
-                  PR #5669 commit 237052ff.
+              Deliberately omitted from invocation evidence:
 
-                - Caller-supplied output-substring fallback — same
-                  reason: the literal `56088` or `hello-bash-tool`
+                * `tool_status` envelopes -- Studio's GGUF tool stream
+                  yields an iteration-boundary status event regardless
+                  of whether a tool was actually invoked, including
+                  empty `{"type":"tool_status","content":""}` cursor
+                  resets. Trusting tool_status would re-introduce a
+                  false-green where the agentic loop initialised but
+                  the model never produced a tool_call. Address of
+                  chatgpt-codex-connector P1 on PR #5669 commit
+                  237052ff.
+
+                * Any output-substring fallback -- the literal answer
                   appearing in the raw stream is not proof the tool
                   ran; the model can emit those characters directly.
-
-              Without one of these strong markers, an empty-or-text-only
-              stream is NOT evidence that the tool path ran -- the model
-              may have just answered without invoking the tool (e.g. if
-              enable_tools is silently ignored). Original chatgpt-codex-
-              connector P1 on PR #5669 commit c032c6ef hardened against
-              that; the follow-up P1 on 237052ff tightens it further.
               """
-              blob = " ".join(events)
-              markers = (
-                  '"tool_calls"', '"tool_call"',
-                  '"tool_use"', '"tool_result"',
-                  '"tool_start"', '"tool_end"',
-                  '"role": "tool"', '"role":"tool"',
-                  '"function_call"',
-              )
-              return any(m in blob for m in markers)
+              for raw in events:
+                  try:
+                      ev = json.loads(raw)
+                  except (json.JSONDecodeError, TypeError):
+                      continue
+                  if not isinstance(ev, dict):
+                      continue
+                  # Studio / Anthropic envelope.
+                  if ev.get("type") in _STUDIO_TOOL_TYPES:
+                      return True
+                  # OpenAI chat completion chunks / non-stream
+                  # responses.
+                  for choice in ev.get("choices", []) or []:
+                      if not isinstance(choice, dict):
+                          continue
+                      if choice.get("finish_reason") == "tool_calls":
+                          return True
+                      for src_key in ("delta", "message"):
+                          src = choice.get(src_key) or {}
+                          if not isinstance(src, dict):
+                              continue
+                          tc = src.get("tool_calls")
+                          if isinstance(tc, list) and tc:
+                              return True
+                          if src.get("function_call"):
+                              return True
+                          if src.get("role") == "tool":
+                              return True
+                  # OpenAI Responses API: top-level output array.
+                  for item in ev.get("output", []) or []:
+                      if isinstance(item, dict) and item.get("type") in {
+                          "tool_call", "function_call", "tool_use",
+                      }:
+                          return True
+                  # Anthropic content blocks (nested).
+                  content = ev.get("content")
+                  if isinstance(content, list):
+                      for blk in content:
+                          if isinstance(blk, dict) and blk.get("type") in {
+                              "tool_use", "tool_result",
+                          }:
+                              return True
+              return False
 
           def _tool_output_contains(events, *needles):
               """Return True iff at least one needle appears inside the
@@ -662,8 +701,18 @@ jobs:
           assert args.get("city"), f"missing city arg: {args}"
           print(f"[tools] PASS function calling -> {tc['function']['name']}({args})")
 
+          # Temperature for tool-probe retries: at T=0 llama.cpp does
+          # deterministic argmax sampling so rotating the seed is a
+          # no-op (verified by run 26242445342 producing three
+          # byte-identical 29-event streams across seeds 3407/3408/
+          # 3409). A small T gives the seed enough purchase to drive
+          # the retry into a distinct sampling trajectory without
+          # destroying tool-output correctness for the attempts that
+          # do invoke the tool.
+          TOOL_PROBE_TEMP = 0.4
+
           def _run_tool_probe(*, label, prompt, enabled, session, needles,
-                              max_attempts = 3):
+                              max_attempts = 4):
               """Drive a server-side tool through the agentic loop and
               return (content_of_winning_attempt, events_of_winning_
               attempt, attempts_log). "Winning" means the attempt where
@@ -697,13 +746,13 @@ jobs:
               """
               attempts_log = []
               for attempt_i in range(max_attempts):
-                  attempt_seed = SEED + attempt_i  # 3407, 3408, 3409
+                  attempt_seed = SEED + attempt_i  # 3407, 3408, ...
                   content, events = post_sse("/v1/chat/completions", {
                       "messages":      [{"role": "user", "content": prompt}],
                       "enable_tools":  True,
                       "enabled_tools": enabled,
                       "session_id":    f"{session}-att{attempt_i}",
-                      "temperature":   0.0,
+                      "temperature":   TOOL_PROBE_TEMP,
                       "seed":          attempt_seed,
                       "max_tokens":    600,
                   })
