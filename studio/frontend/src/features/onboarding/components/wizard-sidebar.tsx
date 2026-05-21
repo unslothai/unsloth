@@ -18,7 +18,7 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
       <div className="flex items-center gap-3 py-1 md:py-2">
         <img
-          src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
+          src="/sticker.png"
           alt="Unsloth"
           className="size-12"
         />

@@ -40,7 +40,7 @@ const ConfettiContext = createContext<Api>({} as Api);
 const ConfettiComponent = forwardRef<ConfettiRef, Props>((props, ref) => {
   const {
     options,
-    globalOptions = { resize: true, useWorker: true },
+    globalOptions = { resize: true, useWorker: false },
     manualstart = false,
     children,
     ...rest
