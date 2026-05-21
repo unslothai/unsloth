@@ -2688,12 +2688,30 @@ def detect_host() -> HostInfo:
                     has_rocm = True
                     break
     elif is_windows:
-        # Windows: prefer active probes that validate GPU presence
+        # Windows: prefer active probes that validate GPU presence.
+        # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
+        # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
+        # the system PATH.  Mirror setup.ps1's fallback: check the env-var
+        # bin dirs before giving up so that `has_rocm` is not silently False
+        # on machines where the PATH is not yet updated.
+        def _resolve_exe(name: str) -> str | None:
+            """Return full path to `name`, checking PATH then HIP_PATH/ROCM_PATH bin."""
+            found = shutil.which(name)
+            if found:
+                return found
+            for _env in ("HIP_PATH", "ROCM_PATH"):
+                _root = os.environ.get(_env)
+                if _root:
+                    _candidate = os.path.join(_root, "bin", f"{name}.exe")
+                    if os.path.isfile(_candidate):
+                        return _candidate
+            return None
+
         for _cmd, _check in (
             (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
             (["amd-smi", "list"], _amd_smi_has_gpu),
         ):
-            _exe = shutil.which(_cmd[0])
+            _exe = _resolve_exe(_cmd[0])
             if not _exe:
                 continue
             try:
