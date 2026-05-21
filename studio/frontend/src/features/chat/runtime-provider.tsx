@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import {
   AssistantRuntimeProvider,
   type AttachmentAdapter,
+  type ChatModelAdapter,
   type CompleteAttachment,
   CompositeAttachmentAdapter,
   ExportedMessageRepository,
@@ -90,6 +91,8 @@ const DEFAULT_SUGGESTIONS = [
     prompt: "Draw an SVG of a cute sloth & show the code",
   },
 ];
+
+const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -748,6 +751,60 @@ function createStudioDbAdapter(
 
 type StudioRuntimeAdapters = NonNullable<LocalRuntimeOptions["adapters"]>;
 
+function trackHistoryAppend(
+  messageId: string,
+  write: Promise<void>,
+): Promise<void> {
+  pendingHistoryAppendByMessageId.set(messageId, write);
+  const cleanup = () => {
+    setTimeout(() => {
+      if (pendingHistoryAppendByMessageId.get(messageId) === write) {
+        pendingHistoryAppendByMessageId.delete(messageId);
+      }
+    }, 30_000);
+  };
+  write.then(cleanup, cleanup);
+  return write;
+}
+
+async function waitForRunStartHistoryAppend(
+  messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
+): Promise<void> {
+  const lastMessage = messages.at(-1);
+  if (!lastMessage || lastMessage.role !== "user") {
+    return;
+  }
+  const write = pendingHistoryAppendByMessageId.get(lastMessage.id);
+  if (!write) {
+    return;
+  }
+  try {
+    await write;
+  } finally {
+    if (pendingHistoryAppendByMessageId.get(lastMessage.id) === write) {
+      pendingHistoryAppendByMessageId.delete(lastMessage.id);
+    }
+  }
+}
+
+function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
+  return {
+    ...adapter,
+    async *run(options) {
+      await waitForRunStartHistoryAppend(options.messages);
+      const result = adapter.run(options);
+      if (!result) {
+        return;
+      }
+      if (typeof result === "object" && Symbol.asyncIterator in result) {
+        yield* result;
+        return;
+      }
+      yield await result;
+    },
+  };
+}
+
 function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -828,46 +885,50 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
       },
 
-      async append({ parentId, message }: ExportedMessageRepositoryItem) {
-        const { remoteId } = await aui.threadListItem().initialize();
-        if (isChatThreadDeleted(remoteId)) {
-          await deleteStoredChatThreads([remoteId]);
-          return;
-        }
-        // Keep single-chat runtime state in sync once a new chat is first
-        // persisted. Compare panes intentionally do not write global activeThreadId.
-        const thread = await getStoredChatThread(remoteId);
-        if (thread) {
-          await ensureStoredChatThread(remoteId, thread);
-        }
-        if (thread?.modelType === "base" && !thread.pairId) {
-          const store = useChatRuntimeStore.getState();
-          if (store.activeThreadId !== remoteId) {
-            store.setActiveThreadId(remoteId);
+      append({ parentId, message }: ExportedMessageRepositoryItem) {
+        const write = (async () => {
+          const { remoteId } = await aui.threadListItem().initialize();
+          if (isChatThreadDeleted(remoteId)) {
+            await deleteStoredChatThreads([remoteId]);
+            return;
           }
-        }
-        const content = cloneContent(message.content);
-        const attachments =
-          message.role === "user" ? cloneAttachments(message.attachments) : [];
-        const custom = message.metadata?.custom;
-        const existingMessage = await getStoredChatMessage(
-          remoteId,
-          message.id,
-        );
-        const createdAt =
-          existingMessage?.createdAt ??
-          message.createdAt?.getTime?.() ??
-          Date.now();
-        await saveStoredChatMessage({
-          id: message.id,
-          threadId: remoteId,
-          parentId: parentId ?? null,
-          role: message.role,
-          content,
-          ...(attachments.length > 0 && { attachments }),
-          ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
-          createdAt,
-        });
+          // Keep single-chat runtime state in sync once a new chat is first
+          // persisted. Compare panes intentionally do not write global activeThreadId.
+          const thread = await getStoredChatThread(remoteId);
+          if (thread) {
+            await ensureStoredChatThread(remoteId, thread);
+          }
+          if (thread?.modelType === "base" && !thread.pairId) {
+            const store = useChatRuntimeStore.getState();
+            if (store.activeThreadId !== remoteId) {
+              store.setActiveThreadId(remoteId);
+            }
+          }
+          const content = cloneContent(message.content);
+          const attachments =
+            message.role === "user" ? cloneAttachments(message.attachments) : [];
+          const custom = message.metadata?.custom;
+          const existingMessage = await getStoredChatMessage(
+            remoteId,
+            message.id,
+          );
+          const createdAt =
+            existingMessage?.createdAt ??
+            message.createdAt?.getTime?.() ??
+            Date.now();
+          await saveStoredChatMessage({
+            id: message.id,
+            threadId: remoteId,
+            parentId: parentId ?? null,
+            role: message.role,
+            content,
+            ...(attachments.length > 0 && { attachments }),
+            ...(custom &&
+              Object.keys(custom).length > 0 && { metadata: custom }),
+            createdAt,
+          });
+        })();
+        return trackHistoryAppend(message.id, write);
       },
     }),
     [aui],
@@ -904,7 +965,11 @@ const chatAdapter = createOpenAIStreamAdapter();
 
 function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters();
-  return useLocalRuntime(chatAdapter, { adapters });
+  const persistedChatAdapter = useMemo(
+    () => createPersistedRunAdapter(chatAdapter),
+    [],
+  );
+  return useLocalRuntime(persistedChatAdapter, { adapters });
 }
 
 function ThreadAutoSwitch({
