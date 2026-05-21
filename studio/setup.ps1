@@ -2364,6 +2364,23 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
+        # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
+        # machine that should have windows-hip), remove it so the installer is
+        # forced to download the correct variant rather than skipping on tag match.
+        $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
+        if (Test-Path $existingMetaPath) {
+            try {
+                $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
+                $existingKind = $existingMeta.install_kind
+                $expectedKind = if ($HasROCm) { "windows-hip" } else { "windows-cpu" }
+                if ($existingKind -and $existingKind -ne $expectedKind) {
+                    substep "Removing mismatched llama.cpp install (found '$existingKind', need '$expectedKind')..."
+                    Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+                }
+            } catch {
+                # unreadable metadata -- let the installer handle it
+            }
+        }
     }
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $env:UNSLOTH_STUDIO_HOME\llama.cpp before the source-build
