@@ -34,10 +34,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import type { ChatSearch } from "@/app/routes/chat";
 import { listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { db } from "./db";
@@ -66,7 +67,12 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_TOOLS_ENABLED_KEY,
+  loadOptionalBool,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
@@ -77,6 +83,15 @@ type LoraCandidate = {
   updatedAt?: number;
   exportType?: "lora" | "merged" | "gguf";
 };
+
+const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
+  openai: 0,
+  anthropic: 1,
+};
+
+function getExternalProviderDropdownRank(providerType: string): number {
+  return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
+}
 
 function normalizeModelRef(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? "";
@@ -551,7 +566,11 @@ export function ChatPage(): ReactElement {
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
   const setExternalProviders = useExternalProvidersStore((s) => s.setProviders);
+  const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
     const threadId = search.thread;
@@ -599,6 +618,7 @@ export function ChatPage(): ReactElement {
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
+  const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
@@ -612,6 +632,24 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const prevConnectionsEnabledRef = useRef(connectionsEnabled);
+  useEffect(() => {
+    const turnedOff =
+      prevConnectionsEnabledRef.current && !connectionsEnabled;
+    if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
+      clearCheckpoint();
+      if (turnedOff) {
+        toast.info("Connections disabled", {
+          description: "Switched away from the hosted model.",
+        });
+      }
+    }
+    prevConnectionsEnabledRef.current = connectionsEnabled;
+  }, [
+    clearCheckpoint,
+    connectionsEnabled,
+    inferenceParams.checkpoint,
+  ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
   );
@@ -635,16 +673,16 @@ export function ChatPage(): ReactElement {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
     return (
-      externalProviders.find(
+      externalProvidersForChat.find(
         (p) => p.id === selection.providerId,
       ) ?? null
     );
-  }, [externalProviders, inferenceParams.checkpoint]);
+  }, [externalProvidersForChat, inferenceParams.checkpoint]);
   const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
-    const provider = externalProviders.find(
+    const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
     );
     const baseCapabilities = getProviderCapabilities(provider?.providerType);
@@ -661,7 +699,7 @@ export function ChatPage(): ReactElement {
       topK: false,
     };
   }, [
-    externalProviders,
+    externalProvidersForChat,
     inferenceParams.checkpoint,
     reasoningEnabled,
     reasoningStyle,
@@ -671,7 +709,9 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return;
-    const provider = externalProviders.find((p) => p.id === selection.providerId);
+    const provider = externalProvidersForChat.find(
+      (p) => p.id === selection.providerId,
+    );
     const reasoningCaps = getExternalReasoningCapabilities(
       provider?.providerType,
       selection.modelId,
@@ -739,6 +779,13 @@ export function ChatPage(): ReactElement {
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
         provider?.providerType === "openai");
+    const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+    const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const nextToolsEnabled = supportsBuiltinWebSearch
+      ? isKimi
+        ? false
+        : (storedToolsEnabled ?? searchOnByDefault)
+      : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -764,10 +811,12 @@ export function ChatPage(): ReactElement {
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
-      toolsEnabled: searchOnByDefault,
-      codeToolsEnabled: false,
+      toolsEnabled: nextToolsEnabled,
+      codeToolsEnabled: supportsBuiltinCodeExecution
+        ? (storedCodeToolsEnabled ?? false)
+        : false,
     });
-  }, [externalProviders, inferenceParams.checkpoint]);
+  }, [externalProvidersForChat, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -870,7 +919,9 @@ export function ChatPage(): ReactElement {
       if (meta?.source === "external" || isExternalModelId(value)) {
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
-          ? externalProviders.find((p) => p.id === selectedExternal.providerId)
+          ? externalProvidersForChat.find(
+              (p) => p.id === selectedExternal.providerId,
+            )
           : null;
         const reasoningCaps = getExternalReasoningCapabilities(
           selectedProvider?.providerType,
@@ -939,6 +990,15 @@ export function ChatPage(): ReactElement {
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
             selectedProvider?.providerType === "openai");
+        const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+        const storedCodeToolsEnabled = loadOptionalBool(
+          CHAT_CODE_TOOLS_ENABLED_KEY,
+        );
+        const nextToolsEnabled = supportsBuiltinWebSearch
+          ? isKimi
+            ? false
+            : (storedToolsEnabled ?? searchOnByDefault)
+          : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -968,8 +1028,10 @@ export function ChatPage(): ReactElement {
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
-          toolsEnabled: searchOnByDefault,
-          codeToolsEnabled: false,
+          toolsEnabled: nextToolsEnabled,
+          codeToolsEnabled: supportsBuiltinCodeExecution
+            ? (storedCodeToolsEnabled ?? false)
+            : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
         return;
@@ -1014,7 +1076,7 @@ export function ChatPage(): ReactElement {
     },
     [
       activeThreadId,
-      externalProviders,
+      externalProvidersForChat,
       modelsFromStore,
       selectModel,
       setInferenceParams,
@@ -1099,41 +1161,47 @@ export function ChatPage(): ReactElement {
   );
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
-      externalProviders.flatMap((provider) =>
-        provider.models.map((model) => {
-          // For OpenRouter's free router we know which underlying free
-          // model the gateway actually picked once a stream completes
-          // (chat-adapter latches `chunk.model` into the runtime store).
-          // Render the chip as `openrouter:<short-chosen>` — drop the
-          // redundant `/free` from the router id and the org prefix
-          // from the chosen id (e.g.
-          //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
-          //     -> openrouter:ring-2.6-1t-20260508:free
-          // ). The `:free` suffix on the chosen id already conveys
-          // 'free model', so the leading `/free` is noise.
-          let displayName = model;
-          if (
-            provider.providerType === "openrouter" &&
-            model === "openrouter/free" &&
-            lastOpenRouterChosenModel
-          ) {
-            const lastSlash = lastOpenRouterChosenModel.lastIndexOf("/");
-            const shortChosen =
-              lastSlash >= 0
-                ? lastOpenRouterChosenModel.slice(lastSlash + 1)
-                : lastOpenRouterChosenModel;
-            displayName = `openrouter:${shortChosen}`;
-          }
-          return {
-            id: buildExternalModelId(provider.id, model),
-            name: displayName,
-            providerId: provider.id,
-            providerName: provider.name,
-            providerType: provider.providerType,
-          };
-        }),
-      ),
-    [externalProviders, lastOpenRouterChosenModel],
+      [...externalProvidersForChat]
+        .sort(
+          (a, b) =>
+            getExternalProviderDropdownRank(a.providerType) -
+            getExternalProviderDropdownRank(b.providerType),
+        )
+        .flatMap((provider) =>
+          provider.models.map((model) => {
+            // For OpenRouter's free router we know which underlying free
+            // model the gateway actually picked once a stream completes
+            // (chat-adapter latches `chunk.model` into the runtime store).
+            // Render the chip as `openrouter:<short-chosen>` — drop the
+            // redundant `/free` from the router id and the org prefix
+            // from the chosen id (e.g.
+            //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
+            //     -> openrouter:ring-2.6-1t-20260508:free
+            // ). The `:free` suffix on the chosen id already conveys
+            // 'free model', so the leading `/free` is noise.
+            let displayName = model;
+            if (
+              provider.providerType === "openrouter" &&
+              model === "openrouter/free" &&
+              lastOpenRouterChosenModel
+            ) {
+              const lastSlash = lastOpenRouterChosenModel.lastIndexOf("/");
+              const shortChosen =
+                lastSlash >= 0
+                  ? lastOpenRouterChosenModel.slice(lastSlash + 1)
+                  : lastOpenRouterChosenModel;
+              displayName = `openrouter:${shortChosen}`;
+            }
+            return {
+              id: buildExternalModelId(provider.id, model),
+              name: displayName,
+              providerId: provider.id,
+              providerName: provider.name,
+              providerType: provider.providerType,
+            };
+          }),
+        ),
+    [externalProvidersForChat, lastOpenRouterChosenModel],
   );
 
   const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
@@ -1375,12 +1443,11 @@ export function ChatPage(): ReactElement {
             ) : null}
             {!loadingModel && modelsError ? (
               <div
-                className="relative top-0.5 max-w-[28rem] truncate pl-0.5 text-xs text-destructive"
-                title={modelsError}
+                className="relative top-0.5 pl-0.5"
                 role="status"
                 aria-live="polite"
               >
-                {modelsError}
+                <CopyableErrorChip message={modelsError} />
               </div>
             ) : null}
           </div>

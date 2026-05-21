@@ -1498,7 +1498,13 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+        # Skip int max() if either is a tensor (HF selective-decode form).
+        if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
+            logits_to_keep, torch.Tensor
+        ):
+            num_logits_to_keep = 0
+        else:
+            num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
         # Move items to same device as lm_head
         hidden_states = hidden_states.to(lm_head_device)
@@ -2109,11 +2115,23 @@ def unsloth_fast_generate(
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # For num_logits_to_keep
-    num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
-    logits_to_keep = kwargs.get("logits_to_keep", None)
-    if num_logits_to_keep is None and logits_to_keep is None:
-        kwargs["num_logits_to_keep"] = 1
+    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep.
+    # Pop both, re-emit under the spelling forward() accepts.
+    _provided_num = kwargs.pop("num_logits_to_keep", None)
+    _provided_logits = kwargs.pop("logits_to_keep", None)
+    _provided = _provided_logits if _provided_logits is not None else _provided_num
+    try:
+        _fwd_params = inspect.signature(self.forward).parameters
+        _has_new = "logits_to_keep" in _fwd_params
+        _has_old = "num_logits_to_keep" in _fwd_params
+    except (TypeError, ValueError):
+        # Opaque forward: keep the caller's spelling, default to new.
+        _has_old = _provided_num is not None and _provided_logits is None
+        _has_new = not _has_old
+    if _has_new:
+        kwargs["logits_to_keep"] = _provided if _provided is not None else 1
+    elif _has_old:
+        kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
@@ -2813,6 +2831,7 @@ class FastLlamaModel:
         bias = "none",
         layers_to_transform = None,
         layers_pattern = None,
+        finetune_last_n_layers = None,
         use_gradient_checkpointing = "unsloth",
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
@@ -2845,6 +2864,7 @@ class FastLlamaModel:
                 bias = bias,
                 layers_to_transform = layers_to_transform,
                 layers_pattern = layers_pattern,
+                finetune_last_n_layers = finetune_last_n_layers,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 random_state = random_state,
                 max_seq_length = max_seq_length,
@@ -3141,6 +3161,14 @@ class FastLlamaModel:
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
+
+        if finetune_last_n_layers is not None and layers_to_transform is None:
+            from .vision import _get_total_transformer_layers
+
+            _total_layers = _get_total_transformer_layers(model)
+            if _total_layers is not None and _total_layers > 0:
+                _n = max(1, min(int(finetune_last_n_layers), _total_layers))
+                layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
         arguments = dict(
             r = r,

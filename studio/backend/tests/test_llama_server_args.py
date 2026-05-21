@@ -42,6 +42,21 @@ from core.inference.llama_server_args import (
         ["--chat-template-kwargs", '{"reasoning_effort":"high"}'],
         ["--spec-type", "ngram-mod"],
         ["--spec-default"],
+        # MTP path (llama.cpp #22673).
+        ["--spec-type", "draft-mtp"],
+        ["--spec-type", "draft-mtp", "--spec-draft-n-max", "6"],
+        [
+            "--spec-type",
+            "ngram-mod,draft-mtp",
+            "--spec-draft-n-max",
+            "3",
+            "--spec-ngram-mod-n-match",
+            "24",
+            "--spec-ngram-mod-n-min",
+            "48",
+            "--spec-ngram-mod-n-max",
+            "64",
+        ],
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
@@ -264,6 +279,35 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         "--top-k",
         "20",
     ]
+
+
+def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
+    # MTP / draft-mtp flags must be stripped when speculative_type is re-applied.
+    out = strip_shadowing_flags(
+        [
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "6",
+            "--spec-ngram-mod-n-match",
+            "24",
+            "--spec-ngram-mod-n-min",
+            "48",
+            "--spec-ngram-mod-n-max",
+            "6",
+            "--top-k",
+            "20",
+        ],
+        strip_spec = True,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_is_managed_flag_false_for_mtp_pass_through():
+    assert is_managed_flag("--spec-draft-n-max") is False
+    assert is_managed_flag("--spec-ngram-mod-n-match") is False
+    assert is_managed_flag("--spec-ngram-mod-n-min") is False
+    assert is_managed_flag("--spec-ngram-mod-n-max") is False
 
 
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():

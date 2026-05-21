@@ -2932,7 +2932,7 @@ def windows_cuda_attempts(
         # binary archive, not the cudart archive itself.
         runtime_archive_name: str | None = None
         runtime_archive_url: str | None = None
-        if selected_name.startswith(f"llama-"):
+        if selected_name.startswith("llama-"):
             cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
             cudart_url = upstream_assets.get(cudart_name)
             if cudart_url and cudart_url != asset_url:

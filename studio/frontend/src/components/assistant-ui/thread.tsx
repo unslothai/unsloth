@@ -66,7 +66,6 @@ import {
   HeadphonesIcon,
   LightbulbIcon,
   LightbulbOffIcon,
-  LoaderIcon,
   MicIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
@@ -81,12 +80,13 @@ import {
   type CompositionEvent,
   type FC,
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -246,24 +246,8 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
-          <GeneratingSpinner />
           {!hideComposer && <ComposerAnimated />}
         </div>
-      </div>
-    </div>
-  );
-};
-
-const GeneratingSpinner: FC = () => {
-  const status = useChatRuntimeStore((s) => s.generatingStatus);
-  if (!status) {
-    return null;
-  }
-  return (
-    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
       </div>
     </div>
   );
@@ -305,14 +289,19 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const hasPendingAttachments = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) => attachment.status.type === "running",
+    ),
+  );
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current) {
+      if (disabled || isComposingRef.current || hasPendingAttachments) {
         event.preventDefault();
       }
     },
-    [disabled, isComposingRef],
+    [disabled, hasPendingAttachments, isComposingRef],
   );
 
   const composerContent = (
@@ -324,7 +313,7 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         placeholder="Send a message..."
         className="aui-composer-input composer-input"
         minRows={1}
-        maxRows={6}
+        maxRows={12}
         autoFocus={!disabled}
         disabled={disabled}
         aria-label="Message input"
@@ -334,8 +323,8 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing}
-        blockSend={() => isComposingRef.current}
+        disabled={disabled || isComposing || hasPendingAttachments}
+        blockSend={() => isComposingRef.current || hasPendingAttachments}
       />
     </>
   );
@@ -365,15 +354,57 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// Fallback timeout for stuck IME composition. When Chrome on Windows talks
+// to a WSL-hosted Studio (issue #5546), `compositionend` never fires after
+// the candidate is committed, so `composingRef` stays true and Send stays
+// disabled. Every compositionupdate / non-composing input resets the timer;
+// only a true gap-after-commit lets it fire. 2500ms is well above a normal
+// candidate-window pause but short enough to recover before the user
+// notices the Send button is stuck.
+const IME_STUCK_TIMEOUT_MS = 2500;
+
 function useImeComposerInputHandlers() {
   const aui = useAui();
   const composingRef = useRef(false);
   const [isComposing, setIsComposing] = useState(false);
+  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const setCompositionState = useCallback((next: boolean) => {
-    composingRef.current = next;
-    setIsComposing(next);
+  const clearStuckTimer = useCallback(() => {
+    if (stuckTimerRef.current) {
+      clearTimeout(stuckTimerRef.current);
+      stuckTimerRef.current = null;
+    }
   }, []);
+
+  const setCompositionState = useCallback(
+    (next: boolean) => {
+      composingRef.current = next;
+      setIsComposing(next);
+      clearStuckTimer();
+      if (next) {
+        stuckTimerRef.current = setTimeout(() => {
+          stuckTimerRef.current = null;
+          composingRef.current = false;
+          setIsComposing(false);
+        }, IME_STUCK_TIMEOUT_MS);
+      }
+    },
+    [clearStuckTimer],
+  );
+
+  const refreshStuckTimer = useCallback(() => {
+    if (!composingRef.current) {
+      return;
+    }
+    clearStuckTimer();
+    stuckTimerRef.current = setTimeout(() => {
+      stuckTimerRef.current = null;
+      composingRef.current = false;
+      setIsComposing(false);
+    }, IME_STUCK_TIMEOUT_MS);
+  }, [clearStuckTimer]);
+
+  useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
   const setComposerText = useCallback(
     (value: string) => {
@@ -392,6 +423,10 @@ function useImeComposerInputHandlers() {
     setCompositionState(true);
   }, [setCompositionState]);
 
+  const onCompositionUpdate = useCallback(() => {
+    refreshStuckTimer();
+  }, [refreshStuckTimer]);
+
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       setCompositionState(false);
@@ -408,11 +443,31 @@ function useImeComposerInputHandlers() {
     [setComposerText, setCompositionState],
   );
 
+  // If the watchdog cleared the composing flags during a long candidate-window
+  // pause, a subsequent IME keypress (browser-side isComposing=true / IME
+  // keyCode 229) would otherwise reach handleSubmit with composingRef=false
+  // and submit the preedit text. Re-arm composingRef synchronously from the
+  // native event so the form-submit gate keeps blocking until compositionend.
+  // Re-arm the watchdog at the same time — otherwise the WSL+Chrome path
+  // this PR targets (no compositionend, no follow-up input event) would
+  // leave composingRef pinned true indefinitely and Send blocked again.
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        composingRef.current = true;
+        refreshStuckTimer();
+      }
+    },
+    [refreshStuckTimer],
+  );
+
   return {
     inputProps: {
       onCompositionStart,
+      onCompositionUpdate,
       onCompositionEnd,
       onChange,
+      onKeyDown,
     },
     isComposing,
     isComposingRef: composingRef,
@@ -494,7 +549,11 @@ const ReasoningToggle: FC = () => {
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const externalSelection = parseExternalModelId(checkpoint);
   const selectedExternalProvider =
     externalSelection != null
@@ -558,12 +617,12 @@ const ReasoningToggle: FC = () => {
             type="button"
             disabled={disabled}
             className={cn(
-              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+              "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
               disabled
                 ? "cursor-not-allowed opacity-40"
                 : effectiveReasoningVisualEnabled
-                  ? "bg-primary/10 text-primary hover:bg-primary/20"
-                  : "text-muted-foreground hover:bg-muted-foreground/15",
+                  ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                  : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
             )}
             aria-label={`Reasoning effort: ${reasoningEffort}`}
           >
@@ -676,12 +735,12 @@ const PreserveThinkingToggle: FC = () => {
       disabled={disabled}
       onClick={() => setPreserveThinking(!preserveThinking)}
       className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+        "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
         disabled
           ? "cursor-not-allowed opacity-40"
           : preserveThinking
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
+            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
       )}
       aria-label={
         preserveThinking ? "Disable preserve think" : "Enable preserve think"
@@ -713,7 +772,11 @@ const WebSearchToggle: FC = () => {
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-  const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
   const externalSelection = parseExternalModelId(checkpoint);
   const selectedExternalProvider =
     externalSelection != null
@@ -848,7 +911,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
 }) => {
   return (
     <div className="aui-composer-action-wrapper composer-action-wrapper">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
         <ComposerAddAttachment />
         <ComposerAudioUpload />
         <ReasoningToggle />
@@ -861,6 +924,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
               tooltip="Dictate"
+              aria-label="Dictate"
               variant="ghost"
               className="size-8 rounded-full text-muted-foreground"
             >
@@ -872,6 +936,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
           <ComposerPrimitive.StopDictation asChild={true}>
             <TooltipIconButton
               tooltip="Stop dictation"
+              aria-label="Stop dictation"
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
@@ -939,6 +1004,24 @@ const GeneratingIndicator: FC = () => {
   return <span className="text-sm text-muted-foreground">Generating...</span>;
 };
 
+// Placeholder when stop fires before any visible content (e.g. mid-think).
+const CancelledIndicator: FC = () => {
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 &&
+      message.status?.type === "incomplete" &&
+      message.status?.reason === "cancelled",
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
+      Cancelled.
+    </span>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -947,6 +1030,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
+        <CancelledIndicator />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,

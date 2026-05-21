@@ -110,40 +110,120 @@ _BLOCKED_COMMANDS = (
 )
 
 
+_SHELL_SEPARATORS = frozenset(
+    {";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"}
+)
+# Bash keywords that introduce a new command position (then $cmd, do $cmd, etc.).
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# Wrappers whose next non-flag argument is itself the command Bash will exec.
+_COMMAND_PREFIXES = frozenset(
+    {
+        "env",
+        "command",
+        "builtin",
+        "exec",
+        "time",
+        "nohup",
+        "nice",
+        "setsid",
+        "stdbuf",
+        "timeout",
+        "ionice",
+        "chroot",
+        "sudo",
+        "doas",
+        "su",
+        "xargs",
+    }
+)
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+
+
 def _find_blocked_commands(command: str) -> set[str]:
-    """Detect blocked commands using shlex tokenization and regex scanning.
+    """Detect blocked commands at shell command position only.
 
-    Catches: full paths (/usr/bin/sudo), quoted strings ("sudo"),
-    split-quotes (su""do), backslash escapes (\\rm), and command-position
-    words after ;, |, &&, $().
+    A token is at command position if it is the first token, or if the
+    preceding token is a shell separator / brace-group opener / keyword
+    that starts a new command (`then`, `do`, etc.), or a command-prefix
+    wrapper like `env` / `time` / `xargs` (the next token is the real
+    command). Tokens in argument position (`grep -r curl .`,
+    `echo source the data`, `ls /usr/bin/curl`) are passed through.
+    Also scans `find ... -exec CMD` and recurses into bash -c / cmd /c.
     """
-    blocked = set()
+    blocked: set[str] = set()
 
-    # 1. shlex tokenization (handles quotes, escapes, concatenation)
+    # shlex with punctuation_chars splits `;`, `&&`, `||`, `|`, `(`, `)`, `` ` ``
+    # off as their own tokens so we can detect command position even when a
+    # caller writes `echo done; rm -rf x` (no whitespace) or quote-splits the
+    # command name itself (`r''m` collapses to a single token `rm` at command
+    # position after the `;` separator).
     try:
-        tokens = (
-            shlex.split(command)
-            if sys.platform != "win32"
-            else shlex.split(command, posix = False)
-        )
+        if sys.platform == "win32":
+            tokens = shlex.split(command, posix = False)
+        else:
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
     except ValueError:
         tokens = command.split()
 
-    for token in tokens:
-        base = os.path.basename(token).lower()
-        # Strip common Windows executable extensions so that
-        # runas.exe, shutdown.bat, etc. match the blocklist.
+    def _token_basename(tok: str) -> str:
+        # shlex may glue trailing meta-chars onto a token (`rm;`); strip them
+        # so the basename match still hits `rm`. Leading shell-state chars
+        # likewise.
+        tok = tok.strip(";&|()`{}")
+        base = os.path.basename(tok).lower()
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
+        return base
+
+    expect_command = True  # start of string is a command position
+    prefix_pending = False  # last command-position token was env/time/timeout/xargs/...
+    for token in tokens:
+        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+            expect_command = True
+            prefix_pending = False
+            continue
+        if token.startswith("-"):
+            # Flags belong to the active command. While a wrapper prefix is
+            # waiting for its command (`stdbuf -oL cmd`, `xargs -- cmd`),
+            # keep expect_command intact.
+            if not prefix_pending:
+                expect_command = False
+            continue
+        if not expect_command:
+            continue
+        # FOO=bar prefix: assignment list, next non-assignment token is the command.
+        if _ASSIGNMENT_RE.match(token):
+            continue
+        # `timeout 1 cmd` / `nice -n 5 cmd` style numeric wrapper arg.
+        if prefix_pending and token.lstrip("-").isdigit():
+            continue
+        base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
+        # Wrappers (`env` / `time` / `xargs` / `sudo`) consume one command; the
+        # next non-flag, non-numeric token is the real command. `sudo` is
+        # already in _BLOCKED_COMMANDS, so it's flagged AND we keep walking.
+        if base in _COMMAND_PREFIXES:
+            prefix_pending = True
+            continue
+        expect_command = False
+        prefix_pending = False
 
-    # 2. Regex: catch blocked words at shell command boundaries
-    #    (semicolons, pipes, &&, ||, backticks, $(), <(), subshells, newlines)
-    #    Uses a single combined pattern for all blocked words.
-    #    Handles optional Unix path prefix (/usr/bin/) and Windows drive
-    #    letter prefix (C:\Windows\...\).
+    # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    for i, tok in enumerate(tokens):
+        if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
+            base = _token_basename(tokens[i + 1])
+            if base in _BLOCKED_COMMANDS:
+                blocked.add(base)
+
+    # Regex: blocked words at shell command boundaries that shlex won't see,
+    # e.g. inside an unquoted $(rm -rf), <(rm), backtick chain, or appended to
+    # a separator with no whitespace ("foo;rm"). Anchored to command-position
+    # delimiters; does not match in argument position.
     lowered = command.lower()
     if _BLOCKED_COMMANDS:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
@@ -154,7 +234,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
-    # 3. Check for nested shell invocations (bash -c 'sudo whoami',
+    # Nested shell invocations (bash -c 'sudo whoami',
     #    bash -lc '...', bash --login -c '...', cmd /c '...').
     #    When a -c or /c flag is found, look backwards for a shell name
     #    (skipping intermediate flags like --login, -l, -x) and recursively
@@ -195,10 +275,13 @@ def _find_blocked_commands(command: str) -> set[str]:
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
-    Strips HF_TOKEN, WANDB_API_KEY, AWS_*, GH_TOKEN, LD_PRELOAD, DYLD_*, etc.
-    Preserves the active Python interpreter and virtualenv directories in PATH
-    so that pip, uv, and packages installed in the Studio runtime remain
-    accessible.
+    Whitelist-built from scratch -- the parent process env is NOT inherited.
+    Only PATH / HOME / TMPDIR / LANG / TERM / PYTHONIOENCODING (+ VIRTUAL_ENV
+    or Windows SystemRoot when applicable) reach the child. HF_TOKEN,
+    WANDB_API_KEY, AWS_*, GH_TOKEN, OPENAI_API_KEY, LD_PRELOAD, DYLD_*, and
+    every other parent var are absent by construction. HOME points at the
+    sandbox workdir so HF / wandb / aws SDKs cannot read cached credentials
+    from the operator's real ~/.
     """
     # Start with the directory containing the running Python interpreter
     # so that subprocess calls to 'python', 'pip', etc. resolve to the
@@ -298,7 +381,17 @@ def _sandbox_preexec_impl(apply_no_new_privs: bool):
         except (ValueError, OSError, AttributeError):
             pass
         try:
-            _resource.setrlimit(_resource.RLIMIT_NOFILE, (1024, 1024))
+            # Default high enough for multi-shard safetensors mmaps + Python's
+            # own handle count; tunable via env for installs that hit the cap.
+            # Clamp to the inherited hard limit so setrlimit doesn't ValueError
+            # on machines where the parent's hard cap is below the requested
+            # value (would otherwise leave NOFILE at the parent's default).
+            nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
+            _soft_cur, hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+            target = (
+                nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+            )
+            _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
 
@@ -1341,12 +1434,207 @@ def _check_signal_escape_patterns(code: str):
                     return True
         return False
 
-    def _method_call_is_hf_upload(node: ast.Call) -> bool:
-        """True for HfApi upload method names on any receiver."""
+    # Bare method-name fallback (`x.upload_file(...)`) is intentionally fuzzy,
+    # but should only fire when huggingface_hub / hf_api is actually imported
+    # somewhere in the snippet -- otherwise paramiko.upload_file, boto3
+    # create_commit, etc. hit a false positive. We pre-scan for the imports.
+    _HF_IMPORT_MODULES = (
+        "huggingface_hub",
+        "hf_api",
+        "huggingface_hub.hf_api",
+    )
+
+    def _module_has_hf_import(tree: ast.AST) -> bool:
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                for alias in n.names:
+                    if alias.name.split(".", 1)[0] in _HF_IMPORT_MODULES:
+                        return True
+            elif isinstance(n, ast.ImportFrom):
+                root = (n.module or "").split(".", 1)[0]
+                if root in _HF_IMPORT_MODULES:
+                    return True
+            elif isinstance(n, ast.Call) and n.args:
+                # __import__('huggingface_hub'), importlib.import_module('huggingface_hub'),
+                # and bare import_module('huggingface_hub') (via `from importlib import ...`).
+                arg0 = n.args[0]
+                if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
+                    continue
+                if arg0.value.split(".", 1)[0] not in _HF_IMPORT_MODULES:
+                    continue
+                func = n.func
+                if isinstance(func, ast.Name) and func.id in {
+                    "__import__",
+                    "import_module",
+                }:
+                    return True
+                if isinstance(func, ast.Attribute) and func.attr == "import_module":
+                    return True
+        return False
+
+    _hf_in_scope = _module_has_hf_import(tree)
+
+    def _method_call_hf_upload_name(node: ast.Call) -> str | None:
+        """Return the HF upload method name (`upload_file`, ...) or None.
+
+        Catches `HfApi().upload_file(...)` (Attribute) and
+        `from huggingface_hub import upload_file; upload_file(...)` (Name).
+        The bare-name branch fires only when an HF import is in scope, mirroring
+        the Attribute branch's gating so paramiko/boto3 do not false-positive.
+        """
+        if not _hf_in_scope:
+            return None
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr in _UPLOAD_HF_METHODS:
+            return f.attr
+        if isinstance(f, ast.Name) and f.id in _UPLOAD_HF_METHODS:
+            return f.id
+        return None
+
+    # Kwargs that ship a credential over the wire. Sandbox env strips HF_TOKEN
+    # / WANDB_API_KEY / AWS_* up front, so any value here is hard-coded or
+    # lifted from the parent process.
+    _HF_SENSITIVE_KWARGS = frozenset(
+        {
+            "token",
+            "hf_token",
+            "api_token",
+            "api_key",
+            "auth_token",
+            "access_token",
+            "password",
+            "secret",
+        }
+    )
+
+    def _is_os_environ(node: ast.AST) -> bool:
         return (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr in _UPLOAD_HF_METHODS
+            isinstance(node, ast.Attribute)
+            and node.attr == "environ"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
         )
+
+    def _reads_env_or_secret(node: ast.AST | None) -> bool:
+        """True if any node in the subtree resolves to an env / process read.
+
+        Walking the subtree (not just the root) means wrapper calls like
+        `str(os.environ)`, `json.dumps(os.environ)`, or
+        `'-'.join(os.environ.values())` are caught too.
+
+        Covers: `os.environ`, `os.environ[K]`, `os.environ.get(K)`, `os.getenv(K)`,
+        bare `getenv(K)` (after `from os import getenv`), and
+        `subprocess.{run,check_output,Popen,getoutput,getstatusoutput}` which
+        the LLM could use to lift parent env via `printenv` / `env` / `set`.
+        """
+        if node is None:
+            return False
+        for sub in ast.walk(node):
+            if _is_os_environ(sub):
+                return True
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                if isinstance(f, ast.Attribute):
+                    if (
+                        f.attr in {"getenv", "getenvb"}
+                        and isinstance(f.value, ast.Name)
+                        and f.value.id == "os"
+                    ):
+                        return True
+                    if (
+                        f.attr
+                        in {
+                            "check_output",
+                            "run",
+                            "Popen",
+                            "getoutput",
+                            "getstatusoutput",
+                        }
+                        and isinstance(f.value, ast.Name)
+                        and f.value.id in {"subprocess", "commands"}
+                    ):
+                        return True
+                if isinstance(f, ast.Name) and f.id in {"getenv", "getenvb"}:
+                    return True
+        return False
+
+    def _is_safe_relative_path(path: str) -> bool:
+        """Relative path with no leading `/`, `~`, drive letter, or `..` segments."""
+        if not isinstance(path, str) or not path:
+            return False
+        if path[0] in ("/", "\\", "~"):
+            return False
+        if len(path) >= 2 and path[1] == ":":
+            return False
+        return ".." not in path.replace("\\", "/").split("/")
+
+    def _path_arg_is_sandbox_local(node: ast.AST | None) -> bool:
+        """Whether the path argument resolves to a sandbox-local literal."""
+        if node is None:
+            return False
+        if isinstance(node, ast.Constant) and isinstance(
+            node.value, (bytes, bytearray)
+        ):
+            return True  # inline bytes, no file access
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return _is_safe_relative_path(node.value)
+        if isinstance(node, ast.Call):
+            f = node.func
+            is_open = (isinstance(f, ast.Name) and f.id == "open") or (
+                isinstance(f, ast.Attribute) and f.attr == "open"
+            )
+            if is_open and node.args:
+                a0 = node.args[0]
+                return (
+                    isinstance(a0, ast.Constant)
+                    and isinstance(a0.value, str)
+                    and _is_safe_relative_path(a0.value)
+                )
+        return False
+
+    def _hf_upload_violation(node: ast.Call, method_name: str) -> str | None:
+        """Inspect an HF upload call; return a violation reason or None.
+
+        Policy: HF uploads are allowed only when (a) no sensitive kwarg is set,
+        (b) no positional / keyword value reads `os.environ` or related env
+        readers, and (c) the path argument is a sandbox-local literal -- a
+        relative string with no `..`, an `open(<literal>)`, or inline bytes.
+        Dynamic / variable paths are rejected; the policy cannot prove safety
+        statically and the cost of a wrong-allow is a credential exfiltration.
+        """
+        for kw in node.keywords or []:
+            if kw.arg in _HF_SENSITIVE_KWARGS:
+                return (
+                    f"HF upload {kw.arg}= cannot be set from sandboxed code; "
+                    "uploads run with the sandbox identity only"
+                )
+        all_values = list(node.args or []) + [kw.value for kw in (node.keywords or [])]
+        for v in all_values:
+            if _reads_env_or_secret(v):
+                return (
+                    "HF upload cannot include os.environ / os.getenv / subprocess "
+                    "env reads; secrets and tokens must not be exfiltrated"
+                )
+        if method_name == "create_commit":
+            for kw in node.keywords or []:
+                if kw.arg == "operations" and isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        if isinstance(elt, ast.Call):
+                            inner = _hf_upload_violation(elt, "upload_file")
+                            if inner:
+                                return inner
+            return None
+        path_node: ast.AST | None = node.args[0] if node.args else None
+        for kw in node.keywords or []:
+            if kw.arg in ("path_or_fileobj", "folder_path"):
+                path_node = kw.value
+                break
+        if not _path_arg_is_sandbox_local(path_node):
+            return (
+                "HF upload path must be a sandbox-local relative-path literal "
+                "(no absolute paths, no '..' segments, no dynamic expressions)"
+            )
+        return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -1359,14 +1647,17 @@ def _check_signal_escape_patterns(code: str):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
 
-            if _method_call_is_hf_upload(node):
-                network_calls.append(
-                    {
-                        "type": "upload_blocked",
-                        "line": getattr(node, "lineno", -1),
-                        "description": ("Blocked: file upload disallowed in sandbox"),
-                    }
-                )
+            hf_upload_name = _method_call_hf_upload_name(node)
+            if hf_upload_name is not None:
+                violation = _hf_upload_violation(node, hf_upload_name)
+                if violation is not None:
+                    network_calls.append(
+                        {
+                            "type": "upload_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"Blocked: {violation}",
+                        }
+                    )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
             if (

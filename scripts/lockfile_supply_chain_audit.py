@@ -389,6 +389,18 @@ class Finding:
         )
 
 
+def _gha_escape(text: str) -> str:
+    """Escape a string for use in a GitHub Actions `::warning::` /
+    `::error::` workflow command message. GH Actions truncates
+    annotation messages at the first newline unless `\\n` is
+    escaped as `%0A`; carriage returns and the percent sign need
+    matching escapes per the workflow-commands spec. Order matters:
+    `%` must be replaced first so the subsequent `%0A` / `%0D`
+    sequences are not double-encoded.
+    """
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 # ─────────────────────────────────────────────────────────────────────
 # package-lock.json audit.
 # ─────────────────────────────────────────────────────────────────────
@@ -397,9 +409,35 @@ class Finding:
 def audit_npm_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
+        # A missing requested lockfile is a config error, not a clean
+        # audit; surface it so a deleted default cannot pass silently.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
+                    "expected lockfile not found; refusing to silently "
+                    "report a clean audit for a path that was not scanned"
+                ),
+            )
+        )
         return findings
 
-    raw = path.read_text(encoding = "utf-8")
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        # Permission denied, is-a-directory, broken-pipe etc. -- surface
+        # as a finding instead of crashing CI with a raw traceback.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
     try:
         lock = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -553,9 +591,32 @@ _PACKAGE_HEADER = re.compile(r"^\[\[package\]\]\s*$")
 def audit_cargo_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
+        # See audit_npm_lockfile: missing lockfile is a finding.
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
+                    "expected lockfile not found; refusing to silently "
+                    "report a clean audit for a path that was not scanned"
+                ),
+            )
+        )
         return findings
 
-    raw = path.read_text(encoding = "utf-8")
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except OSError as exc:
+        findings.append(
+            Finding(
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
+            )
+        )
+        return findings
     try:
         import tomllib  # type: ignore[import-not-found]
     except ImportError:
@@ -652,7 +713,31 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 # ─────────────────────────────────────────────────────────────────────
 
 
-DEFAULT_NPM_LOCKFILES = ("studio/frontend/package-lock.json",)
+# Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
+# Blocking findings come from public supply-chain attack indicators (a
+# version we know is malicious, a string an attacker would have to embed
+# for an attack to work). Advisory findings are structural lockfile
+# anomalies (missing integrity, non-default registry, etc.) -- they
+# WARN the maintainer but do not block merges. Pass --strict to make
+# every finding blocking (PR-5479-style behavior for opt-in adopters).
+BLOCKING_KINDS: frozenset[str] = frozenset(
+    {
+        "blocked-known-malicious",
+        "known-ioc-string",
+        # Internal-failure kinds: a structurally broken lockfile MIGHT
+        # be hiding a real attack, so we keep these blocking too.
+        "malformed-lockfile",
+        "missing-lockfile",
+        "unreadable-lockfile",
+        "missing-toml-parser",
+    }
+)
+
+DEFAULT_NPM_LOCKFILES = (
+    "studio/frontend/package-lock.json",
+    "studio/backend/core/data_recipe/oxc-validator/package-lock.json",
+    "studio/package-lock.json",
+)
 DEFAULT_CARGO_LOCKFILES = ("studio/src-tauri/Cargo.lock",)
 
 
@@ -671,7 +756,9 @@ def main(argv: list[str] | None = None) -> int:
         default = None,
         help = (
             "Path to a package-lock.json (repeatable). "
-            "Default: studio/frontend/package-lock.json."
+            "Default: studio/frontend/package-lock.json, "
+            "studio/backend/core/data_recipe/oxc-validator/package-lock.json, "
+            "and studio/package-lock.json (Tauri CLI for desktop release)."
         ),
     )
     parser.add_argument(
@@ -681,6 +768,18 @@ def main(argv: list[str] | None = None) -> int:
         help = (
             "Path to a Cargo.lock (repeatable). "
             "Default: studio/src-tauri/Cargo.lock."
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action = "store_true",
+        help = (
+            "Treat every finding as blocking (exit 1). "
+            "Default mode only blocks on known-malicious versions, "
+            "indicator-of-compromise strings, or structurally broken "
+            "lockfiles; everything else is printed as an advisory "
+            "warning with exit 0. CI should use the default; local "
+            "audits aiming for zero noise can opt in via --strict."
         ),
     )
     args = parser.parse_args(argv)
@@ -715,8 +814,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     root = Path(args.root).resolve()
-    npm_paths = [root / p for p in (args.npm_lockfile or DEFAULT_NPM_LOCKFILES)]
-    cargo_paths = [root / p for p in (args.cargo_lockfile or DEFAULT_CARGO_LOCKFILES)]
+    # Explicit --npm-lockfile/--cargo-lockfile scopes the scan to those
+    # paths; defaults apply only to the no-args CI invocation.
+    _user_explicit = args.npm_lockfile is not None or args.cargo_lockfile is not None
+    if _user_explicit:
+        npm_paths = [root / p for p in (args.npm_lockfile or ())]
+        cargo_paths = [root / p for p in (args.cargo_lockfile or ())]
+    else:
+        npm_paths = [root / p for p in DEFAULT_NPM_LOCKFILES]
+        cargo_paths = [root / p for p in DEFAULT_CARGO_LOCKFILES]
 
     all_findings: list[Finding] = []
     for p in npm_paths:
@@ -734,17 +840,57 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    # Split findings into blocking (known-malicious / IOC / structurally
+    # broken) and advisory (everything else, e.g. missing integrity on a
+    # registry-published tarball). In default mode advisory findings are
+    # printed but do not change the exit code; --strict treats every
+    # finding as blocking.
+    blocking = [f for f in all_findings if f.kind in BLOCKING_KINDS]
+    advisory = [f for f in all_findings if f.kind not in BLOCKING_KINDS]
+
+    if args.strict:
+        blocking = list(all_findings)
+        advisory = []
+
+    if advisory:
+        print(
+            f"\n[lockfile-audit] {len(advisory)} advisory finding(s) "
+            "(non-blocking; pass --strict to fail the build on these):\n",
+            file = sys.stderr,
+        )
+        for f in advisory:
+            # Surface in GitHub Actions UI as a warning annotation when run
+            # under Actions; harmless prefix elsewhere. GH Actions
+            # truncates annotation messages at the first newline unless
+            # newlines are escaped as `%0A`, so the full multi-line
+            # Finding (kind + path + package + detail) only renders in
+            # the UI after _gha_escape collapses it onto one line.
+            print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
+            print(file = sys.stderr)
+
+    if not blocking:
+        print(
+            f"[lockfile-audit] OK: {len(advisory)} advisory finding(s), "
+            "0 blocking. Run with --strict to escalate advisory findings.",
+            flush = True,
+        )
+        return 0
+
     print(
-        f"\n[lockfile-audit] FAIL: {len(all_findings)} finding(s):\n",
+        f"\n[lockfile-audit] FAIL: {len(blocking)} blocking finding(s):\n",
         file = sys.stderr,
     )
-    for f in all_findings:
-        print(str(f), file = sys.stderr)
+    for f in blocking:
+        # Same %-encoding rationale as the advisory branch above: the
+        # GH Actions annotation is truncated at the first newline
+        # unless the message is escaped.
+        print(f"::error::{_gha_escape(str(f))}", file = sys.stderr)
         print(file = sys.stderr)
     print(
-        "[lockfile-audit] Refusing to proceed. Each finding above is "
-        "either a structural lockfile anomaly or a public indicator-of-"
-        "compromise. Investigate before running `npm ci` or `cargo fetch`.",
+        "[lockfile-audit] Refusing to proceed. Each blocking finding "
+        "above is either a public indicator-of-compromise, a known-"
+        "malicious pinned version, or a structurally broken lockfile. "
+        "Investigate before running `npm ci` or `cargo fetch`.",
         file = sys.stderr,
     )
     return 1

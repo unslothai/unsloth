@@ -145,6 +145,14 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--spec-ngram-size",
         "--draft-min",
         "--draft-max",
+        # MTP path (llama.cpp #22673).
+        "--spec-draft-n-max",
+        "--spec-draft-n-min",
+        "--spec-draft-p-min",
+        "--spec-draft-p-split",
+        "--spec-ngram-mod-n-match",
+        "--spec-ngram-mod-n-min",
+        "--spec-ngram-mod-n-max",
     }
 )
 _TEMPLATE_FLAGS: frozenset[str] = frozenset(
