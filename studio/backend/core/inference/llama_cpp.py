@@ -2542,6 +2542,35 @@ class LlamaCppBackend:
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
                 )
+                # P2 follow-up on PR #5669 commit 237052ff
+                # (chatgpt-codex-connector): if the previous load's
+                # audio probe transiently failed (network error /
+                # malformed JSON inside detect_audio_type leaves
+                # _audio_type == None), the route-level read of the
+                # cached value would keep reporting non-audio
+                # indefinitely on subsequent /load calls that hit this
+                # fast path. Re-probe here so a one-off failure does
+                # not become sticky.
+                if self._audio_type is None:
+                    try:
+                        detected = self.detect_audio_type()
+                    except Exception:
+                        detected = None
+                    if detected in ("snac", "bicodec", "dac"):
+                        try:
+                            self.init_audio_codec(detected)
+                            self._is_audio = True
+                            self._audio_type = detected
+                        except Exception as exc:
+                            logger.warning(
+                                "Fast-path re-probe: failed to init "
+                                "audio codec '%s': %s (continuing as "
+                                "non-audio)",
+                                detected,
+                                exc,
+                            )
+                    elif detected:
+                        self._audio_type = detected
                 return True
 
             self._cancel_event.clear()

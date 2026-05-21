@@ -513,46 +513,60 @@ jobs:
                               parts.append(delta["content"])
               return "".join(parts), events
 
-          def _tool_invoked(events, *, expected_outputs = ()):
-              """Inspect SSE event payloads for evidence that a
-              server-side tool actually executed. Returns True iff any
-              of the following is true:
+          def _tool_invoked(events):
+              """Inspect SSE event payloads for *strong* evidence that
+              a server-side tool actually executed. Returns True iff any
+              event payload contains a marker that fires only when a
+              real tool call ran:
 
-                - any event payload contains an OpenAI-style tool_calls
-                  delta (`"tool_calls"`)
-                - any event payload contains an Anthropic-style tool_use
-                  or tool_result marker
-                - any event payload contains a Studio-emitted tool
-                  lifecycle envelope: `tool_start`, `tool_end`, or
-                  `tool_status` (Studio yields these from the agentic
-                  tool loop in routes/inference.py; they only fire when
-                  the tool path is actually exercised)
-                - any event payload contains a tool-role message or a
-                  function-call payload
-                - any of the caller-supplied expected_outputs substrings
-                  appears in the raw stream (this is the tool's
-                  side-effect output reaching the model, which the
-                  agentic loop forwards as a fresh streaming chunk).
+                - `"tool_calls"`            (OpenAI chat tool call delta)
+                - `"tool_call"`             (OpenAI responses tool call)
+                - `"tool_use"`              (Anthropic tool invocation)
+                - `"tool_result"`           (Anthropic tool result)
+                - `"tool_start"`            (GGUF agentic loop: only
+                                            fires per entry of
+                                            `for tc in tool_calls`)
+                - `"tool_end"`              (GGUF agentic loop: paired
+                                            with tool_start)
+                - `"function_call"`         (OpenAI legacy function call)
+                - `"role": "tool"`          (tool-role message reply)
 
-              Without one of these signals, an empty-or-text-only stream
-              is NOT evidence that the tool path ran -- the model may
-              have just answered without invoking the tool (e.g. if
-              enable_tools is silently ignored). Address of
-              chatgpt-codex-connector P1 on PR #5669.
+              Deliberately omitted:
+
+                - `"tool_status"` — Studio's GGUF tool stream yields an
+                  *iteration-boundary* status event every loop turn
+                  (including empty `{"type":"tool_status","content":""}`
+                  resets) regardless of whether any tool was actually
+                  invoked, so it cannot distinguish "tool ran" from
+                  "tool stream initialised but model never produced a
+                  tool_call". Trusting it would re-introduce a
+                  false-green: the model can answer from prompt context
+                  alone (echo back `hello-bash-tool`, compute
+                  `123*456` mentally) and the test would silently
+                  green. Address of chatgpt-codex-connector P1 review on
+                  PR #5669 commit 237052ff.
+
+                - Caller-supplied output-substring fallback — same
+                  reason: the literal `56088` or `hello-bash-tool`
+                  appearing in the raw stream is not proof the tool
+                  ran; the model can emit those characters directly.
+
+              Without one of these strong markers, an empty-or-text-only
+              stream is NOT evidence that the tool path ran -- the model
+              may have just answered without invoking the tool (e.g. if
+              enable_tools is silently ignored). Original chatgpt-codex-
+              connector P1 on PR #5669 commit c032c6ef hardened against
+              that; the follow-up P1 on 237052ff tightens it further.
               """
               blob = " ".join(events)
               markers = (
-                  '"tool_calls"', '"tool_use"', '"tool_result"',
-                  '"tool_start"', '"tool_end"', '"tool_status"',
+                  '"tool_calls"', '"tool_call"',
+                  '"tool_use"', '"tool_result"',
+                  '"tool_start"', '"tool_end"',
                   '"role": "tool"', '"role":"tool"',
-                  '"function"', '"function_call"',
+                  '"function_call"',
               )
-              if any(m in blob for m in markers):
-                  return True
-              for out in expected_outputs:
-                  if out and out in blob:
-                      return True
-              return False
+              return any(m in blob for m in markers)
 
           # ── 1. Standard OpenAI function calling ──────────────────────
           weather_tool = {
@@ -613,11 +627,12 @@ jobs:
               "seed":          SEED,
               "max_tokens":    600,
           })
-          assert _tool_invoked(events, expected_outputs = ("56088", "56,088")), (
-              "python tool: no evidence of tool invocation in SSE stream "
-              f"(no tool_calls / tool_use / tool_status / tool_start / "
-              f"tool_end markers, no 56088 in any of {len(events)} raw "
-              "events). enable_tools may be silently ignored. "
+          assert _tool_invoked(events), (
+              "python tool: no strong evidence of tool invocation in "
+              f"SSE stream (no tool_calls / tool_call / tool_use / "
+              f"tool_result / tool_start / tool_end / function_call / "
+              f"role:tool markers across {len(events)} raw events). "
+              "enable_tools may be silently ignored. "
               "Last 3 events: " + str(events[-3:])
           )
           if "56088" in content or "56,088" in content:
@@ -644,12 +659,13 @@ jobs:
               "seed":          SEED,
               "max_tokens":    600,
           })
-          assert _tool_invoked(events, expected_outputs = ("hello-bash-tool",)), (
-              "bash/terminal tool: no evidence of tool invocation in SSE "
-              f"stream (no tool_calls / tool_use / tool_status / "
-              f"tool_start / tool_end markers, no 'hello-bash-tool' in "
-              f"any of {len(events)} raw events). enable_tools may be "
-              "silently ignored. Last 3 events: " + str(events[-3:])
+          assert _tool_invoked(events), (
+              "bash/terminal tool: no strong evidence of tool "
+              f"invocation in SSE stream (no tool_calls / tool_call / "
+              f"tool_use / tool_result / tool_start / tool_end / "
+              f"function_call / role:tool markers across {len(events)} "
+              "raw events). enable_tools may be silently ignored. "
+              "Last 3 events: " + str(events[-3:])
           )
           if "hello-bash-tool" in content:
               print(f"[tools] PASS bash/terminal tool ({len(content)} chars, literal in content)")
