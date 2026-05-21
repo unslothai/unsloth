@@ -59,6 +59,7 @@ from .model_mappings import (
     TEMPLATE_TO_MODEL_MAPPER,
     MODEL_TO_TEMPLATE_MAPPER,
     TEMPLATE_TO_RESPONSES_MAPPER,
+    is_gpt_oss_model_name,
 )
 
 # Legacy imports from the original dataset_utils.py for backward compatibility
@@ -98,6 +99,7 @@ __all__ = [
     "TEMPLATE_TO_MODEL_MAPPER",
     "MODEL_TO_TEMPLATE_MAPPER",
     "TEMPLATE_TO_RESPONSES_MAPPER",
+    "is_gpt_oss_model_name",
     # Main entry points
     "check_dataset_format",
     "format_and_template_dataset",
