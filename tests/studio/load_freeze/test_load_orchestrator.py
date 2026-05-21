@@ -273,7 +273,9 @@ def test_functional_equivalence_no_match(shim_no_match):
 def test_functional_equivalence_snac_match():
     # snac match requires _detok(128258) AND _detok(128259) to start
     # with "<custom_token_".
-    with FakeLlamaServer(detok_map = {128258: "<custom_token_99>", 128259: "<custom_token_98>"}) as srv:
+    with FakeLlamaServer(
+        detok_map = {128258: "<custom_token_99>", 128259: "<custom_token_98>"}
+    ) as srv:
         backend = _make_backend(srv.port)
         sync_result = backend.detect_audio_type()
         threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
@@ -416,7 +418,9 @@ def test_50_concurrent_probes_complete_without_deadlock():
             with ThreadPoolExecutor(max_workers = 50) as pool:
                 futs = [
                     pool.submit(
-                        lambda: httpx.get(f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0)
+                        lambda: httpx.get(
+                            f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0
+                        )
                     )
                     for _ in range(50)
                 ]
@@ -426,7 +430,9 @@ def test_50_concurrent_probes_complete_without_deadlock():
     # 50 probes at ~0.4s each, threadpool size 32 default -> ~1-2 batches.
     # Bound generously to absorb CI jitter while catching pathological
     # serialisation (would be ~20s).
-    assert elapsed < 15.0, f"50 concurrent probes took {elapsed:.1f}s; threadpool may be serialising"
+    assert (
+        elapsed < 15.0
+    ), f"50 concurrent probes took {elapsed:.1f}s; threadpool may be serialising"
 
 
 def test_100_concurrent_healths_during_slow_probe_all_responsive():
@@ -496,7 +502,9 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
         for i, line in enumerate(path.read_text().splitlines(), start = 1):
             if pattern.search(line) and "asyncio.to_thread" not in line:
                 offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
-    assert not offenders, "bare detect_audio_type() in async route(s): " + "; ".join(offenders)
+    assert not offenders, "bare detect_audio_type() in async route(s): " + "; ".join(
+        offenders
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +554,7 @@ def test_response_is_valid_browser_parseable_json():
     through json.loads() (the canonical equivalent of
     JSON.parse() in any browser) and assert the expected keys."""
     import json as _json
+
     with FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0) as shim:
         backend = _make_backend(shim.port)
         app = _build_app(backend, wrap_in_thread = True)
@@ -575,13 +584,18 @@ def test_response_shape_matches_pre_fix_for_no_match():
     bodies for the no-match scenario (the dominant code path in
     practice for non-audio models)."""
     import json as _json
+
     with FakeLlamaServer(
         detok_map = {128258: "abc", 128259: "def"},
         tok_response_map = {
-            "<|AUDIO|>": [0, 1], "<|audio_eos|>": [0, 1],
-            "<|startoftranscript|>": [0, 1], "<audio_soft_token>": [0, 1],
-            "<|bicodec_semantic_0|>": [0, 1], "<|bicodec_global_0|>": [0, 1],
-            "<|c1_0|>": [0, 1], "<|c2_0|>": [0, 1],
+            "<|AUDIO|>": [0, 1],
+            "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0, 1],
+            "<audio_soft_token>": [0, 1],
+            "<|bicodec_semantic_0|>": [0, 1],
+            "<|bicodec_global_0|>": [0, 1],
+            "<|c1_0|>": [0, 1],
+            "<|c2_0|>": [0, 1],
         },
     ) as shim:
         backend = _make_backend(shim.port)
