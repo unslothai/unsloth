@@ -3231,18 +3231,28 @@ def _build_usage_chunk(
             Anthropic-only; same value as cached_tokens, kept for
             callers that already key off the native Anthropic name.
 
+    Anthropic's ``input_tokens`` excludes the cache buckets -- the
+    real prompt size is ``input_tokens + cache_creation_input_tokens
+    + cache_read_input_tokens``. Emitting ``input_tokens`` alone as
+    ``prompt_tokens`` undercounts cache-heavy turns and breaks
+    downstream context / cost displays, so we add all three input
+    buckets together. OpenAI Responses already folds cached tokens
+    into ``input_tokens`` so no extra arithmetic is needed there.
+
     Returns ``None`` when there are no usage numbers to report (e.g. an
     upstream error before ``message_start`` / ``response.completed``).
     """
     if not isinstance(last_usage, dict):
         return None
 
+    completion_tokens = last_usage.get("output_tokens") or 0
+
     if provider == "anthropic":
-        prompt_tokens = last_usage.get("input_tokens") or 0
-        completion_tokens = last_usage.get("output_tokens") or 0
+        uncached_input = last_usage.get("input_tokens") or 0
         cache_creation = last_usage.get("cache_creation_input_tokens") or 0
         cache_read = last_usage.get("cache_read_input_tokens") or 0
-        if not (prompt_tokens or completion_tokens or cache_creation or cache_read):
+        prompt_tokens = uncached_input + cache_creation + cache_read
+        if not (prompt_tokens or completion_tokens):
             return None
         usage_block: dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
@@ -3254,7 +3264,6 @@ def _build_usage_chunk(
         }
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
-        completion_tokens = last_usage.get("output_tokens") or 0
         cached = 0
         details = last_usage.get("input_tokens_details")
         if isinstance(details, dict):

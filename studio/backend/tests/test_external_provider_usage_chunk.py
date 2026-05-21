@@ -57,9 +57,12 @@ def test_build_usage_chunk_anthropic_shape():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     usage = payload["usage"]
-    assert usage["prompt_tokens"] == 8
+    # Anthropic's input_tokens excludes cache buckets; prompt_tokens
+    # must add all three input components together so downstream
+    # context / cost displays see the real prompt size.
+    assert usage["prompt_tokens"] == 8 + 1367 + 18901
     assert usage["completion_tokens"] == 862
-    assert usage["total_tokens"] == 870
+    assert usage["total_tokens"] == 8 + 1367 + 18901 + 862
     assert usage["cache_creation_input_tokens"] == 1367
     assert usage["cache_read_input_tokens"] == 18901
     # OpenAI-style mirror for clients that key off prompt_tokens_details.
@@ -243,8 +246,10 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     usages = _usage_chunks(lines)
     assert len(usages) == 1, f"expected one usage chunk, got {len(usages)}: {usages}"
     u = usages[0]
-    assert u["prompt_tokens"] == 7
+    # Real prompt size = uncached input + cache writes + cache reads.
+    assert u["prompt_tokens"] == 7 + 6253 + 5713
     assert u["completion_tokens"] == 1066
+    assert u["total_tokens"] == 7 + 6253 + 5713 + 1066
     assert u["cache_creation_input_tokens"] == 6253
     assert u["cache_read_input_tokens"] == 5713
     assert u["prompt_tokens_details"]["cached_tokens"] == 5713
