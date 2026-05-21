@@ -2613,6 +2613,10 @@ class LlamaCppBackend:
                                     detected,
                                     exc,
                                 )
+                                # Clear _audio_probed so next /load
+                                # re-probes and re-attempts codec
+                                # init (chatgpt-codex P2 3284516915).
+                                self._audio_probed = False
                     elif detected:
                         self._audio_type = detected
                 # Recheck _healthy: an unload between the original
@@ -3396,6 +3400,15 @@ class LlamaCppBackend:
                             detected,
                             exc,
                         )
+                        # Codec init failure is often transient (HF
+                        # snapshot_download blip for bicodec, GPU
+                        # memory pressure, etc.). Clear _audio_probed
+                        # so the next /load on the same model
+                        # re-probes and re-attempts codec init
+                        # instead of getting stuck in non-audio mode
+                        # until a full unload+reload. chatgpt-codex
+                        # P2 3284516915 on commit eb3a52a1.
+                        self._audio_probed = False
             elif detected:
                 # csm / whisper / audio_vlm have no codec init step,
                 # but the audio_type is still informational metadata
