@@ -568,6 +568,68 @@ jobs:
               )
               return any(m in blob for m in markers)
 
+          def _tool_output_contains(events, *needles):
+              """Return True iff at least one needle appears inside the
+              `result` field of a Studio GGUF `tool_end` SSE event, or
+              inside a `tool_result.content` block for the Anthropic
+              path, or inside an OpenAI tool-role message's `content`.
+
+              This is the *tool's own output*, not the model's
+              narration. The tool's output is the canonical record of
+              what the server-side execution actually returned -- if
+              python computed `123*456` correctly, the python tool's
+              tool_end.result will literally contain "56088". The model
+              may then drift in how it narrates that answer (small
+              quant can produce "55,888" or paraphrase), and that
+              narration drift is acceptable as long as the tool itself
+              produced the right number.
+
+              Addresses chatgpt-codex-connector P1 review on PR #5669
+              commit 1a2fba84 ("Keep tool-output assertions hard-
+              failing"): a tool that ran but returned the wrong value
+              is a regression in tool correctness that must FAIL the
+              job, not WARN.
+              """
+              for raw in events:
+                  try:
+                      ev = json.loads(raw)
+                  except (json.JSONDecodeError, TypeError):
+                      continue
+                  # Studio GGUF agentic loop: {"type":"tool_end",
+                  # "tool_name":..., "tool_call_id":..., "result":...}
+                  if isinstance(ev, dict) and ev.get("type") == "tool_end":
+                      result = ev.get("result")
+                      if isinstance(result, str):
+                          if any(n in result for n in needles if n):
+                              return True
+                  # Anthropic-style messages: tool_result blocks
+                  if isinstance(ev, dict) and ev.get("type") == "tool_result":
+                      content = ev.get("content")
+                      if isinstance(content, str):
+                          if any(n in content for n in needles if n):
+                              return True
+                      if isinstance(content, list):
+                          for blk in content:
+                              if isinstance(blk, dict):
+                                  text = blk.get("text") or blk.get("content")
+                                  if isinstance(text, str) and any(
+                                      n in text for n in needles if n
+                                  ):
+                                      return True
+                  # OpenAI chat-completion tool-role messages
+                  if isinstance(ev, dict):
+                      for choice in ev.get("choices", []) or []:
+                          delta = (choice or {}).get("delta") or {}
+                          msg = (choice or {}).get("message") or {}
+                          for src in (delta, msg):
+                              if src.get("role") == "tool":
+                                  content = src.get("content") or ""
+                                  if isinstance(content, str) and any(
+                                      n in content for n in needles if n
+                                  ):
+                                      return True
+              return False
+
           # ── 1. Standard OpenAI function calling ──────────────────────
           weather_tool = {
               "type": "function",
@@ -603,21 +665,27 @@ jobs:
           # ── 2. Server-side python tool ───────────────────────────────
           # 123 * 456 = 56088. The agentic loop streams SSE; we capture
           # both the assistant content AND the raw event payloads so we
-          # can prove the python tool actually ran independently of
-          # whether the model later narrates the answer correctly.
+          # can prove the python tool actually ran AND that it returned
+          # the right value, independently of how the model narrates
+          # the result.
           #
-          # Two distinct things must hold:
-          #   1. The python tool path executed (asserted by `_tool_invoked`
-          #      checking for tool_call / tool_use markers OR the
-          #      expected output substring in the raw stream).
-          #   2. The model narrated the right answer ("56088" or
-          #      "56,088"). Small-quant Qwen3.5-2B occasionally drifts
-          #      here (55,888 etc.) even though the tool returned the
-          #      correct value -- treat that as WARN.
-          # Without (1), a model that ignores `enable_tools` and just
-          # chats can false-green this test (the previous version did
-          # exactly that -- see chatgpt-codex-connector P1 review on
-          # PR #5669).
+          # Three distinct things must hold (all hard asserts):
+          #   1. The python tool path executed -- `_tool_invoked`
+          #      requires a strong marker (tool_start / tool_end /
+          #      tool_calls / tool_use / tool_result / function_call /
+          #      role:tool). The first chatgpt-codex P1 (commit
+          #      c032c6ef) hardened against empty streams here.
+          #   2. The python tool's *own output* contains "56088" --
+          #      `_tool_output_contains` parses the tool_end.result
+          #      field. The second chatgpt-codex P1 (commit 1a2fba84)
+          #      hardened against tool-correctness drift here: a tool
+          #      that ran but returned the wrong number is a real
+          #      regression and must FAIL.
+          # The model's *narration* of the answer is a separate, weaker
+          # signal -- small-quant Qwen3.5-2B occasionally paraphrases
+          # ("about 55,000" etc.) even though the tool returned 56088.
+          # That narration drift remains a WARN-only print so the job
+          # does not flake on the model layer.
           content, events = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
@@ -635,21 +703,32 @@ jobs:
               "enable_tools may be silently ignored. "
               "Last 3 events: " + str(events[-3:])
           )
+          assert _tool_output_contains(events, "56088", "56,088"), (
+              "python tool: tool ran but its tool_end.result did not "
+              "contain the expected product 56088. The tool's own "
+              "output is the canonical record of whether python "
+              "executed 123*456 correctly; a wrong value here is a "
+              "regression in tool correctness, not narration drift. "
+              f"Inspected {len(events)} raw events. "
+              "Last 3 events: " + str(events[-3:])
+          )
           if "56088" in content or "56,088" in content:
               print(f"[tools] PASS python tool ({len(content)} chars, found 56088 in content)")
           else:
               print(
-                  f"[tools] PASS python tool (tool ran, but model narration drifted -- "
-                  f"content={content!r}; tool output was present in raw stream)"
+                  f"[tools] PASS python tool (tool returned 56088 in "
+                  f"tool_end.result, but model narration drifted -- "
+                  f"content={content!r})"
               )
 
           # ── 3. Server-side bash (terminal) tool ──────────────────────
-          # Same shape as python tool: assert the tool actually ran
-          # (terminal-tool markers OR the literal "hello-bash-tool" in
-          # the raw stream from the tool's stdout) independently of
-          # whether the model paraphrases or drops the literal in its
-          # final narration. Empty / no-tool-marker stream is a real
-          # regression and must FAIL.
+          # Same shape as python tool: hard-assert (1) the terminal
+          # tool actually ran via a strong marker, AND (2) the
+          # terminal tool's tool_end.result literally contains
+          # "hello-bash-tool" (the canonical stdout from `echo`).
+          # Model narration that drops or paraphrases the literal in
+          # the final content remains a WARN-only print so the test
+          # does not flake on the model layer.
           content, events = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
               "enable_tools":  True,
@@ -667,12 +746,22 @@ jobs:
               "raw events). enable_tools may be silently ignored. "
               "Last 3 events: " + str(events[-3:])
           )
+          assert _tool_output_contains(events, "hello-bash-tool"), (
+              "bash/terminal tool: tool ran but its tool_end.result "
+              "did not contain the literal 'hello-bash-tool'. The "
+              "tool's own stdout is the canonical record of whether "
+              "`echo` ran -- a wrong value here is a regression in "
+              "tool correctness, not narration drift. Inspected "
+              f"{len(events)} raw events. "
+              "Last 3 events: " + str(events[-3:])
+          )
           if "hello-bash-tool" in content:
               print(f"[tools] PASS bash/terminal tool ({len(content)} chars, literal in content)")
           else:
               print(
-                  f"[tools] PASS bash/terminal tool (tool ran, but model narration "
-                  f"dropped the literal -- content={content!r})"
+                  f"[tools] PASS bash/terminal tool (tool stdout was "
+                  f"'hello-bash-tool' in tool_end.result, but model "
+                  f"narration dropped it -- content={content!r})"
               )
 
           # ── 4. Server-side web_search tool ───────────────────────────
