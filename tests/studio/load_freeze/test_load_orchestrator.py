@@ -475,35 +475,80 @@ def test_100_concurrent_healths_during_slow_probe_all_responsive():
 # ---------------------------------------------------------------------------
 
 
-def test_routes_inference_wraps_detect_audio_type_in_to_thread():
-    f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
+def test_load_model_caches_audio_type_inside_serial_load_lock():
+    """The audio-type detection (and codec init, where applicable) must
+    happen inside ``LlamaCppBackend.load_model`` so the full load
+    sequence is atomic under ``_serial_load_lock``. Running it from the
+    route opens a race where a concurrent /load can replace the backend
+    mid-probe (gemini-code-assist review on #5669)."""
+    f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     text = f.read_text()
-    assert "await asyncio.to_thread(llama_backend.detect_audio_type)" in text
-    assert "llama_backend.detect_audio_type()" not in text
+    # The lock must be acquired.
+    assert "with self._serial_load_lock" in text, (
+        "LlamaCppBackend.load_model must hold self._serial_load_lock"
+    )
+    # The cache writes must be present.
+    assert "self._audio_type = self.detect_audio_type()" in text or \
+           "detected = self.detect_audio_type()" in text, (
+        "LlamaCppBackend.load_model must call self.detect_audio_type and cache "
+        "the result on self._audio_type (#5642 follow-up)."
+    )
 
 
-def test_init_audio_codec_still_wrapped_in_to_thread():
-    """Drift guard: the neighbouring init_audio_codec call must keep
-    its to_thread wrap so any future copy-paste from this block keeps
-    the right pattern."""
+def test_routes_inference_reads_cached_audio_type_not_calls_detect():
+    """Static guard: routes/inference.py must NOT call
+    ``llama_backend.detect_audio_type`` or
+    ``llama_backend.init_audio_codec`` directly any more -- both moved
+    inside ``LlamaCppBackend.load_model`` under the lock. The route
+    reads the cached ``_audio_type`` / ``_is_audio`` attributes."""
     f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
     text = f.read_text()
-    assert "await asyncio.to_thread(llama_backend.init_audio_codec" in text
+    assert "llama_backend.detect_audio_type(" not in text, (
+        "routes/inference.py should not call detect_audio_type directly; "
+        "load_model already cached it under the lock."
+    )
+    assert "llama_backend.init_audio_codec(" not in text, (
+        "routes/inference.py should not call init_audio_codec directly; "
+        "load_model already invoked it under the lock when audio_type was a TTS codec."
+    )
+    # Verify the route DOES read the cached values somewhere.
+    assert "llama_backend._audio_type" in text
+    assert "llama_backend._is_audio" in text
 
 
 def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     """Walk every .py under studio/backend/routes/ and confirm no file
-    contains a bare ``detect_audio_type()`` call inside an async function
-    (would re-introduce the bug). We accept a wrapped form."""
+    contains a ``LlamaCppBackend.detect_audio_type()`` call inside an
+    async function. Re-introducing the bug means putting back the sync
+    call AND opening the race condition the lock fix closes."""
     routes_dir = _REPO_ROOT / "studio" / "backend" / "routes"
     offenders = []
-    pattern = re.compile(r"\.detect_audio_type\s*\(\)")
+    # Match `<anything>.detect_audio_type(` so this catches both
+    # `llama_backend.detect_audio_type(` and `self.detect_audio_type(`.
+    # We exclude the `utils.models.model_config.detect_audio_type`
+    # free function which is a separate, harmless static helper.
+    pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
         for i, line in enumerate(path.read_text().splitlines(), start = 1):
-            if pattern.search(line) and "asyncio.to_thread" not in line:
-                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
-    assert not offenders, "bare detect_audio_type() in async route(s): " + "; ".join(
-        offenders
+            m = pattern.search(line)
+            if not m:
+                continue
+            # Skip the free function import-site uses (no llama_backend prefix
+            # and called outside async context). Easiest: only treat the
+            # LlamaCppBackend instance call as an offender.
+            if "llama_backend.detect_audio_type" not in line:
+                continue
+            if "asyncio.to_thread" in line:
+                # Wrapped sync call is acceptable (event-loop responsive)
+                # but not preferred -- detect_audio_type belongs inside
+                # load_model now. Surface but don't fail; comment in PR
+                # if seen.
+                continue
+            offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
+    assert not offenders, (
+        "routes/*.py contains llama_backend.detect_audio_type() calls; "
+        "the call should live inside load_model now: "
+        + "; ".join(offenders)
     )
 
 

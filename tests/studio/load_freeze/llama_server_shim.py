@@ -224,7 +224,13 @@ class FakeLlamaServer:
         detok_body: Optional[bytes] = None,
         detok_map: Optional[dict] = None,
         completion_delay: float = 0.0,
-        model_path: str = "C:\\Users\\Admin\\.cache\\hf\\gemma-4.gguf",
+        # Cosmetic only -- only appears in the synthesised stdout
+        # template's "loading model '<path>'" line. The production code
+        # we drive from the tests does not parse this value. Default is
+        # OS-portable so the shim does not bake any one developer's
+        # machine path into the test surface (gemini-code-assist review
+        # on PR #5669).
+        model_path: str = "<test-fixture>/gemma-4.gguf",
     ) -> None:
         self.host = host
         self._requested_port = port

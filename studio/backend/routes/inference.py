@@ -860,27 +860,28 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
-            # GGUF audio input is not wired through the chat path yet, so do not
-            # advertise has_audio_input for GGUF models until uploaded audio is
-            # actually forwarded to llama-server.
-            # Run on the threadpool: detect_audio_type fires several sequential
-            # sync httpx.Client.post() calls to llama-server's /tokenize and
-            # /detokenize endpoints. Without this wrap they block the FastAPI
-            # event loop -- /api/inference/load-progress polling stalls and
-            # the UI freezes on the load spinner even though llama-server is
-            # healthy (issue #5642, related #5635).
-            _gguf_audio = await asyncio.to_thread(llama_backend.detect_audio_type)
-            _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
-            llama_backend._is_audio = _gguf_is_audio
-            llama_backend._audio_type = _gguf_audio
+            # Audio metadata is cached by LlamaCppBackend.load_model under
+            # self._serial_load_lock (#5642 follow-up, addresses the
+            # gemini-code-assist review on PR #5669). The route just
+            # surfaces the cached values to the client.
+            #
+            # detect_audio_type fires 8 sequential sync httpx.Client.post()
+            # calls. Calling it from the route would (a) block the FastAPI
+            # event loop on the sync httpx calls (the original #5642
+            # symptom) AND (b) open a race with concurrent /load requests
+            # that could kill the llama-server mid-probe and leave the
+            # route writing stale audio_type onto the next load's backend
+            # instance. Wrapping load_model itself in asyncio.to_thread
+            # (line 810 / 831) is sufficient now that all the audio
+            # detection happens inside it.
+            _gguf_audio = llama_backend._audio_type
+            _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = (
                 model_log_label if native_grant_backed else None
             )
             llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
-                await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
 
             inference_config = load_inference_config(config.identifier)
 

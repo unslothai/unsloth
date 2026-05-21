@@ -3251,6 +3251,43 @@ class LlamaCppBackend:
                     f"llama-server ready on port {self._port} "
                     f"for model '{model_identifier}'"
                 )
+
+                # Cache audio metadata under self._serial_load_lock so a
+                # concurrent /api/inference/load cannot kill this server
+                # mid-probe and leave the route writing stale audio_type
+                # onto the next load's backend instance (#5642 follow-up,
+                # see gemini-code-assist review on PR #5669). The probes
+                # fire 8 sequential /tokenize + /detokenize calls; running
+                # them inside the lock means the next load waits, which
+                # is the same semantics the rest of the load sequence has.
+                # Reset to safe defaults FIRST so a probe failure (network
+                # crash, malformed JSON) does not leak the previous load's
+                # audio_type. detect_audio_type swallows all exceptions
+                # internally so it cannot raise from here.
+                self._is_audio = False
+                self._audio_type = None
+                detected = self.detect_audio_type()
+                if detected in ("snac", "bicodec", "dac"):
+                    try:
+                        self.init_audio_codec(detected)
+                        self._is_audio = True
+                        self._audio_type = detected
+                    except Exception as exc:
+                        # Codec init failure should not fail the whole
+                        # load -- the model is still usable for chat /
+                        # non-audio output.
+                        logger.warning(
+                            "Failed to init audio codec '%s': %s (load continues "
+                            "as non-audio)",
+                            detected,
+                            exc,
+                        )
+                elif detected:
+                    # csm / whisper / audio_vlm have no codec init step,
+                    # but the audio_type is still informational metadata
+                    # the route surfaces through LoadResponse.
+                    self._audio_type = detected
+
                 return True
 
     def _build_speculative_flags(
