@@ -71,7 +71,7 @@ def _tool_events(lines: list[str]) -> list[dict]:
     for line in lines:
         if not line.startswith("data:"):
             continue
-        raw = line[len("data:"):].strip()
+        raw = line[len("data:") :].strip()
         if not raw or raw == "[DONE]":
             continue
         try:
@@ -103,9 +103,7 @@ def test_web_fetch_tool_appended_to_request_body(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages = [
-                {"role": "user", "content": "Fetch https://example.com/article"}
-            ],
+            messages = [{"role": "user", "content": "Fetch https://example.com/article"}],
             model = "claude-opus-4-7",
             temperature = 0.7,
             top_p = 0.95,
@@ -164,9 +162,7 @@ def test_web_fetch_combined_with_web_search_and_code_execution(monkeypatch):
     assert "code_execution_20250825" in tool_types
     # Code-execution still adds its beta flag; web_fetch must not
     # have accidentally stripped it.
-    assert "code-execution-2025-08-25" in captured["headers"].get(
-        "anthropic-beta", ""
-    )
+    assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
 
 
 def test_no_web_fetch_tool_when_pill_off(monkeypatch):

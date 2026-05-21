@@ -1309,9 +1309,7 @@ class ExternalProviderClient:
         # `enabled_tools=["web_fetch"]`, citations off by default
         # because the frontend already paints source pills from the
         # generic tool_end payload.
-        web_fetch_enabled = bool(
-            enabled_tools and "web_fetch" in enabled_tools
-        )
+        web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
@@ -1988,9 +1986,7 @@ class ExternalProviderClient:
                                     inner if isinstance(inner, dict) else {}
                                 )
                                 if tool_use_id in web_fetch_calls:
-                                    web_fetch_calls[tool_use_id]["result"] = (
-                                        result_text
-                                    )
+                                    web_fetch_calls[tool_use_id]["result"] = result_text
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_end",
