@@ -484,12 +484,14 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     text = f.read_text()
     # The lock must be acquired.
-    assert "with self._serial_load_lock" in text, (
-        "LlamaCppBackend.load_model must hold self._serial_load_lock"
-    )
+    assert (
+        "with self._serial_load_lock" in text
+    ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
     # The cache writes must be present.
-    assert "self._audio_type = self.detect_audio_type()" in text or \
-           "detected = self.detect_audio_type()" in text, (
+    assert (
+        "self._audio_type = self.detect_audio_type()" in text
+        or "detected = self.detect_audio_type()" in text
+    ), (
         "LlamaCppBackend.load_model must call self.detect_audio_type and cache "
         "the result on self._audio_type (#5642 follow-up)."
     )
@@ -547,8 +549,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
             offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
     assert not offenders, (
         "routes/*.py contains llama_backend.detect_audio_type() calls; "
-        "the call should live inside load_model now: "
-        + "; ".join(offenders)
+        "the call should live inside load_model now: " + "; ".join(offenders)
     )
 
 
