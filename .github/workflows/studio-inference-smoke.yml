@@ -468,7 +468,19 @@ jobs:
               """POST a streaming request and accumulate the assistant
               text deltas. The server-side agentic loop ALWAYS returns
               SSE regardless of the request's `stream` field, so any
-              call with enable_tools=true must use this helper."""
+              call with enable_tools=true must use this helper.
+
+              Returns (content, raw_payloads):
+                content       -- concatenated assistant delta.content
+                raw_payloads  -- list of every raw "data: ..." event
+                                 payload (JSON strings). Callers asserting
+                                 that a server-side tool actually ran (and
+                                 not just that the model emitted some
+                                 text) should grep raw_payloads for tool
+                                 invocation markers / tool output, since
+                                 `delta.content` alone is not evidence
+                                 that the tool path executed.
+              """
               body = {**body, "stream": True}
               data = json.dumps(body).encode()
               req = urllib.request.Request(
@@ -481,6 +493,7 @@ jobs:
                   },
               )
               parts = []
+              events = []
               with urllib.request.urlopen(req, timeout = timeout) as resp:
                   for raw in resp:
                       line = raw.decode().strip()
@@ -489,6 +502,7 @@ jobs:
                       payload = line[6:]
                       if payload == "[DONE]":
                           break
+                      events.append(payload)
                       try:
                           chunk = json.loads(payload)
                       except json.JSONDecodeError:
@@ -497,7 +511,38 @@ jobs:
                           delta = choice.get("delta", {}) or {}
                           if delta.get("content"):
                               parts.append(delta["content"])
-              return "".join(parts)
+              return "".join(parts), events
+
+          def _tool_invoked(events, *, expected_outputs = ()):
+              """Inspect SSE event payloads for evidence that a
+              server-side tool actually executed. Returns True iff any
+              of the following is true:
+
+                - any event payload contains an OpenAI-style tool_calls
+                  delta (`"tool_calls"`)
+                - any event payload contains an Anthropic-style tool_use
+                  marker (`"tool_use"`)
+                - any event payload contains a tool-role message
+                - any of the caller-supplied expected_outputs substrings
+                  appears in the raw stream (this is the tool's
+                  side-effect output reaching the model, which the
+                  agentic loop forwards as a fresh streaming chunk).
+
+              Without one of these signals, an empty-or-text-only stream
+              is NOT evidence that the tool path ran -- the model may
+              have just answered without invoking the tool (e.g. if
+              enable_tools is silently ignored). Address of
+              chatgpt-codex-connector P1 on PR #5669.
+              """
+              blob = " ".join(events)
+              markers = ('"tool_calls"', '"tool_use"', '"role": "tool"',
+                         '"role":"tool"', '"function"', '"function_call"')
+              if any(m in blob for m in markers):
+                  return True
+              for out in expected_outputs:
+                  if out and out in blob:
+                      return True
+              return False
 
           # ── 1. Standard OpenAI function calling ──────────────────────
           weather_tool = {
@@ -532,17 +577,24 @@ jobs:
           print(f"[tools] PASS function calling -> {tc['function']['name']}({args})")
 
           # ── 2. Server-side python tool ───────────────────────────────
-          # 123 * 456 = 56088. The agentic loop streams SSE; we
-          # accumulate the assistant text and look for the answer. We
-          # accept "56088" or "56,088" since the model may format it.
-          # Small quantized Qwen3.5-2B occasionally hallucinates a wrong
-          # number even after the python tool returns the correct value
-          # (observed in CI runs on `main` and unrelated PRs: 55,888,
-          # 56,008, etc.). This is model output drift, not a Studio
-          # regression -- if the SSE stream came through non-empty, the
-          # python tool path itself is healthy. Match the Windows
-          # variant's WARN-when-tool-ran-but-model-drifted pattern.
-          content = post_sse("/v1/chat/completions", {
+          # 123 * 456 = 56088. The agentic loop streams SSE; we capture
+          # both the assistant content AND the raw event payloads so we
+          # can prove the python tool actually ran independently of
+          # whether the model later narrates the answer correctly.
+          #
+          # Two distinct things must hold:
+          #   1. The python tool path executed (asserted by `_tool_invoked`
+          #      checking for tool_call / tool_use markers OR the
+          #      expected output substring in the raw stream).
+          #   2. The model narrated the right answer ("56088" or
+          #      "56,088"). Small-quant Qwen3.5-2B occasionally drifts
+          #      here (55,888 etc.) even though the tool returned the
+          #      correct value -- treat that as WARN.
+          # Without (1), a model that ignores `enable_tools` and just
+          # chats can false-green this test (the previous version did
+          # exactly that -- see chatgpt-codex-connector P1 review on
+          # PR #5669).
+          content, events = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
               "enabled_tools": ["python"],
@@ -551,22 +603,28 @@ jobs:
               "seed":          SEED,
               "max_tokens":    600,
           })
+          assert _tool_invoked(events, expected_outputs = ("56088", "56,088")), (
+              "python tool: no evidence of tool invocation in SSE stream "
+              f"(no tool_calls / tool_use markers, no 56088 in any of "
+              f"{len(events)} raw events). enable_tools may be silently "
+              "ignored. Last 3 events: " + str(events[-3:])
+          )
           if "56088" in content or "56,088" in content:
-              print(f"[tools] PASS python tool ({len(content)} chars, found 56088)")
+              print(f"[tools] PASS python tool ({len(content)} chars, found 56088 in content)")
           else:
-              assert content, "python tool: SSE stream empty"
               print(
-                  f"[tools] WARN python tool: SSE OK ({len(content)} chars) but "
-                  f"model didn't return 56088 -- model output drift. content={content!r}"
+                  f"[tools] PASS python tool (tool ran, but model narration drifted -- "
+                  f"content={content!r}; tool output was present in raw stream)"
               )
 
           # ── 3. Server-side bash (terminal) tool ──────────────────────
-          # Same WARN-when-tool-ran pattern as the python tool above:
-          # the bash tool runs and returns "hello-bash-tool" but the
-          # small-quant model may paraphrase / drop the literal. Treat
-          # a non-empty SSE as proof the tool path works; only fail
-          # when the stream is empty.
-          content = post_sse("/v1/chat/completions", {
+          # Same shape as python tool: assert the tool actually ran
+          # (terminal-tool markers OR the literal "hello-bash-tool" in
+          # the raw stream from the tool's stdout) independently of
+          # whether the model paraphrases or drops the literal in its
+          # final narration. Empty / no-tool-marker stream is a real
+          # regression and must FAIL.
+          content, events = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
               "enable_tools":  True,
               "enabled_tools": ["terminal"],
@@ -575,22 +633,32 @@ jobs:
               "seed":          SEED,
               "max_tokens":    600,
           })
+          assert _tool_invoked(events, expected_outputs = ("hello-bash-tool",)), (
+              "bash/terminal tool: no evidence of tool invocation in SSE "
+              f"stream (no tool_calls / tool_use markers, no "
+              "'hello-bash-tool' in any of "
+              f"{len(events)} raw events). enable_tools may be silently "
+              "ignored. Last 3 events: " + str(events[-3:])
+          )
           if "hello-bash-tool" in content:
-              print(f"[tools] PASS bash/terminal tool ({len(content)} chars)")
+              print(f"[tools] PASS bash/terminal tool ({len(content)} chars, literal in content)")
           else:
-              assert content, "bash/terminal tool: SSE stream empty"
               print(
-                  f"[tools] WARN bash/terminal tool: SSE OK ({len(content)} chars) but "
-                  f"model didn't echo 'hello-bash-tool' -- model output drift. content={content!r}"
+                  f"[tools] PASS bash/terminal tool (tool ran, but model narration "
+                  f"dropped the literal -- content={content!r})"
               )
 
           # ── 4. Server-side web_search tool ───────────────────────────
           # DuckDuckGo is flaky from CI runners and small Qwen3.5-2B
           # may not actually search. Only assert that the SSE stream
           # opens and yields any data; HTTP / parser failures already
-          # raise above.
+          # raise above. Tool-invocation strictness is relaxed here
+          # because (a) the search may legitimately return no results,
+          # and (b) DuckDuckGo upstream blocks GHA IP ranges often
+          # enough that requiring a tool_call marker would create
+          # red-herring failures from infra rather than from Studio.
           try:
-              content = post_sse("/v1/chat/completions", {
+              content, events = post_sse("/v1/chat/completions", {
                   "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
                   "enable_tools":  True,
                   "enabled_tools": ["web_search"],
@@ -599,7 +667,10 @@ jobs:
                   "seed":          SEED,
                   "max_tokens":    400,
               })
-              print(f"[tools] PASS web_search stream ({len(content)} chars)")
+              print(
+                  f"[tools] PASS web_search stream ({len(content)} chars in content, "
+                  f"{len(events)} raw events)"
+              )
           except Exception as exc:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
 

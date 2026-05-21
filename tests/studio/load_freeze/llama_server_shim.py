@@ -46,15 +46,6 @@ LLAMA_SERVER_STDOUT_TEMPLATE = """\
 """
 
 
-def _free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-    finally:
-        s.close()
-
-
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         return
@@ -253,11 +244,19 @@ class FakeLlamaServer:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> "FakeLlamaServer":
-        port = self._requested_port or _free_port()
-        self._server = FakeLlamaServer._Server((self.host, port), _Handler)
+        # Pass requested port directly (port=0 lets ThreadingHTTPServer pick
+        # a free port atomically, avoiding the find-port-then-bind race the
+        # gemini-code-assist review on PR #5669 flagged). After bind, read
+        # the actually-bound port back via server_address[1].
+        self._server = FakeLlamaServer._Server(
+            (self.host, self._requested_port), _Handler
+        )
         self._server.config = self.config
+        bound_port = self._server.server_address[1]
         self._thread = threading.Thread(
-            target = self._server.serve_forever, daemon = True, name = f"fake-llama-{port}"
+            target = self._server.serve_forever,
+            daemon = True,
+            name = f"fake-llama-{bound_port}",
         )
         self._thread.start()
         return self
