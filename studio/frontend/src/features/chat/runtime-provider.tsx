@@ -12,7 +12,6 @@ import {
   type ExportedMessageRepositoryItem,
   type LocalRuntimeOptions,
   type PendingAttachment,
-  Suggestions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
@@ -66,31 +65,6 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
-
-const DEFAULT_SUGGESTIONS = [
-  {
-    title: "How do you fine-tune an audio model with Unsloth?",
-    label: "Audio fine-tuning",
-    prompt: "How do you fine-tune an audio model with Unsloth?",
-  },
-  {
-    title:
-      "Create a live weather dashboard in HTML using no API key. Show me the code",
-    label: "Weather dashboard",
-    prompt:
-      "Create a live weather dashboard in HTML using no API key. Show me the code",
-  },
-  {
-    title: "Solve the integral of x·sin(x), and verify it",
-    label: "Integral",
-    prompt: "Solve the integral of x·sin(x), and verify it step by step",
-  },
-  {
-    title: "Draw an SVG of a cute sloth & show the code",
-    label: "SVG sloth",
-    prompt: "Draw an SVG of a cute sloth & show the code",
-  },
-];
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 
@@ -778,10 +752,15 @@ async function waitForRunStartHistoryAppend(
   if (!write) {
     return;
   }
+  let didPersist = false;
   try {
     await write;
+    didPersist = true;
   } finally {
-    if (pendingHistoryAppendByMessageId.get(lastMessage.id) === write) {
+    if (
+      didPersist &&
+      pendingHistoryAppendByMessageId.get(lastMessage.id) === write
+    ) {
       pendingHistoryAppendByMessageId.delete(lastMessage.id);
     }
   }
@@ -1165,9 +1144,7 @@ export function ChatRuntimeProvider({
     adapter: createStudioDbAdapter(modelType, pairId),
   });
 
-  const aui = useAui({
-    suggestions: Suggestions(DEFAULT_SUGGESTIONS),
-  });
+  const aui = useAui({});
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
