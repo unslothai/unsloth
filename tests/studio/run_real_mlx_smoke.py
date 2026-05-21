@@ -14,10 +14,10 @@ The `train` subcommand:
   1. Loads `unsloth/gemma-3-270m-it` via FastMLXModel.from_pretrained.
   2. Applies LoRA r=8 on q/k/v/o.
   3. Computes pre-training loss + grad norm via mx.nn.value_and_grad.
-  4. Trains 7 deterministic steps on a dataset of the SAME row repeated
+  4. Trains 30 deterministic steps on a dataset of the SAME row repeated
      ("<<HELLO!!>> My name is Unsloth!"), with batch_size=2 and
      gradient_accumulation_steps=3 so each step processes 6 sequences
-     and the run sees 42 sequences total.
+     and the run sees 180 sequences total.
   5. Computes post-training loss + grad norm.
   6. Generates from "<<HELLO!!>> My name is " and asserts "Unsloth"
      appears in the in-memory completion.
@@ -162,10 +162,9 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
+    # Match Studio's text dataset path: Studio passes exactly the formatted
+    # text to the tokenizer and does not append EOS behind the user's back.
     ids = list(tokenizer.encode(text))
-    eos_id = getattr(tokenizer, "eos_token_id", None)
-    if eos_id is not None:
-        ids.append(int(eos_id))
     if len(ids) < 2:
         raise RuntimeError(f"text too short to compute loss: {len(ids)} tokens")
 
@@ -390,7 +389,15 @@ def cmd_train(args) -> int:
         )
         if k in train_result
     }
-    assert len(losses_per_step) == 7, f"expected 7 logged steps, got {losses_per_step}"
+    expected_logged_steps = int(config.max_steps)
+    assert len(losses_per_step) == expected_logged_steps, (
+        f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
+    )
+    if "train_steps" in train_result:
+        assert int(train_result["train_steps"]) == expected_logged_steps, (
+            f"expected train_steps={expected_logged_steps}, got "
+            f"{train_result['train_steps']}"
+        )
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
         # the LoRA reaches loss=0 around step ~10 with this fixture +
