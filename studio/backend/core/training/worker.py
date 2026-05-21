@@ -2272,36 +2272,35 @@ def run_training_process(
     # hardware limit, giving the UI a clean error instead of a system freeze.
     # Only applied on ROCm -- NVIDIA CUDA has a graceful OOM path and does
     # not need this cap.
-    # Unified-memory APUs share GPU and system RAM in one pool; 0.90 of 128 GB
-    # starves the OS. Detected by comparing torch VRAM to psutil system RAM
-    # (ratio ≥ 0.90 → unified → use 0.80; discrete cards are far below that).
+    # Unified-memory APUs (gfx1150 Strix Point / gfx1151 Strix Halo) share GPU
+    # and system RAM in one pool: 0.90 of 128 GB starves the OS. Use 0.80 there.
+    # Classified via gcnArchName — naming-independent and already parsed
+    # throughout this PR.
     # Non-fatal: silently skipped if torch is not importable.
     if _hw.IS_ROCM:
         try:
-            import psutil as _psutil
             import torch as _torch_mem
 
             if _torch_mem.cuda.is_available():
-                # Unified-memory APUs (e.g. Strix Halo gfx1151) expose the
-                # entire system RAM as the GPU pool, so torch total_memory ≈
-                # psutil total RAM (ratio ≥ 0.90).  Discrete cards are always
-                # well below that (16 GB card on 24 GB host → ~0.67).
-                # This threshold is arch-name-agnostic: any future APU that
-                # shares system RAM will classify correctly without a code change.
-                _dev_name = _torch_mem.cuda.get_device_properties(0).name
-                _vram = _torch_mem.cuda.get_device_properties(0).total_memory
-                _sys_ram = _psutil.virtual_memory().total
-                _is_unified = _vram >= 0.90 * _sys_ram
+                # Classify unified vs discrete by gcnArchName, not by device
+                # marketing name or VRAM/RAM ratio.  Name regexes miss "8060S";
+                # ratio (vram >= 0.90 * sys_ram) false-positives on machines
+                # where discrete VRAM == system RAM (e.g. 16 GB card + 16 GB RAM).
+                # gcnArchName is stable within a product family and is already
+                # parsed throughout this PR.
+                _props = _torch_mem.cuda.get_device_properties(0)
+                _dev_name = _props.name
+                _gcn_arch = (getattr(_props, "gcnArchName", "") or "").split(":")[0]
+                _is_unified = _gcn_arch in {"gfx1150", "gfx1151"}
                 _mem_fraction = 0.80 if _is_unified else 0.90
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
                     "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
-                    "%s memory host (%s, vram=%.1f GiB, sys=%.1f GiB)",
+                    "%s memory host (%s, %s)",
                     _mem_fraction,
                     "unified" if _is_unified else "discrete",
                     _dev_name,
-                    _vram / 2**30,
-                    _sys_ram / 2**30,
+                    _gcn_arch or "unknown arch",
                 )
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
