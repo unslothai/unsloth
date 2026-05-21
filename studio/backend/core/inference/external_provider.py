@@ -1909,7 +1909,9 @@ class ExternalProviderClient:
                             # see cache_creation / cache_read without
                             # scraping the server log.
                             usage_line = _build_usage_chunk(
-                                completion_id, "anthropic", last_usage,
+                                completion_id,
+                                "anthropic",
+                                last_usage,
                             )
                             if usage_line:
                                 yield usage_line
@@ -2742,7 +2744,9 @@ class ExternalProviderClient:
                                 # finish_reason so callers can surface
                                 # cached_tokens in their UI.
                                 usage_line = _build_usage_chunk(
-                                    completion_id, "openai", last_usage,
+                                    completion_id,
+                                    "openai",
+                                    last_usage,
                                 )
                                 if usage_line:
                                     yield usage_line
@@ -2797,7 +2801,9 @@ class ExternalProviderClient:
                                 # incomplete responses still report
                                 # cached_tokens.
                                 usage_line = _build_usage_chunk(
-                                    completion_id, "openai", last_usage,
+                                    completion_id,
+                                    "openai",
+                                    last_usage,
                                 )
                                 if usage_line:
                                     yield usage_line

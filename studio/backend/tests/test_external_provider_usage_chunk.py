@@ -52,7 +52,7 @@ def test_build_usage_chunk_anthropic_shape():
     )
     assert line is not None
     assert line.startswith("data: ")
-    payload = json.loads(line[len("data: "):])
+    payload = json.loads(line[len("data: ") :])
     assert payload["id"] == "chatcmpl-x"
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
@@ -77,7 +77,7 @@ def test_build_usage_chunk_openai_shape():
         },
     )
     assert line is not None
-    payload = json.loads(line[len("data: "):])
+    payload = json.loads(line[len("data: ") :])
     usage = payload["usage"]
     assert usage["prompt_tokens"] == 5507
     assert usage["completion_tokens"] == 252
@@ -98,7 +98,7 @@ def test_build_usage_chunk_missing_fields_default_to_zero():
         {"input_tokens": 42, "output_tokens": 7},
     )
     assert line is not None
-    payload = json.loads(line[len("data: "):])
+    payload = json.loads(line[len("data: ") :])
     assert payload["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
 
 
@@ -112,7 +112,11 @@ def test_build_usage_chunk_returns_none_when_all_zero():
         _build_usage_chunk(
             "id",
             "openai",
-            {"input_tokens": 0, "output_tokens": 0, "input_tokens_details": {"cached_tokens": 0}},
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+            },
         )
         is None
     )
@@ -177,14 +181,18 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
     for raw in lines:
         if not raw.startswith("data:"):
             continue
-        payload = raw[len("data:"):].strip()
+        payload = raw[len("data:") :].strip()
         if not payload or payload == "[DONE]":
             continue
         try:
             parsed = json.loads(payload)
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict) and "usage" in parsed and parsed.get("choices") == []:
+        if (
+            isinstance(parsed, dict)
+            and "usage" in parsed
+            and parsed.get("choices") == []
+        ):
             out.append(parsed["usage"])
     return out
 
@@ -243,9 +251,12 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
 
     # Usage chunk must come before [DONE].
     data_lines = [ln for ln in lines if ln.startswith("data:")]
-    done_idx = next(i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]"))
+    done_idx = next(
+        i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]")
+    )
     usage_idx = next(
-        i for i, ln in enumerate(data_lines)
+        i
+        for i, ln in enumerate(data_lines)
         if '"usage":' in ln and '"choices": []' in ln
     )
     assert usage_idx < done_idx
