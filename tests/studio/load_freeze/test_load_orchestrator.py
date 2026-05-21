@@ -209,11 +209,13 @@ def _build_app(backend: LlamaCppBackend, *, wrap_in_thread: bool):
         return {"status": "ok"}
 
     if wrap_in_thread:
+
         @app.get("/probe")
         async def probe():
             audio_type = await asyncio.to_thread(backend.detect_audio_type)
             return {"audio_type": audio_type}
     else:
+
         @app.get("/probe")
         async def probe():
             audio_type = backend.detect_audio_type()
