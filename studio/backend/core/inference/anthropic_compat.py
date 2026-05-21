@@ -152,21 +152,17 @@ def anthropic_messages_to_openai(
 
 
 def anthropic_tools_to_openai(tools: list) -> list[dict]:
-    """Convert Anthropic client tools to OpenAI function-tool format."""
+    """Convert Anthropic tool definitions to OpenAI function-tool format."""
     result = []
     for t in tools:
         td = t if isinstance(t, dict) else t.model_dump()
-        name = td.get("name")
-        input_schema = td.get("input_schema")
-        if not name or input_schema is None:
-            continue
         result.append(
             {
                 "type": "function",
                 "function": {
-                    "name": name,
+                    "name": td["name"],
                     "description": td.get("description", ""),
-                    "parameters": input_schema,
+                    "parameters": td.get("input_schema", {}),
                 },
             }
         )

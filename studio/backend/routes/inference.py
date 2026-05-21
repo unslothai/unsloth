@@ -67,11 +67,7 @@ def _install_httpcore_asyncgen_silencer() -> None:
         if (
             isinstance(exc_value, RuntimeError)
             and "HTTP11ConnectionByteStream" in obj_repr
-            and (
-                "cancel scope" in str(exc_value)
-                or "GeneratorExit" in str(exc_value)
-                or "no running event loop" in str(exc_value)
-            )
+            and ("cancel scope" in str(exc_value) or "GeneratorExit" in str(exc_value))
         ):
             return
         prior_hook(unraisable)
@@ -4219,49 +4215,6 @@ async def openai_responses(
 # =====================================================================
 
 
-_STUDIO_ANTHROPIC_TOOL_ALIASES = {
-    "web_search": "web_search",
-    "web_search_20250305": "web_search",
-    "web_fetch": "web_search",
-    "web_fetch_20250910": "web_search",
-    "web_fetch_20260209": "web_search",
-    "python": "python",
-    "terminal": "terminal",
-}
-
-
-def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
-    requested: set[str] = set()
-    for tool in tools or []:
-        td = tool if isinstance(tool, dict) else tool.model_dump()
-        # Client tools always carry input_schema; server tools never do.
-        if td.get("input_schema") is not None:
-            continue
-        # Anthropic dispatches server tools by `type` (not by bare `name`);
-        # matching name too would let a malformed client tool like
-        # `{"name": "python"}` silently flip into server-execution mode.
-        type_ = td.get("type")
-        if isinstance(type_, str) and type_ in _STUDIO_ANTHROPIC_TOOL_ALIASES:
-            requested.add(_STUDIO_ANTHROPIC_TOOL_ALIASES[type_])
-    return requested
-
-
-def _select_anthropic_server_tools(
-    all_tools: list[dict],
-    requested_studio_tools: set[str],
-    enabled_tools: Optional[list[str]],
-) -> list[dict]:
-    """Select Studio tools requested through Anthropic tools and extensions."""
-    if not requested_studio_tools and enabled_tools is None:
-        return all_tools
-
-    selected_names = set(requested_studio_tools)
-    if enabled_tools is not None:
-        selected_names.update(enabled_tools)
-
-    return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
-
-
 def _normalize_anthropic_openai_images(
     openai_messages: list[dict], is_vision: bool
 ) -> bool:
@@ -4385,74 +4338,21 @@ async def anthropic_messages(
     # 3. neither           → plain chat
     # Server-side agentic loop doesn't support multimodal input — matches
     # the `not image_b64` gate in /v1/chat/completions.
-    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
-
-    # Reject malformed client tools at the boundary. AnthropicTool was
-    # relaxed to Optional[name]/Optional[input_schema] for server tools,
-    # so the converter silently drops incomplete entries — surface them
-    # as 400. A `type` field marks a server-tool declaration per spec
-    # (unrecognized server tools are accepted as no-ops); anything else
-    # without input_schema or name is malformed and must not be allowed
-    # to silently flip execution mode or disable tool calling.
-    for tool in payload.tools or []:
-        td = tool if isinstance(tool, dict) else tool.model_dump()
-        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
-        if schema is None and not isinstance(type_, str):
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Tool {name!r} is missing required field 'input_schema'.",
-            )
-        if schema is not None and (not isinstance(name, str) or not name):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Client tool is missing required field 'name'.",
-            )
-
-    # Detect client tools from the raw payload (presence of input_schema)
-    # so the mixed-mode check below isn't fooled by a name collision with
-    # a server-tool alias that the post-filter would silently drop.
-    _has_client_tool = any(
-        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
-        for t in payload.tools or []
-    )
-
-    # The server-tool agentic loop executes tools in-process and cannot
-    # relay unknown client functions back to the caller, so mixed requests
-    # would silently drop the client tools. Reject explicitly instead.
-    if requested_studio_tools and _has_client_tool:
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "Mixing Anthropic server tools (e.g. web_search_20250305) "
-                "with custom client tools in a single request is not "
-                "supported. Send them in separate requests."
-            ),
-        )
-
-    openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in requested_studio_tools
-    ]
-
-    # An Anthropic server-tool declaration implies server-tool mode, but
-    # only when tools aren't explicitly disabled (CLI --disable-tools or
-    # per-request enable_tools=false). Explicit False always wins.
-    _enable = _effective_enable_tools(payload)
     server_tools = (
-        (_enable or (_enable is None and bool(requested_studio_tools)))
+        _effective_enable_tools(payload)
         and llama_backend.supports_tools
         and not _has_image
     )
     client_tools = (
         not server_tools
-        and len(openai_client_tools) > 0
+        and payload.tools
+        and len(payload.tools) > 0
         and llama_backend.supports_tools
     )
 
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
-        openai_tools = openai_client_tools
+        openai_tools = anthropic_tools_to_openai(payload.tools)
 
         if payload.stream:
             return await _anthropic_passthrough_stream(
@@ -4495,11 +4395,12 @@ async def anthropic_messages(
     if server_tools:
         from core.inference.tools import ALL_TOOLS
 
-        openai_tools = _select_anthropic_server_tools(
-            ALL_TOOLS,
-            requested_studio_tools,
-            payload.enabled_tools,
-        )
+        if payload.enabled_tools is not None:
+            openai_tools = [
+                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
+            ]
+        else:
+            openai_tools = ALL_TOOLS
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _tool_names = {t["function"]["name"] for t in openai_tools}

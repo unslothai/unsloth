@@ -1251,12 +1251,9 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    # Client tools have input_schema; server tools may only have type/name.
-    type: Optional[str] = None
-    name: Optional[str] = None
+    name: str
     description: Optional[str] = None
-    input_schema: Optional[dict] = None
-    model_config = {"extra": "allow"}
+    input_schema: dict
 
 
 class AnthropicMessagesRequest(BaseModel):
