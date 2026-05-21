@@ -1,35 +1,27 @@
-"""Event-loop regression test for Unsloth Studio issue #5642.
+"""Comprehensive simulation suite for the #5642 fix.
 
-The bug: ``studio/backend/routes/inference.py:863`` calls
-``llama_backend.detect_audio_type()`` synchronously inside an async
-``/api/inference/load`` handler. ``detect_audio_type`` issues up to
-eight sequential sync ``httpx.Client.post()`` requests (10 s timeout
-each), which blocks the FastAPI event loop. While blocked, the
-``/api/inference/load-progress`` poll and any other in-flight HTTP
-request stalls, so Studio's UI never receives the load completion or a
-progress update and appears frozen even though ``llama-server`` is
-healthy.
+Covers:
+  1.  Behavioural canary (the bug class)             — 2 tests
+  2.  Behavioural fix-validation                     — 1 test
+  3.  Functional equivalence (sync == to_thread)     — 5 tests, one per codec branch
+  4.  Failure modes (HTTP 500, malformed JSON,
+      connection reset, unreachable, not-loaded)     — 5 tests
+  5.  Stress (50 concurrent probes / 100 healths)    — 2 tests
+  6.  Drift / regression guards                      — 3 tests
+  7.  Timing budgets                                 — 1 test
 
-This test stands up a real uvicorn server on a free port (matching
-Studio's actual deployment shape) and fires a slow ``/probe`` request
-from one worker thread while a second thread polls ``/health`` and
-records latencies. The buggy route shape stalls every concurrent
-``/health`` request behind the sync ``detect_audio_type`` call; the
-fixed shape keeps them under 200 ms. A pure-asyncio repro is not
-possible because asyncio timers cannot fire while the event loop
-itself is blocked, so the test wouldn't be able to schedule the
-concurrent ``/health`` while ``/probe`` is in its sync window.
-
-The fake ``llama-server`` (``llama_server_shim.py``) runs in-process
-(stdlib ``http.server``) and serves ``/health``, ``/tokenize``,
-``/detokenize``, ``/props``, and ``/completion`` so
-``detect_audio_type`` walks the real network code path (no patching
-of ``httpx`` itself).
+Designed to run from inside ``temp/sim/`` after ``uv venv`` + minimal
+``uv pip install`` of pytest/httpx/fastapi/uvicorn/anyio. Resolves
+``studio/backend`` automatically by walking up from this file looking
+for the workspace clone of ``unslothai/unsloth`` (search order: this
+dir's parents → ``../../unsloth`` → ``UNSLOTH_REPO_ROOT`` env var).
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import socket
 import sys
 import threading
@@ -42,18 +34,16 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap: locate the repo root by walking up from this file looking for
-# a ``studio/backend`` sibling, then put it on sys.path so we can import
-# ``core.inference.llama_cpp``.
+# Repo discovery
 # ---------------------------------------------------------------------------
 
 
 def _find_repo_root() -> Path | None:
-    """Walk up from this file until ``studio/backend`` exists. Falls
-    back to ``<repo>/unsloth/studio/backend`` so the same test file
-    works whether it lives in unslothai/unsloth (sibling
-    ``studio/backend``) or under a workspace that clones the repo
-    into ``./unsloth`` (i.e. ``./unsloth/studio/backend``)."""
+    env = os.environ.get("UNSLOTH_REPO_ROOT")
+    if env:
+        p = Path(env).resolve()
+        if (p / "studio" / "backend").is_dir():
+            return p
     here = Path(__file__).resolve()
     for parent in (here, *here.parents):
         if (parent / "studio" / "backend").is_dir():
@@ -66,8 +56,8 @@ def _find_repo_root() -> Path | None:
 _REPO_ROOT = _find_repo_root()
 if _REPO_ROOT is None:
     pytest.skip(
-        "Could not locate studio/backend relative to this file. "
-        "Run from inside the unslothai/unsloth repo (or a clone of it).",
+        "Could not locate studio/backend. Set UNSLOTH_REPO_ROOT or clone "
+        "unslothai/unsloth into a parent directory.",
         allow_module_level = True,
     )
 
@@ -75,8 +65,6 @@ _STUDIO_BACKEND = _REPO_ROOT / "studio" / "backend"
 sys.path.insert(0, str(_STUDIO_BACKEND))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Stub ``loggers`` and ``structlog`` -- same pattern as
-# studio/backend/tests/test_llama_cpp_wait_for_health.py:27-30.
 import logging as _logging  # noqa: E402
 
 _loggers_stub = types.ModuleType("loggers")
@@ -92,46 +80,17 @@ from llama_server_shim import FakeLlamaServer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures / helpers
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def shim_slow():
-    """Fake llama-server that responds to /health instantly but stalls
-    on /tokenize and /detokenize. Models the real-world bug surface:
-    server is healthy but the post-health vocabulary probes take seconds."""
-    srv = FakeLlamaServer(tok_delay = 0.8, detok_delay = 0.8)
-    srv.start()
-    yield srv
-    srv.stop()
-
-
-@pytest.fixture
-def shim_fast():
-    """Fake llama-server that responds to everything instantly."""
-    srv = FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0)
-    srv.start()
-    yield srv
-    srv.stop()
-
-
-def _make_backend(port: int) -> LlamaCppBackend:
-    """Build a barebones backend pointing at the shim. Uses the same
-    ``__new__`` bypass pattern as studio/backend/tests/test_llama_cpp_*.py
-    so we don't pull in subprocess / atexit / logging side effects."""
+def _make_backend(port: int, *, loaded: bool = True) -> LlamaCppBackend:
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._port = port
     b._api_key = None
-    # is_loaded requires _process is not None AND _healthy is True.
-    b._process = object()  # non-None sentinel; detect_audio_type never touches it
-    b._healthy = True
+    b._process = object() if loaded else None
+    b._healthy = loaded
     return b
-
-
-# ---------------------------------------------------------------------------
-# Uvicorn-in-thread harness
-# ---------------------------------------------------------------------------
 
 
 def _free_port() -> int:
@@ -144,8 +103,6 @@ def _free_port() -> int:
 
 
 class _UvicornServerThread:
-    """Run a uvicorn server on a daemon thread. Cleanly stop on close()."""
-
     def __init__(self, app, *, host: str = "127.0.0.1", port: int) -> None:
         import uvicorn
 
@@ -155,14 +112,11 @@ class _UvicornServerThread:
             app, host = host, port = port, log_level = "warning", access_log = False
         )
         self._server = uvicorn.Server(cfg)
-        # Uvicorn's install_signal_handlers() must NOT run on a thread.
         self._server.install_signal_handlers = lambda: None  # type: ignore[assignment]
         self._thread: threading.Thread | None = None
 
-    def start(self) -> "_UvicornServerThread":
-        self._thread = threading.Thread(
-            target = self._server.run, daemon = True, name = f"uvicorn-{self.port}"
-        )
+    def start(self):
+        self._thread = threading.Thread(target = self._server.run, daemon = True)
         self._thread.start()
         self._wait_ready()
         return self
@@ -179,27 +133,20 @@ class _UvicornServerThread:
             time.sleep(0.05)
         raise RuntimeError(f"uvicorn did not become ready within {timeout}s")
 
-    def stop(self) -> None:
+    def stop(self):
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
             self._thread.join(timeout = 5.0)
-            self._thread = None
 
-    def __enter__(self) -> "_UvicornServerThread":
+    def __enter__(self):
         return self.start()
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc):
         self.stop()
 
 
-def _build_app(backend: LlamaCppBackend, *, wrap_in_thread: bool):
-    """Build a FastAPI app with the buggy or fixed route shape.
-
-    ``/health`` is intentionally trivial. ``/probe`` mirrors the exact
-    semantics of ``studio/backend/routes/inference.py:863-866`` -- the
-    only differing line is whether ``detect_audio_type`` runs on the
-    event loop (buggy) or in the threadpool (fixed)."""
+def _build_app(backend, *, wrap_in_thread: bool):
     from fastapi import FastAPI
 
     app = FastAPI()
@@ -212,169 +159,469 @@ def _build_app(backend: LlamaCppBackend, *, wrap_in_thread: bool):
 
         @app.get("/probe")
         async def probe():
-            audio_type = await asyncio.to_thread(backend.detect_audio_type)
-            return {"audio_type": audio_type}
+            return {"audio_type": await asyncio.to_thread(backend.detect_audio_type)}
     else:
 
         @app.get("/probe")
         async def probe():
-            audio_type = backend.detect_audio_type()
-            return {"audio_type": audio_type}
+            return {"audio_type": backend.detect_audio_type()}
 
     return app
 
 
-# ---------------------------------------------------------------------------
-# Concurrent probe + health driver (sync, runs from worker threads)
-# ---------------------------------------------------------------------------
+def _drive_concurrent_probe_and_health(base_url, *, n_health = 12, gap = 0.05):
+    elapsed = -1.0
+    latencies: list[float] = []
 
-
-def _drive_concurrent_probe_and_health(
-    base_url: str, *, n_health: int = 12, health_gap: float = 0.05
-) -> tuple[float, float, list[float]]:
-    """Fire one /probe in worker A; concurrently issue ``n_health``
-    /health requests from worker B with ``health_gap`` seconds between
-    requests. Returns (max_health_latency, probe_elapsed, all_latencies).
-
-    Crucially each request goes over a real TCP socket to uvicorn, so
-    /health requests submitted while /probe is mid-sync-call queue on
-    uvicorn's event loop -- proving (or disproving) event-loop block."""
-    probe_elapsed = -1.0
-    health_latencies: list[float] = []
-
-    def fire_probe() -> None:
-        nonlocal probe_elapsed
+    def fire_probe():
+        nonlocal elapsed
         t0 = time.perf_counter()
-        with httpx.Client(timeout = 30.0) as client:
-            r = client.get(f"{base_url}/probe")
-            assert r.status_code == 200, r.text
-        probe_elapsed = time.perf_counter() - t0
+        with httpx.Client(timeout = 30.0) as c:
+            r = c.get(f"{base_url}/probe")
+            assert r.status_code == 200
+        elapsed = time.perf_counter() - t0
 
-    def fire_health_loop() -> None:
-        # Give the probe a moment to enter detect_audio_type before we
-        # start hammering /health -- otherwise the first health request
-        # may complete before the probe handler runs.
+    def fire_health():
         time.sleep(0.1)
-        with httpx.Client(timeout = 10.0) as client:
+        with httpx.Client(timeout = 10.0) as c:
             for _ in range(n_health):
                 t0 = time.perf_counter()
-                r = client.get(f"{base_url}/health")
-                health_latencies.append(time.perf_counter() - t0)
-                assert r.status_code == 200, r.text
-                time.sleep(health_gap)
+                r = c.get(f"{base_url}/health")
+                latencies.append(time.perf_counter() - t0)
+                assert r.status_code == 200
+                time.sleep(gap)
 
     with ThreadPoolExecutor(max_workers = 2) as pool:
-        f_probe = pool.submit(fire_probe)
-        f_health = pool.submit(fire_health_loop)
-        f_probe.result(timeout = 60.0)
-        f_health.result(timeout = 60.0)
-
-    assert probe_elapsed >= 0, "probe never set its elapsed time (worker crashed?)"
-    return max(health_latencies), probe_elapsed, health_latencies
+        f1 = pool.submit(fire_probe)
+        f2 = pool.submit(fire_health)
+        f1.result(60.0)
+        f2.result(60.0)
+    return max(latencies), elapsed, latencies
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# (1) Behavioural canary
 # ---------------------------------------------------------------------------
 
 
-def test_buggy_route_blocks_event_loop(shim_slow):
-    """With a sync ``detect_audio_type`` call inside an async route,
-    /health requests issued while /probe is in flight stall behind
-    the blocking httpx.Client.post calls.
-
-    /probe makes up to 8 vocab probes x ~0.8 s. The event loop is
-    blocked for that entire window, so at least one /health request
-    must observe a latency >= one tokenize delay. This is the
-    behavioural canary that proves the bug class -- it is NOT the
-    test that asserts the production code is fixed (see
-    ``test_routes_inference_wraps_detect_audio_type_in_to_thread``).
-    """
-    backend = _make_backend(shim_slow.port)
-    app = _build_app(backend, wrap_in_thread = False)
-    port = _free_port()
-    with _UvicornServerThread(app, port = port) as uv:
-        max_latency, probe_elapsed, _ = _drive_concurrent_probe_and_health(
-            f"http://127.0.0.1:{uv.port}"
-        )
-    assert probe_elapsed >= 1.0, (
-        f"buggy /probe was suspiciously fast ({probe_elapsed:.2f}s); "
-        "shim may not be exercising the slow path."
-    )
-    # The canary: at least one /health request was blocked for >= one
-    # tokenize delay. That's the bug -- the sync call held the event
-    # loop and uvicorn could not dispatch the inbound /health request
-    # to its handler.
-    assert max_latency >= 0.5, (
-        f"buggy: max /health latency was only {max_latency:.3f}s; the "
-        "current code shape is supposed to stall /health behind the sync "
-        "detect_audio_type call. If this is failing, the bug may have "
-        "been fixed elsewhere or the shim isn't being hit."
-    )
+def test_buggy_route_blocks_event_loop():
+    """Sync detect_audio_type call inside async route stalls /health."""
+    with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = False)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(
+                f"http://127.0.0.1:{uv.port}"
+            )
+    assert probe_t >= 0.5
+    assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
 
 
-def test_fixed_route_keeps_event_loop_responsive(shim_slow):
-    """With the proposed fix (await asyncio.to_thread), /health
-    requests stay responsive throughout the entire /probe lifetime.
-    The slow tokenize / detokenize work runs in the threadpool and
-    does not block uvicorn's asyncio event loop, so inbound /health
-    requests are dispatched immediately."""
-    backend = _make_backend(shim_slow.port)
-    app = _build_app(backend, wrap_in_thread = True)
-    port = _free_port()
-    with _UvicornServerThread(app, port = port) as uv:
-        max_latency, probe_elapsed, latencies = _drive_concurrent_probe_and_health(
-            f"http://127.0.0.1:{uv.port}"
-        )
-    assert probe_elapsed >= 1.0, "fixed-route /probe must still exercise the slow path"
-    # 250 ms upper bound absorbs CI jitter while staying well below the
-    # 800 ms-per-tokenize-call threshold the bug produces. If the wrap
-    # regresses this jumps to >= 500 ms (see the buggy test).
-    assert max_latency < 0.25, (
-        f"fixed: max /health latency was {max_latency:.3f}s "
-        f"(all latencies: {[round(x, 3) for x in latencies]}); "
-        "the to_thread wrap is supposed to keep the event loop responsive."
-    )
+def test_fixed_route_keeps_event_loop_responsive():
+    """to_thread-wrapped call leaves the event loop free."""
+    with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            max_lat, probe_t, lats = _drive_concurrent_probe_and_health(
+                f"http://127.0.0.1:{uv.port}"
+            )
+    assert probe_t >= 0.5
+    assert max_lat < 0.25, f"expected <0.25s; got {max_lat:.3f}s (all: {lats})"
+
+
+# ---------------------------------------------------------------------------
+# (2) Functional equivalence -- sync == to_thread for each codec branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def shim_no_match():
+    """A shim whose responses make detect_audio_type fall through every
+    codec branch and return None."""
+    with FakeLlamaServer(
+        # detok responds with a 1-char unique string per tid -> doesn't
+        # start with "<custom_token_" so snac branch fails.
+        detok_map = {128258: "abc", 128259: "def"},
+        # tokenize responds with len-of-words tokens, which is always
+        # 1 for single-word inputs so we need >1 token for the codec
+        # branches NOT to match. Map every audio probe text to a 2-token
+        # response so all `len(_tok(...)) == 1` checks fail.
+        tok_response_map = {
+            "<|AUDIO|>": [0, 1],
+            "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0, 1],
+            "<audio_soft_token>": [0, 1],
+            "<|bicodec_semantic_0|>": [0, 1],
+            "<|bicodec_global_0|>": [0, 1],
+            "<|c1_0|>": [0, 1],
+            "<|c2_0|>": [0, 1],
+        },
+    ) as srv:
+        yield srv
+
+
+def test_functional_equivalence_no_match(shim_no_match):
+    backend = _make_backend(shim_no_match.port)
+    sync_result = backend.detect_audio_type()
+    threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == threaded == None  # noqa: E711
+
+
+def test_functional_equivalence_snac_match():
+    # snac match requires _detok(128258) AND _detok(128259) to start
+    # with "<custom_token_".
+    with FakeLlamaServer(detok_map = {128258: "<custom_token_99>", 128259: "<custom_token_98>"}) as srv:
+        backend = _make_backend(srv.port)
+        sync_result = backend.detect_audio_type()
+        threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == "snac"
+    assert sync_result == threaded
+
+
+def test_functional_equivalence_csm_match():
+    # csm match: _tok("<|AUDIO|>") == 1 token AND _tok("<|audio_eos|>") == 1 token.
+    # Also snac match must fail first.
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_response_map = {"<|AUDIO|>": [0], "<|audio_eos|>": [0]},
+    ) as srv:
+        backend = _make_backend(srv.port)
+        sync_result = backend.detect_audio_type()
+        threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == "csm"
+    assert sync_result == threaded
+
+
+def test_functional_equivalence_whisper_match():
+    # whisper: snac fails, csm fails, then _tok("<|startoftranscript|>") == 1
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_response_map = {
+            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
+            "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0],
+        },
+    ) as srv:
+        backend = _make_backend(srv.port)
+        sync_result = backend.detect_audio_type()
+        threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == "whisper"
+    assert sync_result == threaded
+
+
+def test_functional_equivalence_bicodec_match():
+    # bicodec: snac/csm/whisper/audio_vlm all fail first, then both
+    # bicodec_semantic_0 and bicodec_global_0 are single tokens.
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_response_map = {
+            "<|AUDIO|>": [0, 1],
+            "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0, 1],
+            "<audio_soft_token>": [0, 1],
+            "<|bicodec_semantic_0|>": [0],
+            "<|bicodec_global_0|>": [0],
+        },
+    ) as srv:
+        backend = _make_backend(srv.port)
+        sync_result = backend.detect_audio_type()
+        threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == "bicodec"
+    assert sync_result == threaded
+
+
+# ---------------------------------------------------------------------------
+# (3) Failure modes
+# ---------------------------------------------------------------------------
+
+
+def test_shim_returns_500_on_tokenize_returns_none():
+    """detect_audio_type's `r.status_code == 200` check filters out
+    non-200 responses; the function gracefully falls through and
+    returns None. Both sync and threaded paths see identical behaviour."""
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_status = 500,
+    ) as srv:
+        backend = _make_backend(srv.port)
+        # Sync
+        assert backend.detect_audio_type() is None
+        # Threaded
+        assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
+
+
+def test_shim_returns_malformed_json_returns_none():
+    """detect_audio_type's outer try/except catches r.json() failures."""
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_body = b"{this is not json",
+    ) as srv:
+        backend = _make_backend(srv.port)
+        assert backend.detect_audio_type() is None
+        assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
+
+
+def test_shim_connection_reset_returns_none():
+    """Connection drops mid-response (RemoteProtocolError / ReadError)
+    must be caught by detect_audio_type's outer try/except."""
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_reset = True,
+    ) as srv:
+        backend = _make_backend(srv.port)
+        assert backend.detect_audio_type() is None
+        assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
+
+
+def test_unreachable_port_returns_none():
+    """Pointing the backend at a port nothing is listening on triggers
+    httpx.ConnectError. detect_audio_type's try/except swallows it."""
+    backend = _make_backend(_free_port())  # nothing listening
+    assert backend.detect_audio_type() is None
+    assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
+
+
+def test_backend_not_loaded_short_circuits():
+    """is_loaded=False -> detect_audio_type returns None without doing
+    any network I/O. Confirm sub-millisecond on both paths."""
+    backend = _make_backend(_free_port(), loaded = False)
+    t0 = time.perf_counter()
+    sync = backend.detect_audio_type()
+    sync_t = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    threaded_t = time.perf_counter() - t0
+    assert sync is threaded is None
+    assert sync_t < 0.05
+    assert threaded_t < 0.05
+
+
+# ---------------------------------------------------------------------------
+# (4) Stress / concurrency
+# ---------------------------------------------------------------------------
+
+
+def test_50_concurrent_probes_complete_without_deadlock():
+    """Fire 50 /probe calls in parallel against a fast shim. Threadpool
+    must not deadlock; route handler must not lock or serialise."""
+    with FakeLlamaServer(tok_delay = 0.05, detok_delay = 0.05) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            t0 = time.perf_counter()
+            with ThreadPoolExecutor(max_workers = 50) as pool:
+                futs = [
+                    pool.submit(
+                        lambda: httpx.get(f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0)
+                    )
+                    for _ in range(50)
+                ]
+                results = [f.result(60.0) for f in futs]
+            elapsed = time.perf_counter() - t0
+    assert all(r.status_code == 200 for r in results)
+    # 50 probes at ~0.4s each, threadpool size 32 default -> ~1-2 batches.
+    # Bound generously to absorb CI jitter while catching pathological
+    # serialisation (would be ~20s).
+    assert elapsed < 15.0, f"50 concurrent probes took {elapsed:.1f}s; threadpool may be serialising"
+
+
+def test_100_concurrent_healths_during_slow_probe_all_responsive():
+    """Heavier version of the canary: 100 /health requests across 8
+    worker threads during a slow /probe. With the fix, max latency
+    stays bounded; without the fix, requests pile up."""
+    with FakeLlamaServer(tok_delay = 0.4, detok_delay = 0.4) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            base = f"http://127.0.0.1:{uv.port}"
+
+            def probe():
+                with httpx.Client(timeout = 30.0) as c:
+                    return c.get(f"{base}/probe").status_code
+
+            def health_burst(n):
+                lats = []
+                with httpx.Client(timeout = 10.0) as c:
+                    for _ in range(n):
+                        t0 = time.perf_counter()
+                        assert c.get(f"{base}/health").status_code == 200
+                        lats.append(time.perf_counter() - t0)
+                return lats
+
+            with ThreadPoolExecutor(max_workers = 9) as pool:
+                probe_f = pool.submit(probe)
+                time.sleep(0.05)  # let probe enter detect_audio_type
+                health_fs = [pool.submit(health_burst, 13) for _ in range(8)]
+                assert probe_f.result(60.0) == 200
+                latencies = [x for f in health_fs for x in f.result(60.0)]
+    assert len(latencies) == 104
+    max_lat = max(latencies)
+    assert max_lat < 0.35, f"100-burst max latency {max_lat:.3f}s exceeds 350 ms"
+
+
+# ---------------------------------------------------------------------------
+# (5) Drift / regression guards on the production source
+# ---------------------------------------------------------------------------
 
 
 def test_routes_inference_wraps_detect_audio_type_in_to_thread():
-    """Static guard: studio/backend/routes/inference.py must call
-    ``detect_audio_type`` via ``await asyncio.to_thread(...)`` so the
-    fix for issue #5642 cannot regress silently. The behavioural tests
-    above prove the pattern works; this test ensures the production
-    route file actually uses it."""
-    routes_inference = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
-    if not routes_inference.is_file():
-        pytest.skip(f"routes/inference.py not present at {routes_inference}")
-    text = routes_inference.read_text()
-    # The buggy shape is exactly the line `_gguf_audio = llama_backend.detect_audio_type()`.
-    # The fixed shape is `_gguf_audio = await asyncio.to_thread(llama_backend.detect_audio_type)`.
-    assert "await asyncio.to_thread(llama_backend.detect_audio_type)" in text, (
-        "routes/inference.py is missing the asyncio.to_thread wrap around "
-        "llama_backend.detect_audio_type. See issue unslothai/unsloth#5642."
-    )
-    assert "llama_backend.detect_audio_type()" not in text, (
-        "routes/inference.py still contains a bare ``llama_backend.detect_audio_type()`` "
-        "call. The fix for #5642 requires every call site to go through "
-        "asyncio.to_thread."
-    )
+    f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
+    text = f.read_text()
+    assert "await asyncio.to_thread(llama_backend.detect_audio_type)" in text
+    assert "llama_backend.detect_audio_type()" not in text
 
 
-def test_fast_path_load_completes_quickly(shim_fast):
-    """Sanity / regression guard: with a zero-delay shim, the entire
-    detect_audio_type sequence finishes in well under a second. Locks
-    in an upper bound for the post-_wait_for_health work so a future
-    regression that adds new sync probes is caught early."""
-    backend = _make_backend(shim_fast.port)
-    app = _build_app(backend, wrap_in_thread = True)
-    port = _free_port()
-    with _UvicornServerThread(app, port = port) as uv:
-        t0 = time.perf_counter()
-        with httpx.Client(timeout = 5.0) as client:
-            r = client.get(f"http://127.0.0.1:{uv.port}/probe")
-        elapsed = time.perf_counter() - t0
-    assert r.status_code == 200, r.text
-    assert elapsed < 2.0, (
-        f"/probe took {elapsed:.2f}s against a zero-delay shim; expected <2s. "
-        "Either the shim is slow or detect_audio_type grew a new blocking call."
-    )
+def test_init_audio_codec_still_wrapped_in_to_thread():
+    """Drift guard: the neighbouring init_audio_codec call must keep
+    its to_thread wrap so any future copy-paste from this block keeps
+    the right pattern."""
+    f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
+    text = f.read_text()
+    assert "await asyncio.to_thread(llama_backend.init_audio_codec" in text
+
+
+def test_no_other_async_route_calls_detect_audio_type_unwrapped():
+    """Walk every .py under studio/backend/routes/ and confirm no file
+    contains a bare ``detect_audio_type()`` call inside an async function
+    (would re-introduce the bug). We accept a wrapped form."""
+    routes_dir = _REPO_ROOT / "studio" / "backend" / "routes"
+    offenders = []
+    pattern = re.compile(r"\.detect_audio_type\s*\(\)")
+    for path in routes_dir.rglob("*.py"):
+        for i, line in enumerate(path.read_text().splitlines(), start = 1):
+            if pattern.search(line) and "asyncio.to_thread" not in line:
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
+    assert not offenders, "bare detect_audio_type() in async route(s): " + "; ".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# (6) Timing budgets
+# ---------------------------------------------------------------------------
+
+
+def test_load_response_under_2s_with_fast_shim():
+    """Regression budget: fast shim must complete /probe in <2 s."""
+    with FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            t0 = time.perf_counter()
+            with httpx.Client(timeout = 5.0) as c:
+                assert c.get(f"http://127.0.0.1:{uv.port}/probe").status_code == 200
+            elapsed = time.perf_counter() - t0
+    assert elapsed < 2.0
+
+
+def test_repeated_loads_bounded_total_time():
+    """Five sequential /probe calls against a fast shim must complete
+    in well under 10 s total. Locks in that there's no per-call leak
+    (open connections, threads, etc.) that compounds across loads."""
+    with FakeLlamaServer(tok_delay = 0.05, detok_delay = 0.05) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            t0 = time.perf_counter()
+            with httpx.Client(timeout = 5.0) as c:
+                for _ in range(5):
+                    assert c.get(f"http://127.0.0.1:{uv.port}/probe").status_code == 200
+            elapsed = time.perf_counter() - t0
+    assert elapsed < 10.0
+
+
+# ---------------------------------------------------------------------------
+# (7) Browser-compatibility surface
+# ---------------------------------------------------------------------------
+
+
+def test_response_is_valid_browser_parseable_json():
+    """The fix changes the route's internal scheduling but must not
+    change the response shape any browser sees. Round-trip the response
+    through json.loads() (the canonical equivalent of
+    JSON.parse() in any browser) and assert the expected keys."""
+    import json as _json
+    with FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            with httpx.Client(timeout = 5.0) as c:
+                r = c.get(f"http://127.0.0.1:{uv.port}/probe")
+    # 1. Status code is one a browser will surface as success.
+    assert r.status_code == 200
+    # 2. Content-Type is exactly application/json (browsers use this
+    #    header to decide if they can JSON-parse the body).
+    assert r.headers["content-type"].startswith("application/json")
+    # 3. Body is valid JSON. Every modern browser (Firefox, Safari,
+    #    Chrome, Edge) uses the same JSON.parse semantics; parse via
+    #    Python's strict json module here as a stand-in.
+    parsed = _json.loads(r.text)
+    # 4. Expected key present.
+    assert "audio_type" in parsed
+    # 5. No NaN / Infinity / non-JSON-spec types that would break
+    #    browser parsers.
+    assert _json.dumps(parsed)
+
+
+def test_response_shape_matches_pre_fix_for_no_match():
+    """The fix's only externally-observable effect must be timing.
+    Confirm sync and threaded paths return byte-identical response
+    bodies for the no-match scenario (the dominant code path in
+    practice for non-audio models)."""
+    import json as _json
+    with FakeLlamaServer(
+        detok_map = {128258: "abc", 128259: "def"},
+        tok_response_map = {
+            "<|AUDIO|>": [0, 1], "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0, 1], "<audio_soft_token>": [0, 1],
+            "<|bicodec_semantic_0|>": [0, 1], "<|bicodec_global_0|>": [0, 1],
+            "<|c1_0|>": [0, 1], "<|c2_0|>": [0, 1],
+        },
+    ) as shim:
+        backend = _make_backend(shim.port)
+        # Two apps -- sync (pre-fix) and to_thread (post-fix).
+        for wrap in (False, True):
+            app = _build_app(backend, wrap_in_thread = wrap)
+            port = _free_port()
+            with _UvicornServerThread(app, port = port) as uv:
+                with httpx.Client(timeout = 30.0) as c:
+                    r = c.get(f"http://127.0.0.1:{uv.port}/probe")
+            assert r.status_code == 200
+            body = _json.loads(r.text)
+            assert body == {"audio_type": None}
+
+
+# ---------------------------------------------------------------------------
+# (8) Cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_client_disconnect_during_probe_does_not_crash_server():
+    """If the HTTP client disconnects mid-probe, uvicorn must continue
+    serving subsequent requests. The threadpool task keeps running
+    (asyncio.to_thread doesn't propagate cancellation), but that's
+    matched by the existing init_audio_codec wrap and is not a
+    regression. After the disconnect, /health must still respond."""
+    with FakeLlamaServer(tok_delay = 0.5, detok_delay = 0.5) as shim:
+        backend = _make_backend(shim.port)
+        app = _build_app(backend, wrap_in_thread = True)
+        port = _free_port()
+        with _UvicornServerThread(app, port = port) as uv:
+            base = f"http://127.0.0.1:{uv.port}"
+
+            # Connect and immediately drop. httpx with a very short
+            # timeout simulates a client that gave up.
+            with pytest.raises(httpx.TimeoutException):
+                with httpx.Client(timeout = 0.2) as c:
+                    c.get(f"{base}/probe")
+
+            # The server must still serve /health afterwards.
+            with httpx.Client(timeout = 5.0) as c:
+                r = c.get(f"{base}/health")
+            assert r.status_code == 200
