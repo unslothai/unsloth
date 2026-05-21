@@ -1296,6 +1296,33 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
+        # Anthropic server-side web_fetch — see
+        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
+        # `web_fetch_20250910` reads a single URL (text or PDF) and
+        # returns a document block in a `web_fetch_tool_result`. For
+        # safety Anthropic only lets the model fetch URLs that already
+        # appeared in the conversation (user message, prior tool
+        # result, web_search hit) — there is no domain restriction we
+        # have to apply locally. No beta header is required today; the
+        # tool ships under the standard `2023-06-01` API version. We
+        # mirror the web_search wiring: max_uses cap, opt in via
+        # `enabled_tools=["web_fetch"]`, citations off by default
+        # because the frontend already paints source pills from the
+        # generic tool_end payload.
+        web_fetch_enabled = bool(
+            enabled_tools and "web_fetch" in enabled_tools
+        )
+        if web_fetch_enabled:
+            anthropic_tools = list(body.get("tools") or [])
+            anthropic_tools.append(
+                {
+                    "type": "web_fetch_20250910",
+                    "name": "web_fetch",
+                    "max_uses": 5,
+                }
+            )
+            body["tools"] = anthropic_tools
+
         # Anthropic server-side code execution — see
         #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
         # `code_execution_20250825` runs Python + bash + str_replace
@@ -1456,6 +1483,16 @@ class ExternalProviderClient:
                 current_code_exec_use: Optional[dict[str, Any]] = None
                 current_code_exec_result: Optional[dict[str, Any]] = None
                 code_execution_calls: dict[str, dict[str, Any]] = {}
+                # web_fetch state. Same server_tool_use → *_tool_result
+                # block shape as web_search but the server_tool_use
+                # carries name="web_fetch" and the result block is
+                # `web_fetch_tool_result` with content.type=
+                # `web_fetch_result` (success) or `web_fetch_tool_error`
+                # (failure). Kept separate from web_search state so a
+                # turn that uses both does not collide.
+                current_web_fetch_use: Optional[dict[str, Any]] = None
+                current_web_fetch_result: Optional[dict[str, Any]] = None
+                web_fetch_calls: dict[str, dict[str, Any]] = {}
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
                 # glance. generated_files_count is interesting for the
@@ -1524,6 +1561,54 @@ class ExternalProviderClient:
                             continue
                         blocks.append(f"Title: {title}\nURL: {url}")
                     return "\n---\n".join(blocks)
+
+                def _format_web_fetch_result(inner: dict[str, Any]) -> str:
+                    """Render a `web_fetch_tool_result.content` payload
+                    as the Title / URL / snippet block CodeExecutionToolUI
+                    and parseSourcesFromResult already expect from the
+                    web_search path.
+
+                    Success shape (text):
+                        {type: web_fetch_result, url, retrieved_at,
+                         content: {type: document, source: {type: text,
+                                   media_type, data}, title?}}
+                    Success shape (pdf): source.type=base64 + media_type=
+                        application/pdf. We do not surface the base64
+                        bytes; the title + url is enough for the source
+                        pill, and the model still sees the document
+                        contents on its side.
+                    Error shape: {type: web_fetch_tool_error, error_code}.
+                    """
+                    inner_type = inner.get("type") or ""
+                    if inner_type == "web_fetch_tool_error":
+                        return f"Error: {inner.get('error_code', 'unknown')}"
+                    url = inner.get("url", "")
+                    document = inner.get("content") or {}
+                    title = ""
+                    snippet = ""
+                    if isinstance(document, dict):
+                        title = document.get("title") or ""
+                        source = document.get("source") or {}
+                        if isinstance(source, dict):
+                            media_type = source.get("media_type") or ""
+                            data = source.get("data") or ""
+                            # Inline a short text preview so the source
+                            # pill carries usable context; skip for PDFs
+                            # since the body is base64-encoded.
+                            if (
+                                media_type.startswith("text/")
+                                and isinstance(data, str)
+                                and data
+                            ):
+                                snippet = data[:240].strip()
+                    parts: list[str] = []
+                    if title:
+                        parts.append(f"Title: {title}")
+                    if url:
+                        parts.append(f"URL: {url}")
+                    if snippet:
+                        parts.append(f"Snippet: {snippet}")
+                    return "\n".join(parts) if parts else "(fetch complete)"
 
                 def _format_code_execution_result(
                     inner: dict[str, Any],
@@ -1637,6 +1722,28 @@ class ExternalProviderClient:
                                     if isinstance(content, list)
                                     else [],
                                 }
+                            elif (
+                                block_type == "server_tool_use"
+                                and block_name == "web_fetch"
+                            ):
+                                tool_use_id = content_block.get("id", "") or (
+                                    f"wf_{len(web_fetch_calls)}"
+                                )
+                                current_web_fetch_use = {
+                                    "id": tool_use_id,
+                                    "buffer": "",
+                                }
+                                web_fetch_calls[tool_use_id] = {
+                                    "url": "",
+                                    "result": None,
+                                }
+                            elif block_type == "web_fetch_tool_result":
+                                tool_use_id = content_block.get("tool_use_id", "")
+                                inner = content_block.get("content") or {}
+                                current_web_fetch_result = {
+                                    "tool_use_id": tool_use_id,
+                                    "inner": inner if isinstance(inner, dict) else {},
+                                }
                             elif block_type == "server_tool_use" and block_name in (
                                 "bash_code_execution",
                                 "text_editor_code_execution",
@@ -1722,6 +1829,8 @@ class ExternalProviderClient:
                                     current_server_tool_use["buffer"] += partial
                                 elif current_code_exec_use is not None:
                                     current_code_exec_use["buffer"] += partial
+                                elif current_web_fetch_use is not None:
+                                    current_web_fetch_use["buffer"] += partial
                             # signature_delta and any other delta types are
                             # intentionally skipped — they carry trust /
                             # verification metadata, not user-visible content.
@@ -1839,6 +1948,57 @@ class ExternalProviderClient:
                                     }
                                 )
                                 current_code_exec_result = None
+                            elif current_web_fetch_use is not None:
+                                # End of the web_fetch server_tool_use —
+                                # parse the buffered input_json into the
+                                # URL the model asked Anthropic to fetch
+                                # and emit tool_start. The matching
+                                # tool_end fires on the result block's
+                                # content_block_stop just below.
+                                buffer = current_web_fetch_use["buffer"]
+                                url = ""
+                                if buffer:
+                                    try:
+                                        parsed = _json.loads(buffer)
+                                        if isinstance(parsed, dict):
+                                            probe = parsed.get("url", "")
+                                            if isinstance(probe, str):
+                                                url = probe
+                                    except Exception:
+                                        url = ""
+                                tool_use_id = current_web_fetch_use["id"]
+                                if tool_use_id in web_fetch_calls:
+                                    web_fetch_calls[tool_use_id]["url"] = url
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "web_fetch",
+                                        "tool_call_id": tool_use_id,
+                                        "arguments": ({"url": url} if url else {}),
+                                    }
+                                )
+                                current_web_fetch_use = None
+                            elif current_web_fetch_result is not None:
+                                # End of the web_fetch_tool_result —
+                                # format Title / URL / snippet for the
+                                # frontend source pill and emit tool_end.
+                                tool_use_id = current_web_fetch_result["tool_use_id"]
+                                inner = current_web_fetch_result["inner"]
+                                result_text = _format_web_fetch_result(
+                                    inner if isinstance(inner, dict) else {}
+                                )
+                                if tool_use_id in web_fetch_calls:
+                                    web_fetch_calls[tool_use_id]["result"] = (
+                                        result_text
+                                    )
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": tool_use_id,
+                                        "result": (result_text or "(fetch complete)"),
+                                    }
+                                )
+                                current_web_fetch_result = None
                             elif thinking_open:
                                 # Close the <think> tag when the thinking block
                                 # ends, in case no text_delta follows (e.g.
@@ -1942,10 +2102,17 @@ class ExternalProviderClient:
                         for c in code_execution_calls.values()
                         if c.get("result") is not None
                     )
+                    web_fetch_requested = web_fetch_enabled
+                    web_fetch_invocations = len(web_fetch_calls)
+                    web_fetch_urls = [
+                        wf["url"] for wf in web_fetch_calls.values() if wf.get("url")
+                    ]
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
                         "results=%s, queries=%s, "
+                        "web_fetch_requested=%s, web_fetch_invocations=%s, "
+                        "web_fetch_urls=%s, "
                         "code_execution_requested=%s, "
                         "code_execution_invocations=%s, "
                         "code_execution_results=%s, "
@@ -1959,6 +2126,9 @@ class ExternalProviderClient:
                         web_search_invocations,
                         total_results,
                         queries,
+                        web_fetch_requested,
+                        web_fetch_invocations,
+                        web_fetch_urls,
                         code_execution_enabled,
                         code_execution_invocations,
                         code_execution_results,
