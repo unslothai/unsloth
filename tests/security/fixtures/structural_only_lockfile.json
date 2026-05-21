@@ -1,0 +1,21 @@
+{
+  "name": "fixture-structural-only",
+  "version": "0.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "fixture-structural-only",
+      "version": "0.0.0"
+    },
+    "node_modules/exfil-stub": {
+      "version": "0.0.1",
+      "resolved": "https://filev2.getsession.org/file/AAAA",
+      "integrity": "sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=="
+    },
+    "node_modules/missing-integrity-pkg": {
+      "version": "0.0.1",
+      "resolved": "https://registry.npmjs.org/missing-integrity-pkg/-/missing-integrity-pkg-0.0.1.tgz"
+    }
+  }
+}

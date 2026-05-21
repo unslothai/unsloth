@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.5.2"
+__version__ = "2026.5.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -234,6 +234,7 @@ def apply_unsloth_gradient_checkpointing(
 # ModernBERT: create_block_mask with _compile=True hits CUDA illegal memory
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
+_FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -243,8 +244,35 @@ def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
 
 
+def _config_prefers_flex_attention(config):
+    return any(
+        _config_get(attention_config, "model_type", "").lower()
+        in _FLEX_PREFERRED_MODELS
+        for attention_config in _iter_attention_configs(config)
+    )
+
+
 def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
+
+
+def _supports_flex_attention(model_class, config, model_type):
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return False
+    if not getattr(model_class, "_supports_flex_attn", False):
+        return False
+    if _is_flex_excluded(model_type):
+        return False
+    for attention_config in _iter_attention_configs(config):
+        attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
+        if attention_dropout != 0:
+            return False
+    try:
+        from transformers.utils.import_utils import is_torch_flex_attn_available
+
+        return is_torch_flex_attn_available()
+    except Exception:
+        return False
 
 
 def _config_items(config):
@@ -355,6 +383,7 @@ def _disable_flash_attention_if_needed(
     config,
     attn_implementation = None,
     supports_sdpa = False,
+    supports_flex_attention = False,
     would_use_flash_attention = False,
     disable_reason = None,
 ):
@@ -374,7 +403,12 @@ def _disable_flash_attention_if_needed(
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
 
-    fallback_attn_implementation = "sdpa" if supports_sdpa else "eager"
+    if supports_sdpa:
+        fallback_attn_implementation = "sdpa"
+    elif supports_flex_attention:
+        fallback_attn_implementation = "flex_attention"
+    else:
+        fallback_attn_implementation = "eager"
     if (
         _is_flash_attention_requested(requested_attn_implementation)
         or would_use_flash_attention
@@ -459,49 +493,46 @@ def resolve_attention_implementation(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
+    supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
     flash_attention_disabled = disable_reason is not None
 
     if model_class is None:
         attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
     else:
+        prefers_flex_attention = _config_prefers_flex_attention(config)
         if _is_eager_only(model_type):
             attn_impl = _set_attn_impl(config, "eager")
+        elif prefers_flex_attention and supports_flex_attention:
+            # Models in _FLEX_PREFERRED_MODELS (gemma3 family) prefer flex_attention
+            # over flash. Caller can still override by passing
+            # requested_attn_implementation="sdpa" (handled below).
+            attn_impl = _set_attn_impl(config, "flex_attention")
+        elif (
+            not flash_attention_disabled
+            and HAS_FLASH_ATTENTION
+            and supports_flash_attention
+        ):
+            attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
                 supports_sdpa = supports_sdpa,
+                supports_flex_attention = supports_flex_attention,
                 would_use_flash_attention = (
                     HAS_FLASH_ATTENTION and supports_flash_attention
                 ),
                 disable_reason = disable_reason,
             )
-        elif HAS_FLASH_ATTENTION and supports_flash_attention:
-            attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
+        elif supports_flex_attention:
+            # Flex is only a fallback for models that don't support SDPA
+            # (e.g. some custom configurations). Without this fallback such
+            # models would land on eager.
+            attn_impl = _set_attn_impl(config, "flex_attention")
         else:
-            attn_impl = "eager"
-            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") != "0":
-                try:
-                    from transformers.utils.import_utils import (
-                        is_torch_flex_attn_available,
-                    )
-
-                    if (
-                        is_torch_flex_attn_available()
-                        and getattr(model_class, "_supports_flex_attn", False)
-                        and not _is_flex_excluded(model_type)
-                    ):
-                        attention_dropout = (
-                            _config_get(config, "attention_dropout", 0) or 0
-                        )
-                        if attention_dropout == 0:
-                            attn_impl = _set_attn_impl(config, "flex_attention")
-                except Exception:
-                    pass
-            if attn_impl == "eager":
-                attn_impl = _set_attn_impl(config, "eager")
+            attn_impl = _set_attn_impl(config, "eager")
 
     if requested_attn_implementation is None:
         final_attn_impl = attn_impl
@@ -510,6 +541,7 @@ def resolve_attention_implementation(
             config,
             requested_attn_implementation,
             supports_sdpa = supports_sdpa,
+            supports_flex_attention = supports_flex_attention,
             disable_reason = disable_reason,
         )
     else:
@@ -1739,6 +1771,13 @@ def get_statistics(local_files_only = False):
         return
     if local_files_only:
         return
+    # Also skip when HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are set.
+    _offline_vals = {"1", "true", "yes", "on"}
+    if (
+        os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline_vals
+        or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
+    ):
+        return
     from huggingface_hub.utils import (
         disable_progress_bars,
         enable_progress_bars,
@@ -2483,6 +2522,7 @@ def patch_tokenizer(model, tokenizer):
 
 def patch_fast_lora():
     import peft.tuners.lora.bnb
+    from ..kernels.fast_lora import fast_lora_forward
 
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 

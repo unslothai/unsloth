@@ -67,7 +67,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 
@@ -913,6 +913,7 @@ export function DatasetSection() {
                       <SelectItem value="alpaca">Alpaca</SelectItem>
                       <SelectItem value="chatml">ChatML</SelectItem>
                       <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                      <SelectItem value="raw">Raw Text</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

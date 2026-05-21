@@ -3,11 +3,13 @@
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { useCallback } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
+import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
+import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
@@ -88,7 +90,10 @@ export function useTrainingActions() {
           });
         }
 
-        const needsReview = check.requires_manual_mapping || check.detected_format === "custom_heuristic";
+        const isRawFormat = isRawTextDatasetFormat(config.datasetFormat);
+        const needsReview =
+          !isRawFormat &&
+          (check.requires_manual_mapping || check.detected_format === "custom_heuristic");
         if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};
@@ -136,6 +141,7 @@ export function useTrainingActions() {
       }
 
       runtimeStore.setStartQueued(response.job_id, response.message);
+      emitTrainingRunsChanged();
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {
@@ -199,6 +205,7 @@ export function useTrainingActions() {
       }
 
       runtimeStore.setStartQueued(response.job_id, response.message);
+      emitTrainingRunsChanged();
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {

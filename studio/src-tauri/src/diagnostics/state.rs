@@ -435,6 +435,27 @@ pub fn begin_backend_session(
     }
 }
 
+pub fn begin_adopted_backend_session(diagnostics: &DiagnosticsState, port: u16, generation: u64) {
+    let session_id = new_id("adopted-backend");
+    let started_at_ms = now_ms();
+    with_snapshot(diagnostics, |snapshot| {
+        snapshot.backend = Some(BackendSummary {
+            session_id: Some(session_id.clone()),
+            backend_kind: "adopted".to_string(),
+            log_segments: Vec::new(),
+            requested_port: Some(port),
+            reported_port: Some(port),
+            generation: Some(generation),
+            started_at_ms: Some(started_at_ms),
+            ended_at_ms: None,
+            exit_status: None,
+            intentional_stop: false,
+            terminal_reason: None,
+            last_error: None,
+        });
+    });
+}
+
 pub fn record_backend_start_failure(
     diagnostics: &DiagnosticsState,
     requested_port: Option<u16>,
@@ -769,6 +790,9 @@ fn disposition_label(disposition: &DesktopPreflightDisposition) -> &'static str 
         DesktopPreflightDisposition::NotInstalled => "not_installed",
         DesktopPreflightDisposition::ManagedReady => "managed_ready",
         DesktopPreflightDisposition::ManagedStale => "managed_stale",
+        DesktopPreflightDisposition::OwnedReady => "owned_ready",
+        DesktopPreflightDisposition::OwnedStale => "owned_stale",
         DesktopPreflightDisposition::AttachedReady => "attached_ready",
+        DesktopPreflightDisposition::ExternalConflict => "external_conflict",
     }
 }
