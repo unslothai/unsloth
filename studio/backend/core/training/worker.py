@@ -1413,6 +1413,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             weight_decay = weight_decay,
             max_grad_norm = max_grad_norm,
             max_grad_value = max_grad_value,
+            cast_norm_output_to_input_dtype = bool(
+                config.get("cast_norm_output_to_input_dtype", True)
+            ),
             logging_steps = 1,
             max_seq_length = max_seq_length,
             seed = config.get("random_seed", 3407),

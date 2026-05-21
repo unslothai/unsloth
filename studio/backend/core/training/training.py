@@ -219,6 +219,9 @@ class TrainingBackend:
             "weight_decay": kwargs.get("weight_decay", 0.001),
             "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
             "max_grad_value": kwargs.get("max_grad_value"),
+            "cast_norm_output_to_input_dtype": kwargs.get(
+                "cast_norm_output_to_input_dtype", True
+            ),
             "random_seed": kwargs.get("random_seed", 3407),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),

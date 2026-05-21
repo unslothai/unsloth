@@ -275,6 +275,13 @@ class TrainingStartRequest(BaseModel):
             "If unset, MLX uses its runtime default."
         ),
     )
+    cast_norm_output_to_input_dtype: bool = Field(
+        True,
+        description = (
+            "MLX-only: keep norm parameters in fp32 but cast norm outputs "
+            "back to the incoming activation dtype."
+        ),
+    )
     random_seed: int = Field(42, description = "Random seed")
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
