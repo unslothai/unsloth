@@ -1,0 +1,36 @@
+{
+  "_comment": "Maps Colab GPU runtime pinned wheels to CPU equivalents for ubuntu-latest CI smoke jobs. The Colab GPU image ships +cu128 builds that won't install on a CPU-only runner; this map either rewrites the spec to a CPU wheel from https://download.pytorch.org/whl/cpu or falls back to module-spoof for packages with no CPU build.",
+  "rewrite": {
+    "torch": {
+      "from_local_version": "+cu128",
+      "to_index_url": "https://download.pytorch.org/whl/cpu"
+    },
+    "torchvision": {
+      "from_local_version": "+cu128",
+      "to_index_url": "https://download.pytorch.org/whl/cpu"
+    },
+    "torchaudio": {
+      "from_local_version": "+cu128",
+      "to_index_url": "https://download.pytorch.org/whl/cpu"
+    }
+  },
+  "module_spoof": {
+    "torchcodec": "no CPU wheel published; smoke job sys.modules-stubs torchcodec before importing unsloth"
+  },
+  "skip": [
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-cupti-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cudnn-cu12",
+    "nvidia-cufft-cu12",
+    "nvidia-curand-cu12",
+    "nvidia-cusolver-cu12",
+    "nvidia-cusparse-cu12",
+    "nvidia-cusparselt-cu12",
+    "nvidia-nccl-cu12",
+    "nvidia-nvjitlink-cu12",
+    "nvidia-nvtx-cu12",
+    "triton"
+  ]
+}

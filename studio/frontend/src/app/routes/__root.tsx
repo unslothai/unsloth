@@ -15,8 +15,16 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, type ReactNode } from "react";
 import { AppProvider } from "../provider";
+
+// Fallback while a lazy route bundle (Train/Recipes/Export) loads.
+// /chat is synchronous and never hits this.
+const RouteFallback: ReactNode = (
+  <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
+    Loading...
+  </div>
+);
 
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
@@ -72,7 +80,7 @@ function RootLayout() {
       <SettingsDialog />
       {hideNavbar ? (
         <main className="flex-1">
-          <Suspense fallback={null}>
+          <Suspense fallback={RouteFallback}>
             <Outlet />
           </Suspense>
         </main>
@@ -81,7 +89,7 @@ function RootLayout() {
           pinned={pinned}
           setPinned={setPinned}
           togglePinned={togglePinned}
-          className="!min-h-0 h-dvh overflow-hidden"
+          className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
           <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
@@ -98,7 +106,7 @@ function RootLayout() {
                   transition={{ duration: 0.15 }}
                   className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
                 >
-                  <Suspense fallback={null}>
+                  <Suspense fallback={RouteFallback}>
                     <Outlet />
                   </Suspense>
                 </motion.div>

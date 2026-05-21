@@ -21,9 +21,14 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+_BACKEND_DIR = Path(__file__).resolve().parent / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(1, str(_BACKEND_DIR))
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
+    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -624,9 +629,18 @@ def _flash_attn_install_disabled() -> bool:
 
 
 def _ensure_flash_attn() -> None:
-    if NO_TORCH or IS_WINDOWS or IS_MACOS:
-        return
     if _flash_attn_install_disabled():
+        return
+    if NO_TORCH:
+        return
+    if has_blackwell_gpu():
+        _step(
+            "warning",
+            "Skipping flash-attn: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+            _cyan,
+        )
+        return
+    if IS_WINDOWS or IS_MACOS:
         return
     if (
         subprocess.run(
@@ -972,12 +986,22 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
+            _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
             pip_install(
                 "Overlaying local repo (editable)",
                 "--no-cache-dir",
                 "--no-deps",
                 "-e",
                 local_repo,
+                constrain = False,
+            )
+            _step(_LABEL, "overlaying unsloth-zoo from git main")
+            pip_install(
+                "Overlaying unsloth-zoo from git main",
+                "--no-cache-dir",
+                "--no-deps",
+                "--force-reinstall",
+                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
                 constrain = False,
             )
     elif local_repo:
@@ -994,12 +1018,22 @@ def install_python_stack() -> int:
             "unsloth-zoo",
             req = REQ_ROOT / "base.txt",
         )
+        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
         pip_install(
             "Overlaying local repo (editable)",
             "--no-cache-dir",
             "--no-deps",
             "-e",
             local_repo,
+            constrain = False,
+        )
+        _step(_LABEL, "overlaying unsloth-zoo from git main")
+        pip_install(
+            "Overlaying unsloth-zoo from git main",
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
             constrain = False,
         )
     elif package_name != "unsloth":

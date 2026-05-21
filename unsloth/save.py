@@ -424,6 +424,60 @@ def fast_save_pickle(shard, name):
     return
 
 
+def _preserve_tokenizer_eos_token(tokenizer, save_directory, filename_prefix = None):
+    """Restore tokenizer_config.json eos_token from the tokenizer passed to save.
+
+    Some merge paths may re-save or mutate tokenizer metadata after the tokenizer
+    is written. Gemma 4 instruct models use `<turn|>` as their chat EOS token;
+    if tokenizer_config.json is reset to the raw base `<eos>` token, runtimes such
+    as vLLM will not stop generation correctly. Keep the serialized metadata in
+    sync with the source tokenizer without failing the save if the config is not
+    present or cannot be edited.
+
+    `filename_prefix` mirrors the same argument on Transformers'
+    `PreTrainedTokenizerBase.save_pretrained`: when provided, the tokenizer
+    config is written as `{filename_prefix}-tokenizer_config.json` instead of
+    `tokenizer_config.json`.
+    """
+    if tokenizer is None or save_directory is None:
+        return
+
+    source_tokenizer = (
+        tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    )
+    eos_token = getattr(source_tokenizer, "eos_token", None)
+    if eos_token is None and source_tokenizer is not tokenizer:
+        eos_token = getattr(tokenizer, "eos_token", None)
+    if eos_token is None:
+        return
+    eos_token = str(eos_token)
+
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json"
+        if filename_prefix
+        else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config):
+        return
+
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+
+        if config.get("eos_token") == eos_token:
+            return
+
+        config["eos_token"] = eos_token
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not preserve tokenizer eos_token in {tokenizer_config}: {error}"
+        )
+
+
 @torch.inference_mode
 def unsloth_save_model(
     model,
@@ -980,6 +1034,11 @@ def unsloth_save_model(
         _tokenizer.padding_side = "left"
 
         tokenizer.save_pretrained(**tokenizer_save_settings)
+        _preserve_tokenizer_eos_token(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
 
         # Revert back padding side
         _tokenizer.padding_side = old_padding_side
@@ -1552,19 +1611,33 @@ def save_to_gguf(
                             f"Error: {e}"
                         )
         print("Unsloth: Model files cleanup...")
+        want_full_precision = first_conversion in quantization_method
         if quants_created:
-            all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink(missing_ok = True)
+            # convert_to_gguf may return multiple base shards plus an mmproj entry,
+            # so treat every initial file that is not an mmproj as part of the base set.
+            base_files = [
+                f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()
+            ]
+            if not want_full_precision:
+                for f in base_files:
+                    if f in all_saved_locations:
+                        all_saved_locations.remove(f)
+                    Path(f).unlink(missing_ok = True)
 
             # flip the list to get [text_model, mmproj] order. for text models stays the same.
             all_saved_locations.reverse()
+
+            # When the base format is preserved, move base files (incl. shards) away from
+            # list boundaries so example commands ([0]=model, [-1]=mmproj) stay correct.
+            if want_full_precision and len(all_saved_locations) > len(base_files) + 1:
+                for f in base_files:
+                    if f in all_saved_locations:
+                        all_saved_locations.remove(f)
+                for i, f in enumerate(base_files):
+                    all_saved_locations.insert(1 + i, f)
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
-
-    if is_gpt_oss:
         want_full_precision = True
-    else:
-        want_full_precision = first_conversion in frozenset(quantization_method)
 
     print(f"Unsloth: All GGUF conversions completed successfully!")
     print(f"Generated files: {all_saved_locations}")
@@ -2627,7 +2700,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         )
 
         readme_path = os.path.join(actual_save_directory, "README.md")
-        with open(readme_path, "w") as f:
+        with open(readme_path, "w", encoding = "utf-8") as f:
             f.write(readme_content)
 
         api.upload_file(
@@ -3501,6 +3574,11 @@ def patch_saving_functions(model, vision = False):
             self,
             save_directory,
             token = kwargs.get("token", None),
+        )
+        _preserve_tokenizer_eos_token(
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
         )
         if push_to_hub:
             push_kwargs = dict(kwargs)

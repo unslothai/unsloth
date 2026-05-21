@@ -5,8 +5,13 @@
 Authentication API routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+import ipaddress
+import os
+import threading
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from models.auth import (
@@ -33,14 +38,160 @@ from auth.authentication import (
 router = APIRouter()
 
 
+# Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
+# typos from blocking others; the aggregate stops username-rotation spray.
+# Single-process only -- multi-worker deployments need a shared store.
+_LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
+_LOGIN_IP_BUCKETS: dict[str, deque] = {}
+_LOGIN_BUCKETS_LOCK = threading.Lock()
+_LOGIN_WINDOW_SECONDS = 60.0
+_LOGIN_MAX_FAILS = 5
+_LOGIN_IP_MAX_FAILS = 30
+_LOGIN_LOCKOUT_SECONDS = 60
+# Bucket-dict cap. On overflow we prune stale entries; if still full the
+# failure folds into the per-IP aggregate only.
+_LOGIN_MAX_BUCKETS = 4096
+# Unrepresentable as a real username (leading NUL); folds unknown-user attempts
+# into one slot so attacker cardinality cannot blow the bucket dict.
+_UNKNOWN_LOGIN_USER = "\x00unknown-user"
+
+
+def _trust_forwarded_for() -> bool:
+    """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set.
+
+    Off by default so a direct caller cannot spoof the header.
+    """
+    return os.environ.get("UNSLOTH_STUDIO_TRUST_FORWARDED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _normalize_forwarded_addr(value: str) -> str:
+    """Parse an XFF / Forwarded `for=` value into a bare IP (port-stripped)."""
+    value = (value or "").strip().strip('"')
+    if not value or value.lower() == "unknown":
+        return ""
+    if value.startswith("["):
+        # Bracketed IPv6, optionally with port.
+        end = value.find("]")
+        if end <= 0:
+            return ""
+        host = value[1:end]
+    elif value.count(":") == 1:
+        # IPv4:port. Bare IPv6 has multiple colons and takes the else branch.
+        head, _, tail = value.rpartition(":")
+        host = head if tail.isdigit() and head else value
+    else:
+        host = value
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return ""
+
+
+def _forwarded_for_from_element(element: str) -> str:
+    """Pick the `for=` token out of a single ``Forwarded`` element."""
+    for tok in element.split(";"):
+        key, sep, val = tok.strip().partition("=")
+        if sep and key.lower() == "for":
+            return _normalize_forwarded_addr(val)
+    return ""
+
+
+def _client_ip(request: Request | None) -> str:
+    if request is None:
+        return "_unknown"
+    if _trust_forwarded_for():
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            # First entry is the originating client.
+            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
+            if normalized:
+                return normalized
+        fwd = request.headers.get("forwarded", "")
+        if fwd:
+            # First element only -- multi-element headers cannot fork buckets.
+            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
+            if normalized:
+                return normalized
+    return (request.client.host if request.client else None) or "_unknown"
+
+
+def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
+    return (_client_ip(request), (username or "").casefold())
+
+
+def _unknown_user_key(request: Request | None) -> tuple[str, str]:
+    return (_client_ip(request), _UNKNOWN_LOGIN_USER)
+
+
+def _prune_bucket(bucket: deque, now: float) -> None:
+    while bucket and now - bucket[0] > _LOGIN_WINDOW_SECONDS:
+        bucket.popleft()
+
+
+def _prune_stale_buckets(now: float) -> None:
+    """Drop empty / expired account buckets to bound memory under spray."""
+    stale: list[tuple[str, str]] = []
+    for key, bucket in _LOGIN_BUCKETS.items():
+        _prune_bucket(bucket, now)
+        if not bucket:
+            stale.append(key)
+    for key in stale:
+        _LOGIN_BUCKETS.pop(key, None)
+
+
+def _record_login_failure(key: tuple[str, str]) -> int:
+    now = time.monotonic()
+    ip, _username = key
+    with _LOGIN_BUCKETS_LOCK:
+        ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
+        _prune_bucket(ip_bucket, now)
+        ip_bucket.append(now)
+
+        if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            _prune_stale_buckets(now)
+        if key in _LOGIN_BUCKETS or len(_LOGIN_BUCKETS) < _LOGIN_MAX_BUCKETS:
+            account_bucket = _LOGIN_BUCKETS.setdefault(key, deque())
+            _prune_bucket(account_bucket, now)
+            account_bucket.append(now)
+            return len(account_bucket)
+        # Bucket dict is at its cap; per-IP cap still applies via ip_bucket.
+        return len(ip_bucket)
+
+
+def _blocked_for(bucket: deque | None, now: float, max_fails: int) -> int:
+    if not bucket:
+        return 0
+    _prune_bucket(bucket, now)
+    if len(bucket) >= max_fails:
+        return max(1, int(_LOGIN_WINDOW_SECONDS - (now - bucket[0])))
+    return 0
+
+
+def _login_blocked(key: tuple[str, str]) -> int:
+    """Return seconds until the next attempt is allowed, or 0."""
+    now = time.monotonic()
+    ip, _username = key
+    with _LOGIN_BUCKETS_LOCK:
+        return max(
+            _blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS),
+            _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
+        )
+
+
+def _clear_login_bucket(key: tuple[str, str]) -> None:
+    ip, _username = key
+    with _LOGIN_BUCKETS_LOCK:
+        _LOGIN_BUCKETS.pop(key, None)
+        _LOGIN_IP_BUCKETS.pop(ip, None)
+
+
 @router.get("/status", response_model = AuthStatusResponse)
 async def auth_status() -> AuthStatusResponse:
-    """
-    Check whether auth has already been initialized.
-
-    - initialized = False -> frontend should wait for the seeded admin bootstrap.
-    - initialized = True  -> frontend should show login or force the first password change.
-    """
+    """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
@@ -53,12 +204,28 @@ async def auth_status() -> AuthStatusResponse:
 
 
 @router.post("/login", response_model = Token)
-async def login(payload: AuthLoginRequest) -> Token:
-    """
-    Login with username/password and receive access + refresh tokens.
-    """
+async def login(payload: AuthLoginRequest, request: Request) -> Token:
+    """Login with username/password. Per-account + per-IP rate-limited."""
+    key = _bucket_key(request, payload.username)
+    unknown_key = _unknown_user_key(request)
+    blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
+    if blocked_for > 0:
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            # IP is intentionally not interpolated into the body; behind a
+            # proxy or NAT it is either misleading or an info leak.
+            detail = (
+                f"Too many failed login attempts. "
+                f"Try again in {blocked_for} seconds."
+            ),
+            headers = {"Retry-After": str(blocked_for)},
+        )
+
     record = storage.get_user_and_secret(payload.username)
     if record is None:
+        # Record under a single sentinel key per IP so attacker-controlled
+        # username cardinality does not allocate buckets without bound.
+        _record_login_failure(unknown_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
@@ -66,11 +233,14 @@ async def login(payload: AuthLoginRequest) -> Token:
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
+        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
         )
 
+    _clear_login_bucket(key)
+    _clear_login_bucket(unknown_key)
     access_token = create_access_token(subject = payload.username)
     refresh_token = create_refresh_token(subject = payload.username)
     return Token(
@@ -79,6 +249,23 @@ async def login(payload: AuthLoginRequest) -> Token:
         token_type = "bearer",
         must_change_password = must_change_password,
     )
+
+
+@router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
+async def logout(
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+) -> Response:
+    """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
+    try:
+        storage.revoke_user_refresh_tokens(current_subject)
+    except Exception:
+        pass
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
+    return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/desktop-login", response_model = Token)
@@ -101,21 +288,20 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
 
 @router.post("/refresh", response_model = Token)
 async def refresh(payload: RefreshTokenRequest) -> Token:
-    """
-    Exchange a valid refresh token for a new access token.
-
-    The refresh token itself is reusable until it expires (7 days).
-    """
-    new_access_token, username, is_desktop = refresh_access_token(payload.refresh_token)
-    if new_access_token is None or username is None:
+    """Exchange a refresh token for a new access+refresh pair (single-use)."""
+    consumed = storage.consume_refresh_token(payload.refresh_token)
+    if consumed is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
+    username, is_desktop = consumed
+    new_access_token = create_access_token(subject = username, desktop = is_desktop)
+    new_refresh_token = create_refresh_token(subject = username, desktop = is_desktop)
 
     return Token(
         access_token = new_access_token,
-        refresh_token = payload.refresh_token,
+        refresh_token = new_refresh_token,
         token_type = "bearer",
         must_change_password = False
         if is_desktop
@@ -126,6 +312,7 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
 @router.post("/change-password", response_model = Token)
 async def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
@@ -150,6 +337,10 @@ async def change_password(
 
     storage.update_password(current_subject, payload.new_password)
     storage.revoke_user_refresh_tokens(current_subject)
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
     access_token = create_access_token(subject = current_subject)
     refresh_token = create_refresh_token(subject = current_subject)
     return Token(

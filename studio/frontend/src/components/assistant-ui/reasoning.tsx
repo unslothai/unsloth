@@ -19,10 +19,8 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Idea01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon, CheckIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -128,10 +126,7 @@ function ReasoningTrigger({
       )}
       {...props}
     >
-      <HugeiconsIcon
-        icon={Idea01Icon}
-        className="aui-reasoning-trigger-icon size-4 shrink-0"
-      />
+      <LightbulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
@@ -316,15 +311,28 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     if (message.status?.type !== "running") {
       return false;
     }
-    const lastIndex = message.parts.length - 1;
-    if (lastIndex < 0) {
+    const parts = message.parts;
+    const len = parts.length;
+    if (len === 0) {
       return false;
     }
-    const lastType = message.parts[lastIndex]?.type;
-    if (lastType !== "reasoning") {
+
+    let groupHasReasoning = false;
+    for (let i = startIndex; i <= endIndex && i < len; i += 1) {
+      if (parts[i]?.type === "reasoning") {
+        groupHasReasoning = true;
+        break;
+      }
+    }
+    if (!groupHasReasoning) {
       return false;
     }
-    return lastIndex >= startIndex && lastIndex <= endIndex;
+    for (let i = endIndex + 1; i < len; i += 1) {
+      if (parts[i]?.type !== "tool-call") {
+        return false;
+      }
+    }
+    return true;
   });
 
   const persistedDuration = useAuiState(({ message }) => {

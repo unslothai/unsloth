@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -17,21 +18,12 @@ import type {
 } from "../types/api";
 
 function parseErrorText(status: number, body: unknown): string {
-  if (
-    body &&
-    typeof body === "object" &&
-    "detail" in body &&
-    typeof body.detail === "string"
-  ) {
-    return body.detail;
-  }
-  if (
-    body &&
-    typeof body === "object" &&
-    "message" in body &&
-    typeof body.message === "string"
-  ) {
-    return body.message;
+  if (body && typeof body === "object") {
+    const detail = (body as { detail?: unknown }).detail;
+    const formatted = formatFastApiDetail(detail);
+    if (formatted) return formatted;
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
   }
   return `Request failed (${status})`;
 }
@@ -68,7 +60,11 @@ export async function loadModel(
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      native_path_lease: payload.nativePathLease ?? null,
+      nativePathLease: undefined,
+    }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
@@ -81,6 +77,7 @@ export async function validateModel(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
+      native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
     }),
@@ -215,6 +212,25 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export async function deleteFineTunedModel(args: {
+  modelPath: string;
+  source: "training" | "exported";
+  exportType?: "lora" | "merged" | "gguf";
+  ggufVariant?: string;
+}): Promise<void> {
+  const response = await authFetch("/api/models/delete-finetuned", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: args.modelPath,
+      source: args.source,
+      export_type: args.exportType ?? null,
+      gguf_variant: args.ggufVariant ?? null,
+    }),
   });
   await parseJsonOrThrow<unknown>(response);
 }

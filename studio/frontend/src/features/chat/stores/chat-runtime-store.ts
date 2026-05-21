@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type ChatLoraSummary,
@@ -22,17 +22,37 @@ const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
 const CHAT_ACTIVE_PRESET_KEY = "unsloth_chat_active_preset";
 const CHAT_ACTIVE_PRESET_SOURCE_KEY = "unsloth_chat_active_preset_source";
+export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 const REASONING_EFFORT_KEY = "unsloth_reasoning_effort";
 const PRESERVE_THINKING_KEY = "unsloth_preserve_thinking";
+export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
+export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
-export type ReasoningEffort = "low" | "medium" | "high";
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "max"
+  | "xhigh";
 
 function loadReasoningEffort(fallback: ReasoningEffort): ReasoningEffort {
   if (!canUseStorage()) return fallback;
   try {
     const raw = localStorage.getItem(REASONING_EFFORT_KEY);
-    if (raw === "low" || raw === "medium" || raw === "high") return raw;
+    if (
+      raw === "none" ||
+      raw === "minimal" ||
+      raw === "low" ||
+      raw === "medium" ||
+      raw === "high" ||
+      raw === "max" ||
+      raw === "xhigh"
+    ) {
+      return raw;
+    }
     return fallback;
   } catch {
     return fallback;
@@ -45,13 +65,18 @@ function canUseStorage(): boolean {
 }
 
 function loadBool(key: string, fallback: boolean): boolean {
-  if (!canUseStorage()) return fallback;
+  const raw = loadOptionalBool(key);
+  return raw ?? fallback;
+}
+
+export function loadOptionalBool(key: string): boolean | null {
+  if (!canUseStorage()) return null;
   try {
     const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
+    if (raw === null) return null;
     return raw === "true";
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -196,11 +221,40 @@ type ChatRuntimeStore = {
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
+  /**
+   * The model id the OpenRouter router actually picked for the most recent
+   * stream when the active checkpoint is the openrouter/free meta-model.
+   * Updated each time a chunk arrives carrying a non-empty `model` field
+   * that differs from the requested id. Cleared when a non-OpenRouter
+   * model is selected. Used purely for UI display — appended after
+   * `openrouter/free:` in the active model chip.
+   */
+  lastOpenRouterChosenModel: string | null;
   reasoningStyle: ReasoningStyle;
   reasoningEffort: ReasoningEffort;
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: readonly ReasoningEffort[];
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   supportsTools: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * web_search tool (OpenAI's /v1/responses today). Distinct from
+   * `supportsTools` — that flag governs the local tool runtime (Code,
+   * python sandbox, our DuckDuckGo web_search). This one only enables
+   * the chat composer's Search pill for external models. Local models
+   * keep `supportsTools` only.
+   */
+  supportsBuiltinWebSearch: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * code-execution tool (Anthropic's `code_execution_20250825` on the
+   * Claude 4.x family). Distinct from `supportsTools` for the same
+   * reason as `supportsBuiltinWebSearch`: external providers don't
+   * give us a local tool runtime, but Anthropic dispatches code
+   * execution server-side. Read by both composers' Code pill gate.
+   */
+  supportsBuiltinCodeExecution: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   toolStatus: string | null;
@@ -212,9 +266,14 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  /** User --spec-draft-n-max override (null = platform default). */
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+  loadedIsMultimodal: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
+  loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
@@ -226,6 +285,7 @@ type ChatRuntimeStore = {
     cachedTokens: number;
   } | null;
   modelLoading: boolean;
+  activeNativePathToken: string | null;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -242,11 +302,18 @@ type ChatRuntimeStore = {
   setActiveThreadId: (threadId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
-  setReasoningEnabled: (enabled: boolean) => void;
+  setReasoningEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
+  setLastOpenRouterChosenModel: (chosen: string | null) => void;
   setReasoningStyle: (style: ReasoningStyle) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
-  setToolsEnabled: (enabled: boolean) => void;
+  setToolsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -255,6 +322,7 @@ type ChatRuntimeStore = {
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
+  setSpecDraftNMax: (value: number | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -279,14 +347,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
-  reasoningEnabled: true,
+  reasoningEnabled: loadBool(CHAT_REASONING_ENABLED_KEY, true),
   reasoningStyle: "enable_thinking",
   reasoningEffort: loadReasoningEffort("medium"),
+  supportsReasoningOff: false,
+  reasoningEffortLevels: ["low", "medium", "high"],
+  lastOpenRouterChosenModel: null,
   supportsPreserveThinking: false,
   preserveThinking: loadBool(PRESERVE_THINKING_KEY, false),
   supportsTools: false,
-  toolsEnabled: false,
-  codeToolsEnabled: false,
+  supportsBuiltinWebSearch: false,
+  supportsBuiltinCodeExecution: false,
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
@@ -294,17 +367,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "default",
+  speculativeType: "auto",
   loadedSpeculativeType: null,
+  specDraftNMax: null,
+  loadedSpecDraftNMax: null,
+  loadedIsMultimodal: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
+  loadedChatTemplateOverride: null,
   activeThreadId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
   contextUsage: null,
   modelLoading: false,
+  activeNativePathToken: null,
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
@@ -378,6 +456,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeNativePathToken: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
@@ -387,20 +466,36 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       reasoningAlwaysOn: false,
       reasoningEnabled: true,
       reasoningStyle: "enable_thinking",
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high"],
       supportsPreserveThinking: false,
       supportsTools: false,
+      supportsBuiltinWebSearch: false,
+      supportsBuiltinCodeExecution: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "default",
+      speculativeType: "auto",
       loadedSpeculativeType: null,
+      specDraftNMax: null,
+      loadedSpecDraftNMax: null,
+      loadedIsMultimodal: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
+      loadedChatTemplateOverride: null,
     })),
-  setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
+  setReasoningEnabled: (reasoningEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      }
+      return { reasoningEnabled };
+    }),
+  setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
+    set({ lastOpenRouterChosenModel }),
   setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
   setReasoningEffort: (reasoningEffort) =>
     set(() => {
@@ -418,8 +513,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       saveBool(PRESERVE_THINKING_KEY, preserveThinking);
       return { preserveThinking };
     }),
-  setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
-  setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
+  setToolsEnabled: (toolsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      }
+      return { toolsEnabled };
+    }),
+  setCodeToolsEnabled: (codeToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
+      return { codeToolsEnabled };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
@@ -439,6 +544,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
+  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>

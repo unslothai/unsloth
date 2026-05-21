@@ -9,26 +9,54 @@ import {
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
-  RuntimeAdapterProvider,
   Suggestions,
+  type LocalRuntimeOptions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
   WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
+  useAuiEvent,
   useAuiState,
   useLocalRuntime,
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import mammoth from "mammoth";
-import { type ReactElement, type ReactNode, useEffect, useMemo } from "react";
+import {
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { extractText, getDocumentProxy } from "unpdf";
+import { toast } from "sonner";
 import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
+import {
+  loadConnectionsEnabled,
+  loadExternalProviders,
+  parseExternalModelId,
+  providerTypeSupportsVision,
+} from "./external-providers";
+import {
+  OPEN_DOCUMENT_SPREADSHEET_MIME,
+  OPEN_DOCUMENT_TEXT_MIME,
+  type OpenDocumentAttachmentContent,
+  readActiveOpenDocumentAttachmentContent,
+  readOpenDocumentAttachmentContent,
+} from "./open-document";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType } from "./types";
+import {
+  isChatThreadDeleted,
+  markChatThreadDeleted,
+} from "./utils/chat-thread-tombstones";
+import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
+import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 const DEFAULT_SUGGESTIONS = [
   {
@@ -65,6 +93,37 @@ class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const state = useChatRuntimeStore.getState();
+    const checkpoint = state.params.checkpoint;
+    const activeModel = state.models.find((m) => m.id === checkpoint);
+    const externalSelection = parseExternalModelId(checkpoint);
+    const isExternalModel = externalSelection !== null;
+    const modelLoaded = !!checkpoint && !state.modelLoading;
+    let externalSupportsVision: boolean | null = null;
+    let externalModelLabel: string | null = null;
+    if (externalSelection !== null) {
+      const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
+      const provider = providers.find(
+        (p) => p.id === externalSelection.providerId,
+      );
+      externalSupportsVision = providerTypeSupportsVision(
+        provider?.providerType,
+      );
+      externalModelLabel = externalSelection.modelId;
+    }
+    const unavailableReason = getImageInputUnavailableReason({
+      activeModel,
+      isExternalModel,
+      externalSupportsVision,
+      externalModelLabel,
+      loadedIsMultimodal: state.loadedIsMultimodal,
+      modelLoaded,
+    });
+    if (unavailableReason) {
+      toast.error(unavailableReason);
+      throw new Error(unavailableReason);
+    }
+
     const maxSize = 20 * 1024 * 1024;
     if (file.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
@@ -247,6 +306,95 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
+  private readonly active = new Set<string>();
+  private readonly sending = new Set<string>();
+  private readonly content = new Map<
+    string,
+    Promise<OpenDocumentAttachmentContent | null>
+  >();
+
+  accept = [
+    ".ods",
+    ".odt",
+    OPEN_DOCUMENT_SPREADSHEET_MIME,
+    OPEN_DOCUMENT_TEXT_MIME,
+  ].join(",");
+
+  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    const id = crypto.randomUUID();
+    this.active.add(id);
+    const attachment = {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+
+    yield attachment;
+    const content = readActiveOpenDocumentAttachmentContent(
+      file,
+      file.name,
+      file.type,
+      () => this.active.has(id),
+    );
+    this.content.set(id, content);
+
+    try {
+      if ((await content) && this.active.has(id) && !this.sending.has(id)) {
+        yield {
+          ...attachment,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      }
+    } catch {
+      this.active.delete(id);
+      this.content.delete(id);
+      if (!this.sending.has(id)) {
+        yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      }
+    }
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    this.sending.add(attachment.id);
+    try {
+      const content =
+        (await this.content.get(attachment.id)) ??
+        (await readOpenDocumentAttachmentContent(
+          attachment.file,
+          attachment.name,
+          attachment.contentType ?? "",
+        ));
+      const { label, text } = content;
+
+      return {
+        id: attachment.id,
+        type: "document",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [
+          { type: "text", text: `[${label}: ${attachment.name}]\n${text}` },
+        ],
+        status: { type: "complete" },
+      };
+    } finally {
+      this.active.delete(attachment.id);
+      this.content.delete(attachment.id);
+      this.sending.delete(attachment.id);
+    }
+  }
+
+  remove(attachment: { id: string }): Promise<void> {
+    this.active.delete(attachment.id);
+    this.sending.delete(attachment.id);
+    this.content.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
 function clip(input: string, maxLen: number): string {
   const text = input.replace(/\s+/g, " ").trim();
   if (text.length <= maxLen) return text;
@@ -383,6 +531,55 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   };
 }
 
+export async function ensureThreadRecord({
+  threadId,
+  modelType,
+  pairId,
+}: {
+  threadId: string;
+  modelType: ModelType;
+  pairId?: string;
+}): Promise<void> {
+  if (isChatThreadDeleted(threadId)) {
+    return;
+  }
+  const existing = await db.threads.get(threadId);
+  if (existing) {
+    return;
+  }
+
+  const currentModelId =
+    useChatRuntimeStore.getState().params.checkpoint ?? "";
+  const record = {
+    id: threadId,
+    title: "New Chat",
+    modelType,
+    modelId: currentModelId,
+    pairId,
+    archived: false,
+    createdAt: Date.now(),
+  };
+
+  try {
+    await db.threads.add(record);
+  } catch (error) {
+    // assistant-ui can issue overlapping first-message persistence calls.
+    // If another call created the same thread while this one was waiting,
+    // treat initialization as successful and let the message write continue.
+    if (await db.threads.get(threadId)) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function deleteThreadRows(threadId: string): Promise<void> {
+  await db.transaction("rw", db.threads, db.messages, async () => {
+    await db.messages.where("threadId").equals(threadId).delete();
+    await db.threads.delete(threadId);
+  });
+}
+
 function createDexieAdapter(
   modelType: ModelType,
   pairId?: string,
@@ -418,17 +615,7 @@ function createDexieAdapter(
     },
 
     async initialize(threadId: string) {
-      const currentModelId =
-        useChatRuntimeStore.getState().params.checkpoint ?? "";
-      await db.threads.add({
-        id: threadId,
-        title: "New Chat",
-        modelType,
-        modelId: currentModelId,
-        pairId,
-        archived: false,
-        createdAt: Date.now(),
-      });
+      await ensureThreadRecord({ threadId, modelType, pairId });
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -445,8 +632,8 @@ function createDexieAdapter(
     },
 
     async delete(remoteId: string) {
-      await db.messages.where("threadId").equals(remoteId).delete();
-      await db.threads.delete(remoteId);
+      markChatThreadDeleted(remoteId);
+      await deleteThreadRows(remoteId);
     },
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
@@ -531,9 +718,9 @@ function createDexieAdapter(
   };
 }
 
-function ThreadHistoryProvider({
-  children,
-}: { children?: ReactNode }): ReactElement {
+type StudioRuntimeAdapters = NonNullable<LocalRuntimeOptions["adapters"]>;
+
+function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
   const aui = useAui();
 
   const history = useMemo<ThreadHistoryAdapter>(
@@ -599,6 +786,10 @@ function ThreadHistoryProvider({
 
       async append({ parentId, message }: ExportedMessageRepositoryItem) {
         const { remoteId } = await aui.threadListItem().initialize();
+        if (isChatThreadDeleted(remoteId)) {
+          await deleteThreadRows(remoteId);
+          return;
+        }
         // Keep single-chat runtime state in sync once a new chat is first
         // persisted. Compare panes intentionally do not write global activeThreadId.
         const thread = await db.threads.get(remoteId);
@@ -647,6 +838,7 @@ function ThreadHistoryProvider({
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
+        new OpenDocumentAttachmentAdapter(),
       ]),
     [],
   );
@@ -655,17 +847,14 @@ function ThreadHistoryProvider({
     [history, dictation, attachments],
   );
 
-  return (
-    <RuntimeAdapterProvider adapters={adapters}>
-      {children}
-    </RuntimeAdapterProvider>
-  );
+  return adapters;
 }
 
 const chatAdapter = createOpenAIStreamAdapter();
 
 function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-  return useLocalRuntime(chatAdapter);
+  const adapters = useStudioRuntimeAdapters();
+  return useLocalRuntime(chatAdapter, { adapters });
 }
 
 function ThreadAutoSwitch({
@@ -765,6 +954,66 @@ function CancelRegistrar(): ReactElement | null {
   return null;
 }
 
+function ThreadDexieAutosave({
+  modelType,
+  pairId,
+}: {
+  modelType: ModelType;
+  pairId?: string;
+}): ReactElement | null {
+  const aui = useAui();
+  const saveChainRef = useRef(Promise.resolve());
+
+  const saveThread = useCallback(async (threadId: string): Promise<void> => {
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    if (!runtime) {
+      return;
+    }
+    const exported = runtime.threads.getById(threadId).export();
+    if (exported.messages.length === 0) {
+      return;
+    }
+
+    const { remoteId } = await runtime.threads.getItemById(threadId).initialize();
+    if (isChatThreadDeleted(remoteId)) {
+      await deleteThreadRows(remoteId);
+      return;
+    }
+    await syncExportedRepositoryToDexie(remoteId, exported);
+    if (isChatThreadDeleted(remoteId)) {
+      await deleteThreadRows(remoteId);
+      return;
+    }
+
+    if (modelType === "base" && !pairId) {
+      const store = useChatRuntimeStore.getState();
+      const activeThreadId = runtime.threads.getState().mainThreadId;
+      if (activeThreadId === threadId && store.activeThreadId !== remoteId) {
+        store.setActiveThreadId(remoteId);
+      }
+    }
+  }, [aui, modelType, pairId]);
+
+  const queueSave = useCallback((threadId: string): void => {
+    saveChainRef.current = saveChainRef.current
+      .catch(() => {})
+      .then(() => saveThread(threadId))
+      .catch((error) => {
+        console.error("Failed to autosave chat thread", error);
+      });
+  }, [saveThread]);
+
+  useAuiEvent("thread.runEnd", ({ threadId }) => {
+    queueSave(threadId);
+  });
+
+  useAuiEvent("thread.runStart", ({ threadId }) => {
+    queueSave(threadId);
+  });
+
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -782,10 +1031,7 @@ export function ChatRuntimeProvider({
 }): ReactElement {
   const runtime = useRemoteThreadListRuntime({
     runtimeHook: useRuntimeHook,
-    adapter: {
-      ...createDexieAdapter(modelType, pairId),
-      unstable_Provider: ThreadHistoryProvider,
-    },
+    adapter: createDexieAdapter(modelType, pairId),
   });
 
   const aui = useAui({
@@ -797,6 +1043,7 @@ export function ChatRuntimeProvider({
       <ActiveThreadSync
         enabled={modelType === "base" && !pairId && !newThreadNonce && !initialThreadId}
       />
+      <ThreadDexieAutosave modelType={modelType} pairId={pairId} />
       <CancelRegistrar />
       {initialThreadId && (
         <ThreadAutoSwitch

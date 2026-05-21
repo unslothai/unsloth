@@ -6,6 +6,7 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
+  setMustChangePassword,
   storeAuthTokens,
 } from "./session";
 import { refreshSession } from "./api";
@@ -15,9 +16,13 @@ type DesktopAuthResponse = {
   refresh_token: string;
 };
 
+type TauriAutoAuthOptions = {
+  force?: boolean;
+};
+
 // Concurrency guard: multiple route guards can call tauriAutoAuth simultaneously.
 // Without this, the first-launch password-change could race with itself.
-let pending: Promise<boolean> | null = null;
+let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 
 const TAURI_AUTH_FAILURE_FALLBACK =
@@ -49,15 +54,15 @@ function isBackendNotReady(error: unknown): boolean {
   return authFailureMessage(error).includes(BACKEND_NOT_READY_MESSAGE);
 }
 
-async function doTauriAutoAuth(): Promise<boolean> {
+async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> {
   // Desktop must handle password-change state internally in Rust.
-  if (hasAuthToken() && !mustChangePassword()) {
+  if (!options.force && hasAuthToken() && !mustChangePassword()) {
     clearTauriAuthFailure();
     return true;
   }
 
   // Try refreshing existing session
-  if (hasRefreshToken()) {
+  if (!options.force && hasRefreshToken()) {
     const refreshed = await refreshSession();
     if (refreshed && hasAuthToken() && !mustChangePassword()) {
       clearTauriAuthFailure();
@@ -68,7 +73,8 @@ async function doTauriAutoAuth(): Promise<boolean> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const tokens = await invoke<DesktopAuthResponse>("desktop_auth");
-    storeAuthTokens(tokens.access_token, tokens.refresh_token, false);
+    storeAuthTokens(tokens.access_token, tokens.refresh_token);
+    setMustChangePassword(false);
     clearTauriAuthFailure();
     return true;
   } catch (error) {
@@ -86,10 +92,17 @@ async function doTauriAutoAuth(): Promise<boolean> {
  * Returns true if authentication succeeded.
  * Concurrent calls are coalesced into a single in-flight attempt.
  */
-export function tauriAutoAuth(): Promise<boolean> {
+export function tauriAutoAuth(
+  options: TauriAutoAuthOptions = {},
+): Promise<boolean> {
   if (!isTauri) return Promise.resolve(false);
-  if (!pending) {
-    pending = doTauriAutoAuth().finally(() => { pending = null; });
+  const force = options.force === true;
+  if (!pending || (force && !pending.force)) {
+    let promise: Promise<boolean>;
+    promise = doTauriAutoAuth({ force }).finally(() => {
+      if (pending?.promise === promise) pending = null;
+    });
+    pending = { promise, force };
   }
-  return pending;
+  return pending.promise;
 }

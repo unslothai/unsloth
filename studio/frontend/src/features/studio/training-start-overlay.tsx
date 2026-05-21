@@ -64,6 +64,22 @@ const EMPTY_DOWNLOAD_STATE: DownloadState = {
   cachePath: null,
 };
 
+function coerceCachedStateReady(state: DownloadState): DownloadState {
+  if (!state.cachePath) return state;
+  if (state.downloadedBytes > 0 && state.percent < 100) return state;
+  const totalBytes =
+    state.totalBytes > 0 ? state.totalBytes : state.downloadedBytes;
+  if (totalBytes <= 0) {
+    return { ...state, percent: 100 };
+  }
+  return {
+    ...state,
+    downloadedBytes: totalBytes,
+    totalBytes,
+    percent: 100,
+  };
+}
+
 type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
 
 /**
@@ -88,10 +104,12 @@ function useHfDownloadProgress(
     phase === "downloading_model" ||
     phase === "downloading_dataset" ||
     phase === "loading_model" ||
-    phase === "loading_dataset";
+    phase === "loading_dataset" ||
+    phase === "training";
 
   useEffect(() => {
     if (!repoId || !HF_REPO_REGEX.test(repoId) || !shouldPoll) {
+      setState(EMPTY_DOWNLOAD_STATE);
       return;
     }
 
@@ -229,14 +247,42 @@ export function TrainingStartOverlay({
 }: TrainingStartOverlayProps): ReactElement {
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
-  const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
+  const phase = useTrainingRuntimeStore((s) => s.phase);
+  const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
+  const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
+  const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
+  const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
   const dataset = useTrainingConfigStore((s) => s.dataset);
   // Only HF datasets have a download phase to track. Uploaded files are
   // already on disk by the time the overlay shows up.
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
-  const modelDownload = useModelDownloadProgress(selectedModel);
-  const datasetDownload = useDatasetDownloadProgress(hfDatasetName);
+  const hasStartResources = startModelName !== null;
+  const useConfiguredResources = !isStarting && !hasStartResources;
+  const isDownloadPhase =
+    phase === "downloading_model" || phase === "downloading_dataset";
+  const modelName = hasStartResources
+    ? startModelName
+    : useConfiguredResources
+      ? configuredModel
+      : null;
+  const datasetName = hasStartResources
+    ? startDatasetName
+    : useConfiguredResources
+      ? hfDatasetName
+      : null;
+  const displayMessage =
+    startFromResume && !isDownloadPhase && /^download/i.test(message)
+      ? "Resuming training..."
+      : message || "starting training...";
+  const rawModelDownload = useModelDownloadProgress(modelName);
+  const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
+  const modelDownload = isDownloadPhase
+    ? rawModelDownload
+    : coerceCachedStateReady(rawModelDownload);
+  const datasetDownload = isDownloadPhase
+    ? rawDatasetDownload
+    : coerceCachedStateReady(rawDatasetDownload);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 
@@ -314,7 +360,7 @@ export function TrainingStartOverlay({
             {"> We are getting everything ready for your run..."}
           </TypingAnimation>
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {`> ${message || "starting training..."} | waiting for first step... (${currentStep})`}
+            {`> ${displayMessage} | waiting for first step... (${currentStep})`}
           </AnimatedSpan>
           {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">

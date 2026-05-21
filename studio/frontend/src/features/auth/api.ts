@@ -7,6 +7,7 @@ import {
   getAuthToken,
   getRefreshToken,
   mustChangePassword,
+  setMustChangePassword,
   storeAuthTokens,
 } from "./session";
 
@@ -17,6 +18,32 @@ type RefreshResponse = {
 };
 
 let isRedirecting = false;
+
+const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTauriNetworkRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      if (
+        !isTauri ||
+        !(error instanceof TypeError) ||
+        attempt >= TAURI_FETCH_RETRY_DELAYS_MS.length
+      ) {
+        throw error;
+      }
+      await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
 
 async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
   if (response.status !== 403) return false;
@@ -38,7 +65,11 @@ async function redirectToAuth(): Promise<void> {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
-      if (data.requires_password_change || mustChangePassword()) target = "/change-password";
+      // Server truth wins; keep localStorage in sync both ways.
+      if (data.requires_password_change !== mustChangePassword()) {
+        setMustChangePassword(data.requires_password_change);
+      }
+      if (data.requires_password_change) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -54,7 +85,7 @@ async function retryWithCurrentToken(
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  return fetch(input, { ...init, headers: retryHeaders });
+  return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
 }
 
 async function retryWithTauriAutoAuth(
@@ -67,31 +98,45 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
+// Singleflight: the backend consumes the refresh token atomically, so
+// concurrent callers must share one in-flight promise (loser would 401).
+let refreshInflight: Promise<boolean> | null = null;
+// Bumped by logout(); a refresh that resolves after logout drops its
+// new tokens instead of silently re-auth-ing the SPA.
+let logoutGeneration = 0;
+
 export async function refreshSession(): Promise<boolean> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
-
-  try {
-    const response = await fetch(apiUrl("/api/auth/refresh"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-
-    if (!response.ok) {
-      clearAuthTokens();
+  if (refreshInflight) return refreshInflight;
+  const startGeneration = logoutGeneration;
+  refreshInflight = (async () => {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return false;
+    try {
+      const response = await fetchWithTauriNetworkRetry(
+        apiUrl("/api/auth/refresh"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        },
+      );
+      if (!response.ok) {
+        clearAuthTokens();
+        return false;
+      }
+      const payload = (await response.json()) as RefreshResponse;
+      if (startGeneration !== logoutGeneration) return false;
+      storeAuthTokens(payload.access_token, payload.refresh_token);
+      setMustChangePassword(payload.must_change_password ?? false);
+      return true;
+    } catch {
       return false;
     }
-
-    const payload = (await response.json()) as RefreshResponse;
-    storeAuthTokens(
-      payload.access_token,
-      payload.refresh_token,
-      payload.must_change_password,
-    );
-    return true;
-  } catch {
-    return false;
+  })();
+  try {
+    return await refreshInflight;
+  } finally {
+    refreshInflight = null;
   }
 }
 
@@ -108,9 +153,20 @@ export async function authFetch(
 
   let response: Response;
   try {
-    response = await fetch(resolvedInput, { ...init, headers });
+    response = await fetchWithTauriNetworkRetry(resolvedInput, {
+      ...init,
+      headers,
+    });
   } catch (err) {
     if (err instanceof TypeError) {
+      // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
+      // it's always backend-down; in the web build distinguish offline
+      // so the user gets the right recovery path.
+      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+        throw new Error(
+          "You appear to be offline. Check your network connection and try again.",
+        );
+      }
       throw new Error("Studio isn't running -- please relaunch it.");
     }
     throw err;
@@ -147,6 +203,32 @@ export async function authFetch(
   return retryWithCurrentToken(resolvedInput, init);
 }
 
-export function logout(): void {
-  clearAuthTokens();
+async function postLogout(accessToken: string | null): Promise<Response | null> {
+  try {
+    return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
+      method: "POST",
+      headers: accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : undefined,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function logout(): Promise<void> {
+  // Server-side revoke. If the access token is expired the 401 fires
+  // BEFORE revoke runs; rotate via the refresh token and retry so the
+  // refresh family is actually revoked. Generation bump in finally
+  // invalidates any in-flight refresh from before this call.
+  try {
+    let response = await postLogout(getAuthToken());
+    if (response && response.status === 401 && getRefreshToken()) {
+      const refreshed = await refreshSession();
+      if (refreshed) response = await postLogout(getAuthToken());
+    }
+  } finally {
+    logoutGeneration += 1;
+    clearAuthTokens();
+  }
 }

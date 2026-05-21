@@ -364,6 +364,10 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
         "unsloth/Qwen3-30B-A3B-Thinking-2507",
         "Qwen/Qwen3-30B-A3B-Thinking-2507",
+        "Qwen/Qwen3.6-35B-A3B",
+        "unsloth/Qwen3.6-35B-A3B",
+        "Qwen/Qwen3.6-27B",
+        "unsloth/Qwen3.6-27B",
     ),
     "qwen3.5": (
         "unsloth/Qwen3.5-0.8B",
@@ -436,6 +440,26 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
+
+
+def is_gpt_oss_model_name(name: str) -> bool:
+    """Name-based check for gpt-oss / harmony models.
+
+    Used by both the in-process backend and the parent-process
+    orchestrator to detect harmony models without an IPC round-trip.
+    """
+    name = (name or "").lower()
+    if not name:
+        return False
+    try:
+        if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
+            return True
+        for key, tmpl in MODEL_TO_TEMPLATE_MAPPER.items():
+            if tmpl == "gpt-oss" and (key in name or name in key):
+                return True
+    except Exception:
+        pass
+    return "gpt-oss" in name
 
 
 TEMPLATE_TO_RESPONSES_MAPPER = {

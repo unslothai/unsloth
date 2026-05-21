@@ -92,7 +92,7 @@ export function ApiKeyRow({
             className="text-destructive focus:text-destructive"
           >
             <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
-            Revoke key
+            Revoke token
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

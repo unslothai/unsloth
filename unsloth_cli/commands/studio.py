@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -13,14 +14,82 @@ import sys
 import tempfile
 import time
 import types
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import typer
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
-STUDIO_HOME = Path.home() / ".unsloth" / "studio"
+
+# Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
+# sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
+# the installer's env var has expired), then legacy ~/.unsloth/studio.
+# UNSLOTH_STUDIO_HOME wins when both env vars are set.
+def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
+    """Sentinel check (studio.conf or bin shim) so a dev venv named
+    unsloth_studio is not misidentified as a custom Studio root.
+    """
+    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
+    return (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "bin" / shim_name
+    ).is_file()
+
+
+def _resolve_studio_home() -> tuple[Path, bool]:
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve(), True
+        except (OSError, ValueError):
+            return Path(override).expanduser(), True
+    try:
+        prefix = Path(sys.prefix).resolve()
+        if prefix.name == "unsloth_studio":
+            inferred = prefix.parent
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+            if inferred != legacy and _looks_like_installer_managed_studio_home(
+                inferred
+            ):
+                return inferred, True
+    except (OSError, ValueError):
+        pass
+    return Path.home() / ".unsloth" / "studio", False
+
+
+STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
+
+
+def _ensure_studio_env_exported() -> None:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH only for real
+    custom roots so subprocesses inherit the right install. Called from each
+    studio subcommand entry rather than at import time, to avoid leaking env
+    state into unrelated importers (tests, --help, CLI introspection).
+    """
+    if not _STUDIO_HOME_IS_CUSTOM:
+        return
+    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
+    # suppress the inferred custom root.
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
+    # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
+    try:
+        _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
+        _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
+    except (OSError, ValueError):
+        _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
+    if _is_legacy:
+        _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
+    else:
+        _llama_dir = STUDIO_HOME / "llama.cpp"
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
+
+
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
 DEFAULT_ADMIN_USERNAME = "unsloth"
@@ -65,6 +134,26 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+def _stream_for_subprocess(stream):
+    """Return *stream* if it has a real OS file descriptor, else None.
+
+    subprocess.run on Windows refuses to inherit std handles unless
+    they're passed explicitly (otherwise close_fds=True forces
+    bInheritHandles=False, and a CREATE_NO_WINDOW child ends up with
+    no stdio at all). When sys.stdout / sys.stderr is a real fd-backed
+    stream we want to hand it through; when it's been captured by a
+    test harness (pytest's capsys, an in-memory wrapper, etc) we fall
+    back to None so subprocess uses its default.
+    """
+    if stream is None:
+        return None
+    try:
+        stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    return stream
 
 
 def _studio_venv_python() -> Optional[Path]:
@@ -374,6 +463,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
@@ -388,6 +478,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if llama_extra_args:
+        payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -414,7 +506,7 @@ def _load_model_via_http(
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
     api_only: bool = typer.Option(
@@ -424,6 +516,8 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # Runs before any subcommand; covers run/setup/update/etc in one place.
+    _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
         return
 
@@ -514,9 +608,57 @@ def studio_default(
 # ── unsloth studio run ───────────────────────────────────────────────
 
 
-@studio_app.command()
+def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
+    """Split ``org/name:variant`` HF-style identifiers into (repo, variant).
+
+    Mirrors llama.cpp's ``-hf <repo>:<quant>`` convention so users can
+    write ``unsloth/gpt-oss-20b-GGUF:UD-Q4_K_XL`` instead of passing
+    ``--gguf-variant`` separately. Local paths (absolute, ``./``,
+    ``~/``, Windows drive letters) and identifiers without a ``:``
+    suffix are returned verbatim.
+    """
+    s = model_arg.strip()
+    if not s:
+        return s, None
+    if s.startswith(("/", "./", "../", "~")) or s == ".":
+        return s, None
+    # Windows drive letter (e.g. "C:\\path" or "C:/path") -- the colon
+    # here is a path separator, not a variant suffix.
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        return s, None
+    if ":" not in s:
+        return s, None
+    repo, _, variant = s.rpartition(":")
+    if not repo or not variant:
+        return s, None
+    # A real quant label has no slashes; ``foo:bar/baz`` is not
+    # ``repo:variant`` syntax.
+    if "/" in variant:
+        return s, None
+    return repo, variant
+
+
+@studio_app.command(
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    },
+)
 def run(
-    model: str = typer.Option(..., "--model", "-m", help = "Model path or HF repo"),
+    ctx: typer.Context,
+    model: str = typer.Option(
+        ...,
+        "--model",
+        "-m",
+        "-hf",
+        "-hfr",
+        "--hf-repo",
+        help = (
+            "Model path or HF repo. Accepts llama.cpp-style "
+            "`org/repo:variant` syntax. The `-hf` / `--hf-repo` aliases "
+            "match llama-server's spelling."
+        ),
+    ),
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
@@ -528,15 +670,66 @@ def run(
         "cli", "--api-key-name", help = "Label for the auto-generated API key"
     ),
     port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = (
+            "Force server-side tools on/off for all requests. "
+            "Default: on for 127.0.0.1, off for 0.0.0.0."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+    ),
 ):
     """Start Studio, load a model, and print an API key -- one-liner server.
 
+    Any flag this command does not recognize is forwarded verbatim to
+    the underlying llama-server (GGUF only). Studio-managed flags
+    (--port, -c / --ctx-size, --api-key, -ngl, --jinja, --flash-attn,
+    --no-context-shift, model-identity flags, ...) are rejected with
+    HTTP 400.
+
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42
+        unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
     """
+    extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # ── 0. Parse llama.cpp-style ``repo:variant`` syntax in --model. ───
+    # Lets users write ``--model unsloth/foo-GGUF:UD-Q4_K_XL`` instead
+    # of pairing ``--model`` with ``--gguf-variant``. If both are given
+    # and disagree, fail loudly instead of silently picking one.
+    parsed_repo, embedded_variant = _split_repo_variant(model)
+    if embedded_variant:
+        if gguf_variant and gguf_variant != embedded_variant:
+            typer.echo(
+                f"Error: --model embeds variant '{embedded_variant}' but "
+                f"--gguf-variant '{gguf_variant}' was also provided.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        model = parsed_repo
+        gguf_variant = gguf_variant or embedded_variant
+
+    # ── Resolve the server-side tool policy. The y/N prompt (if any)
+    # runs in the outer process so the re-exec'd child never re-prompts.
+    from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
+
+    enable_tools = resolve_tool_policy(
+        host = host,
+        flag = enable_tools,
+        yes = yes,
+        silent = silent,
+    )
+
     # ── 1. Venv re-exec (same pattern as studio_default) ──────────────
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
@@ -576,6 +769,23 @@ def run(
             args.extend(["--frontend", str(frontend)])
         if silent:
             args.append("--silent")
+        # Forward the resolved tool policy (always concrete True/False
+        # at this point — the resolver above ran before the re-exec).
+        if enable_tools:
+            args.append("--enable-tools")
+        else:
+            args.append("--disable-tools")
+        # Forward --yes whenever the parent already cleared the prompt
+        # (either operator passed --yes, or the parent's resolver
+        # accepted the network-bind confirmation). Otherwise the child
+        # re-runs the resolver and prompts a second time.
+        if yes or (enable_tools and is_external_host(host)):
+            args.append("--yes")
+        # Forward unknown args (llama-server pass-through) to the
+        # re-exec'd command so the studio venv sees them in ctx.args
+        # and the re-execed run() can include them in the load payload.
+        if extra_llama_args:
+            args.extend(extra_llama_args)
 
         if sys.platform == "win32":
             proc = subprocess.Popen(args)
@@ -595,6 +805,17 @@ def run(
         run_kwargs["frontend_path"] = frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
+
+    # ── Apply the resolved tool policy as a process-level override.
+    # Must use the same import path the route handlers use --
+    # `studio/backend/run.py` adds `studio/backend/` to sys.path so the
+    # routes import this module as top-level `state.tool_policy`. If we
+    # imported via `studio.backend.state.tool_policy` instead, Python
+    # would cache two different module objects with two different
+    # `_tool_policy` globals, and the gates would never see our value.
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
 
     # ── 3. Wait for server health ─────────────────────────────────────
     if not silent:
@@ -617,6 +838,7 @@ def run(
             gguf_variant = gguf_variant,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            llama_extra_args = extra_llama_args,
         )
     except RuntimeError as exc:
         typer.echo(f"Error: {exc}", err = True)
@@ -630,6 +852,32 @@ def run(
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
+    # Claude orange (Claude Code's brand color) for tool-policy notices
+    # so they stand out from the surrounding banner. Always printed --
+    # even under --silent / --yes -- so the operator never misses the
+    # current tool-execution status.
+    _tool_notice_fg = (217, 119, 87)
+    _is_external = is_external_host(host)
+    if _is_external and enable_tools:
+        _tool_notice = (
+            f"Server-side tools are ENABLED on {host} (network-reachable). "
+            f"Anyone with the API key can run code on this machine. "
+            f"Do not share the API key."
+        )
+    elif _is_external:
+        _tool_notice = (
+            f"Server-side tools are disabled by default on {host} "
+            f"(network-reachable). Pass --enable-tools to turn on "
+            f"(you will be warned about API-key risk)."
+        )
+    elif enable_tools:
+        _tool_notice = (
+            "Server-side tools are enabled by default for loopback. "
+            "Pass --disable-tools to turn off."
+        )
+    else:
+        _tool_notice = "Server-side tools are disabled."
+
     if not silent:
         typer.echo("")
         typer.echo("=" * 56)
@@ -640,6 +888,7 @@ def run(
         typer.echo("  OpenAI / Anthropic SDK base URL:")
         typer.echo(f"    {sdk_base_url}")
         typer.echo("=" * 56)
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
         typer.echo("")
         typer.echo("OpenAI Chat Completions:")
         typer.echo(f"  curl {sdk_base_url}/chat/completions \\")
@@ -663,6 +912,13 @@ def run(
         typer.echo('    -H "Content-Type: application/json" \\')
         typer.echo("""    -d '{"input": "Hello", "stream": true}'""")
         typer.echo("")
+    else:
+        # Silent mode still prints the essentials (URL, API key) plus
+        # the orange tool-status notice so the operator never loses
+        # visibility into the security-relevant policy.
+        typer.echo(f"URL:     {base_url}")
+        typer.echo(f"API Key: {api_key}")
+        typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # ── 7. Wait for Ctrl+C ────────────────────────────────────────────
     from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
@@ -765,10 +1021,43 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             powershell_args.extend(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
             )
-        powershell_args.extend(["-ExecutionPolicy", "Bypass", "-File", str(script)])
+        # Use -Command + `*>&1` instead of -File so setup.ps1's
+        # Write-Host output (PowerShell Information stream / #6) is
+        # merged into the success stream and reaches the parent's
+        # stdout. With -File, Information stream output is dropped
+        # whenever stdout is a pipe, which is exactly the situation
+        # CI hits with `unsloth studio update --local 2>&1 | tee
+        # logs/update.log`. Single-quote escaping handles paths that
+        # contain apostrophes.
+        script_pwsh_literal = str(script).replace("'", "''")
+        powershell_args.extend(
+            [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"& '{script_pwsh_literal}' *>&1",
+            ]
+        )
+        # Explicitly hand stdin/stdout/stderr to the child so the
+        # CI tee actually sees setup.ps1's output. Without this,
+        # subprocess.run on Windows uses close_fds=True (default,
+        # since Python 3.7) which sets bInheritHandles=False on
+        # CreateProcess. With CREATE_NO_WINDOW also set (via
+        # _windows_hidden_subprocess_kwargs in non-TTY runs), the
+        # child has neither a console nor any inherited std
+        # handles, so PowerShell's Write-Host -- and even
+        # [Console]::Out.WriteLine -- writes to nothing. Passing
+        # stdout=sys.stdout / stderr=sys.stderr makes Python set up
+        # PROC_THREAD_ATTRIBUTE_HANDLE_LIST with the std handles
+        # explicitly inheritable, which works alongside
+        # CREATE_NO_WINDOW. Empty update.log on the windows-latest
+        # CI was the smoking gun (run 25533694490 and 25534292239).
         result = subprocess.run(
             powershell_args,
             env = env,
+            stdin = _stream_for_subprocess(sys.stdin),
+            stdout = _stream_for_subprocess(sys.stdout),
+            stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
     else:
@@ -776,6 +1065,170 @@ def _run_setup_script(*, verbose: bool = False) -> None:
 
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
+
+
+_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
+_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+
+
+def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
+    """Re-run installer with --shortcuts-only to refresh launchers post-update."""
+    env = {**os.environ}
+    if verbose:
+        env["UNSLOTH_VERBOSE"] = "1"
+
+    is_windows = platform.system() == "Windows"
+    installer_name = "install.ps1" if is_windows else "install.sh"
+    installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
+
+    # Prefer local checkout, fall back to package dir, then network fetch.
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    candidates: list[Path] = []
+    if local_repo:
+        candidates.append(Path(local_repo) / installer_name)
+    candidates.append(_PACKAGE_ROOT / installer_name)
+
+    args = ["--shortcuts-only"]
+    if verbose:
+        args.append("--verbose")
+
+    if is_windows:
+        ps_argv: list[str] = ["powershell.exe"]
+        if _should_hide_windows_subprocesses():
+            ps_argv.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
+
+        for script in candidates:
+            try:
+                if script.is_file():
+                    quoted = str(script).replace("'", "''")
+                    argv = list(ps_argv)
+                    argv.extend(
+                        [
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-Command",
+                            f"& '{quoted}' {' '.join(args)} *>&1",
+                        ]
+                    )
+                    result = subprocess.run(
+                        argv,
+                        env = env,
+                        check = False,
+                        **_windows_hidden_subprocess_kwargs(),
+                    )
+                    if result.returncode != 0:
+                        typer.echo(
+                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
+                        )
+                    return
+            except OSError:
+                continue
+
+        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
+        try:
+            request = urllib.request.Request(
+                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+            )
+            with urllib.request.urlopen(request, timeout = 30) as response:
+                installer = response.read().decode("utf-8", errors = "replace")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            typer.echo(
+                f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+            )
+            return
+
+        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
+        # stdin `$args` is empty so that triggers the full installer flow
+        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
+        installer = re.sub(
+            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
+            "",
+            installer,
+        )
+        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
+        marker_args = " ".join(args)
+        wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
+
+        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
+        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
+        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
+        # in install.ps1. -File reads the BOM and decodes correctly. The
+        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
+        ps1_fd, ps1_path = tempfile.mkstemp(
+            prefix = "unsloth-studio-refresh-",
+            suffix = ".ps1",
+        )
+        try:
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
+            argv = list(ps_argv)
+            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
+            try:
+                result = subprocess.run(
+                    argv,
+                    env = env,
+                    check = False,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
+                    )
+            except OSError as exc:
+                typer.echo(
+                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
+                )
+        finally:
+            try:
+                os.unlink(ps1_path)
+            except OSError:
+                pass
+        return
+
+    for script in candidates:
+        try:
+            if script.is_file():
+                result = subprocess.run(
+                    ["bash", str(script), *args],
+                    env = env,
+                    check = False,
+                )
+                if result.returncode != 0:
+                    typer.echo(
+                        f"  refresh-launcher  install.sh exited {result.returncode}"
+                    )
+                return
+        except OSError:
+            continue
+
+    # PyPI installs lack install.sh: fetch upstream.
+    try:
+        request = urllib.request.Request(
+            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
+        )
+        with urllib.request.urlopen(request, timeout = 30) as response:
+            installer = response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        typer.echo(
+            f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+        )
+        return
+
+    try:
+        result = subprocess.run(
+            ["bash", "-s", "--", *args],
+            input = installer,
+            env = env,
+            check = False,
+        )
+        if result.returncode != 0:
+            typer.echo(
+                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
+            )
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
 
 @studio_app.command(hidden = True)
@@ -807,6 +1260,9 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
+    # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
+    # subprocess resolves the same install root the user originally chose.
+    _ensure_studio_env_exported()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -819,7 +1275,88 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _run_setup_script(verbose = verbose)
+    _release_self_exe_lock_windows()
+    try:
+        _run_setup_script(verbose = verbose)
+    except BaseException:
+        # Restore unsloth.exe from .deleteme if setup failed before pip
+        # produced a replacement; otherwise the user has no CLI for recovery.
+        _restore_self_exe_lock_windows()
+        raise
+    # On Windows clear the .deleteme orphan now that pip wrote a fresh
+    # unsloth.exe; on next update os.replace would overwrite it anyway,
+    # but leaving a stale binary around invites cross-version restore
+    # confusion from _restore_self_exe_lock_windows.
+    _cleanup_self_exe_lock_windows()
+    # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
+    # so a Tauri-initiated update doesn't create duplicate shortcuts.
+    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+        if verbose:
+            typer.echo("  refresh-launcher  skipped (Tauri update)")
+        return
+    _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _release_self_exe_lock_windows() -> None:
+    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    if not exe.exists():
+        return
+    stale = exe.with_suffix(".exe.deleteme")
+    try:
+        # os.replace is atomic-overwrite on Windows; os.rename would raise
+        # FileExistsError if a prior aborted update left a .deleteme behind.
+        os.replace(exe, stale)
+    except OSError as e:
+        # Not fatal; setup.ps1 retries from a sibling process.
+        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+
+
+def _restore_self_exe_lock_windows() -> None:
+    """If setup failed before pip wrote a working unsloth.exe, restore .deleteme."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    exe = venv_scripts / "unsloth.exe"
+    stale = exe.with_suffix(".exe.deleteme")
+    if not stale.exists():
+        return
+    # Treat a missing or zero-byte exe as "pip didn't produce a usable
+    # replacement"; otherwise leave the new binary alone.
+    if exe.exists():
+        try:
+            if exe.stat().st_size > 0:
+                return
+        except OSError:
+            return
+    try:
+        os.replace(stale, exe)
+    except OSError as e:
+        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+
+
+def _cleanup_self_exe_lock_windows() -> None:
+    """Remove the .deleteme orphan after a successful update on Windows."""
+    if platform.system() != "Windows":
+        return
+    try:
+        venv_scripts = Path(sys.executable).resolve().parent
+    except OSError:
+        return
+    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
+    try:
+        stale.unlink(missing_ok = True)
+    except OSError:
+        pass
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
@@ -835,8 +1372,10 @@ def desktop_capabilities(
 ):
     payload = {
         "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
+        "supports_desktop_backend_ownership": True,
         "version": "unknown",
     }
     try:

@@ -33,6 +33,7 @@ _OXC_TOOL_DIR = Path(__file__).resolve().parent / "oxc-validator"
 _OXC_RUNNER_PATH = _OXC_TOOL_DIR / "validate.mjs"
 
 
+from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -248,7 +249,7 @@ def _run_oxc_batch(
     }
     try:
         tmp_dir = ensure_dir(oxc_validator_tmp_root())
-        env = dict(os.environ)
+        env = child_env_without_native_path_secret()
         tmp_dir_str = str(tmp_dir)
         env["TMPDIR"] = tmp_dir_str
         env["TMP"] = tmp_dir_str
