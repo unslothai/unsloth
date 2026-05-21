@@ -2264,25 +2264,33 @@ def run_training_process(
                     "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
 
-    # ── 1g. ROCm/CUDA OOM guard ──
+    # ── 1g. ROCm OOM guard ──
     # On RDNA 4 (gfx1200/gfx1201) and other ROCm GPUs, exhausting VRAM can
     # cause a HIP driver hang that freezes the entire system rather than
     # raising a Python exception.  set_per_process_memory_fraction caps the
-    # HIP/CUDA allocator at 90% of available VRAM so PyTorch raises
-    # OutOfMemoryError before hitting the hardware limit, giving the UI a
-    # clean error message instead of a system freeze.
-    # Non-fatal: if torch is not importable here (CPU-only path) the guard
-    # is silently skipped and the training path will handle it later.
-    if _hw.DEVICE == _hw.DeviceType.CUDA:
+    # HIP allocator so PyTorch raises OutOfMemoryError before hitting the
+    # hardware limit, giving the UI a clean error instead of a system freeze.
+    # Only applied on ROCm -- NVIDIA CUDA has a graceful OOM path and does
+    # not need this cap.
+    # Unified-memory APUs (gfx1150/gfx1151 Strix Halo) share GPU and system
+    # RAM in one pool: 0.90 of 128 GB starves the OS. Use 0.80 there.
+    # Non-fatal: silently skipped if torch is not importable.
+    if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
+            import psutil as _psutil
 
             if _torch_mem.cuda.is_available():
-                _torch_mem.cuda.set_per_process_memory_fraction(0.90)
+                _vram_total = _torch_mem.cuda.get_device_properties(0).total_memory
+                _ram_total = _psutil.virtual_memory().total
+                _is_unified = _vram_total > (_ram_total * 0.5)
+                _mem_fraction = 0.80 if _is_unified else 0.90
+                _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
-                    "GPU OOM guard: set_per_process_memory_fraction(0.90) — "
-                    "HIP/CUDA allocator will raise OutOfMemoryError before "
-                    "hitting the hardware VRAM limit"
+                    "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
+                    "%s memory host",
+                    _mem_fraction,
+                    "unified" if _is_unified else "discrete",
                 )
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)

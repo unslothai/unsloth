@@ -271,11 +271,9 @@ def _detect_windows_gfx_arch() -> str | None:
     def _dedup_pick(tokens: list[str]) -> "str | None":
         if not tokens:
             return None
-        _seen: list[str] = []
-        for _t in tokens:
-            if _t not in _seen:
-                _seen.append(_t)
-        return _seen[_pick_visible_index(len(_seen))]
+        # Index into the full (ordered) list first so HIP_VISIBLE_DEVICES
+        # correctly addresses GPU N on mixed-arch hosts, then return that arch.
+        return tokens[_pick_visible_index(len(tokens))]
 
     # 2. hipinfo via PATH, then HIP_PATH\bin / ROCM_PATH\bin.
     hipinfo = shutil.which("hipinfo")

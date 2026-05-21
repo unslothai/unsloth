@@ -714,8 +714,10 @@ if (-not $HasNvidiaSmi) {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
                 $HasROCm = $true
-                if ($hipOut -match "(?im)^\s*gcnArchName\s*:\s*(\S+)") {
-                    $script:ROCmGfxArch = ($Matches[1] -split ':')[0].Trim().ToLower()
+                $_hipAllArches = [regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() }
+                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                if ($_hipAllArches.Count -gt 0) {
+                    $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
                     $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"

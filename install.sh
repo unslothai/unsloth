@@ -1855,14 +1855,14 @@ case "$TORCH_INDEX_URL" in
         # Strix per-gfx index.
         _gfx_all=""
         if command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk '!seen[$0]++')
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
             fi
         fi
         _runtime_gfx=""

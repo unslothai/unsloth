@@ -1043,7 +1043,11 @@ else
                 # runtime dir AND /usr/include/c++/<ver> headers, then pass it
                 # to clang via --gcc-install-dir so HIP builds succeed.
                 _GCC_INSTALL_DIR=""
-                _GCC_MULTIARCH="$(gcc -print-multiarch 2>/dev/null || uname -m)-linux-gnu"
+                _gcc_pm="$(gcc -print-multiarch 2>/dev/null)"
+                case "$_gcc_pm" in
+                    *-linux-gnu*) _GCC_MULTIARCH="$_gcc_pm" ;;
+                    *) _GCC_MULTIARCH="$(uname -m)-linux-gnu" ;;
+                esac
                 for _gcc_ver in 14 13 12 11; do
                     if [ -d "/usr/lib/gcc/$_GCC_MULTIARCH/$_gcc_ver/include" ] && \
                        [ -d "/usr/include/c++/$_gcc_ver" ]; then
