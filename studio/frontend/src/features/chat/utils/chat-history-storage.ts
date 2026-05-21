@@ -231,12 +231,16 @@ async function backfillLegacyThreadFields(
       legacyThread.anthropicCodeExecContainerId;
   }
   if (Object.keys(patch).length === 0) return backendThread;
-  return (
-    (await updateChatThread(backendThread.id, patch)) ?? {
-      ...backendThread,
-      ...patch,
-    }
-  );
+  try {
+    return (
+      (await updateChatThread(backendThread.id, patch)) ?? {
+        ...backendThread,
+        ...patch,
+      }
+    );
+  } catch {
+    return backendThread;
+  }
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
