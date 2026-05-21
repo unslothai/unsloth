@@ -9,6 +9,7 @@ import {
   hasRefreshToken,
   mustChangePassword,
   refreshSession,
+  setMustChangePassword,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -26,7 +27,12 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
-    return (await res.json()) as AuthStatus;
+    const status = (await res.json()) as AuthStatus;
+    // Server truth wins; keep localStorage in sync both ways.
+    if (status.requires_password_change !== mustChangePassword()) {
+      setMustChangePassword(status.requires_password_change);
+    }
+    return status;
   } catch {
     return { initialized: true, requires_password_change: mustChangePassword() };
   }
@@ -61,6 +67,8 @@ export async function requireGuest(): Promise<void> {
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
+  // Reconcile localStorage before routing.
+  await fetchAuthStatus();
   throw redirect({ to: getPostAuthRoute() });
 }
 
