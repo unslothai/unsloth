@@ -53,6 +53,7 @@ import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatMessage,
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
@@ -849,7 +850,14 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         const attachments =
           message.role === "user" ? cloneAttachments(message.attachments) : [];
         const custom = message.metadata?.custom;
-        const createdAt = message.createdAt?.getTime?.() ?? Date.now();
+        const existingMessage = await getStoredChatMessage(
+          remoteId,
+          message.id,
+        );
+        const createdAt =
+          existingMessage?.createdAt ??
+          message.createdAt?.getTime?.() ??
+          Date.now();
         await saveStoredChatMessage({
           id: message.id,
           threadId: remoteId,
