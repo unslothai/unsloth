@@ -805,6 +805,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
+      const webSearchEnabledForThisTurn =
+        Boolean(
+          externalProvider &&
+            toolsEnabled &&
+            providerSupportsBuiltinWebSearch(externalProvider.providerType),
+        );
+      const codeExecEnabledForThisTurn =
+        Boolean(
+          externalProvider &&
+            externalSelection &&
+            codeToolsEnabled &&
+            providerSupportsBuiltinCodeExecution(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              externalProvider.baseUrl,
+            ),
+        );
+
       const outboundMessages = messages
         .map(toOpenAIMessage)
         .filter((message): message is NonNullable<typeof message> =>
@@ -818,6 +836,41 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           role: "system",
           content: safeSystemPrompt.trim(),
         });
+      }
+      let disabledToolGuard: string | null = null;
+      if (externalProvider?.providerType === "anthropic") {
+        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+          disabledToolGuard =
+            "You do not have web search or code execution tools in this conversation. " +
+            "Answer from your own knowledge. " +
+            "If a request genuinely requires live data or running code, say so plainly, instead of emitting tool-call syntax.";
+        } else if (!webSearchEnabledForThisTurn) {
+          disabledToolGuard =
+            "You do not have web search tools in this conversation. " +
+            "Answer from your own knowledge. " +
+            "If a request genuinely requires live data, say so plainly, instead of emitting tool-call syntax.";
+        } else if (!codeExecEnabledForThisTurn) {
+          disabledToolGuard =
+            "You do not have code execution tools in this conversation. " +
+            "Answer from your own knowledge. " +
+            "If a request genuinely requires running code, say so plainly, instead of emitting tool-call syntax.";
+        }
+      }
+      if (disabledToolGuard) {
+        if (
+          outboundMessages[0]?.role === "system" &&
+          typeof outboundMessages[0].content === "string"
+        ) {
+          outboundMessages[0] = {
+            ...outboundMessages[0],
+            content: `${outboundMessages[0].content}\n\n${disabledToolGuard}`,
+          };
+        } else {
+          outboundMessages.unshift({
+            role: "system",
+            content: disabledToolGuard,
+          });
+        }
       }
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
@@ -1068,13 +1121,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // (sent as `container` on /v1/messages).
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
-            const codeExecEnabledForThisTurn =
-              codeToolsEnabled &&
-              providerSupportsBuiltinCodeExecution(
-                externalProvider.providerType,
-                externalSelection.modelId,
-                externalProvider.baseUrl,
-              );
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
               try {
                 const thread = await db.threads.get(resolvedThreadId);
@@ -1252,31 +1298,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // translates enabled_tools into each provider's tool
               // schema — for Anthropic that's the entries appended to
               // body["tools"] inside _stream_anthropic.
-              ...((toolsEnabled &&
-                providerSupportsBuiltinWebSearch(externalProvider.providerType)) ||
-              (codeToolsEnabled &&
-                providerSupportsBuiltinCodeExecution(
-                  externalProvider.providerType,
-                  externalSelection.modelId,
-                  externalProvider.baseUrl,
-                ))
+              ...(webSearchEnabledForThisTurn || codeExecEnabledForThisTurn
                 ? {
                     enable_tools: true,
                     enabled_tools: [
-                      ...(toolsEnabled &&
-                      providerSupportsBuiltinWebSearch(
-                        externalProvider.providerType,
-                      )
-                        ? ["web_search"]
-                        : []),
-                      ...(codeToolsEnabled &&
-                      providerSupportsBuiltinCodeExecution(
-                        externalProvider.providerType,
-                        externalSelection.modelId,
-                        externalProvider.baseUrl,
-                      )
-                        ? ["code_execution"]
-                        : []),
+                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
+                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                     ],
                   }
                 : {}),
