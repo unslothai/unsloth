@@ -9,7 +9,6 @@ import {
   ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
   type PendingAttachment,
-  Suggestions,
   type LocalRuntimeOptions,
   type ThreadHistoryAdapter,
   type ThreadMessage,
@@ -37,6 +36,7 @@ import { authFetch } from "@/features/auth";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import { db } from "./db";
 import {
+  loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -56,29 +56,6 @@ import {
 } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToDexie } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
-
-const DEFAULT_SUGGESTIONS = [
-  {
-    title: "How do you fine-tune an audio model with Unsloth?",
-    label: "Audio fine-tuning",
-    prompt: "How do you fine-tune an audio model with Unsloth?",
-  },
-  {
-    title: "Create a live weather dashboard in HTML using no API key. Show me the code",
-    label: "Weather dashboard",
-    prompt: "Create a live weather dashboard in HTML using no API key. Show me the code",
-  },
-  {
-    title: "Solve the integral of x·sin(x), and verify it",
-    label: "Integral",
-    prompt: "Solve the integral of x·sin(x), and verify it step by step",
-  },
-  {
-    title: "Draw an SVG of a cute sloth & show the code",
-    label: "SVG sloth",
-    prompt: "Draw an SVG of a cute sloth & show the code",
-  },
-];
 
 type TitleResponse = {
   choices?: Array<{
@@ -101,7 +78,7 @@ class VisionImageAdapter implements AttachmentAdapter {
     let externalSupportsVision: boolean | null = null;
     let externalModelLabel: string | null = null;
     if (externalSelection !== null) {
-      const providers = loadExternalProviders();
+      const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
       const provider = providers.find(
         (p) => p.id === externalSelection.providerId,
       );
@@ -1033,9 +1010,7 @@ export function ChatRuntimeProvider({
     adapter: createDexieAdapter(modelType, pairId),
   });
 
-  const aui = useAui({
-    suggestions: Suggestions(DEFAULT_SUGGESTIONS),
-  });
+  const aui = useAui({});
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>

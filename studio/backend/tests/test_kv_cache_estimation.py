@@ -1558,6 +1558,33 @@ class TestServerFlags:
         )
         assert fitted < 32_768
 
+    def test_fit_mtp_engaged_returns_smaller_or_equal_context(self):
+        # MTP-engaged budget is 0.85 of available; non-MTP is 0.90.
+        # On a tight budget the MTP path must yield <= the non-MTP path.
+        b = self._gqa_backend()
+        common = dict(
+            requested_ctx = 32_768,
+            available_mib = 128,
+            model_size_bytes = 8 * 1024 * 1024,
+            cache_type_kv = "f16",
+        )
+        baseline = b._fit_context_to_vram(**common)
+        mtp = b._fit_context_to_vram(**common, mtp_engaged = True)
+        assert mtp <= baseline
+
+    def test_fit_mtp_engaged_unchanged_when_kv_off_gpu(self):
+        # kv_on_gpu=False short-circuits the fit; mtp_engaged is irrelevant.
+        b = self._gqa_backend()
+        fitted = b._fit_context_to_vram(
+            requested_ctx = 32_768,
+            available_mib = 1,
+            model_size_bytes = 100,
+            cache_type_kv = "f16",
+            kv_on_gpu = False,
+            mtp_engaged = True,
+        )
+        assert fitted == 32_768
+
     def test_fit_threads_swa_full_through_estimator(self):
         # SWA model, generous budget; both should fit but cache size differs.
         b = self._swa_backend()

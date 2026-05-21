@@ -92,6 +92,7 @@ function Install-UnslothStudio {
     $RepoRoot = ""
     $TauriMode = $false
     $SkipTorch = $false
+    $ShortcutsOnly = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
@@ -100,6 +101,7 @@ function Install-UnslothStudio {
             "--no-torch" { $SkipTorch = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
+            "--shortcuts-only" { $ShortcutsOnly = $true }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -871,6 +873,19 @@ shell.Run cmd, 0, False
         }
     }
 
+    # Regen .lnk + launcher only; used by `unsloth studio update`.
+    if ($ShortcutsOnly) {
+        if ($TauriMode) { return }
+        $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+        if (-not (Test-Path -LiteralPath $UnslothExe)) {
+            Write-Host "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
+            # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
+            throw "unsloth.exe missing"
+        }
+        New-StudioShortcuts -UnslothExePath $UnslothExe
+        return
+    }
+
     # ── Check winget ──
     Write-TauriLog "STEP" "Checking system dependencies"
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -1285,7 +1300,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.5" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -1293,7 +1308,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.5" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1331,7 +1346,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.5" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -1339,7 +1354,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.3" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.5" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -1367,7 +1382,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.3" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.5" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
