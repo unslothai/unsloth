@@ -259,7 +259,15 @@ jobs:
               determinism_failures = []
               for i, (a, b) in enumerate(zip(first, second), start = 1):
                   print(f"[{label} turn {i}] {a!r}")
-                  assert a, f"{label}: empty turn {i} response"
+                  # Both runs must produce a non-empty response. A
+                  # second-run empty / degraded reply (intermittent
+                  # backend or tool instability) is a real regression
+                  # in the second execution path the probe is meant
+                  # to exercise -- it must FAIL, not silently log
+                  # drift. Address of chatgpt-codex P2 review on PR
+                  # #5669 commit 7dbe4960.
+                  assert a, f"{label}: empty turn {i} response in first run"
+                  assert b, f"{label}: empty turn {i} response in second run"
                   # Compare on stripped content: llama-server can vary
                   # trailing whitespace (specifically a final '\n') between
                   # otherwise-identical greedy runs depending on the
