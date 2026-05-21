@@ -2378,6 +2378,9 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             "--published-repo", $HelperReleaseRepo,
             "--simple-policy"
         )
+        if ($HasROCm) {
+            $prebuiltArgs += "--has-rocm"
+        }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }

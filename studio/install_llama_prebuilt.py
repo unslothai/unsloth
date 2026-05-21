@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclasses_replace
 
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
@@ -5532,8 +5532,11 @@ def install_prebuilt(
     published_release_tag: str,
     *,
     simple_policy: bool = False,
+    override_has_rocm: bool = False,
 ) -> None:
     host = detect_host()
+    if override_has_rocm and not host.has_rocm:
+        host = dataclasses_replace(host, has_rocm = True)
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -5667,6 +5670,17 @@ def parse_args() -> argparse.Namespace:
         action = "store_true",
         help = "Use the simplified platform-specific prebuilt selection policy.",
     )
+    parser.add_argument(
+        "--has-rocm",
+        action = "store_true",
+        default = False,
+        help = (
+            "Assert that an AMD ROCm GPU is present. When set, skips the internal "
+            "hipinfo/amd-smi probe and forces has_rocm=True in the host profile. "
+            "Used by setup.ps1/setup.sh to forward their own ROCm detection result "
+            "so the HIP llama.cpp prebuilt is selected even when hipinfo is not on PATH."
+        ),
+    )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
@@ -5787,6 +5801,7 @@ def main() -> int:
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
         simple_policy = args.simple_policy,
+        override_has_rocm = args.has_rocm,
     )
     return EXIT_SUCCESS
 
