@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from unittest import mock
 
 from utils import wheel_utils
@@ -47,6 +48,17 @@ def _plain_pypi_spec() -> KernelPackageSpec:
 def _patch_missing_package(monkeypatch):
     monkeypatch.setattr(wheel_utils, "_package_is_importable", lambda name: False)
     monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _env())
+    monkeypatch.setattr(
+        wheel_utils,
+        "_installed_package_constraints",
+        lambda package_names: ["torch==2.9.0"] if package_names == ("torch",) else [],
+    )
+
+
+def _assert_torch_constrained(cmd: list[str]) -> None:
+    assert "--constraint" in cmd
+    constraint_index = cmd.index("--constraint")
+    assert Path(cmd[constraint_index + 1]).name.startswith("unsloth-kernel-")
 
 
 def test_direct_wheel_success_returns_true_and_skips_pypi(monkeypatch):
@@ -72,7 +84,9 @@ def test_direct_wheel_success_returns_true_and_skips_pypi(monkeypatch):
     )
 
     assert len(calls) == 1
-    assert calls[0][:4] == ["uv", "pip", "install", "--python"]
+    assert calls[0][:3] == ["uv", "pip", "install"]
+    _assert_torch_constrained(calls[0])
+    assert "--python" in calls[0]
     assert calls[0][-1].endswith(
         "test_kernel-1.0.0+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
@@ -103,13 +117,9 @@ def test_direct_wheel_lets_installer_resolve_wheel_dependencies(monkeypatch):
         is True
     )
 
-    assert calls[0][:5] == [
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        sys.executable,
-    ]
+    assert calls[0][:3] == ["uv", "pip", "install"]
+    _assert_torch_constrained(calls[0])
+    assert calls[0][calls[0].index("--python") + 1] == sys.executable
     assert "--no-deps" not in calls[0]
     assert "einops" not in calls[0]
     assert calls[0][-1].endswith(".whl")
@@ -139,6 +149,7 @@ def test_direct_wheel_pip_fallback_resolves_wheel_dependencies(monkeypatch):
     )
 
     assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
+    _assert_torch_constrained(calls[1])
     assert "--no-deps" not in calls[1]
     assert "--upgrade" not in calls[1]
     assert "--force-reinstall" not in calls[1]
@@ -168,13 +179,9 @@ def test_mamba_wheel_uses_only_direct_wheel_requirement(monkeypatch):
         is True
     )
 
-    assert calls[0][:5] == [
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        sys.executable,
-    ]
+    assert calls[0][:3] == ["uv", "pip", "install"]
+    _assert_torch_constrained(calls[0])
+    assert calls[0][calls[0].index("--python") + 1] == sys.executable
     assert "--no-deps" not in calls[0]
     assert calls[0].count(calls[0][-1]) == 1
     assert calls[0][-1].endswith(".whl")
@@ -402,8 +409,10 @@ def test_direct_wheel_tries_uv_then_pip(monkeypatch):
 
     assert calls[0][0] == "uv"
     assert calls[0][1:3] == ["pip", "install"]
+    _assert_torch_constrained(calls[0])
     assert "--no-deps" not in calls[0]
     assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
+    _assert_torch_constrained(calls[1])
     assert "--no-deps" not in calls[1]
     assert calls[1][-1] == calls[0][-1]
 

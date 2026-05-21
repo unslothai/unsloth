@@ -11,9 +11,11 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Callable
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -234,6 +236,17 @@ FLASH_ATTN_SPEC = KernelPackageSpec(
 )
 
 
+def _installed_package_constraints(package_names: tuple[str, ...]) -> list[str]:
+    constraints: list[str] = []
+    for package_name in package_names:
+        try:
+            installed_version = version(package_name)
+        except PackageNotFoundError:
+            continue
+        constraints.append(f"{package_name}=={installed_version}")
+    return constraints
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -243,33 +256,59 @@ def install_wheel(
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
+    constraints = _installed_package_constraints(("torch",))
+    constraint_path: str | None = None
+    constraint_args: list[str] = []
 
-    if use_uv and shutil.which("uv"):
-        uv_cmd = ["uv", "pip", "install"]
-        if uv_needs_system:
-            uv_cmd.append("--system")
-        uv_cmd.extend(["--python", python_executable, wheel_url])
+    if constraints:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding = "utf-8", prefix = "unsloth-kernel-", suffix = ".txt", delete = False
+        ) as constraint_file:
+            constraint_file.write("\n".join(constraints))
+            constraint_file.write("\n")
+            constraint_path = constraint_file.name
+        constraint_args = ["--constraint", constraint_path]
+
+    try:
+        if use_uv and shutil.which("uv"):
+            uv_cmd = ["uv", "pip", "install"]
+            if uv_needs_system:
+                uv_cmd.append("--system")
+            uv_cmd.extend([*constraint_args, "--python", python_executable, wheel_url])
+            result = run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                env = child_env_without_native_path_secret(),
+            )
+            attempts.append(("uv", result))
+            if result.returncode == 0:
+                return attempts
+
+        pip_cmd = [
+            python_executable,
+            "-m",
+            "pip",
+            "install",
+            *constraint_args,
+            wheel_url,
+        ]
         result = run(
-            uv_cmd,
+            pip_cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             env = child_env_without_native_path_secret(),
         )
-        attempts.append(("uv", result))
-        if result.returncode == 0:
-            return attempts
-
-    pip_cmd = [python_executable, "-m", "pip", "install", wheel_url]
-    result = run(
-        pip_cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        env = child_env_without_native_path_secret(),
-    )
-    attempts.append(("pip", result))
-    return attempts
+        attempts.append(("pip", result))
+        return attempts
+    finally:
+        if constraint_path is not None:
+            try:
+                os.unlink(constraint_path)
+            except OSError:
+                pass
 
 
 def _package_is_importable(import_name: str) -> bool:
