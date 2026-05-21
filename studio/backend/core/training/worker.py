@@ -2285,7 +2285,7 @@ def run_training_process(
                 # names ending in a digit+M suffix ("AMD Radeon 890M").
                 # Discrete cards use "RX NNNN [XT|XTX]" — no trailing M.
                 _dev_name = _torch_mem.cuda.get_device_properties(0).name
-                _is_unified = bool(_re.search(r'\d[Mm]\b', _dev_name))
+                _is_unified = bool(_re.search(r"\d[Mm]\b", _dev_name))
                 _mem_fraction = 0.80 if _is_unified else 0.90
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
