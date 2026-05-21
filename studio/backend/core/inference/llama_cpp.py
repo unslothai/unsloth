@@ -683,6 +683,18 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        # Audio metadata cache. _audio_probed records whether the
+        # currently-loaded model has been probed for audio support
+        # (snac / bicodec / dac / csm / whisper / audio_vlm). For
+        # non-audio models detect_audio_type() returns None, so we
+        # cannot use _audio_type is None as a "not probed yet"
+        # sentinel -- doing so would re-run the 8 sequential
+        # /tokenize+/detokenize probes under _serial_load_lock on
+        # every no-op /load. Address of chatgpt-codex-connector P2
+        # review on PR #5669 commit f63ac224.
+        self._is_audio: bool = False
+        self._audio_type: Optional[str] = None
+        self._audio_probed: bool = False
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -2558,9 +2570,18 @@ class LlamaCppBackend:
                 # mid-probe; init inside self._lock so it cannot race
                 # against an unload that already cleared backend
                 # state.
-                if self._audio_type is None:
+                # Only re-probe on fast-path when the previous load
+                # never recorded a probe outcome (transient probe
+                # failure / exception). For non-audio models the
+                # previous load set _audio_probed=True with
+                # _audio_type=None, so this branch is skipped and
+                # no-op /load calls do not re-run the 8 HTTP probes
+                # under _serial_load_lock (chatgpt-codex P2 on
+                # commit f63ac224).
+                if not self._audio_probed:
                     try:
                         detected = self.detect_audio_type()
+                        self._audio_probed = True
                     except Exception:
                         detected = None
                     if detected in ("snac", "bicodec", "dac"):
@@ -3309,12 +3330,27 @@ class LlamaCppBackend:
             # concurrent /load still serialises.
             self._is_audio = False
             self._audio_type = None
+            self._audio_probed = False
             try:
                 detected = self.detect_audio_type()
+                # Mark probed regardless of audio/non-audio outcome.
+                # detect_audio_type returns None for non-audio models
+                # as well as for transient probe failures; the route
+                # cannot distinguish these from outside, so we treat
+                # a completed call (no exception escaped) as a
+                # definitive probe and cache the result. Worst case
+                # of a stale-None caching: the route reports the
+                # model as non-audio until the next unload+reload,
+                # which is recoverable user-side; the alternative
+                # (re-probing under _serial_load_lock on every
+                # no-op /load) is not.
+                self._audio_probed = True
             except Exception:
                 # detect_audio_type already swallows all internal
                 # exceptions and returns None; the belt-and-braces
-                # except here protects against future refactors.
+                # except here protects against future refactors and
+                # deliberately leaves _audio_probed False so the
+                # fast-path re-probe can recover.
                 detected = None
             if detected in ("snac", "bicodec", "dac"):
                 # init_audio_codec allocates codec GPU memory and
@@ -3690,6 +3726,7 @@ class LlamaCppBackend:
             self._is_vision = False
             self._is_audio = False
             self._audio_type = None
+            self._audio_probed = False
             self._port = None
             self._healthy = False
             self._context_length = None
