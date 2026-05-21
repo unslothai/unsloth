@@ -2551,24 +2551,39 @@ class LlamaCppBackend:
                 # indefinitely on subsequent /load calls that hit this
                 # fast path. Re-probe here so a one-off failure does
                 # not become sticky.
+                #
+                # Same lock discipline as the main load path
+                # (chatgpt-codex P2 on commit b8a7fe4a): detect
+                # outside self._lock so /unload can still acquire it
+                # mid-probe; init inside self._lock so it cannot race
+                # against an unload that already cleared backend
+                # state.
                 if self._audio_type is None:
                     try:
                         detected = self.detect_audio_type()
                     except Exception:
                         detected = None
                     if detected in ("snac", "bicodec", "dac"):
-                        try:
-                            self.init_audio_codec(detected)
-                            self._is_audio = True
-                            self._audio_type = detected
-                        except Exception as exc:
-                            logger.warning(
-                                "Fast-path re-probe: failed to init "
-                                "audio codec '%s': %s (continuing as "
-                                "non-audio)",
-                                detected,
-                                exc,
-                            )
+                        with self._lock:
+                            if not self._healthy:
+                                logger.info(
+                                    "load_model fast-path: unload won "
+                                    "race after re-probe; skipping "
+                                    "audio codec init"
+                                )
+                                return False
+                            try:
+                                self.init_audio_codec(detected)
+                                self._is_audio = True
+                                self._audio_type = detected
+                            except Exception as exc:
+                                logger.warning(
+                                    "Fast-path re-probe: failed to "
+                                    "init audio codec '%s': %s "
+                                    "(continuing as non-audio)",
+                                    detected,
+                                    exc,
+                                )
                     elif detected:
                         self._audio_type = detected
                 return True
@@ -3281,43 +3296,61 @@ class LlamaCppBackend:
                     f"for model '{model_identifier}'"
                 )
 
-                # Cache audio metadata under self._serial_load_lock so a
-                # concurrent /api/inference/load cannot kill this server
-                # mid-probe and leave the route writing stale audio_type
-                # onto the next load's backend instance (#5642 follow-up,
-                # see gemini-code-assist review on PR #5669). The probes
-                # fire 8 sequential /tokenize + /detokenize calls; running
-                # them inside the lock means the next load waits, which
-                # is the same semantics the rest of the load sequence has.
-                # Reset to safe defaults FIRST so a probe failure (network
-                # crash, malformed JSON) does not leak the previous load's
-                # audio_type. detect_audio_type swallows all exceptions
-                # internally so it cannot raise from here.
-                self._is_audio = False
-                self._audio_type = None
+            # Reset audio cache to safe defaults BEFORE probing so a
+            # transient probe failure (network / JSON error) does not
+            # leak the previous load's audio_type onto the next load's
+            # backend instance. The probe + init pair runs *outside*
+            # self._lock so /api/inference/unload can still acquire
+            # _lock and kill llama-server mid-probe if /tokenize or
+            # /detokenize hangs (chatgpt-codex P2 on commit b8a7fe4a:
+            # without this, unload blocks for up to 8 probes x 10s =
+            # 80s after the server is already healthy). The probe
+            # itself remains inside self._serial_load_lock so a
+            # concurrent /load still serialises.
+            self._is_audio = False
+            self._audio_type = None
+            try:
                 detected = self.detect_audio_type()
-                if detected in ("snac", "bicodec", "dac"):
+            except Exception:
+                # detect_audio_type already swallows all internal
+                # exceptions and returns None; the belt-and-braces
+                # except here protects against future refactors.
+                detected = None
+            if detected in ("snac", "bicodec", "dac"):
+                # init_audio_codec allocates codec GPU memory and
+                # writes to LlamaCppBackend._codec_mgr; serialize
+                # against unload via self._lock. Re-check _healthy
+                # inside the lock so that a /api/inference/unload
+                # that fired after detect_audio_type completed but
+                # before we re-acquired _lock wins cleanly.
+                with self._lock:
+                    if not self._healthy:
+                        # Lost the race to unload. The backend is
+                        # already torn down; don't reattach codec
+                        # state to a dead server.
+                        logger.info(
+                            "load_model: unload won race after probe; "
+                            "skipping audio codec init"
+                        )
+                        return False
                     try:
                         self.init_audio_codec(detected)
                         self._is_audio = True
                         self._audio_type = detected
                     except Exception as exc:
-                        # Codec init failure should not fail the whole
-                        # load -- the model is still usable for chat /
-                        # non-audio output.
                         logger.warning(
-                            "Failed to init audio codec '%s': %s (load continues "
-                            "as non-audio)",
+                            "Failed to init audio codec '%s': %s "
+                            "(load continues as non-audio)",
                             detected,
                             exc,
                         )
-                elif detected:
-                    # csm / whisper / audio_vlm have no codec init step,
-                    # but the audio_type is still informational metadata
-                    # the route surfaces through LoadResponse.
-                    self._audio_type = detected
+            elif detected:
+                # csm / whisper / audio_vlm have no codec init step,
+                # but the audio_type is still informational metadata
+                # the route surfaces through LoadResponse.
+                self._audio_type = detected
 
-                return True
+            return True
 
     def _build_speculative_flags(
         self,
