@@ -847,13 +847,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         } else if (!webSearchEnabledForThisTurn) {
           disabledToolGuard =
             "You do not have web search tools in this conversation. " +
-            "Answer from your own knowledge. " +
-            "If a request genuinely requires live data, say so plainly, instead of emitting tool-call syntax.";
+            "You may still use code execution tools when they are available and useful. " +
+            "If a request genuinely requires live data, say so plainly, instead of emitting web-search tool-call syntax.";
         } else if (!codeExecEnabledForThisTurn) {
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
-            "Answer from your own knowledge. " +
-            "If a request genuinely requires running code, say so plainly, instead of emitting tool-call syntax.";
+            "You may still use web search tools when they are available and useful. " +
+            "If a request genuinely requires running code, say so plainly, instead of emitting code-execution tool-call syntax.";
         }
       }
       if (disabledToolGuard) {
