@@ -1394,6 +1394,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     max_grad_norm = 0.0
     max_grad_value = config.get("max_grad_value")
     max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)
+    weight_decay = config.get("weight_decay", 0.001)
+    weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
     trainer = MLXTrainer(
         model = model,
@@ -1408,7 +1410,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             warmup_steps = warmup_steps,
             lr_scheduler_type = lr_scheduler_type,
             optim = optim_name,
-            weight_decay = float(config.get("weight_decay", 0.001) or 0.001),
+            weight_decay = weight_decay,
             max_grad_norm = max_grad_norm,
             max_grad_value = max_grad_value,
             logging_steps = 1,
@@ -1418,6 +1420,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             compile = True,
             gradient_checkpointing = use_grad_checkpoint,
             streaming = is_vlm,
+            dataset_order = "torch_randperm",
             packing = bool(config.get("packing", False)),
             output_dir = output_dir,
             save_steps = int(config.get("save_steps", 0) or 0),
