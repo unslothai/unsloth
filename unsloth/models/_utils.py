@@ -3253,6 +3253,18 @@ _MOE_BROAD_MLP_TARGETS = frozenset(
 )
 
 
+def _moe_target_set_from_string(target_modules: str) -> set[str]:
+    if target_modules in _MOE_BROAD_MLP_TARGETS:
+        return {target_modules}
+
+    is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
+    targets_mlp = "mlp" in target_modules or "ffn" in target_modules
+    if is_regex and "proj" in target_modules and targets_mlp:
+        return set(_MOE_BROAD_MLP_TARGETS)
+
+    return set()
+
+
 def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
     """
     Get the target_parameters for MoE expert layers if applicable.
@@ -3295,11 +3307,7 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
     if target_modules is None:
         return None
     elif isinstance(target_modules, str):
-        target_set = (
-            {target_modules}
-            if "." not in target_modules and target_modules in _MOE_BROAD_MLP_TARGETS
-            else set()
-        )
+        target_set = _moe_target_set_from_string(target_modules)
     else:
         target_set = {
             target
