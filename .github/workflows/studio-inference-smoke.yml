@@ -521,8 +521,14 @@ jobs:
                 - any event payload contains an OpenAI-style tool_calls
                   delta (`"tool_calls"`)
                 - any event payload contains an Anthropic-style tool_use
-                  marker (`"tool_use"`)
-                - any event payload contains a tool-role message
+                  or tool_result marker
+                - any event payload contains a Studio-emitted tool
+                  lifecycle envelope: `tool_start`, `tool_end`, or
+                  `tool_status` (Studio yields these from the agentic
+                  tool loop in routes/inference.py; they only fire when
+                  the tool path is actually exercised)
+                - any event payload contains a tool-role message or a
+                  function-call payload
                 - any of the caller-supplied expected_outputs substrings
                   appears in the raw stream (this is the tool's
                   side-effect output reaching the model, which the
@@ -535,8 +541,12 @@ jobs:
               chatgpt-codex-connector P1 on PR #5669.
               """
               blob = " ".join(events)
-              markers = ('"tool_calls"', '"tool_use"', '"role": "tool"',
-                         '"role":"tool"', '"function"', '"function_call"')
+              markers = (
+                  '"tool_calls"', '"tool_use"', '"tool_result"',
+                  '"tool_start"', '"tool_end"', '"tool_status"',
+                  '"role": "tool"', '"role":"tool"',
+                  '"function"', '"function_call"',
+              )
               if any(m in blob for m in markers):
                   return True
               for out in expected_outputs:
@@ -605,9 +615,10 @@ jobs:
           })
           assert _tool_invoked(events, expected_outputs = ("56088", "56,088")), (
               "python tool: no evidence of tool invocation in SSE stream "
-              f"(no tool_calls / tool_use markers, no 56088 in any of "
-              f"{len(events)} raw events). enable_tools may be silently "
-              "ignored. Last 3 events: " + str(events[-3:])
+              f"(no tool_calls / tool_use / tool_status / tool_start / "
+              f"tool_end markers, no 56088 in any of {len(events)} raw "
+              "events). enable_tools may be silently ignored. "
+              "Last 3 events: " + str(events[-3:])
           )
           if "56088" in content or "56,088" in content:
               print(f"[tools] PASS python tool ({len(content)} chars, found 56088 in content)")
@@ -635,10 +646,10 @@ jobs:
           })
           assert _tool_invoked(events, expected_outputs = ("hello-bash-tool",)), (
               "bash/terminal tool: no evidence of tool invocation in SSE "
-              f"stream (no tool_calls / tool_use markers, no "
-              "'hello-bash-tool' in any of "
-              f"{len(events)} raw events). enable_tools may be silently "
-              "ignored. Last 3 events: " + str(events[-3:])
+              f"stream (no tool_calls / tool_use / tool_status / "
+              f"tool_start / tool_end markers, no 'hello-bash-tool' in "
+              f"any of {len(events)} raw events). enable_tools may be "
+              "silently ignored. Last 3 events: " + str(events[-3:])
           )
           if "hello-bash-tool" in content:
               print(f"[tools] PASS bash/terminal tool ({len(content)} chars, literal in content)")
