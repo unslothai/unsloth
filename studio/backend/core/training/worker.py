@@ -1156,8 +1156,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
-    model_random_state = config.get("model_random_state", 3407)
-    lora_random_state = config.get("lora_random_state", 3407)
+    random_seed = config.get("random_seed", 3407)
+    model_random_state = config.get("model_random_state", random_seed)
+    lora_random_state = config.get("lora_random_state", random_seed)
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit = config.get("load_in_4bit", True),
@@ -1388,12 +1389,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    # MLX: per-element clip to [-1, 1]; norm clip disabled (it needs a
-    # global reduction that breaks MLX's eager pipeline). 1.0 (not 5.0):
-    # |g_i| > 5 rarely fires, so the historical 5.0 was effectively no-op.
+    # MLX Studio uses per-element clipping by default and keeps norm clipping
+    # disabled. Preserve None so the MLX trainer owns its runtime default.
     max_grad_norm = 0.0
     max_grad_value = config.get("max_grad_value")
-    max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)
+    max_grad_value = None if max_grad_value is None else float(max_grad_value)
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 

@@ -114,18 +114,75 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertEqual(config["max_grad_norm"], 0.7)
         self.assertEqual(config["max_grad_value"], 3.0)
 
-    def test_mlx_worker_uses_cuda_style_model_and_lora_init_seed(self):
+    def test_training_backend_forwards_random_seed_without_internal_mlx_seed_keys(self):
+        backend = TrainingBackend()
+
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        with (
+            patch(
+                "core.training.training.prepare_gpu_selection",
+                return_value = ([0], {"selection_mode": "auto"}),
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread",
+                return_value = DummyThread(),
+            ),
+        ):
+            backend.start_training(
+                job_id = "test-seed",
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                random_seed = 1234,
+            )
+
+        config = mock_process.call_args.kwargs["kwargs"]["config"]
+        self.assertEqual(config["random_seed"], 1234)
+        self.assertNotIn("model_random_state", config)
+        self.assertNotIn("lora_random_state", config)
+
+    def test_mlx_worker_falls_back_init_seeds_to_random_seed(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
 
+        self.assertIn('random_seed = config.get("random_seed", 3407)', source)
         self.assertIn(
-            'model_random_state = config.get("model_random_state", 3407)', source
+            'model_random_state = config.get("model_random_state", random_seed)', source
         )
         self.assertIn(
-            'lora_random_state = config.get("lora_random_state", 3407)', source
+            'lora_random_state = config.get("lora_random_state", random_seed)', source
         )
         self.assertIn("random_state = model_random_state", source)
         self.assertIn("random_state = lora_random_state", source)
         self.assertIn('seed = config.get("random_seed", 3407)', source)
+
+    def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
+
+        self.assertIn(
+            "max_grad_value = None if max_grad_value is None else float(max_grad_value)",
+            source,
+        )
+        self.assertNotIn(
+            "max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)",
+            source,
+        )
 
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(
