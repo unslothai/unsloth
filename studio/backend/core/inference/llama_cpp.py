@@ -3411,8 +3411,7 @@ class LlamaCppBackend:
             # 3284185172 on commit 0f55615d.
             if not self._healthy:
                 logger.info(
-                    "load_model: unload won race after probe; "
-                    "reporting load failure"
+                    "load_model: unload won race after probe; " "reporting load failure"
                 )
                 return False
             return True
@@ -5370,9 +5369,7 @@ class LlamaCppBackend:
                 # Raise on HTTP / network / JSON failure so the
                 # caller can distinguish a definitive non-audio
                 # verdict from a transient probe failure.
-                r = client.post(
-                    f"{self.base_url}/detokenize", json = {"tokens": [tid]}
-                )
+                r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
                 r.raise_for_status()
                 return r.json().get("content", "")
 
