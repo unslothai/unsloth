@@ -354,3 +354,89 @@ def test_web_fetch_error_renders_error_code(monkeypatch):
     end = events[1]
     assert end["type"] == "tool_end"
     assert end["result"] == "Error: url_not_accessible"
+
+
+def test_web_fetch_titleless_document_falls_back_to_url(monkeypatch):
+    # Anthropic may omit `document.title` on pages where the HTML
+    # provides nothing usable. Without a fallback the formatter would
+    # emit `URL: ...\nSnippet: ...` only, and the frontend's
+    # parseSourcesFromResult skips entries that lack a `Title:` line,
+    # so the source pill silently disappears. Verify the formatter
+    # mirrors the web_search behaviour and falls back to the URL.
+    sse_events = [
+        {"type": "message_start", "message": {"usage": {}}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "server_tool_use",
+                "id": "srvtoolu_wf3",
+                "name": "web_fetch",
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"url": "https://example.com/raw"}',
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {
+                "type": "web_fetch_tool_result",
+                "tool_use_id": "srvtoolu_wf3",
+                "content": {
+                    "type": "web_fetch_result",
+                    "url": "https://example.com/raw",
+                    "retrieved_at": "2026-05-21T12:00:00Z",
+                    "content": {
+                        "type": "document",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": "Raw body without an HTML title tag.",
+                        },
+                        # No `title` field on the document.
+                    },
+                },
+            },
+        },
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        return await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "fetch raw"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enabled_tools = ["web_fetch"],
+            )
+        )
+
+    lines = _drive(run())
+    events = _tool_events(lines)
+    assert len(events) == 2
+    end = events[1]
+    assert end["type"] == "tool_end"
+    # Title must be present so parseSourcesFromResult emits a pill.
+    assert "Title: https://example.com/raw" in end["result"]
+    assert "URL: https://example.com/raw" in end["result"]
+    assert "Snippet: Raw body without an HTML title tag." in end["result"]

@@ -1599,6 +1599,12 @@ class ExternalProviderClient:
                                 and data
                             ):
                                 snippet = data[:240].strip()
+                    # Frontend parseSourcesFromResult only emits a source
+                    # pill when both `Title:` and `URL:` are present, so
+                    # fall back to the URL when Anthropic omits the
+                    # document title (matches the web_search formatter).
+                    if not title and url:
+                        title = url
                     parts: list[str] = []
                     if title:
                         parts.append(f"Title: {title}")
@@ -1963,6 +1969,10 @@ class ExternalProviderClient:
                                             if isinstance(probe, str):
                                                 url = probe
                                     except Exception:
+                                        logger.debug(
+                                            "Failed to parse web_fetch input_json",
+                                            buffer = buffer,
+                                        )
                                         url = ""
                                 tool_use_id = current_web_fetch_use["id"]
                                 if tool_use_id in web_fetch_calls:
@@ -1980,10 +1990,15 @@ class ExternalProviderClient:
                                 # End of the web_fetch_tool_result —
                                 # format Title / URL / snippet for the
                                 # frontend source pill and emit tool_end.
+                                # `inner` is sanitised to a dict at the
+                                # matching content_block_start, and the
+                                # formatter always returns a non-empty
+                                # string (defaulting to "(fetch complete)"
+                                # when no fields are present), so no
+                                # extra fallback is needed here.
                                 tool_use_id = current_web_fetch_result["tool_use_id"]
-                                inner = current_web_fetch_result["inner"]
                                 result_text = _format_web_fetch_result(
-                                    inner if isinstance(inner, dict) else {}
+                                    current_web_fetch_result["inner"]
                                 )
                                 if tool_use_id in web_fetch_calls:
                                     web_fetch_calls[tool_use_id]["result"] = result_text
@@ -1991,7 +2006,7 @@ class ExternalProviderClient:
                                     {
                                         "type": "tool_end",
                                         "tool_call_id": tool_use_id,
-                                        "result": (result_text or "(fetch complete)"),
+                                        "result": result_text,
                                     }
                                 )
                                 current_web_fetch_result = None
