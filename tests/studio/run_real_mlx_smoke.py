@@ -390,9 +390,9 @@ def cmd_train(args) -> int:
         if k in train_result
     }
     expected_logged_steps = int(config.max_steps)
-    assert len(losses_per_step) == expected_logged_steps, (
-        f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
-    )
+    assert (
+        len(losses_per_step) == expected_logged_steps
+    ), f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
     if "train_steps" in train_result:
         assert int(train_result["train_steps"]) == expected_logged_steps, (
             f"expected train_steps={expected_logged_steps}, got "
