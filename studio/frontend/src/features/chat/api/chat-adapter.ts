@@ -857,14 +857,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       }
       if (disabledToolGuard) {
-        if (
-          outboundMessages[0]?.role === "system" &&
-          typeof outboundMessages[0].content === "string"
-        ) {
-          outboundMessages[0] = {
-            ...outboundMessages[0],
-            content: `${outboundMessages[0].content}\n\n${disabledToolGuard}`,
-          };
+        const firstMessage = outboundMessages[0];
+        if (firstMessage?.role === "system") {
+          if (typeof firstMessage.content === "string") {
+            outboundMessages[0] = {
+              ...firstMessage,
+              content: `${firstMessage.content}\n\n${disabledToolGuard}`,
+            };
+          } else {
+            outboundMessages[0] = {
+              ...firstMessage,
+              content: [
+                ...firstMessage.content,
+                { type: "text", text: `\n\n${disabledToolGuard}` },
+              ],
+            };
+          }
         } else {
           outboundMessages.unshift({
             role: "system",
