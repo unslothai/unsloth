@@ -55,6 +55,24 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
+const ROUTE_TITLES: Array<[string, string]> = [
+  ["/chat", "Chat"],
+  ["/studio", "Train"],
+  ["/data-recipes", "Data Recipes"],
+  ["/export", "Export"],
+  ["/settings", "Settings"],
+  ["/login", "Login"],
+  ["/onboarding", "Onboarding"],
+  ["/change-password", "Change Password"],
+];
+
+function routeTitle(pathname: string): string {
+  const match = ROUTE_TITLES.find(
+    ([p]) => pathname === p || pathname.startsWith(`${p}/`),
+  );
+  return match ? `${match[1]} - Unsloth Studio` : "Unsloth Studio";
+}
+
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
@@ -62,6 +80,10 @@ function RootLayout() {
   const { pinned, setPinned, togglePinned } = useSidebarPin();
 
   useTrainingUnloadGuard();
+
+  useEffect(() => {
+    document.title = routeTitle(pathname);
+  }, [pathname]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
