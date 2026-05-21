@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.5.4"
+__version__ = "2026.5.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1770,6 +1770,13 @@ def get_statistics(local_files_only = False):
     ):
         return
     if local_files_only:
+        return
+    # Also skip when HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are set.
+    _offline_vals = {"1", "true", "yes", "on"}
+    if (
+        os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline_vals
+        or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline_vals
+    ):
         return
     from huggingface_hub.utils import (
         disable_progress_bars,
