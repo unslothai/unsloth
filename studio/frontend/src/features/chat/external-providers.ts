@@ -134,6 +134,38 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
+/** Local OpenAI-compat presets that expose GET /v1/models (no API key). */
+const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
+  "ollama",
+  "vllm",
+  "llama_cpp",
+]);
+
+export function supportsRemoteModelCatalog(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null &&
+    REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES.has(providerType)
+  );
+}
+
+/** Presets that skip the API-key field (local servers with no auth by default). */
+export function customPresetSkipsApiKeyField(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "ollama" || providerType === "llama_cpp";
+}
+
+/** Catalog load plus optional manual model IDs (OpenRouter + local presets). */
+export function allowsManualModelIdsWithCatalog(
+  providerType: string | null | undefined,
+): boolean {
+  if (!providerType) return false;
+  if (providerType === "openrouter") return true;
+  return supportsRemoteModelCatalog(providerType);
+}
+
 export function customProviderDisplayName(
   providerType: string | null | undefined,
 ): string {
@@ -181,6 +213,8 @@ export function toExternalBackendProviderType(
   // type through so the backend routes vLLM to /v1/chat/completions instead
   // of the OpenAI Responses path used for gpt-5.x.
   if (providerType === "vllm") return "vllm";
+  if (providerType === "ollama") return "ollama";
+  if (providerType === "llama_cpp") return "llama_cpp";
   return isCustomProviderType(providerType)
     ? CUSTOM_BACKEND_PROVIDER_TYPE
     : providerType;
@@ -188,6 +222,7 @@ export function toExternalBackendProviderType(
 
 const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
+const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {
@@ -303,6 +338,26 @@ function fromUnknownProvider(value: unknown): ExternalProviderConfig | null {
     createdAt: typeof legacy.createdAt === "number" ? legacy.createdAt : Date.now(),
     updatedAt: typeof legacy.updatedAt === "number" ? legacy.updatedAt : Date.now(),
   };
+}
+
+export function loadConnectionsEnabled(): boolean {
+  if (!canUseStorage()) return true;
+  try {
+    const raw = localStorage.getItem(CONNECTIONS_ENABLED_KEY);
+    if (raw == null) return true;
+    return raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function saveConnectionsEnabled(enabled: boolean): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(CONNECTIONS_ENABLED_KEY, enabled ? "true" : "false");
+  } catch {
+    // ignore
+  }
 }
 
 export function loadExternalProviders(): ExternalProviderConfig[] {

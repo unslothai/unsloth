@@ -121,6 +121,7 @@ try:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -147,6 +148,7 @@ except ImportError:
         LlamaCppBackend,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_T_MAX_PREDICT_MS,
+        _canonicalize_spec_mode,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
@@ -235,6 +237,57 @@ from datetime import date as _date
 router = APIRouter()
 # Studio-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
+
+
+def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
+    """Classify reasoning/tool capabilities via the GGUF classifier so
+    flags match across backends. gpt-oss is overridden because Harmony
+    routes reasoning and tools through tokenizer channels, not template
+    markup."""
+    model_id = getattr(backend, "active_model_name", None)
+    flags = (
+        detect_reasoning_flags(
+            chat_template,
+            model_identifier = model_id,
+            log_source = "safetensors",
+        )
+        if chat_template
+        else {
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+            "supports_tools": False,
+        }
+    )
+    # Our safetensors loop only parses <tool_call>{json}</tool_call>
+    # and <function=name>...</function>. Llama uses <|python_tag|>,
+    # Mistral uses [TOOL_CALLS]; advertising tools for those would
+    # enable a pill the parser cannot honour. GGUF is unaffected --
+    # llama-server normalises every format into structured deltas.
+    if (
+        flags.get("supports_tools")
+        and chat_template
+        and "<tool_call>" not in chat_template
+        and "<function=" not in chat_template
+    ):
+        logger.info(
+            "safetensors: template advertises tools but uses an "
+            "emission format the loop cannot parse; suppressing "
+            "supports_tools"
+        )
+        flags["supports_tools"] = False
+
+    # gpt-oss: keep reasoning on, drop tools (Harmony channel, not
+    # <tool_call> XML this loop parses).
+    try:
+        if hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model():
+            flags["supports_reasoning"] = True
+            flags["reasoning_style"] = "reasoning_effort"
+            flags["supports_tools"] = False
+    except Exception:
+        logger.debug("gpt_oss_check_failed", exc_info = True)
+    return flags
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -445,12 +498,17 @@ def _request_matches_loaded_settings(
     # spec on ``not is_vision``), so treat the request as ``off`` against
     # the backend's ``None`` to avoid forcing a redundant reload.
     if llama_backend.is_vision:
-        req_spec = "off"
+        req_mode = "off"
     else:
-        req_spec = _normalise_settings_str(request.speculative_type) or "off"
-    backend_spec = _normalise_settings_str(llama_backend.speculative_type) or "off"
-    if req_spec != backend_spec:
+        req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
+    backend_mode = llama_backend.requested_spec_mode or "auto"
+    if req_mode != backend_mode:
         return False
+    # spec_draft_n_max only matters when an MTP variant is engaged; None
+    # means "platform default" and matches whatever the backend chose.
+    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
+        if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
+            return False
     if (request.chat_template_override or None) != (
         llama_backend.chat_template_override or None
     ):
@@ -587,8 +645,10 @@ async def load_model(
                     reasoning_style = llama_backend.reasoning_style,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
+                    supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
-                    speculative_type = llama_backend.speculative_type,
+                    speculative_type = llama_backend.requested_spec_mode,
+                    spec_draft_n_max = llama_backend.spec_draft_n_max,
                 )
         else:
             if (
@@ -608,21 +668,10 @@ async def load_model(
                     logger.warning(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
-                # Non-GGUF: only advertise reasoning for gpt-oss Harmony,
-                # which emits reasoning via channels at the tokenizer level.
-                # Template-level chat_template_kwargs (enable_thinking /
-                # preserve_thinking / tools) are not yet forwarded through
-                # the transformers generation path, so avoid advertising
-                # controls the server cannot honour outside GGUF.
-                _sf_supports_reasoning = False
-                _sf_reasoning_style = "enable_thinking"
-                if hasattr(backend, "_is_gpt_oss_model"):
-                    try:
-                        if backend._is_gpt_oss_model():
-                            _sf_supports_reasoning = True
-                            _sf_reasoning_style = "reasoning_effort"
-                    except Exception:
-                        pass
+                # Classify via the same path as GGUF.
+                _sf_flags = _detect_safetensors_features(backend, _chat_template)
+                _sf_supports_reasoning = _sf_flags["supports_reasoning"]
+                _sf_reasoning_style = _sf_flags["reasoning_style"]
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -643,9 +692,9 @@ async def load_model(
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
-                    reasoning_always_on = False,
-                    supports_preserve_thinking = False,
-                    supports_tools = False,
+                    reasoning_always_on = _sf_flags["reasoning_always_on"],
+                    supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+                    supports_tools = _sf_flags["supports_tools"],
                     chat_template = _chat_template,
                 )
 
@@ -728,7 +777,10 @@ async def load_model(
                         llama_backend.extra_args,
                         strip_context = "max_seq_length" in fields_set,
                         strip_cache = "cache_type_kv" in fields_set,
-                        strip_spec = "speculative_type" in fields_set,
+                        strip_spec = (
+                            "speculative_type" in fields_set
+                            or "spec_draft_n_max" in fields_set
+                        ),
                         strip_template = "chat_template_override" in fields_set,
                     )
                     try:
@@ -769,6 +821,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -792,6 +845,7 @@ async def load_model(
                     chat_template_override = request.chat_template_override,
                     cache_type_kv = request.cache_type_kv,
                     speculative_type = request.speculative_type,
+                    spec_draft_n_max = request.spec_draft_n_max,
                     n_parallel = _n_parallel,
                     extra_args = extra_llama_args,
                 )
@@ -850,7 +904,8 @@ async def load_model(
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template = llama_backend.chat_template,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -972,19 +1027,8 @@ async def load_model(
         except Exception:
             pass
 
-        # Non-GGUF: gpt-oss Harmony surfaces reasoning via tokenizer-level
-        # channels; other safetensors reasoning/tools/preserve-thinking
-        # knobs are not forwarded to tokenizer.apply_chat_template yet, so
-        # we only advertise support for the Harmony case here.
-        _sf_supports_reasoning = False
-        _sf_reasoning_style = "enable_thinking"
-        if hasattr(backend, "_is_gpt_oss_model"):
-            try:
-                if backend._is_gpt_oss_model():
-                    _sf_supports_reasoning = True
-                    _sf_reasoning_style = "reasoning_effort"
-            except Exception:
-                pass
+        # Classify reasoning/tool flags via the GGUF sniffer.
+        _sf_flags = _detect_safetensors_features(backend, _chat_template)
 
         return LoadResponse(
             status = "loaded",
@@ -1002,11 +1046,11 @@ async def load_model(
             requires_trust_remote_code = bool(
                 inference_config.get("trust_remote_code", False)
             ),
-            supports_reasoning = _sf_supports_reasoning,
-            reasoning_style = _sf_reasoning_style,
-            reasoning_always_on = False,
-            supports_preserve_thinking = False,
-            supports_tools = False,
+            supports_reasoning = _sf_flags["supports_reasoning"],
+            reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_always_on = _sf_flags["reasoning_always_on"],
+            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+            supports_tools = _sf_flags["supports_tools"],
             chat_template = _chat_template,
         )
 
@@ -1349,7 +1393,8 @@ async def get_status(
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = llama_backend.chat_template_override,
-                speculative_type = llama_backend.speculative_type,
+                speculative_type = llama_backend.requested_spec_mode,
+                spec_draft_n_max = llama_backend.spec_draft_n_max,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
@@ -1377,18 +1422,8 @@ async def get_status(
             else None
         )
 
-        # Non-GGUF: only gpt-oss Harmony is wired through the transformers
-        # generation path. Other template-level reasoning / tool kwargs
-        # are not yet forwarded, so we do not advertise them here.
-        supports_reasoning = False
-        reasoning_style = "enable_thinking"
-        if backend.active_model_name and hasattr(backend, "_is_gpt_oss_model"):
-            try:
-                if backend._is_gpt_oss_model():
-                    supports_reasoning = True
-                    reasoning_style = "reasoning_effort"
-            except Exception:
-                pass
+        # Non-GGUF: classify from the loaded template.
+        _sf_flags = _detect_safetensors_features(backend, chat_template)
         inference_config = (
             load_inference_config(backend.active_model_name)
             if backend.active_model_name
@@ -1408,11 +1443,11 @@ async def get_status(
             requires_trust_remote_code = bool(
                 (inference_config or {}).get("trust_remote_code", False)
             ),
-            supports_reasoning = supports_reasoning,
-            reasoning_style = reasoning_style,
-            reasoning_always_on = False,
-            supports_preserve_thinking = False,
-            supports_tools = False,
+            supports_reasoning = _sf_flags["supports_reasoning"],
+            reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_always_on = _sf_flags["reasoning_always_on"],
+            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
+            supports_tools = _sf_flags["supports_tools"],
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
@@ -2738,6 +2773,300 @@ async def openai_chat_completions(
         except Exception as e:
             raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
 
+    # Classify capability flags from the loaded template.
+    _sf_model_info = backend.models.get(backend.active_model_name, {})
+    _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
+    _sf_features = _detect_safetensors_features(backend, _sf_tpl)
+
+    cancel_event = threading.Event()
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    # ── Safetensors tool-calling path ─────────────────────────
+    # Mirrors the GGUF agentic loop's event shape. Disabled for
+    # vision turns (untested overlap with image render slot) and
+    # for gpt-oss (Harmony uses dedicated channels, not <tool_call>
+    # XML -- gpt-oss tools still work via the GGUF path).
+    _sf_is_gptoss = False
+    try:
+        _sf_is_gptoss = bool(
+            hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model()
+        )
+    except Exception:
+        _sf_is_gptoss = False
+
+    _sf_tool_budget = (
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else 25
+    )
+
+    _sf_use_tools = (
+        _effective_enable_tools(payload)
+        and _sf_features.get("supports_tools", False)
+        and image is None
+        and not _sf_is_gptoss
+        and _sf_tool_budget > 0
+    )
+
+    if _sf_use_tools:
+        from core.inference.tools import ALL_TOOLS
+
+        if payload.enabled_tools is not None:
+            _sf_tools_to_use = [
+                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
+            ]
+        else:
+            _sf_tools_to_use = ALL_TOOLS
+
+        _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
+        _sf_has_web = "web_search" in _sf_tool_names
+        _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
+
+        _sf_date_line = f"The current date is {_date.today().isoformat()}."
+        _sf_model_size_b = _extract_model_size_b(model_name)
+        _sf_is_small_model = _sf_model_size_b is not None and _sf_model_size_b < 9
+
+        if _sf_is_small_model:
+            _sf_web_tips = "Do not repeat the same search query."
+        else:
+            _sf_web_tips = (
+                "When you search and find a relevant URL in the results, "
+                "fetch its full content by calling web_search with the url parameter. "
+                "Do not repeat the same search query. If a search returns "
+                "no useful results, try rephrasing or fetching a result URL directly."
+            )
+        _sf_code_tips = (
+            "Use code execution for math, calculations, data processing, "
+            "or to parse and analyze information from tool results."
+        )
+
+        if _sf_has_web and _sf_has_code:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "tools rather than answering from memory. "
+                + _sf_web_tips
+                + " "
+                + _sf_code_tips
+            )
+        elif _sf_has_code:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "code execution rather than answering from memory. " + _sf_code_tips
+            )
+        elif _sf_has_web:
+            _sf_nudge = (
+                _sf_date_line + " "
+                "You have access to tools. When appropriate, prefer using "
+                "web search for up-to-date or uncertain factual "
+                "information rather than answering from memory. " + _sf_web_tips
+            )
+        else:
+            _sf_nudge = ""
+
+        _sf_system_prompt = system_prompt
+        if _sf_nudge:
+            _sf_nudge += _TOOL_ACTION_NUDGE
+            if _sf_system_prompt:
+                _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
+            else:
+                _sf_system_prompt = _sf_nudge
+
+        # Strip stale tool-call XML from prior assistant turns.
+        _sf_chat_messages = []
+        for _msg in chat_messages:
+            if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                _sf_chat_messages.append(
+                    {
+                        **_msg,
+                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
+                    }
+                )
+            else:
+                _sf_chat_messages.append(_msg)
+
+        def sf_generate_with_tools():
+            return backend.generate_chat_completion_with_tools(
+                messages = _sf_chat_messages,
+                tools = _sf_tools_to_use,
+                system_prompt = _sf_system_prompt or "",
+                temperature = payload.temperature,
+                top_p = payload.top_p,
+                top_k = payload.top_k,
+                min_p = payload.min_p,
+                max_tokens = payload.max_tokens,
+                repetition_penalty = payload.repetition_penalty,
+                cancel_event = cancel_event,
+                enable_thinking = payload.enable_thinking,
+                reasoning_effort = payload.reasoning_effort,
+                preserve_thinking = payload.preserve_thinking,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True,
+                max_tool_iterations = _sf_tool_budget,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                session_id = payload.session_id,
+                use_adapter = payload.use_adapter,
+            )
+
+        _sf_tool_sentinel = object()
+        _sf_cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _sf_tracker = _TrackedCancel(cancel_event, *_sf_cancel_keys)
+        _sf_tracker.__enter__()
+
+        async def sf_tool_stream():
+            try:
+                first_chunk = ChatCompletionChunk(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(role = "assistant"),
+                            finish_reason = None,
+                        )
+                    ],
+                )
+                yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                gen = sf_generate_with_tools()
+                prev_text = ""
+                while True:
+                    if cancel_event.is_set():
+                        backend.reset_generation_state()
+                        break
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        backend.reset_generation_state()
+                        return
+
+                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    if event is _sf_tool_sentinel:
+                        break
+
+                    if event["type"] == "status":
+                        if not event["text"]:
+                            prev_text = ""
+                        status_data = json.dumps(
+                            {
+                                "type": "tool_status",
+                                "content": event["text"],
+                            }
+                        )
+                        yield f"data: {status_data}\n\n"
+                        continue
+
+                    if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_start":
+                            prev_text = ""
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
+
+                    # Diff cumulative cleaned text against last snapshot.
+                    raw_cumulative = event.get("text", "")
+                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    new_text = clean_cumulative[len(prev_text) :]
+                    prev_text = clean_cumulative
+                    if not new_text:
+                        continue
+                    chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(content = new_text),
+                                finish_reason = None,
+                            )
+                        ],
+                    )
+                    yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
+                final_chunk = ChatCompletionChunk(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(),
+                            finish_reason = "stop",
+                        )
+                    ],
+                )
+                yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except asyncio.CancelledError:
+                cancel_event.set()
+                backend.reset_generation_state()
+                raise
+            except Exception:
+                backend.reset_generation_state()
+                # Generic wire message; full trace stays in the log
+                # (CWE-209: transformers/torch errors may leak paths).
+                logger.exception("safetensors tool stream error")
+                error_chunk = {
+                    "error": {
+                        "message": "An internal error occurred.",
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+            finally:
+                _sf_tracker.__exit__(None, None, None)
+
+        if payload.stream:
+            return StreamingResponse(
+                sf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        # Non-streaming JSON: drain the loop, build one ChatCompletion.
+        try:
+
+            def _drain_to_text():
+                full_text = ""
+                gen = sf_generate_with_tools()
+                for event in gen:
+                    if cancel_event.is_set():
+                        break
+                    if event.get("type") == "content":
+                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                return full_text
+
+            content_text = await asyncio.to_thread(_drain_to_text)
+            response = ChatCompletion(
+                id = completion_id,
+                created = created,
+                model = model_name,
+                choices = [
+                    CompletionChoice(
+                        message = CompletionMessage(content = content_text),
+                        finish_reason = "stop",
+                    )
+                ],
+            )
+            return JSONResponse(content = response.model_dump())
+        except Exception:
+            backend.reset_generation_state()
+            # CWE-209: generic detail; full trace in log.
+            logger.exception("safetensors tool completion error")
+            raise HTTPException(
+                status_code = 500,
+                detail = "An internal error occurred.",
+            )
+        finally:
+            _sf_tracker.__exit__(None, None, None)
+
     # Shared generation kwargs
     gen_kwargs = dict(
         messages = chat_messages,
@@ -2750,9 +3079,14 @@ async def openai_chat_completions(
         max_new_tokens = payload.max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
     )
-
-    # Choose generation path (adapter-controlled or standard)
-    cancel_event = threading.Event()
+    # Forward reasoning kwargs; the worker/template wrapper peels off
+    # any the template doesn't accept.
+    if payload.enable_thinking is not None:
+        gen_kwargs["enable_thinking"] = payload.enable_thinking
+    if payload.reasoning_effort is not None:
+        gen_kwargs["reasoning_effort"] = payload.reasoning_effort
+    if payload.preserve_thinking is not None:
+        gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
     if payload.use_adapter is not None:
 
@@ -2768,9 +3102,6 @@ async def openai_chat_completions(
             return backend.generate_chat_response(
                 cancel_event = cancel_event, **gen_kwargs
             )
-
-    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    created = int(time.time())
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
