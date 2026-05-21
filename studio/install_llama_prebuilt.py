@@ -2654,7 +2654,8 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     # Dict preserves insertion order on Python 3.7+; collapses duplicates.
     _tokens = list(dict.fromkeys(raw))
     _vis_raw = None
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+    # AMD's HIP runtime honours all three env vars with identical semantics.
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         _val = os.environ.get(_env)
         if _val is not None:
             _vis_raw = _val
@@ -4178,6 +4179,11 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
                     "librocrand.so*",
                     "libMIOpen.so*",
                     "libmagma.so*",
+                    # Direct NEEDED entries of libamdhip64.so.7 in lemonade bundles;
+                    # absent from upstream tarballs (no-op matches there).
+                    "libamd_comgr.so*",
+                    "librocm_kpack.so*",
+                    "librocm_sysdeps_*.so*",
                 ]
             )
         return patterns

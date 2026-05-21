@@ -363,5 +363,41 @@ def test_lemonade_runtime_patterns_include_hip_runtime():
         "libhsa-runtime64.so*",
         "libhipblas.so*",
         "librocblas.so*",
+        # Transitive NEEDED entries of libamdhip64.so.7 in lemonade bundles --
+        # preflight fails without these (confirmed on gfx1151, b1272).
+        "libamd_comgr.so*",
+        "librocm_kpack.so*",
+        "librocm_sysdeps_*.so*",
     ):
         assert needed in pats, f"missing {needed!r} in {pats}"
+
+
+_pick_rocm_gfx_target = getattr(_mod, "_pick_rocm_gfx_target", None)
+
+
+@pytest.mark.skipif(
+    _pick_rocm_gfx_target is None,
+    reason = "_pick_rocm_gfx_target not present on this branch",
+)
+def test_pick_rocm_gfx_target_honors_cuda_visible_devices(monkeypatch):
+    """AMD HIP honours CUDA_VISIBLE_DEVICES identically to HIP_VISIBLE_DEVICES;
+    on a gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
+    # Two GPUs; rocminfo reports each token twice (as in the real tool output).
+    probe_out = "gfx1151\ngfx1151\ngfx1100\ngfx1100"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _pick_rocm_gfx_target(probe_out) == "gfx1100"
+
+
+@pytest.mark.skipif(
+    _pick_rocm_gfx_target is None,
+    reason = "_pick_rocm_gfx_target not present on this branch",
+)
+def test_pick_rocm_gfx_target_cuda_visible_devices_minus_one_returns_none(monkeypatch):
+    """CUDA_VISIBLE_DEVICES=-1 means no GPU visible; resolver must return None."""
+    probe_out = "gfx1151\ngfx1100"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    assert _pick_rocm_gfx_target(probe_out) is None
