@@ -1646,9 +1646,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         settleFirstTokenOk();
 
-        // Extract source parts from completed web_search tool calls
+        // Extract source parts from completed web_search and web_fetch
+        // tool calls. Both emit the same `Title:` / `URL:` / `Snippet:`
+        // block shape from the Anthropic backend, so the parser does
+        // not need to branch on tool name.
         const sourceParts = toolCallParts.flatMap((tc) => {
-          if (tc.toolName !== "web_search" || !tc.result) return [];
+          if (
+            (tc.toolName !== "web_search" && tc.toolName !== "web_fetch") ||
+            !tc.result
+          ) {
+            return [];
+          }
           return parseSourcesFromResult(typeof tc.result === "string" ? tc.result : "");
         });
 
