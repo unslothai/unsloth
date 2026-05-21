@@ -390,7 +390,9 @@ def cmd_train(args) -> int:
         )
         if k in train_result
     }
-    assert len(losses_per_step) == 30, f"expected 30 logged steps (logging_steps=1, max_steps=30), got {losses_per_step}"
+    assert (
+        len(losses_per_step) == 30
+    ), f"expected 30 logged steps (logging_steps=1, max_steps=30), got {losses_per_step}"
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 per-step loss underflows to 0.0 after
         # the LoRA reaches loss=0 around step ~10 with this fixture +
