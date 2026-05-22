@@ -10,7 +10,9 @@ Anthropic uses native Messages API with translation in this client.
 
 import json as _json
 import re
+import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -24,6 +26,7 @@ import structlog
 # sites use printf-style positional args, which structlog accepts.
 logger = structlog.get_logger(__name__)
 
+
 # Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
 # the API returns 400 "<param> is deprecated for this model" if any of
 # them is set to a non-default value. The "Sampling parameters removed"
@@ -32,6 +35,34 @@ logger = structlog.get_logger(__name__)
 # 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
 # the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
 # anchor keeps future versions (e.g. claude-opus-5) unaffected.
+def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
+    """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
+
+    Anchored to the URL host so an attacker can't bypass the gate with a
+    path or subdomain like ``https://evil.com/api.openai.com/v1`` or
+    ``https://api.openai.com.attacker.com/v1`` (CodeQL py/incomplete-url-
+    substring-sanitization). Used to scope cloud-only Responses-API
+    extensions (prompt_cache_retention, context_management compaction,
+    container shell tool) that 400 on non-cloud OpenAI-compatible
+    servers (ollama / llama.cpp / vLLM).
+
+    Azure Foundry resources are scoped to
+    ``<resource-name>.openai.azure.com``; match any subdomain via an
+    `endswith` on the lowercased hostname, with the leading dot so
+    `openai.azure.com` itself doesn't slip through (there is no
+    apex-hosted Azure Foundry endpoint).
+    """
+    if not base_url:
+        return False
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+
+
 _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
@@ -68,6 +99,82 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
         if model.startswith(spec.prefixes):
             return spec
     return None
+
+
+# Anthropic ships date-pinned tool versions per model family. Per the
+# tool-reference docs (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference)
+# the newer `_20260209` / `_20260120` variants only run on Opus 4.6/4.7
+# and Sonnet 4.6 (web_search / web_fetch) or Opus 4.5+ and Sonnet 4.5+
+# (code_execution). Sending the new versions to an older model returns
+# 400 "tool not supported", and sending the old versions on a new model
+# misses the dynamic-filtering and free-with-search pricing path. Pick
+# the newest combination the model accepts, falling back to the GA
+# (`_20250305` / `_20250910` / `_20250825`) defaults for everything else.
+_ANTHROPIC_NEW_WEB_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+)
+_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+)
+
+
+def _anthropic_web_search_version(model: str) -> str:
+    return (
+        "web_search_20260209"
+        if model.startswith(_ANTHROPIC_NEW_WEB_PREFIXES)
+        else "web_search_20250305"
+    )
+
+
+def _anthropic_web_fetch_version(model: str) -> str:
+    return (
+        "web_fetch_20260209"
+        if model.startswith(_ANTHROPIC_NEW_WEB_PREFIXES)
+        else "web_fetch_20250910"
+    )
+
+
+def _anthropic_code_execution_version(model: str) -> str:
+    return (
+        "code_execution_20260120"
+        if model.startswith(_ANTHROPIC_NEW_CODE_EXEC_PREFIXES)
+        else "code_execution_20250825"
+    )
+
+
+# Anthropic's beta-header flag for code execution does NOT change with
+# the tool version -- both `_20250825` and `_20260120` are unlocked by
+# the same `code-execution-2025-08-25` header per the upstream docs.
+_ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
+
+
+# Anthropic server-side context compaction (beta as of compact-2026-01-12).
+# Per the docs, the compaction tool is currently supported on Opus 4.6,
+# Opus 4.7, Sonnet 4.6 and Mythos Preview. The beta header is the same
+# for every supported model; the dated `compact_20260112` type lives in
+# the body's `context_management.edits` array. Anything sent to a model
+# outside this prefix list is silently ignored so we don't 400 upstream.
+_ANTHROPIC_COMPACTION_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-mythos-preview",
+)
+_ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
+_ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
+# The docs require the threshold to be at least 50K tokens; lower values
+# would 400. We clamp on the way out so a UI slider can't underflow.
+_ANTHROPIC_COMPACTION_MIN = 50_000
+
+
+def _anthropic_supports_compaction(model: str) -> bool:
+    return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
 
 
 class _MistralThinkingSpec(NamedTuple):
@@ -239,6 +346,8 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        prompt_cache_ttl: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -265,6 +374,8 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 anthropic_code_exec_container_id,
+                prompt_cache_ttl,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -286,6 +397,7 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 openai_code_exec_container_id,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -433,6 +545,12 @@ class ExternalProviderClient:
                 if response.status_code != 200:
                     error_body = await response.aread()
                     error_text = error_body.decode("utf-8", errors = "replace")
+                    error_text = _friendly_provider_error_text(
+                        self.provider_type,
+                        response.status_code,
+                        error_text,
+                        model = model,
+                    )
                     logger.error(
                         "External provider returned %d: %s",
                         response.status_code,
@@ -1066,6 +1184,8 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        prompt_cache_ttl: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1095,15 +1215,34 @@ class ExternalProviderClient:
 
             content = msg.get("content")
             if isinstance(content, list):
-                # Translate OpenAI image_url parts → Anthropic native image format
+                # Translate OpenAI multimodal parts -> Anthropic native shapes.
+                # - `image_url`     -> `{type:"image", source:...}`
+                # - `input_document` -> `{type:"document", source:...}`
+                #   (Studio extension; mirrors Anthropic's document block,
+                #   which supports PDFs as base64 or URL per
+                #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
                 for part in content:
                     if part.get("type") == "text":
                         anthropic_parts.append({"type": "text", "text": part["text"]})
+                    elif part.get("type") == "compaction":
+                        # Round-trip the compaction block. When the
+                        # prior assistant turn ran server-side
+                        # compaction, that block must land back on this
+                        # turn's assistant message so Anthropic skips
+                        # re-compaction from scratch. Forward verbatim
+                        # under the {type:"compaction", content:"..."}
+                        # shape the API expects. See
+                        #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                        summary = part.get("content") or ""
+                        if isinstance(summary, str) and summary:
+                            anthropic_parts.append(
+                                {"type": "compaction", "content": summary}
+                            )
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         if url.startswith("data:"):
-                            # data:image/png;base64,<DATA> → split header and data
+                            # data:image/png;base64,<DATA> -> split header and data
                             header, _, b64data = url.partition(",")
                             media_type = (
                                 header.split(";")[0].replace("data:", "")
@@ -1120,7 +1259,7 @@ class ExternalProviderClient:
                                 }
                             )
                         else:
-                            # Remote URL — Anthropic supports url source type natively.
+                            # Remote URL -- Anthropic supports url source type natively.
                             # See: https://docs.anthropic.com/en/docs/build-with-claude/vision#url-based-images
                             anthropic_parts.append(
                                 {
@@ -1131,7 +1270,62 @@ class ExternalProviderClient:
                                     },
                                 }
                             )
-                filtered.append({"role": msg["role"], "content": anthropic_parts})
+                    elif part.get("type") == "input_document":
+                        # `input_document` is Studio's normalised content type
+                        # for PDFs / docs. The frontend sends either
+                        # `{type:"input_document", file_data:"data:application/pdf;base64,..."}`
+                        # or `{type:"input_document", file_url:"https://..."}`,
+                        # plus optional `filename` and `media_type`.
+                        # Translate to Anthropic's native `document` block.
+                        url = part.get("file_url") or ""
+                        data_uri = part.get("file_data") or ""
+                        title = part.get("filename")
+                        # Treat any "data:" URI with no actual base64
+                        # payload (`data:application/pdf;base64,` or
+                        # whitespace-only) as missing so the file_url
+                        # branch below can take over. Matches the
+                        # OpenAI-side fallback so a malformed inline
+                        # payload + valid remote URL still attaches.
+                        data_uri_valid = False
+                        b64data = ""
+                        header = ""
+                        if data_uri.startswith("data:"):
+                            header, _, b64data = data_uri.partition(",")
+                            data_uri_valid = bool(b64data.strip())
+                        if data_uri_valid:
+                            media_type = (
+                                part.get("media_type")
+                                or header.split(";")[0].replace("data:", "")
+                                or "application/pdf"
+                            )
+                            doc_block: dict[str, Any] = {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64data,
+                                },
+                            }
+                            if title:
+                                doc_block["title"] = title
+                            anthropic_parts.append(doc_block)
+                        elif url:
+                            doc_block = {
+                                "type": "document",
+                                "source": {
+                                    "type": "url",
+                                    "url": url,
+                                },
+                            }
+                            if title:
+                                doc_block["title"] = title
+                            anthropic_parts.append(doc_block)
+                # Skip whole-message append when nothing usable survived.
+                # An empty content array (e.g. user dropped only an unparseable
+                # `input_document`) would 400 the Anthropic API with
+                # "messages.N.content: at least one block is required".
+                if anthropic_parts:
+                    filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
                 filtered.append(msg)
 
@@ -1159,6 +1353,27 @@ class ExternalProviderClient:
         # same as True here (callers that don't set the flag still get
         # caching). Pass False explicitly to opt out.
         prompt_caching_enabled = enable_prompt_caching is not False
+        # Anthropic accepts an optional `ttl` on each cache_control marker
+        # (default is the 5m ephemeral pool; set "1h" to land in the 1h
+        # pool instead). Per the prompt-caching docs, 1h cache writes are
+        # billed at 2x base input vs 1.25x for 5m, but reads are 0.1x for
+        # both. The 1h pool is the right pick when conversations span
+        # multiple short bursts more than 5 minutes apart -- the read
+        # discount makes up for the 1.6x write premium after a single
+        # additional hit. Anything other than the known TTL strings is
+        # dropped to avoid sending a malformed marker.
+        #
+        # The `extended-cache-ttl-2025-04-11` beta header that originally
+        # gated 1h TTL has been promoted to GA: as of 2026-05 the live
+        # API accepts `ttl: "1h"` without any beta opt-in. Verified
+        # against api.anthropic.com on claude-opus-4-7 (status 200 +
+        # `ephemeral_1h_input_tokens` populated). The test below pins
+        # the contract by asserting the header is NOT on the wire so a
+        # future regression that reintroduces the gate would surface
+        # before users see a 400.
+        cache_marker: dict[str, Any] = {"type": "ephemeral"}
+        if prompt_cache_ttl in ("5m", "1h"):
+            cache_marker["ttl"] = prompt_cache_ttl
 
         if system:
             if prompt_caching_enabled:
@@ -1170,7 +1385,7 @@ class ExternalProviderClient:
                     {
                         "type": "text",
                         "text": system,
-                        "cache_control": {"type": "ephemeral"},
+                        "cache_control": dict(cache_marker),
                     }
                 ]
             else:
@@ -1193,7 +1408,7 @@ class ExternalProviderClient:
                     {
                         "type": "text",
                         "text": content,
-                        "cache_control": {"type": "ephemeral"},
+                        "cache_control": dict(cache_marker),
                     }
                 ]
             elif isinstance(content, list) and content:
@@ -1204,7 +1419,7 @@ class ExternalProviderClient:
                 head = list(content[:-1])
                 tail = content[-1]
                 if isinstance(tail, dict):
-                    head.append({**tail, "cache_control": {"type": "ephemeral"}})
+                    head.append({**tail, "cache_control": dict(cache_marker)})
                 else:
                     head.append(tail)
                 last_msg["content"] = head
@@ -1272,19 +1487,48 @@ class ExternalProviderClient:
                     body["max_tokens"] = budget_tokens + 1024
 
         # Anthropic server-side web_search — see
-        #   https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
-        # The tool type is date-pinned (web_search_20250305 today) and
-        # Anthropic dispatches search calls server-side, returning
-        # server_tool_use + web_search_tool_result blocks in the SSE
-        # stream, plus url-citation annotations on text deltas. We
-        # translate all of that into our local _toolEvent shape so the
-        # chat UI renders web_search exactly like OpenAI's path.
+        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+        # The tool type is date-pinned per model family. Newer Opus /
+        # Sonnet 4.6 + 4.7 accept `web_search_20260209` with dynamic
+        # filtering (Claude writes code to filter results before they
+        # reach context); everything else uses `web_search_20250305`.
+        # `_anthropic_web_search_version` picks the right one. Anthropic
+        # dispatches search calls server-side, returning server_tool_use
+        # + web_search_tool_result blocks in the SSE stream, plus
+        # url-citation annotations on text deltas. We translate all of
+        # that into our local _toolEvent shape so the chat UI renders
+        # web_search exactly like OpenAI's path.
         if enabled_tools and "web_search" in enabled_tools:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "web_search_20250305",
+                    "type": _anthropic_web_search_version(model),
                     "name": "web_search",
+                    "max_uses": 5,
+                }
+            )
+            body["tools"] = anthropic_tools
+
+        # Anthropic server-side web_fetch — see
+        #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
+        # `web_fetch_20250910` reads a single URL (text or PDF) and
+        # returns a document block in a `web_fetch_tool_result`. For
+        # safety Anthropic only lets the model fetch URLs that already
+        # appeared in the conversation (user message, prior tool
+        # result, web_search hit) — there is no domain restriction we
+        # have to apply locally. No beta header is required today; the
+        # tool ships under the standard `2023-06-01` API version. We
+        # mirror the web_search wiring: max_uses cap, opt in via
+        # `enabled_tools=["web_fetch"]`, citations off by default
+        # because the frontend already paints source pills from the
+        # generic tool_end payload.
+        web_fetch_enabled = bool(enabled_tools and "web_fetch" in enabled_tools)
+        if web_fetch_enabled:
+            anthropic_tools = list(body.get("tools") or [])
+            anthropic_tools.append(
+                {
+                    "type": "web_fetch_20250910",
+                    "name": "web_fetch",
                     "max_uses": 5,
                 }
             )
@@ -1292,15 +1536,18 @@ class ExternalProviderClient:
 
         # Anthropic server-side code execution — see
         #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
-        # `code_execution_20250825` runs Python + bash + str_replace
-        # file edits inside a 5 GB sandboxed container per request, with
-        # no internet access. The tool entry itself takes no extra
-        # parameters; on the SSE stream Anthropic emits two sub-tool
-        # names — `bash_code_execution` and
-        # `text_editor_code_execution` — wrapped in the standard
-        # server_tool_use / *_tool_result block shape. The matching
-        # beta header (`code-execution-2025-08-25`) is set further down
-        # in this function alongside the request headers.
+        # The tool type is date-pinned per model family.
+        # `_anthropic_code_execution_version` picks `code_execution_20260120`
+        # for Opus 4.5+ / Sonnet 4.5+ / Opus 4.7 / Sonnet 4.6 (adds REPL
+        # state persistence + programmatic tool calling) and falls back
+        # to `code_execution_20250825` everywhere else. Both versions
+        # run Python + bash + str_replace file edits inside a 5 GB
+        # sandboxed container per request, with no internet access, and
+        # both are unlocked by the same `code-execution-2025-08-25`
+        # `anthropic-beta` header set further down. On the SSE stream
+        # Anthropic emits two sub-tool names -- `bash_code_execution`
+        # and `text_editor_code_execution` -- wrapped in the standard
+        # server_tool_use / *_tool_result block shape.
         # v1 wires the tool only; file uploads (container_upload
         # content blocks and generated-file retrieval via the Files
         # API) are a deliberate follow-up.
@@ -1311,7 +1558,7 @@ class ExternalProviderClient:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
-                    "type": "code_execution_20250825",
+                    "type": _anthropic_code_execution_version(model),
                     "name": "code_execution",
                 }
             )
@@ -1329,6 +1576,40 @@ class ExternalProviderClient:
             # the next turn fall back to auto-create.
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
+
+        # Server-side context compaction — see
+        #   https://platform.claude.com/docs/en/build-with-claude/compaction
+        # Beta as of `compact-2026-01-12`. When `compaction_threshold` is
+        # provided AND the model accepts compaction (Opus 4.6+ / 4.7,
+        # Sonnet 4.6, Mythos preview), attach
+        # `context_management.edits[{type:"compact_20260112", trigger:
+        # {type:"input_tokens", value:N}}]` to the body. Anthropic runs
+        # the compaction step server-side once the rendered prompt
+        # crosses the threshold and replies with a top-level
+        # `context_management` block plus `usage.iterations[]` so we can
+        # account per-iteration. Below-min thresholds get clamped up to
+        # 50K so the request doesn't 400.
+        compaction_active = (
+            compaction_threshold is not None
+            and compaction_threshold > 0
+            and _anthropic_supports_compaction(model)
+        )
+        if compaction_active:
+            trigger_value = max(
+                int(compaction_threshold),
+                _ANTHROPIC_COMPACTION_MIN,
+            )
+            body["context_management"] = {
+                "edits": [
+                    {
+                        "type": _ANTHROPIC_COMPACTION_TYPE,
+                        "trigger": {
+                            "type": "input_tokens",
+                            "value": trigger_value,
+                        },
+                    }
+                ]
+            }
 
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
@@ -1351,29 +1632,44 @@ class ExternalProviderClient:
             body.get("max_tokens"),
         )
 
-        _finish_reason_map = {
+        # Translate Anthropic stop reasons onto the OpenAI chat-completions
+        # `finish_reason` vocabulary. `pause_turn` maps to None so the
+        # adapter does NOT emit a finish_reason chunk: pause_turn means
+        # Claude paused a long server-tool turn (web_search / web_fetch)
+        # and will continue once the user (or our retry) sends back the
+        # partial assistant message. Forwarding it as "stop" makes the
+        # OpenAI client think the answer is done and truncates the
+        # rendered message. `refusal` maps to "content_filter" as the
+        # nearest semantic match. See
+        #   https://platform.claude.com/docs/en/api/messages#response-stop-reason
+        _finish_reason_map: dict[str, Optional[str]] = {
             "end_turn": "stop",
             "max_tokens": "length",
             "stop_sequence": "stop",
+            "tool_use": "tool_calls",
+            "refusal": "content_filter",
+            "pause_turn": None,
         }
 
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         request_headers = self._auth_headers()
-        if code_execution_enabled:
-            # Anthropic accepts comma-separated beta features in a single
-            # `anthropic-beta` header. Merge our flag onto whatever the
-            # registry's extra_headers contributed (currently nothing on
-            # the beta axis, just anthropic-version) so future betas
-            # added at the registry level keep working.
-            existing_beta = request_headers.get("anthropic-beta", "").strip()
-            beta_parts = (
-                [p.strip() for p in existing_beta.split(",") if p.strip()]
-                if existing_beta
-                else []
-            )
-            if "code-execution-2025-08-25" not in beta_parts:
-                beta_parts.append("code-execution-2025-08-25")
+        # Anthropic accepts comma-separated beta features in a single
+        # `anthropic-beta` header. Merge our flags onto whatever the
+        # registry's extra_headers contributed (currently nothing on
+        # the beta axis, just anthropic-version) so future betas
+        # added at the registry level keep working.
+        existing_beta = request_headers.get("anthropic-beta", "").strip()
+        beta_parts = (
+            [p.strip() for p in existing_beta.split(",") if p.strip()]
+            if existing_beta
+            else []
+        )
+        if code_execution_enabled and _ANTHROPIC_CODE_EXECUTION_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
+        if compaction_active and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_COMPACTION_BETA)
+        if beta_parts:
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
         try:
@@ -1450,6 +1746,27 @@ class ExternalProviderClient:
                 current_code_exec_use: Optional[dict[str, Any]] = None
                 current_code_exec_result: Optional[dict[str, Any]] = None
                 code_execution_calls: dict[str, dict[str, Any]] = {}
+                # web_fetch state. Same server_tool_use → *_tool_result
+                # block shape as web_search but the server_tool_use
+                # carries name="web_fetch" and the result block is
+                # `web_fetch_tool_result` with content.type=
+                # `web_fetch_result` (success) or `web_fetch_tool_error`
+                # (failure). Kept separate from web_search state so a
+                # turn that uses both does not collide.
+                current_web_fetch_use: Optional[dict[str, Any]] = None
+                current_web_fetch_result: Optional[dict[str, Any]] = None
+                web_fetch_calls: dict[str, dict[str, Any]] = {}
+                # Compaction state. Server-side compaction emits a
+                # `{type:"compaction", content:"..."}` content block
+                # whenever it runs. The summary text can land on the
+                # start event AND/OR via text_delta events on the same
+                # block (Anthropic's wire format is permissive here).
+                # Accumulate in `current_compaction["content"]` and emit
+                # on content_block_stop so the chat-adapter can persist
+                # it onto the assistant message for round-tripping on
+                # the next turn.
+                current_compaction: Optional[dict[str, Any]] = None
+                compaction_blocks_seen = 0
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
                 # glance. generated_files_count is interesting for the
@@ -1518,6 +1835,60 @@ class ExternalProviderClient:
                             continue
                         blocks.append(f"Title: {title}\nURL: {url}")
                     return "\n---\n".join(blocks)
+
+                def _format_web_fetch_result(inner: dict[str, Any]) -> str:
+                    """Render a `web_fetch_tool_result.content` payload
+                    as the Title / URL / snippet block CodeExecutionToolUI
+                    and parseSourcesFromResult already expect from the
+                    web_search path.
+
+                    Success shape (text):
+                        {type: web_fetch_result, url, retrieved_at,
+                         content: {type: document, source: {type: text,
+                                   media_type, data}, title?}}
+                    Success shape (pdf): source.type=base64 + media_type=
+                        application/pdf. We do not surface the base64
+                        bytes; the title + url is enough for the source
+                        pill, and the model still sees the document
+                        contents on its side.
+                    Error shape: {type: web_fetch_tool_error, error_code}.
+                    """
+                    inner_type = inner.get("type") or ""
+                    if inner_type == "web_fetch_tool_error":
+                        return f"Error: {inner.get('error_code', 'unknown')}"
+                    url = inner.get("url", "")
+                    document = inner.get("content") or {}
+                    title = ""
+                    snippet = ""
+                    if isinstance(document, dict):
+                        title = document.get("title") or ""
+                        source = document.get("source") or {}
+                        if isinstance(source, dict):
+                            media_type = source.get("media_type") or ""
+                            data = source.get("data") or ""
+                            # Inline a short text preview so the source
+                            # pill carries usable context; skip for PDFs
+                            # since the body is base64-encoded.
+                            if (
+                                media_type.startswith("text/")
+                                and isinstance(data, str)
+                                and data
+                            ):
+                                snippet = data[:240].strip()
+                    # Frontend parseSourcesFromResult only emits a source
+                    # pill when both `Title:` and `URL:` are present, so
+                    # fall back to the URL when Anthropic omits the
+                    # document title (matches the web_search formatter).
+                    if not title and url:
+                        title = url
+                    parts: list[str] = []
+                    if title:
+                        parts.append(f"Title: {title}")
+                    if url:
+                        parts.append(f"URL: {url}")
+                    if snippet:
+                        parts.append(f"Snippet: {snippet}")
+                    return "\n".join(parts) if parts else "(fetch complete)"
 
                 def _format_code_execution_result(
                     inner: dict[str, Any],
@@ -1631,6 +2002,28 @@ class ExternalProviderClient:
                                     if isinstance(content, list)
                                     else [],
                                 }
+                            elif (
+                                block_type == "server_tool_use"
+                                and block_name == "web_fetch"
+                            ):
+                                tool_use_id = content_block.get("id", "") or (
+                                    f"wf_{len(web_fetch_calls)}"
+                                )
+                                current_web_fetch_use = {
+                                    "id": tool_use_id,
+                                    "buffer": "",
+                                }
+                                web_fetch_calls[tool_use_id] = {
+                                    "url": "",
+                                    "result": None,
+                                }
+                            elif block_type == "web_fetch_tool_result":
+                                tool_use_id = content_block.get("tool_use_id", "")
+                                inner = content_block.get("content") or {}
+                                current_web_fetch_result = {
+                                    "tool_use_id": tool_use_id,
+                                    "inner": inner if isinstance(inner, dict) else {},
+                                }
                             elif block_type == "server_tool_use" and block_name in (
                                 "bash_code_execution",
                                 "text_editor_code_execution",
@@ -1669,6 +2062,23 @@ class ExternalProviderClient:
                                     "tool_use_id": tool_use_id,
                                     "inner": inner if isinstance(inner, dict) else {},
                                 }
+                            elif block_type == "compaction":
+                                # Server-side compaction emits a `compaction`
+                                # content block on the assistant message.
+                                # Anthropic may include the summary text on
+                                # this start event AND/OR stream it via
+                                # text_delta events on the same block. See
+                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                                # Capture either form; finalize and emit
+                                # on content_block_stop. The chat-adapter
+                                # persists the block onto the assistant
+                                # message so the next turn's request
+                                # carries it back -- Anthropic then skips
+                                # re-compaction from scratch.
+                                seed = content_block.get("content") or ""
+                                current_compaction = {
+                                    "content": seed if isinstance(seed, str) else "",
+                                }
 
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
@@ -1687,21 +2097,31 @@ class ExternalProviderClient:
                                         thinking_open = True
                                     yield _content_chunk(thinking_text)
                             elif delta_type == "text_delta":
-                                # First text after a thinking block closes the
-                                # <think> tag we opened above. Anthropic emits
-                                # a content_block_stop between blocks, but
-                                # closing on the text_delta transition is more
-                                # forgiving if events arrive out of order.
-                                if thinking_open:
-                                    yield _content_chunk("</think>")
-                                    thinking_open = False
                                 text = delta.get("text", "")
-                                if text:
-                                    yield _content_chunk(text)
-                                # Citations on text deltas are attached
-                                # per-call by Anthropic via the
-                                # `web_search_tool_result` block; we don't
-                                # need to scrape them off the text events.
+                                # text_deltas inside a compaction block
+                                # carry the summary chunks; route them
+                                # into the compaction buffer and DON'T
+                                # yield them to the user-visible stream
+                                # -- the summary is opaque internal
+                                # state, not assistant prose.
+                                if current_compaction is not None:
+                                    if text:
+                                        current_compaction["content"] += text
+                                else:
+                                    # First text after a thinking block closes the
+                                    # <think> tag we opened above. Anthropic emits
+                                    # a content_block_stop between blocks, but
+                                    # closing on the text_delta transition is more
+                                    # forgiving if events arrive out of order.
+                                    if thinking_open:
+                                        yield _content_chunk("</think>")
+                                        thinking_open = False
+                                    if text:
+                                        yield _content_chunk(text)
+                                    # Citations on text deltas are attached
+                                    # per-call by Anthropic via the
+                                    # `web_search_tool_result` block; we don't
+                                    # need to scrape them off the text events.
                             elif delta_type == "input_json_delta":
                                 # Streamed partial_json carrying tool inputs
                                 # — the search query for web_search, or the
@@ -1716,6 +2136,8 @@ class ExternalProviderClient:
                                     current_server_tool_use["buffer"] += partial
                                 elif current_code_exec_use is not None:
                                     current_code_exec_use["buffer"] += partial
+                                elif current_web_fetch_use is not None:
+                                    current_web_fetch_use["buffer"] += partial
                             # signature_delta and any other delta types are
                             # intentionally skipped — they carry trust /
                             # verification metadata, not user-visible content.
@@ -1802,6 +2224,23 @@ class ExternalProviderClient:
                                     }
                                 )
                                 current_code_exec_use = None
+                            elif current_compaction is not None:
+                                # End of a compaction block. Emit it as a
+                                # synthetic tool_event so the chat-adapter
+                                # can persist the {type:"compaction",
+                                # content:"..."} payload onto the
+                                # assistant message. The next turn's
+                                # request body forwards the content_part
+                                # verbatim and Anthropic recognises it
+                                # as the prior compaction state.
+                                compaction_blocks_seen += 1
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "compaction_block",
+                                        "content": current_compaction["content"],
+                                    }
+                                )
+                                current_compaction = None
                             elif current_code_exec_result is not None:
                                 # End of a code-execution result block —
                                 # format the inner result into the text
@@ -1833,6 +2272,64 @@ class ExternalProviderClient:
                                     }
                                 )
                                 current_code_exec_result = None
+                            elif current_web_fetch_use is not None:
+                                # End of the web_fetch server_tool_use —
+                                # parse the buffered input_json into the
+                                # URL the model asked Anthropic to fetch
+                                # and emit tool_start. The matching
+                                # tool_end fires on the result block's
+                                # content_block_stop just below.
+                                buffer = current_web_fetch_use["buffer"]
+                                url = ""
+                                if buffer:
+                                    try:
+                                        parsed = _json.loads(buffer)
+                                        if isinstance(parsed, dict):
+                                            probe = parsed.get("url", "")
+                                            if isinstance(probe, str):
+                                                url = probe
+                                    except Exception:
+                                        logger.debug(
+                                            "Failed to parse web_fetch input_json",
+                                            buffer = buffer,
+                                        )
+                                        url = ""
+                                tool_use_id = current_web_fetch_use["id"]
+                                if tool_use_id in web_fetch_calls:
+                                    web_fetch_calls[tool_use_id]["url"] = url
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_start",
+                                        "tool_name": "web_fetch",
+                                        "tool_call_id": tool_use_id,
+                                        "arguments": ({"url": url} if url else {}),
+                                    }
+                                )
+                                current_web_fetch_use = None
+                            elif current_web_fetch_result is not None:
+                                # End of the web_fetch_tool_result —
+                                # format Title / URL / snippet for the
+                                # frontend source pill and emit tool_end.
+                                # `inner` is sanitised to a dict at the
+                                # matching content_block_start, and the
+                                # formatter always returns a non-empty
+                                # string (defaulting to "(fetch complete)"
+                                # when no fields are present), so no
+                                # extra fallback is needed here.
+                                tool_use_id = current_web_fetch_result["tool_use_id"]
+                                result_text = _format_web_fetch_result(
+                                    current_web_fetch_result["inner"]
+                                )
+                                if tool_use_id in web_fetch_calls:
+                                    web_fetch_calls[tool_use_id]["result"] = result_text
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "tool_end",
+                                        "tool_call_id": tool_use_id,
+                                        "result": result_text,
+                                    }
+                                )
+                                current_web_fetch_result = None
                             elif thinking_open:
                                 # Close the <think> tag when the thinking block
                                 # ends, in case no text_delta follows (e.g.
@@ -1845,6 +2342,33 @@ class ExternalProviderClient:
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
+                                # When a fresh compaction has run, Anthropic
+                                # publishes per-iteration token counts in
+                                # `usage.iterations[]`. The top-level
+                                # input_tokens / output_tokens only cover the
+                                # `message` iteration, NOT the compaction
+                                # passes — billing has to sum the whole
+                                # array. See
+                                #   https://platform.claude.com/docs/en/build-with-claude/compaction
+                                # Fold the compaction iterations into
+                                # `compaction_input_tokens` / `compaction_output_tokens`
+                                # so the cost surface can add them without
+                                # re-walking the array (and so the closing
+                                # log line names the figures).
+                                iterations = delta_usage.get("iterations")
+                                if isinstance(iterations, list):
+                                    c_in = 0
+                                    c_out = 0
+                                    for it in iterations:
+                                        if (
+                                            isinstance(it, dict)
+                                            and it.get("type") == "compaction"
+                                        ):
+                                            c_in += int(it.get("input_tokens") or 0)
+                                            c_out += int(it.get("output_tokens") or 0)
+                                    if c_in or c_out:
+                                        last_usage["compaction_input_tokens"] = c_in
+                                        last_usage["compaction_output_tokens"] = c_out
                             # Anthropic reports the code_execution container
                             # id on `message_delta.delta.container.{id,
                             # expires_at}` (NOT on message_start — at start
@@ -1880,25 +2404,40 @@ class ExternalProviderClient:
                                 if thinking_open:
                                     yield _content_chunk("</think>")
                                     thinking_open = False
-                                chunk = {
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "choices": [
-                                        {
-                                            "index": 0,
-                                            "delta": {},
-                                            "finish_reason": _finish_reason_map.get(
-                                                stop_reason, "stop"
-                                            ),
-                                        }
-                                    ],
-                                }
-                                yield f"data: {_json.dumps(chunk)}"
+                                # `pause_turn` is in-progress, not terminal:
+                                # the SSE stream still ends with [DONE] via
+                                # message_stop but we skip emitting a
+                                # finish_reason="stop" chunk that would
+                                # truncate the rendered message in the UI.
+                                mapped = _finish_reason_map.get(stop_reason, "stop")
+                                if mapped is not None:
+                                    chunk = {
+                                        "id": completion_id,
+                                        "object": "chat.completion.chunk",
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "delta": {},
+                                                "finish_reason": mapped,
+                                            }
+                                        ],
+                                    }
+                                    yield f"data: {_json.dumps(chunk)}"
 
                         elif event_type == "message_stop":
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
+                            # Final include_usage-style chunk so callers can
+                            # see cache_creation / cache_read without
+                            # scraping the server log.
+                            usage_line = _build_usage_chunk(
+                                completion_id,
+                                "anthropic",
+                                last_usage,
+                            )
+                            if usage_line:
+                                yield usage_line
                             yield "data: [DONE]"
                             await (
                                 response.aclose()
@@ -1936,10 +2475,17 @@ class ExternalProviderClient:
                         for c in code_execution_calls.values()
                         if c.get("result") is not None
                     )
+                    web_fetch_requested = web_fetch_enabled
+                    web_fetch_invocations = len(web_fetch_calls)
+                    web_fetch_urls = [
+                        wf["url"] for wf in web_fetch_calls.values() if wf.get("url")
+                    ]
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
                         "results=%s, queries=%s, "
+                        "web_fetch_requested=%s, web_fetch_invocations=%s, "
+                        "web_fetch_urls=%s, "
                         "code_execution_requested=%s, "
                         "code_execution_invocations=%s, "
                         "code_execution_results=%s, "
@@ -1947,12 +2493,18 @@ class ExternalProviderClient:
                         "container_id_in=%s, container_id_out=%s, "
                         "input_tokens=%s, output_tokens=%s, "
                         "cache_creation_input_tokens=%s, "
-                        "cache_read_input_tokens=%s, events=%s)",
+                        "cache_read_input_tokens=%s, "
+                        "compaction_input_tokens=%s, "
+                        "compaction_output_tokens=%s, "
+                        "compaction_blocks_seen=%s, events=%s)",
                         model,
                         web_search_requested,
                         web_search_invocations,
                         total_results,
                         queries,
+                        web_fetch_requested,
+                        web_fetch_invocations,
+                        web_fetch_urls,
                         code_execution_enabled,
                         code_execution_invocations,
                         code_execution_results,
@@ -1963,6 +2515,9 @@ class ExternalProviderClient:
                         last_usage.get("output_tokens"),
                         last_usage.get("cache_creation_input_tokens"),
                         last_usage.get("cache_read_input_tokens"),
+                        last_usage.get("compaction_input_tokens"),
+                        last_usage.get("compaction_output_tokens"),
+                        compaction_blocks_seen,
                         event_counts,
                     )
                     await response.aclose()
@@ -2002,6 +2557,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -2054,6 +2610,43 @@ class ExternalProviderClient:
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
                             )
+                    elif part_type == "input_document":
+                        # OpenAI Responses accepts PDFs / docs as
+                        # `{type:"input_file", file_data:"data:application/pdf;base64,..."}`
+                        # or `{type:"input_file", file_url:"https://..."}`,
+                        # with optional `filename`. See
+                        # https://developers.openai.com/api/docs/guides/images-vision
+                        # Map Studio's normalised `input_document` shape
+                        # straight onto Responses' `input_file`.
+                        file_url = part.get("file_url")
+                        file_data = part.get("file_data")
+                        filename = part.get("filename")
+                        # Mirror the Anthropic-side guard: any "data:" URI
+                        # without an actual base64 payload (`data:application/pdf;base64,`
+                        # or whitespace-only) would otherwise be forwarded
+                        # to OpenAI as `file_data=""`, which 400s the whole
+                        # turn. Treat such payloads as missing AND fall
+                        # back to file_url if one is also present, so a
+                        # recoverable remote URL doesn't get discarded in
+                        # favour of a malformed inline payload.
+                        file_data_valid = bool(
+                            isinstance(file_data, str)
+                            and file_data
+                            and (
+                                not file_data.startswith("data:")
+                                or file_data.partition(",")[2].strip()
+                            )
+                        )
+                        block: dict[str, Any] = {"type": "input_file"}
+                        if file_data_valid:
+                            block["file_data"] = file_data
+                        elif file_url:
+                            block["file_url"] = file_url
+                        else:
+                            continue
+                        if filename:
+                            block["filename"] = filename
+                        translated_parts.append(block)
                 if translated_parts:
                     input_items.append({"role": role, "content": translated_parts})
 
@@ -2120,9 +2713,39 @@ class ExternalProviderClient:
         # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
         # accept this parameter (gpt-5.5+ already defaults to "24h" and
         # rejects "in_memory", so it's a safe no-op there).
-        is_openai_cloud = "api.openai.com" in (self.base_url or "")
+        # OpenAI-family cloud: api.openai.com OR Azure OpenAI Foundry
+        # (*.openai.azure.com). Both expose the same Responses-API
+        # extensions used below -- prompt_cache_retention,
+        # context_management compaction, container shell tool -- so
+        # treat them uniformly. Non-cloud OpenAI-compatible servers
+        # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
+        # without these extensions and would 400 on the unknown body
+        # fields, so they intentionally fall outside this gate.
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
+
+        # OpenAI server-side context compaction — see
+        #   https://developers.openai.com/api/docs/guides/compaction
+        # When `compaction_threshold` is provided on a cloud OpenAI
+        # request, attach `context_management: [{type:"compaction",
+        # compact_threshold:N}]` so the API runs server-side
+        # compaction when the rendered prompt crosses the threshold.
+        # No beta header is required; no dated version pin. The field
+        # is silently dropped for non-cloud backends because ollama /
+        # llama.cpp / "custom" presets land in this helper and would
+        # 400 on an unknown body field.
+        if (
+            is_openai_cloud
+            and compaction_threshold is not None
+            and compaction_threshold > 0
+        ):
+            body["context_management"] = [
+                {
+                    "type": "compaction",
+                    "compact_threshold": int(compaction_threshold),
+                }
+            ]
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools
@@ -2134,6 +2757,18 @@ class ExternalProviderClient:
         # be added with the same pattern when we surface their toggles.
         code_execution_enabled_openai = bool(
             enabled_tools and "code_execution" in enabled_tools and is_openai_cloud
+        )
+        # OpenAI's image_generation tool is a Responses-API server tool.
+        # See https://developers.openai.com/api/docs/guides/tools-image-generation
+        # The model picks size / quality / background server-side and
+        # delegates rendering to a gpt-image-* family model; the result
+        # comes back inline as an `image_generation_call` output item
+        # with a base64 image. Available on every gpt-5.x family member
+        # plus gpt-4.1 / gpt-4o / o3 per the docs; restrict to cloud
+        # OpenAI because the local llama.cpp / ollama backends don't
+        # implement it and would 400.
+        image_generation_enabled_openai = bool(
+            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
         )
         if enabled_tools:
             tools_array: list[dict[str, Any]] = []
@@ -2161,6 +2796,8 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
+            if image_generation_enabled_openai:
+                tools_array.append({"type": "image_generation"})
             if tools_array:
                 body["tools"] = tools_array
 
@@ -2191,6 +2828,8 @@ class ExternalProviderClient:
                     tools_array_attempt.append(
                         {"type": "shell", "environment": env_attempt}
                     )
+                if image_generation_enabled_openai:
+                    tools_array_attempt.append({"type": "image_generation"})
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
                 else:
@@ -2630,6 +3269,60 @@ class ExternalProviderClient:
                                             "result": result_text,
                                         }
                                     )
+                                elif item.get("type") == "image_generation_call":
+                                    # OpenAI's image_generation tool returns
+                                    # a single output item with the base64
+                                    # PNG/WebP/JPEG on `result` (sometimes
+                                    # `b64_json` depending on output_format).
+                                    # `revised_prompt` is what the gpt-image
+                                    # backbone actually used after refinement
+                                    # of the assistant's request. Emit
+                                    # tool_start + tool_end so the chat card
+                                    # renders the prompt + the generated
+                                    # image inline. The frontend chat-adapter
+                                    # decides how to render the base64 blob
+                                    # (likely an <img src="data:image/...">)
+                                    # based on the `kind: "image"` hint we
+                                    # set on tool_start arguments.
+                                    # `time_ns()` (nanoseconds) instead of
+                                    # millisecond resolution so synthesised
+                                    # ids stay unique even when two image
+                                    # generations resolve in the same ms.
+                                    item_id = item.get("id", "") or (
+                                        f"img_{time.time_ns()}"
+                                    )
+                                    prompt_in = (
+                                        item.get("revised_prompt")
+                                        or item.get("prompt")
+                                        or ""
+                                    )
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_start",
+                                            "tool_name": "image_generation",
+                                            "tool_call_id": item_id,
+                                            "arguments": {
+                                                "kind": "image",
+                                                "prompt": prompt_in,
+                                            },
+                                        }
+                                    )
+                                    b64 = (
+                                        item.get("result") or item.get("b64_json") or ""
+                                    )
+                                    output_format = item.get("output_format") or "png"
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": item_id,
+                                            "result": "",
+                                            "image_b64": b64,
+                                            "image_mime": (f"image/{output_format}"),
+                                            "size": item.get("size"),
+                                            "quality": item.get("quality"),
+                                            "background": item.get("background"),
+                                        }
+                                    )
 
                             elif (
                                 isinstance(event_type, str)
@@ -2724,6 +3417,16 @@ class ExternalProviderClient:
                                     ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
+                                # Emit include_usage-style chunk after the
+                                # finish_reason so callers can surface
+                                # cached_tokens in their UI.
+                                usage_line = _build_usage_chunk(
+                                    completion_id,
+                                    "openai",
+                                    last_usage,
+                                )
+                                if usage_line:
+                                    yield usage_line
 
                             elif event_type == "response.incomplete":
                                 incomplete_usage = (event.get("response") or {}).get(
@@ -2770,6 +3473,17 @@ class ExternalProviderClient:
                                     ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
+                                # Emit include_usage-style chunk after the
+                                # length-truncated finish_reason too, so
+                                # incomplete responses still report
+                                # cached_tokens.
+                                usage_line = _build_usage_chunk(
+                                    completion_id,
+                                    "openai",
+                                    last_usage,
+                                )
+                                if usage_line:
+                                    yield usage_line
 
                             elif event_type in ("response.failed", "error"):
                                 # Surface the failure to the client; let the
@@ -2933,11 +3647,39 @@ class ExternalProviderClient:
             response.raise_for_status()
             data = response.json()
             # OpenAI format: {"data": [{"id": "...", ...}, ...]}
-            models = data.get("data", [])
+            # Some local servers (Ollama with no models) return data: null.
+            models: list[dict[str, Any]] = []
+            if isinstance(data, dict):
+                raw_models = data.get("data") or []
+                if isinstance(raw_models, list):
+                    models = [model for model in raw_models if isinstance(model, dict)]
+            if not models and self.provider_type == "ollama":
+                models = await self._list_ollama_native_models()
             return models
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
+        """Fallback when Ollama's /v1/models returns an empty or null catalog."""
+        root = self.base_url.removesuffix("/v1").rstrip("/")
+        response = await _http_client.get(
+            f"{root}/api/tags",
+            headers = self._auth_headers(),
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return []
+        raw_models = payload.get("models") or []
+        if not isinstance(raw_models, list):
+            return []
+        return [
+            {"id": entry.get("name", "").strip(), "owned_by": "ollama"}
+            for entry in raw_models
+            if isinstance(entry, dict) and entry.get("name", "").strip()
+        ]
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """
@@ -3087,6 +3829,40 @@ class ExternalProviderClient:
         """No-op — the underlying client is shared across requests."""
 
 
+def _provider_display_name(provider_type: str) -> str:
+    from core.inference.providers import get_provider_info
+
+    info = get_provider_info(provider_type) or {}
+    return str(info.get("display_name") or provider_type)
+
+
+def _friendly_provider_error_text(
+    provider_type: str,
+    status_code: int,
+    raw_message: str,
+    *,
+    model: str | None = None,
+) -> str:
+    """Rewrite common provider errors into actionable Studio copy."""
+    if status_code == 404 and model:
+        lowered = raw_message.lower()
+        if "not found" in lowered or "not_found" in lowered:
+            if provider_type == "ollama":
+                label = _provider_display_name(provider_type)
+                return (
+                    f"Model '{model}' is not installed in {label}. "
+                    f"Run `ollama pull {model}` in a terminal, then retry."
+                )
+            if provider_type in ("vllm", "llama_cpp"):
+                label = _provider_display_name(provider_type)
+                return (
+                    f"Model '{model}' is not available on the {label} server. "
+                    "Check that the server is running and the model is loaded, "
+                    "then retry."
+                )
+    return raw_message
+
+
 def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
     """Format an error as an SSE data line in OpenAI error format."""
     import json
@@ -3100,3 +3876,88 @@ def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
         }
     }
     return f"data: {json.dumps(error_obj)}"
+
+
+def _build_usage_chunk(
+    completion_id: str,
+    provider: Literal["anthropic", "openai"],
+    last_usage: Optional[dict],
+) -> Optional[str]:
+    """Build an OpenAI ``include_usage``-style SSE chunk that carries the
+    upstream prompt-cache accounting back to the client.
+
+    Until now Studio captured ``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens`` (Anthropic) and
+    ``input_tokens_details.cached_tokens`` (OpenAI Responses) on
+    ``last_usage`` and only wrote them to the structlog stream.
+    Browser / SDK clients had no way to see how many tokens hit the cache
+    -- so the "you saved $X" UX in the chat panel was impossible without
+    scraping the server log.
+
+    This helper emits the standard OpenAI chunk shape -- ``choices: []``
+    with a populated ``usage`` block -- so any client that already
+    consumes ``stream_options={"include_usage": true}`` keeps working,
+    and the Anthropic-native counts are surfaced as extra keys on the
+    same ``usage`` dict:
+
+        usage.prompt_tokens_details.cached_tokens
+            normalised cache-read count, present for both providers.
+        usage.cache_creation_input_tokens
+            Anthropic-only; tokens billed at the cache-write premium.
+        usage.cache_read_input_tokens
+            Anthropic-only; same value as cached_tokens, kept for
+            callers that already key off the native Anthropic name.
+
+    Anthropic's ``input_tokens`` excludes the cache buckets -- the
+    real prompt size is ``input_tokens + cache_creation_input_tokens
+    + cache_read_input_tokens``. Emitting ``input_tokens`` alone as
+    ``prompt_tokens`` undercounts cache-heavy turns and breaks
+    downstream context / cost displays, so we add all three input
+    buckets together. OpenAI Responses already folds cached tokens
+    into ``input_tokens`` so no extra arithmetic is needed there.
+
+    Returns ``None`` when there are no usage numbers to report (e.g. an
+    upstream error before ``message_start`` / ``response.completed``).
+    """
+    if not isinstance(last_usage, dict):
+        return None
+
+    completion_tokens = last_usage.get("output_tokens") or 0
+
+    if provider == "anthropic":
+        uncached_input = last_usage.get("input_tokens") or 0
+        cache_creation = last_usage.get("cache_creation_input_tokens") or 0
+        cache_read = last_usage.get("cache_read_input_tokens") or 0
+        prompt_tokens = uncached_input + cache_creation + cache_read
+        if not (prompt_tokens or completion_tokens):
+            return None
+        usage_block: dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": cache_read},
+            "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": cache_read,
+        }
+    else:
+        prompt_tokens = last_usage.get("input_tokens") or 0
+        cached = 0
+        details = last_usage.get("input_tokens_details")
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens") or 0
+        if not (prompt_tokens or completion_tokens or cached):
+            return None
+        usage_block = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": cached},
+        }
+
+    chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "choices": [],
+        "usage": usage_block,
+    }
+    return f"data: {_json.dumps(chunk)}"
