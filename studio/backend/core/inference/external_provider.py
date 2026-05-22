@@ -2152,9 +2152,7 @@ class ExternalProviderClient:
         # OpenAI because the local llama.cpp / ollama backends don't
         # implement it and would 400.
         image_generation_enabled_openai = bool(
-            enabled_tools
-            and "image_generation" in enabled_tools
-            and is_openai_cloud
+            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
         )
         if enabled_tools:
             tools_array: list[dict[str, Any]] = []
@@ -2690,22 +2688,16 @@ class ExternalProviderClient:
                                         }
                                     )
                                     b64 = (
-                                        item.get("result")
-                                        or item.get("b64_json")
-                                        or ""
+                                        item.get("result") or item.get("b64_json") or ""
                                     )
-                                    output_format = (
-                                        item.get("output_format") or "png"
-                                    )
+                                    output_format = item.get("output_format") or "png"
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
                                             "result": "",
                                             "image_b64": b64,
-                                            "image_mime": (
-                                                f"image/{output_format}"
-                                            ),
+                                            "image_mime": (f"image/{output_format}"),
                                             "size": item.get("size"),
                                             "quality": item.get("quality"),
                                             "background": item.get("background"),
