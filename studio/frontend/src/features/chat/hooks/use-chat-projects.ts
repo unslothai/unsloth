@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useEffect, useState } from "react";
+import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import type { ProjectRecord } from "../types";
+import {
+  createStoredChatProject,
+  deleteStoredChatProject,
+  listStoredChatProjects,
+  moveStoredChatItemToProject,
+  updateStoredChatProject,
+} from "../utils/chat-history-storage";
+import type { SidebarItem } from "./use-chat-sidebar-items";
+
+export function useChatProjects(): { projects: ProjectRecord[] } {
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      const next = await listStoredChatProjects({ includeArchived: false });
+      if (!cancelled) setProjects(next);
+    }
+
+    const onHistoryUpdated = () => {
+      void load();
+    };
+
+    void load();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    };
+  }, []);
+
+  return { projects };
+}
+
+export async function createChatProject(name: string): Promise<ProjectRecord> {
+  return createStoredChatProject(name);
+}
+
+export async function renameChatProject(
+  projectId: string,
+  name: string,
+): Promise<void> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Project name is required.");
+  await updateStoredChatProject(projectId, { name: trimmed });
+}
+
+export async function updateChatProjectInstructions(
+  projectId: string,
+  instructions: string,
+): Promise<void> {
+  await updateStoredChatProject(projectId, { instructions: instructions.trim() });
+}
+
+export async function deleteChatProject(projectId: string): Promise<void> {
+  await deleteStoredChatProject(projectId);
+}
+
+export async function moveChatItemToProject(
+  item: SidebarItem,
+  projectId: string | null,
+): Promise<void> {
+  await moveStoredChatItemToProject(item, projectId);
+}
