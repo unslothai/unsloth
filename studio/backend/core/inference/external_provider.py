@@ -10,6 +10,7 @@ Anthropic uses native Messages API with translation in this client.
 
 import json as _json
 import re
+import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
 
 import httpx
@@ -2141,6 +2142,20 @@ class ExternalProviderClient:
         code_execution_enabled_openai = bool(
             enabled_tools and "code_execution" in enabled_tools and is_openai_cloud
         )
+        # OpenAI's image_generation tool is a Responses-API server tool.
+        # See https://developers.openai.com/api/docs/guides/tools-image-generation
+        # The model picks size / quality / background server-side and
+        # delegates rendering to a gpt-image-* family model; the result
+        # comes back inline as an `image_generation_call` output item
+        # with a base64 image. Available on every gpt-5.x family member
+        # plus gpt-4.1 / gpt-4o / o3 per the docs; restrict to cloud
+        # OpenAI because the local llama.cpp / ollama backends don't
+        # implement it and would 400.
+        image_generation_enabled_openai = bool(
+            enabled_tools
+            and "image_generation" in enabled_tools
+            and is_openai_cloud
+        )
         if enabled_tools:
             tools_array: list[dict[str, Any]] = []
             if "web_search" in enabled_tools:
@@ -2167,6 +2182,8 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
+            if image_generation_enabled_openai:
+                tools_array.append({"type": "image_generation"})
             if tools_array:
                 body["tools"] = tools_array
 
@@ -2197,6 +2214,8 @@ class ExternalProviderClient:
                     tools_array_attempt.append(
                         {"type": "shell", "environment": env_attempt}
                     )
+                if image_generation_enabled_openai:
+                    tools_array_attempt.append({"type": "image_generation"})
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
                 else:
@@ -2634,6 +2653,62 @@ class ExternalProviderClient:
                                             "type": "tool_end",
                                             "tool_call_id": call_id,
                                             "result": result_text,
+                                        }
+                                    )
+                                elif item.get("type") == "image_generation_call":
+                                    # OpenAI's image_generation tool returns
+                                    # a single output item with the base64
+                                    # PNG/WebP/JPEG on `result` (sometimes
+                                    # `b64_json` depending on output_format).
+                                    # `revised_prompt` is what the gpt-image
+                                    # backbone actually used after refinement
+                                    # of the assistant's request. Emit
+                                    # tool_start + tool_end so the chat card
+                                    # renders the prompt + the generated
+                                    # image inline. The frontend chat-adapter
+                                    # decides how to render the base64 blob
+                                    # (likely an <img src="data:image/...">)
+                                    # based on the `kind: "image"` hint we
+                                    # set on tool_start arguments.
+                                    item_id = item.get("id", "") or (
+                                        f"img_{int(time.time() * 1000)}"
+                                    )
+                                    prompt_in = (
+                                        item.get("revised_prompt")
+                                        or item.get("prompt")
+                                        or ""
+                                    )
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_start",
+                                            "tool_name": "image_generation",
+                                            "tool_call_id": item_id,
+                                            "arguments": {
+                                                "kind": "image",
+                                                "prompt": prompt_in,
+                                            },
+                                        }
+                                    )
+                                    b64 = (
+                                        item.get("result")
+                                        or item.get("b64_json")
+                                        or ""
+                                    )
+                                    output_format = (
+                                        item.get("output_format") or "png"
+                                    )
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "tool_end",
+                                            "tool_call_id": item_id,
+                                            "result": "",
+                                            "image_b64": b64,
+                                            "image_mime": (
+                                                f"image/{output_format}"
+                                            ),
+                                            "size": item.get("size"),
+                                            "quality": item.get("quality"),
+                                            "background": item.get("background"),
                                         }
                                     )
 
