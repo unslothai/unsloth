@@ -1674,16 +1674,41 @@ def _extract_content_parts(
 # ── External provider proxy ──────────────────────────────────────
 
 
+# Providers whose stream helper translates `input_document` parts into
+# a native attachment block on the wire. For Anthropic the mapping is
+# `_stream_anthropic` -> {type:"document", source:...}; for OpenAI it
+# is `_stream_openai_responses` -> {type:"input_file", file_data|file_url}.
+# Every other provider (gemini / mistral / kimi / openrouter / deepseek /
+# custom OpenAI-compat) goes through the generic /chat/completions
+# passthrough that forwards messages verbatim, so handing them an
+# `input_document` part would 400 with an unknown content_part type.
+_INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
+    provider_type: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
 
-    - Vision providers: preserve multimodal content arrays (image_url parts intact).
-    - Non-vision providers: flatten to text-only (images silently dropped).
+    Behaviour per content-part type:
+    - `text`: always preserved.
+    - `image_url`: preserved on vision providers; stripped on non-vision.
+    - `input_document`: preserved ONLY when the provider's stream helper
+      has explicit translation logic for it (Anthropic + OpenAI today,
+      see ``_INPUT_DOCUMENT_PROVIDERS``). For every other provider the
+      part is stripped so the unknown content type doesn't reach generic
+      /chat/completions passthrough and 400 the request.
+    - `compaction`: Anthropic-only synthetic part (round-trips server-side
+      compaction state). Forwarded ONLY when provider_type=="anthropic";
+      stripped for every other provider so the unknown part doesn't
+      reach generic /chat/completions passthrough where it would 400
+      (e.g. DeepSeek, Mistral, Gemini, Kimi, OpenRouter, etc.).
     """
+    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
+    anthropic = provider_type == "anthropic"
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1704,11 +1729,46 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "input_document" and document_provider:
+                        # ExternalProviderClient maps this onto
+                        # Anthropic's `document` or OpenAI Responses'
+                        # `input_file` block per provider; every other
+                        # provider would 400 on the unknown part type.
+                        doc: dict[str, Any] = {"type": "input_document"}
+                        if part.file_data:
+                            doc["file_data"] = part.file_data
+                        if part.file_url:
+                            doc["file_url"] = part.file_url
+                        if part.filename:
+                            doc["filename"] = part.filename
+                        if part.media_type:
+                            doc["media_type"] = part.media_type
+                        parts.append(doc)
+                    elif part.type == "compaction" and anthropic:
+                        # Anthropic stream helper forwards this as a
+                        # native `compaction` block; every other
+                        # provider would 400 on the unknown part, so
+                        # gate by provider_type.
+                        parts.append({"type": "compaction", "content": part.content})
                 result.append({"role": msg.role, "content": parts})
             else:
-                # Non-vision provider — strip images, keep text only
-                text = "\n".join(p.text for p in msg.content if p.type == "text")
-                result.append({"role": msg.role, "content": text})
+                # Non-vision provider: strip images / documents, keep
+                # text, optionally keep compaction (Anthropic only --
+                # compaction-capable Anthropic models all report
+                # supports_vision=True today, but the gate is here for
+                # safety).
+                preserved = []
+                for p in msg.content:
+                    if p.type == "text":
+                        preserved.append({"type": "text", "text": p.text})
+                    elif p.type == "compaction" and anthropic:
+                        preserved.append({"type": "compaction", "content": p.content})
+                if len(preserved) == 1 and preserved[0]["type"] == "text":
+                    # Single text part collapses back to a string for
+                    # providers that don't accept content arrays.
+                    result.append({"role": msg.role, "content": preserved[0]["text"]})
+                else:
+                    result.append({"role": msg.role, "content": preserved})
     return result
 
 
@@ -1779,7 +1839,11 @@ async def _proxy_to_external_provider(
 
     _pinfo = _get_provider_info(provider_type) or {}
     _supports_vision = _pinfo.get("supports_vision", False)
-    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+    chat_messages = _build_external_messages(
+        payload.messages,
+        _supports_vision,
+        provider_type = provider_type,
+    )
 
     client = ExternalProviderClient(
         provider_type = provider_type,
@@ -1802,6 +1866,8 @@ async def _proxy_to_external_provider(
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
+            prompt_cache_ttl = payload.prompt_cache_ttl,
+            compaction_threshold = payload.compaction_threshold,
             stream = payload.stream,
         )
         try:

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type {
-  CompleteAttachment,
-  ExportedMessageRepository,
-  ThreadMessage,
-} from "@assistant-ui/react";
 /**
  * assistant-ui does not expose a public `deleteMessage` on `ThreadRuntime` / `MessageRuntime`
  * in our version, but it already implements branch-safe deletion inside `MessageRepository`.
@@ -19,10 +14,20 @@ import type {
  * surface area.
  */
 import { MessageRepository } from "@assistant-ui/core/internal";
-import { db } from "../db";
+import type {
+  CompleteAttachment,
+  ExportedMessageRepository,
+  ThreadMessage,
+} from "@assistant-ui/react";
 import type { MessageRecord } from "../types";
+import {
+  ensureStoredChatThread,
+  syncStoredChatMessages,
+} from "./chat-history-storage";
 
-function cloneContent(content: ThreadMessage["content"]): ThreadMessage["content"] {
+function cloneContent(
+  content: ThreadMessage["content"],
+): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
@@ -38,7 +43,7 @@ function cloneAttachments(
   return JSON.parse(JSON.stringify(attachments));
 }
 
-function exportedItemToRecord(
+export function exportedItemToRecord(
   threadId: string,
   parentId: string | null,
   message: ThreadMessage,
@@ -64,7 +69,10 @@ function exportedItemToRecord(
     threadId,
     parentId: parentId ?? null,
     role: "assistant",
-    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: content as Extract<
+      ThreadMessage,
+      { role: "assistant" }
+    >["content"],
     ...(Object.keys(custom).length > 0 && { metadata: custom }),
     createdAt: message.createdAt?.getTime?.() ?? Date.now(),
   };
@@ -73,29 +81,19 @@ function exportedItemToRecord(
 /**
  * Persist exported messages, pruning only for explicit delete flows.
  */
-export async function syncExportedRepositoryToDexie(
+export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
-  await db.transaction("rw", db.messages, async () => {
-    if (options.pruneMissing) {
-      const keepIds = new Set(exp.messages.map((x) => x.message.id));
-      const existingIds = await db.messages
-        .where("threadId")
-        .equals(remoteId)
-        .primaryKeys();
-      const idsToDelete = existingIds.filter((id) => !keepIds.has(String(id)));
-      if (idsToDelete.length > 0) {
-        await db.messages.bulkDelete(idsToDelete);
-      }
-    }
-    await db.messages.bulkPut(
-      exp.messages.map(({ message, parentId }) =>
-        exportedItemToRecord(remoteId, parentId, message),
-      ),
-    );
-  });
+  await ensureStoredChatThread(remoteId);
+  await syncStoredChatMessages(
+    remoteId,
+    exp.messages.map(({ message, parentId }) =>
+      exportedItemToRecord(remoteId, parentId, message),
+    ),
+    { pruneMissing: options.pruneMissing },
+  );
 }
 
 type ThreadImportExport = {
@@ -104,7 +102,7 @@ type ThreadImportExport = {
 };
 
 /**
- * Remove a message from the thread and mirror the result to IndexedDB.
+ * Remove a message from the thread and mirror the result to backend storage.
  */
 export async function deleteThreadMessage(args: {
   thread: ThreadImportExport;
@@ -118,7 +116,9 @@ export async function deleteThreadMessage(args: {
   repo.deleteMessage(messageId);
   const next = repo.export();
   if (remoteId) {
-    await syncExportedRepositoryToDexie(remoteId, next, { pruneMissing: true });
+    await syncExportedRepositoryToBackend(remoteId, next, {
+      pruneMissing: true,
+    });
   }
   thread.import(next);
 }
