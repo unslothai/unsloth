@@ -993,10 +993,7 @@ export function ChatPage(): ReactElement {
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
-        setInferenceParams({
-          ...store.params,
-          checkpoint: value,
-        });
+        store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
         );
@@ -1117,7 +1114,6 @@ export function ChatPage(): ReactElement {
       externalProvidersForChat,
       modelsFromStore,
       selectModel,
-      setInferenceParams,
       view,
     ],
   );

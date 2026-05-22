@@ -640,17 +640,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      // chat-page picks an external model by mutating `params.checkpoint`
-      // through this setter (not through `setCheckpoint`), so the
-      // localStorage mirror needs to be refreshed here too. Otherwise
-      // the persisted slot stays empty and a refresh falls back to
-      // whatever the backend's `/api/inference/status.active_model`
-      // returns -- usually the previously loaded local model.
-      if (params.checkpoint !== state.params.checkpoint) {
-        saveLastExternalCheckpoint(
-          isExternalModelId(params.checkpoint) ? params.checkpoint : null,
-        );
-      }
       return { params };
     }),
   setCustomPresets: (customPresets) =>
