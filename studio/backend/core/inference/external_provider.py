@@ -177,6 +177,42 @@ def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
 
 
+def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
+    """Stable dedup key for an Anthropic ``citations_delta.citation``.
+
+    Shape varies per document type per
+    https://platform.claude.com/docs/en/build-with-claude/citations
+    and https://platform.claude.com/docs/en/build-with-claude/search-results :
+
+    * ``char_location``: ``document_index`` + ``start_char_index``
+    * ``page_location``: ``document_index`` + ``start_page_number``
+    * ``content_block_location``: ``document_index`` + ``start_block_index``
+    * ``search_result_location``: ``document_index`` + ``source`` +
+      ``start_block_index``
+
+    Anything unrecognised falls back to a stringified copy so a future
+    shape still dedupes (worst case: more entries, never collisions).
+    """
+    ctype = citation.get("type")
+    doc = citation.get("document_index")
+    title = citation.get("document_title") or ""
+    if ctype == "char_location":
+        return (ctype, doc, title, citation.get("start_char_index"))
+    if ctype == "page_location":
+        return (ctype, doc, title, citation.get("start_page_number"))
+    if ctype == "content_block_location":
+        return (ctype, doc, title, citation.get("start_block_index"))
+    if ctype == "search_result_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("source"),
+            citation.get("start_block_index"),
+        )
+    return (ctype, _json.dumps(citation, sort_keys = True))
+
+
 class _MistralThinkingSpec(NamedTuple):
     models: tuple[str, ...]
     style: Literal["prompt_mode", "reasoning_effort", "disabled"]
@@ -1767,6 +1803,19 @@ class ExternalProviderClient:
                 # the next turn.
                 current_compaction: Optional[dict[str, Any]] = None
                 compaction_blocks_seen = 0
+                # Document citations accumulator. Anthropic streams
+                # ``citations_delta`` events on content_block_delta when
+                # the user enabled ``citations: {enabled: true}`` on a
+                # document block. Each event carries one citation; we
+                # dedupe by the type-specific anchor key, assign a
+                # 1-based number, and inject ``[N]`` inline right after
+                # the cited run so the reader sees footnote markers.
+                # The full list is forwarded as a synthetic tool_end
+                # on message_stop so the Sources panel can render them
+                # next to web_search / web_fetch citations. See
+                #   https://platform.claude.com/docs/en/build-with-claude/citations
+                #   https://platform.claude.com/docs/en/build-with-claude/search-results
+                document_citations: list[dict[str, Any]] = []
                 # Counts surfaced in the final log line so reports of
                 # "Code execution did nothing" can be triaged at a
                 # glance. generated_files_count is interesting for the
@@ -2118,10 +2167,30 @@ class ExternalProviderClient:
                                         thinking_open = False
                                     if text:
                                         yield _content_chunk(text)
-                                    # Citations on text deltas are attached
-                                    # per-call by Anthropic via the
-                                    # `web_search_tool_result` block; we don't
-                                    # need to scrape them off the text events.
+                                    # web_search citations: web_search_tool_result.
+                                    # User-doc citations: citations_delta below.
+                            elif delta_type == "citations_delta":
+                                # https://platform.claude.com/docs/en/build-with-claude/citations
+                                # Each citations_delta carries one citation.
+                                # Collapse onto a numbered footnote list
+                                # and inject [N] inline so the prose has
+                                # reader-visible references.
+                                cit = delta.get("citation")
+                                if isinstance(cit, dict):
+                                    key = _anthropic_citation_key(cit)
+                                    idx_for_marker: Optional[int] = None
+                                    for idx, existing in enumerate(
+                                        document_citations, start = 1
+                                    ):
+                                        if existing.get("_key") == key:
+                                            idx_for_marker = idx
+                                            break
+                                    if idx_for_marker is None:
+                                        document_citations.append(
+                                            {**cit, "_key": key}
+                                        )
+                                        idx_for_marker = len(document_citations)
+                                    yield _content_chunk(f"[{idx_for_marker}]")
                             elif delta_type == "input_json_delta":
                                 # Streamed partial_json carrying tool inputs
                                 # — the search query for web_search, or the
@@ -2428,6 +2497,21 @@ class ExternalProviderClient:
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
+                            # Forward accumulated document_citations so the
+                            # Sources panel can render the footnotes the
+                            # inline [N] markers point at. No-op when
+                            # the stream carried no citations_delta.
+                            if document_citations:
+                                clean_cits = [
+                                    {k: v for k, v in c.items() if k != "_key"}
+                                    for c in document_citations
+                                ]
+                                yield _emit_tool_event(
+                                    {
+                                        "type": "document_citations",
+                                        "citations": clean_cits,
+                                    }
+                                )
                             # Final include_usage-style chunk so callers can
                             # see cache_creation / cache_read without
                             # scraping the server log.
