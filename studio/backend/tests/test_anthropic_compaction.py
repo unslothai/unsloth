@@ -276,9 +276,7 @@ def test_message_delta_iterations_array_aggregates_compaction_tokens(
     assert "compaction_output_tokens=3500" in summary, summary
 
 
-def test_message_delta_no_iterations_leaves_compaction_keys_unset(
-    monkeypatch, capsys
-):
+def test_message_delta_no_iterations_leaves_compaction_keys_unset(monkeypatch, capsys):
     # Re-applying a previous compaction block does NOT emit a fresh
     # iterations array. The helper must not invent compaction keys
     # in that case (would otherwise double-bill).
