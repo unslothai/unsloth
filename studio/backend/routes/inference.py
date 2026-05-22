@@ -1679,18 +1679,35 @@ def _extract_content_parts(
 # ── External provider proxy ──────────────────────────────────────
 
 
+# Providers whose stream helper translates `input_document` parts into
+# a native attachment block on the wire. For Anthropic the mapping is
+# `_stream_anthropic` -> {type:"document", source:...}; for OpenAI it
+# is `_stream_openai_responses` -> {type:"input_file", file_data|file_url}.
+# Every other provider (gemini / mistral / kimi / openrouter / deepseek /
+# custom OpenAI-compat) goes through the generic /chat/completions
+# passthrough that forwards messages verbatim, so handing them an
+# `input_document` part would 400 with an unknown content_part type.
+_INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
+    provider_type: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
 
-    - Vision providers: preserve multimodal content arrays (image_url and
-      input_document parts intact for downstream translation).
-    - Non-vision providers: flatten to text-only (images and documents
-      silently dropped).
+    Behaviour per content-part type:
+    - `text`: always preserved.
+    - `image_url`: preserved on vision providers; stripped on non-vision.
+    - `input_document`: preserved ONLY when the provider's stream helper
+      has explicit translation logic for it (Anthropic + OpenAI today,
+      see ``_INPUT_DOCUMENT_PROVIDERS``). For every other provider the
+      part is stripped so the unknown content type doesn't reach generic
+      /chat/completions passthrough and 400 the request.
     """
+    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1711,10 +1728,11 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
-                    elif part.type == "input_document":
-                        # Pass through; ExternalProviderClient maps this
-                        # onto Anthropic's `document` or OpenAI Responses'
-                        # `input_file` block per provider.
+                    elif part.type == "input_document" and document_provider:
+                        # ExternalProviderClient maps this onto
+                        # Anthropic's `document` or OpenAI Responses'
+                        # `input_file` block per provider; every other
+                        # provider would 400 on the unknown part type.
                         doc: dict[str, Any] = {"type": "input_document"}
                         if part.file_data:
                             doc["file_data"] = part.file_data
@@ -1800,7 +1818,11 @@ async def _proxy_to_external_provider(
 
     _pinfo = _get_provider_info(provider_type) or {}
     _supports_vision = _pinfo.get("supports_vision", False)
-    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+    chat_messages = _build_external_messages(
+        payload.messages,
+        _supports_vision,
+        provider_type = provider_type,
+    )
 
     client = ExternalProviderClient(
         provider_type = provider_type,
