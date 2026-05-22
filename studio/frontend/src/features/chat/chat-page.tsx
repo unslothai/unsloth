@@ -56,6 +56,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import { ChatRuntimeProvider } from "./runtime-provider";
@@ -68,6 +69,7 @@ import {
 } from "./shared-composer";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
   loadOptionalBool,
   useChatRuntimeStore,
@@ -771,6 +773,12 @@ export function ChatPage(): ReactElement {
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsBuiltinImageGeneration =
+      providerSupportsBuiltinImageGeneration(
+        provider?.providerType,
+        selection.modelId,
+        provider?.baseUrl,
+      );
     // Kimi's k2.6/k2.5 default to thinking enabled on the server side
     // (per https://platform.kimi.ai/docs/models). Mirror that default
     // in the UI so the Think pill comes up clicked when the user picks
@@ -790,6 +798,9 @@ export function ChatPage(): ReactElement {
         provider?.providerType === "openai");
     const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
     const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const storedImageToolsEnabled = loadOptionalBool(
+      CHAT_IMAGE_TOOLS_ENABLED_KEY,
+    );
     const nextToolsEnabled = supportsBuiltinWebSearch
       ? isKimi
         ? false
@@ -811,18 +822,24 @@ export function ChatPage(): ReactElement {
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
       // External models never give us a local tool runtime (no
-      // python sandbox), so `supportsTools` must be false. The two
+      // python sandbox), so `supportsTools` must be false. The three
       // `supportsBuiltin*` flags pick up the slack for providers that
       // run the tool server-side: `supportsBuiltinWebSearch` lights
       // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
       // `supportsBuiltinCodeExecution` lights up the Code pill
-      // (Anthropic Claude 4.x only, today).
+      // (Anthropic Claude 4.x and OpenAI gpt-5.5), and
+      // `supportsBuiltinImageGeneration` lights up the Images pill
+      // (OpenAI cloud Responses-API models only).
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
+      supportsBuiltinImageGeneration,
       toolsEnabled: nextToolsEnabled,
       codeToolsEnabled: supportsBuiltinCodeExecution
         ? (storedCodeToolsEnabled ?? false)
+        : false,
+      imageToolsEnabled: supportsBuiltinImageGeneration
+        ? (storedImageToolsEnabled ?? false)
         : false,
     });
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
@@ -988,6 +1005,12 @@ export function ChatPage(): ReactElement {
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
+        const supportsBuiltinImageGeneration =
+          providerSupportsBuiltinImageGeneration(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+            selectedProvider?.baseUrl,
+          );
         // See sibling useEffect above: Kimi's k2.x default to thinking
         // enabled, so the Think pill comes up clicked. Search pill stays
         // off by default; mutual exclusion flips them via the composer.
@@ -1002,6 +1025,9 @@ export function ChatPage(): ReactElement {
         const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
         const storedCodeToolsEnabled = loadOptionalBool(
           CHAT_CODE_TOOLS_ENABLED_KEY,
+        );
+        const storedImageToolsEnabled = loadOptionalBool(
+          CHAT_IMAGE_TOOLS_ENABLED_KEY,
         );
         const nextToolsEnabled = supportsBuiltinWebSearch
           ? isKimi
@@ -1029,17 +1055,23 @@ export function ChatPage(): ReactElement {
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
           // External models have no local tool runtime → supportsTools
-          // stays false. The two supportsBuiltin* flags carry the
+          // stays false. The three supportsBuiltin* flags carry the
           // server-side capability info for each pill:
           //   - Search → providerSupportsBuiltinWebSearch
           //   - Code   → providerSupportsBuiltinCodeExecution
-          //              (Anthropic Claude 4.x only, today)
+          //              (Anthropic Claude 4.x + OpenAI gpt-5.5)
+          //   - Images → providerSupportsBuiltinImageGeneration
+          //              (OpenAI cloud Responses-API models)
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
+          supportsBuiltinImageGeneration,
           toolsEnabled: nextToolsEnabled,
           codeToolsEnabled: supportsBuiltinCodeExecution
             ? (storedCodeToolsEnabled ?? false)
+            : false,
+          imageToolsEnabled: supportsBuiltinImageGeneration
+            ? (storedImageToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });

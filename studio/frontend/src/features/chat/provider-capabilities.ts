@@ -218,6 +218,44 @@ export function providerSupportsBuiltinCodeExecution(
 }
 
 /**
+ * Whether the selected external provider/model exposes OpenAI's
+ * Responses-API server-side image_generation tool. Lit on for OpenAI
+ * cloud (`api.openai.com`) when the picked model is a Responses-API
+ * family id (gpt-5.x today). The backend additionally gates on
+ * `is_openai_cloud`; mirror that here so the pill is hidden on custom
+ * OpenAI-compat backends (ollama / llama.cpp / vLLM) that report
+ * `provider_type="openai"` but would 400 on a `{type:"image_generation"}`
+ * tool. See backend/core/inference/external_provider.py near line 2770
+ * for the dispatch and backend/tests/test_openai_image_generation.py
+ * for the round-trip coverage.
+ */
+const OPENAI_IMAGE_GENERATION_MODEL_PREFIXES = [
+  "gpt-5.5-pro",
+  "gpt-5.5",
+  "gpt-5.4-pro",
+  "gpt-5.4",
+  "gpt-5.3",
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5",
+  "o3",
+] as const;
+
+export function providerSupportsBuiltinImageGeneration(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  baseUrl?: string | null,
+): boolean {
+  if (providerType !== "openai") return false;
+  if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
+    normalized.startsWith(prefix),
+  );
+}
+
+/**
  * Per-provider minimum on the outbound max_tokens. Kimi's docs require
  * `max_tokens >= 16000` whenever a thinking model is in use so the
  * reasoning_content and final answer both fit in the budget — anything

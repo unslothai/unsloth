@@ -23,6 +23,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
@@ -830,7 +831,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled } = runtime;
+      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -899,6 +900,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const providerShipsWebFetch = Boolean(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
+      // OpenAI Responses-API image_generation server tool. Pill is
+      // gated on OpenAI cloud + a Responses-API model id; the backend
+      // additionally re-checks is_openai_cloud before appending
+      // {type:"image_generation"} to the request tools array.
+      const imageGenerationEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          imageToolsEnabled &&
+          providerSupportsBuiltinImageGeneration(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
       );
 
       const outboundMessages = messages
@@ -1396,7 +1411,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // body["tools"] inside _stream_anthropic.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
-              codeExecEnabledForThisTurn
+              codeExecEnabledForThisTurn ||
+              imageGenerationEnabledForThisTurn
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -1410,6 +1426,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       // tool. There is no separate UI toggle yet.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
+                      // OpenAI Responses-API only: `image_generation`
+                      // returns inline image_generation_call output
+                      // items; the backend's _stream_openai_responses
+                      // path translates them to assistant tool events.
+                      ...(imageGenerationEnabledForThisTurn
+                        ? ["image_generation"]
+                        : []),
                     ],
                   }
                 : {}),
