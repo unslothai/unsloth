@@ -63,6 +63,35 @@ class KernelPackageSpec:
 
 
 @functools.lru_cache(maxsize = 1)
+def has_nvidia_gpu() -> bool:
+    """Return True if `nvidia-smi` reports at least one visible NVIDIA GPU.
+
+    Used to gate flash-attn / flash-linear-attention installs: AMD ROCm,
+    Intel XPU and CPU-only torch builds have no working path through the
+    Dao-AILab wheels or the PyPI/source fallback, so we skip them outright.
+
+    Cached for process lifetime; tests must call ``cache_clear()`` first.
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "--query-gpu=name", "--format=csv,noheader"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+            env = child_env_without_native_path_secret(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return any(line.strip() for line in result.stdout.splitlines())
+
+
+@functools.lru_cache(maxsize = 1)
 def has_blackwell_gpu() -> bool:
     """Return True if any visible NVIDIA GPU has compute capability >= 10.0
     (Blackwell: sm_100, sm_120, sm_121, ...).

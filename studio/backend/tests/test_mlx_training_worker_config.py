@@ -46,6 +46,7 @@ def _load_worker_module():
             "direct_wheel_url",
             "flash_attn_wheel_url",
             "has_blackwell_gpu",
+            "has_nvidia_gpu",
             "install_optional_kernel",
             "install_wheel",
             "probe_torch_wheel_env",

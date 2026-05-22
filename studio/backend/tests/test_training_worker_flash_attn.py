@@ -51,6 +51,7 @@ def test_runtime_flash_attn_uses_shared_optional_kernel_installer(monkeypatch):
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: True)
     monkeypatch.setattr(
         worker,
         "_send_status",
@@ -81,6 +82,7 @@ def test_runtime_flash_attn_reports_shared_installer_failure(monkeypatch):
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: True)
     monkeypatch.setattr(
         worker,
         "_send_status",
@@ -126,6 +128,30 @@ def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
     install_mock.assert_not_called()
     assert len(statuses) == 1
     assert "Blackwell" in statuses[0]
+
+
+def test_runtime_flash_attn_skips_without_nvidia_gpu(monkeypatch):
+    # AMD/Intel/CPU: nvidia-smi missing -> skip with NVIDIA warning, no install.
+    statuses: list[str] = []
+    install_mock = mock.Mock()
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(
+        worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True
+    )
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(worker, "install_optional_kernel", install_mock)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+
+    install_mock.assert_not_called()
+    assert statuses == ["Skipping flash-attn install: no NVIDIA GPU detected"]
 
 
 def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch):
@@ -201,6 +227,7 @@ def _force_missing_fla_imports(monkeypatch):
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: True)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)
@@ -243,6 +270,30 @@ def test_flash_linear_attention_skipped_on_blackwell(monkeypatch):
     ]
 
 
+def test_flash_linear_attention_skipped_without_nvidia_gpu(monkeypatch):
+    # AMD/Intel/CPU: skip FLA with NVIDIA warning, no pip subprocess.
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "_model_wants_tilelang", lambda model_name: True)
+    monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
+    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: False)
+    run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
+    monkeypatch.setattr(worker._sp, "run", run_mock)
+    _force_missing_fla_imports(monkeypatch)
+    statuses: list[str] = []
+    monkeypatch.setattr(worker, "_send_status", lambda queue, msg: statuses.append(msg))
+
+    worker._ensure_flash_linear_attention(
+        event_queue = [],
+        model_name = "unsloth/Qwen3.5-2B",
+    )
+
+    run_mock.assert_not_called()
+    assert statuses == [
+        "Skipping flash-linear-attention install: no NVIDIA GPU detected"
+    ]
+
+
 def test_flash_linear_attention_skips_for_unrelated_models(monkeypatch):
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
@@ -275,6 +326,7 @@ def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
 def test_flash_linear_attention_matches_full_qwen3_family(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: True)
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
     _force_missing_fla_imports(monkeypatch)

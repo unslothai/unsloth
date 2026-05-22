@@ -31,6 +31,7 @@ from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
     has_blackwell_gpu,
+    has_nvidia_gpu,
     install_optional_kernel,
 )
 
@@ -634,6 +635,14 @@ def _ensure_flash_attn() -> None:
         )
         return
     if IS_WINDOWS or IS_MACOS:
+        return
+    # NVIDIA-only for now; AMD/Intel/CPU have no working flash-attn path.
+    if not has_nvidia_gpu():
+        _step(
+            "warning",
+            "Skipping flash-attn: no NVIDIA GPU detected",
+            _cyan,
+        )
         return
 
     def _status(message: str) -> None:

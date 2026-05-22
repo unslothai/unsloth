@@ -32,6 +32,7 @@ from utils.wheel_utils import (
     FLASH_ATTN_SPEC,
     direct_wheel_url,
     has_blackwell_gpu,
+    has_nvidia_gpu,
     install_optional_kernel,
     install_wheel,
     probe_torch_wheel_env,
@@ -420,6 +421,13 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         _send_status(
             event_queue,
             "Skipping flash-linear-attention install: Blackwell GPU detected",
+        )
+        return False
+    # NVIDIA-only for now; AMD/Intel/CPU have no working FLA path.
+    if not has_nvidia_gpu():
+        _send_status(
+            event_queue,
+            "Skipping flash-linear-attention install: no NVIDIA GPU detected",
         )
         return False
 
@@ -932,6 +940,13 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         _send_status(
             event_queue,
             "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+        )
+        return
+    # NVIDIA-only for now; AMD/Intel/CPU have no working flash-attn path.
+    if not has_nvidia_gpu():
+        _send_status(
+            event_queue,
+            "Skipping flash-attn install: no NVIDIA GPU detected",
         )
         return
 
