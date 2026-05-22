@@ -1335,7 +1335,9 @@ class TestFollowup_DynamicImportShellEscape:
             + SUDO
             + " whoami')",
             "m = __import__('os'); m.system('" + SUDO + " whoami')",
-            "m = __import__('subprocess'); m.run(['" + SUDO + "', 'whoami'], shell=True)",
+            "m = __import__('subprocess'); m.run(['"
+            + SUDO
+            + "', 'whoami'], shell=True)",
             "import importlib; mod = importlib.import_module('os'); "
             "mod.popen('cat ~/.aws/credentials')",
         ],
