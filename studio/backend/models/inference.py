@@ -455,14 +455,15 @@ class InputDocumentContentPart(BaseModel):
     type: Literal["input_document"]
     file_data: Optional[str] = Field(
         None,
-        description = 'data:<media_type>;base64,<DATA> URI for inline payloads. Either file_data or file_url must be set; otherwise the part is dropped.',
+        description = "data:<media_type>;base64,<DATA> URI for inline payloads. Either file_data or file_url must be set; otherwise the part is dropped.",
     )
     file_url: Optional[str] = Field(
         None,
         description = "Remote URL pointing to the document (https://...).",
     )
     filename: Optional[str] = Field(
-        None, description = "Display filename, forwarded to providers as `title`/`filename`."
+        None,
+        description = "Display filename, forwarded to providers as `title`/`filename`.",
     )
     media_type: Optional[str] = Field(
         None,
