@@ -240,9 +240,7 @@ def calculate_cost(
         for key in ("input_tokens_details", "prompt_tokens_details"):
             details = usage.get(key) or {}
             if isinstance(details, dict):
-                cache_read = max(
-                    cache_read, int(details.get("cached_tokens") or 0)
-                )
+                cache_read = max(cache_read, int(details.get("cached_tokens") or 0))
         # OpenAI: cache_read already counted inside input_tokens.
         out["billable_input_tokens"] = input_tokens + cache_creation
     else:
