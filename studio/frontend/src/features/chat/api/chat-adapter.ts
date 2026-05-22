@@ -9,9 +9,11 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
   providerTypeSupportsVision,
+  supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
@@ -1441,6 +1443,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_prompt_caching:
                       externalProvider.enablePromptCaching ?? true,
                   }
+                : {}),
+              // Anthropic-only: pass the cache TTL the user picked in
+              // Configuration → Provider. Omitted = inherit the default
+              // 5-minute pool. The backend's `_stream_anthropic` only
+              // attaches `cache_control.ttl` when the value is one of
+              // "5m" / "1h" (see external_provider.py near line 1375),
+              // so unknown values are a no-op end-to-end.
+              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              (externalProvider.enablePromptCaching ?? true) &&
+              isPromptCacheTtl(externalProvider.promptCacheTtl)
+                ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
