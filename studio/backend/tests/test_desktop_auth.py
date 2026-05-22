@@ -432,6 +432,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     router_stub = SimpleNamespace(
         auth_router = APIRouter(),
         chat_history_router = APIRouter(),
+        codex_router = APIRouter(),
         data_recipe_router = APIRouter(),
         datasets_router = APIRouter(),
         export_router = APIRouter(),
