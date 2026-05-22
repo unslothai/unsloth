@@ -440,6 +440,37 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class InputDocumentContentPart(BaseModel):
+    """Document (PDF / file) content part in a multimodal message.
+
+    Studio-normalised shape. The frontend sends either
+    ``{type:"input_document", file_data:"data:application/pdf;base64,..."}``
+    or ``{type:"input_document", file_url:"https://..."}``, plus optional
+    ``filename`` and ``media_type``. ``external_provider`` translates this
+    onto Anthropic's ``document`` block or OpenAI Responses' ``input_file``
+    block for vision-capable providers; non-vision providers drop the
+    part entirely (handled in ``_build_external_messages``).
+    """
+
+    type: Literal["input_document"]
+    file_data: Optional[str] = Field(
+        None,
+        description = "data:<media_type>;base64,<DATA> URI for inline payloads. Either file_data or file_url must be set; otherwise the part is dropped.",
+    )
+    file_url: Optional[str] = Field(
+        None,
+        description = "Remote URL pointing to the document (https://...).",
+    )
+    filename: Optional[str] = Field(
+        None,
+        description = "Display filename, forwarded to providers as `title`/`filename`.",
+    )
+    media_type: Optional[str] = Field(
+        None,
+        description = 'Override the media type sniffed from the data URI (e.g. "application/pdf").',
+    )
+
+
 class CompactionContentPart(BaseModel):
     """Anthropic server-side compaction state, attached to an assistant
     message for round-tripping on the next turn.
@@ -472,6 +503,7 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[InputDocumentContentPart, Tag("input_document")],
         Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
