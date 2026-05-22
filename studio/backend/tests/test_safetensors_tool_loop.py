@@ -1438,7 +1438,7 @@ class TestRoutesPythonTagStrip:
         # Combined: multi-line code AND literal ``<`` in code.
         text = (
             '<|python_tag|>python.call(code="for i in range(10):\n'
-            '    if i < 5:\n'
+            "    if i < 5:\n"
             '        print(i)")'
         )
         assert self._strip(text) == ""
@@ -1453,10 +1453,7 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == "<|eom_id|>final answer text"
 
     def test_python_tag_stops_at_eot_sentinel(self):
-        text = (
-            "<|python_tag|>brave_search.call(query=\"x\")"
-            "<|eot_id|>after"
-        )
+        text = '<|python_tag|>brave_search.call(query="x")' "<|eot_id|>after"
         assert self._strip(text) == "<|eot_id|>after"
 
     def test_python_tag_json_form_multiline_stripped(self):
