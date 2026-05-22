@@ -1237,24 +1237,21 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             // container_id (if any) so subsequent turns in the same
             // thread reference the existing container instead of
             // auto-creating a fresh one. Empty string / undefined →
-            // backend falls back to container_auto. Anthropic doesn't
-            // use this (server-side per-turn container).
+            // backend falls back to container_auto. Anthropic uses
+            // the parallel `anthropicCodeExecContainerId` field below
+            // (sent as `container` on /v1/messages).
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
-            const codeExecEnabledForThisTurn =
-              codeToolsEnabled &&
-              providerSupportsBuiltinCodeExecution(
-                externalProvider.providerType,
-                externalSelection.modelId,
-                externalProvider.baseUrl,
-              );
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
               try {
                 const thread = await getStoredChatThread(resolvedThreadId);
                 openaiCodeExecContainerId =
                   thread?.openaiCodeExecContainerId ?? null;
+                anthropicCodeExecContainerId =
+                  thread?.anthropicCodeExecContainerId ?? null;
               } catch {
                 openaiCodeExecContainerId = null;
+                anthropicCodeExecContainerId = null;
               }
               // Pre-send container validation (OpenAI only). The list
               // endpoint already filters status==="expired" server-side
@@ -1456,6 +1453,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
+                  }
+                : {}),
+              ...(anthropicCodeExecContainerId
+                ? {
+                    anthropic_code_exec_container_id:
+                      anthropicCodeExecContainerId,
                   }
                 : {}),
               ...(supportsProviderPromptCaching(externalProvider.providerType)
