@@ -2295,12 +2295,16 @@ class ModelConfig:
                 logger.error(f"GGUF file does not exist: {path}")
                 return None
             if _is_mmproj(gguf_path.name):
-                logger.error(f"GGUF mmproj file cannot be loaded as model weights: {path}")
+                logger.error(
+                    f"GGUF mmproj file cannot be loaded as model weights: {path}"
+                )
                 return None
 
             gguf_file = str(gguf_path.absolute())
             display_name = gguf_path.stem
-            mmproj_file = detect_mmproj_file(gguf_file, search_root = str(gguf_path.parent))
+            mmproj_file = detect_mmproj_file(
+                gguf_file, search_root = str(gguf_path.parent)
+            )
             gguf_is_vision = bool(mmproj_file)
             if mmproj_file:
                 logger.info(f"Detected mmproj for vision: {mmproj_file}")

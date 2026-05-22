@@ -169,7 +169,9 @@ class _StubUnslothBackend:
 
 
 def _request_obj():
-    return SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)))
+    return SimpleNamespace(
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+    )
 
 
 def test_load_route_direct_local_gguf_uses_llama_backend(monkeypatch, tmp_path):
@@ -306,7 +308,9 @@ class _FakeProc:
         pass
 
 
-def _capture_llama_command(monkeypatch, tmp_path, *, cache_type_kv = None, free_mib = 200000):
+def _capture_llama_command(
+    monkeypatch, tmp_path, *, cache_type_kv = None, free_mib = 200000
+):
     import core.inference.llama_cpp as llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
 
