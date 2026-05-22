@@ -1266,6 +1266,7 @@ def _extract_quant_label(filename: str) -> str:
         "model-UD-IQ1_S.gguf"                 → "UD-IQ1_S"
         "model-UD-TQ1_0.gguf"                 → "UD-TQ1_0"
         "MXFP4_MOE/model-MXFP4_MOE-0001.gguf"→ "MXFP4_MOE"
+        "Qwen3.6-IQ4_XS-3.53bpw.gguf"         → "IQ4_XS-3.53bpw"
     """
     import re
 
@@ -1281,6 +1282,10 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
+        # Optional bits-per-weight modifier so repos that ship multiple
+        # files at the same base quant (e.g. byteshape's IQ4_XS at 3.53,
+        # 3.97, 4.19 bpw) don't collapse into a single merged variant.
+        r"(-[0-9]+(?:\.[0-9]+)?bpw)?"
     )
     match = re.search(quant_re, stem, re.IGNORECASE)
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
@@ -1295,7 +1300,8 @@ def _extract_quant_label(filename: str) -> str:
                 break
     if match:
         prefix = match.group(1) or ""
-        return f"{prefix}{match.group(2)}"
+        bpw = match.group(3) or ""
+        return f"{prefix}{match.group(2)}{bpw}"
     # Fallback: last segment after hyphen
     return stem.split("-")[-1]
 
