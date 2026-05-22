@@ -274,11 +274,11 @@ def test_anthropic_canonical_4_5_ids_are_priced():
     # in backend defaults but was missing from the table, so the
     # calculator returned priced=False + zero cost. Pin the aliases.
     cases = {
-        "claude-opus-4-5":   (5.0, 25.0),
+        "claude-opus-4-5": (5.0, 25.0),
         "claude-sonnet-4-5": (3.0, 15.0),
-        "claude-haiku-4-5":  (1.0, 5.0),
+        "claude-haiku-4-5": (1.0, 5.0),
         # Opus 4.1 has the same problem.
-        "claude-opus-4-1":   (15.0, 75.0),
+        "claude-opus-4-1": (15.0, 75.0),
     }
     for model, (inp, outp) in cases.items():
         out = calculate_cost(
@@ -354,7 +354,9 @@ def test_openai_web_search_charged_per_thousand():
             "openai_tool_use": {"web_search_requests": 250},
         },
     )
-    assert _isclose(out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
+    assert _isclose(
+        out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
+    )
     assert _isclose(out["total_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
 
 
