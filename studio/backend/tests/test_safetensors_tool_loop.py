@@ -158,18 +158,12 @@ class TestParser:
         assert result == []
 
     def test_rehearsal_inside_unclosed_bracket_think_is_ignored(self):
-        text = (
-            "[THINK]planning to use python[ARGS]"
-            '{"code":"print(1)"} but not yet.'
-        )
+        text = "[THINK]planning to use python[ARGS]" '{"code":"print(1)"} but not yet.'
         result = parse_tool_calls_from_text(text)
         assert result == []
 
     def test_rehearsal_after_closed_think_still_parsed(self):
-        text = (
-            "<think>planning</think>"
-            'python[ARGS]{"code":"print(1)"}'
-        )
+        text = "<think>planning</think>" 'python[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
