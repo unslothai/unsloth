@@ -17,6 +17,12 @@ class AuthLoginRequest(BaseModel):
     password: str = Field(..., description = "Password")
 
 
+class DesktopLoginRequest(BaseModel):
+    """Desktop-only local secret exchange payload."""
+
+    secret: str = Field(..., description = "Desktop local auth secret")
+
+
 class RefreshTokenRequest(BaseModel):
     """Refresh token payload to obtain new access + refresh tokens."""
 
@@ -31,7 +37,10 @@ class AuthStatusResponse(BaseModel):
     initialized: bool = Field(
         ..., description = "True if the auth database contains a login user"
     )
-    default_username: str = Field(..., description = "Default seeded admin username")
+    default_username: str = Field(
+        "unsloth",
+        description = "Default admin username for first-boot UI prefill.",
+    )
     requires_password_change: bool = Field(
         ...,
         description = "True if the seeded admin must still change the default password",

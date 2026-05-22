@@ -120,12 +120,13 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
 
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc();
+  const name = useAuiState(({ attachment }) => attachment.name);
 
   if (src) {
     return (
       <img
         src={src}
-        alt="Attachment preview"
+        alt={name || "Attachment preview"}
         className="h-full w-full object-cover"
       />
     );
@@ -143,6 +144,7 @@ const AttachmentUI: FC = () => {
   const isComposer = aui.attachment.source === "composer";
 
   const isImage = useAuiState(({ attachment }) => attachment.type === "image");
+  const name = useAuiState(({ attachment }) => attachment.name);
   const typeLabel = useAuiState(({ attachment }) => {
     const type = attachment.type;
     switch (type) {
@@ -156,6 +158,11 @@ const AttachmentUI: FC = () => {
         throw new Error(`Unknown attachment type: ${type as string}`);
     }
   });
+  // Include filename in accessible name so screen readers distinguish
+  // same-typed attachments. Sighted users get it via the tooltip.
+  const accessibleName = name
+    ? `${typeLabel} attachment: ${name}`
+    : `${typeLabel} attachment`;
 
   return (
     <Tooltip>
@@ -175,7 +182,7 @@ const AttachmentUI: FC = () => {
                   "aui-attachment-tile-composer border-foreground/20",
               )}
               id="attachment-tile"
-              aria-label={`${typeLabel} attachment`}
+              aria-label={accessibleName}
               type="button"
             >
               <AttachmentThumb />
@@ -184,7 +191,7 @@ const AttachmentUI: FC = () => {
         </AttachmentPreviewDialog>
         {isComposer && <AttachmentRemove />}
       </AttachmentPrimitive.Root>
-      <TooltipContent side="top">
+      <TooltipContent side="top" className="tooltip-compact">
         <AttachmentPrimitive.Name />
       </TooltipContent>
     </Tooltip>

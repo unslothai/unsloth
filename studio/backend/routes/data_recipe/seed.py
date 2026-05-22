@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
 from itertools import islice
 from pathlib import Path
@@ -627,3 +628,14 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         split = None,
         subset = None,
     )
+
+
+@router.get("/seed/github/env-token")
+def get_github_env_token_status() -> dict:
+    """Report whether the server has a GH_TOKEN / GITHUB_TOKEN env var.
+
+    The value is never returned; the UI uses this to tell the user they
+    can leave the token field blank.
+    """
+    has_token = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+    return {"has_token": has_token}

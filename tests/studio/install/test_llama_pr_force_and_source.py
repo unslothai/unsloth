@@ -35,9 +35,11 @@ requires_pwsh = pytest.mark.skipif(not PWSH_AVAILABLE, reason = "pwsh not availa
 # Helpers
 # ---------------------------------------------------------------------------
 def run_bash(
-    script: str, *, timeout: int = 10, env: dict | None = None
+    script: str, *, timeout: int = 60, env: dict | None = None
 ) -> subprocess.CompletedProcess:
-    """Run a bash script fragment and return the CompletedProcess."""
+    """Run a bash script fragment and return the CompletedProcess.
+    60s default tolerates slow shell startup on heavily-loaded CI
+    runners; the scripts themselves run in well under a second."""
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
@@ -51,9 +53,12 @@ def run_bash(
 
 
 def run_pwsh(
-    script: str, *, timeout: int = 10, env: dict | None = None
+    script: str, *, timeout: int = 60, env: dict | None = None
 ) -> subprocess.CompletedProcess:
-    """Run a PowerShell script fragment and return the CompletedProcess."""
+    """Run a PowerShell script fragment and return the CompletedProcess.
+    60s default tolerates slow pwsh startup on heavily-loaded CI
+    runners; the scripts themselves run in well under a second.
+    A 10s budget previously surfaced as a flaky TimeoutExpired."""
     run_env = os.environ.copy()
     run_env["NO_COLOR"] = "1"
     if env:

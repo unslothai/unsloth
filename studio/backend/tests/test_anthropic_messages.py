@@ -10,6 +10,8 @@ import sys
 import os
 import json
 
+import pytest
+
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
@@ -32,6 +34,18 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+from routes.inference import (
+    _normalize_anthropic_openai_images,
+    _select_anthropic_server_tools,
+    _anthropic_requested_studio_tools,
+    anthropic_messages,
+)
+from state.tool_policy import reset_tool_policy, set_tool_policy
+from fastapi import HTTPException
+import asyncio
+import base64 as _b64
+from io import BytesIO as _BytesIO
+from types import SimpleNamespace
 
 
 # =====================================================================
@@ -71,6 +85,17 @@ class TestAnthropicModels:
         )
         assert len(req.tools) == 1
         assert req.tools[0].name == "web_search"
+
+    def test_server_tool_field_parses(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            tools = [{"type": "web_fetch_20250910", "name": "web_fetch"}],
+        )
+        assert len(req.tools) == 1
+        assert req.tools[0].type == "web_fetch_20250910"
+        assert req.tools[0].name == "web_fetch"
+        assert req.tools[0].input_schema is None
 
     def test_extra_fields_accepted(self):
         req = AnthropicMessagesRequest(
@@ -246,6 +271,141 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1 Line 2"
 
+    def test_image_base64_block_becomes_multimodal_part(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": "AAAA",
+                        },
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        parts = result[0]["content"]
+        assert isinstance(parts, list)
+        assert parts[0] == {"type": "text", "text": "What is this?"}
+        assert parts[1]["type"] == "image_url"
+        assert parts[1]["image_url"]["url"] == "data:image/jpeg;base64,AAAA"
+
+    def test_image_url_block_forwarded_as_url(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe it"},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://x/y.png"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://x/y.png"},
+        }
+
+    def test_image_only_user_message_emits_no_text_part(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "ZZ",
+                        },
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert len(parts) == 1
+        assert parts[0]["type"] == "image_url"
+
+    def test_image_default_media_type_when_missing(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "data": "BB"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    def test_image_text_order_preserved(self):
+        # [text1, image1, text2, image2] must not collapse to
+        # [text1+text2, image1, image2].
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AA",
+                        },
+                    },
+                    {"type": "text", "text": "after"},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://x/y.png"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        parts = result[0]["content"]
+        assert [p["type"] for p in parts] == [
+            "text",
+            "image_url",
+            "text",
+            "image_url",
+        ]
+        assert parts[0]["text"] == "before"
+        assert parts[2]["text"] == "after"
+        assert parts[1]["image_url"]["url"] == "data:image/png;base64,AA"
+        assert parts[3]["image_url"]["url"] == "https://x/y.png"
+
+    def test_malformed_image_block_is_skipped(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hi"},
+                    {"type": "image", "source": {"type": "base64"}},
+                    {"type": "image", "source": {"type": "url"}},
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        # No image parts emitted; message falls back to plain text.
+        assert result[0] == {"role": "user", "content": "Hi"}
+
 
 # =====================================================================
 # Tool translation tests
@@ -282,6 +442,31 @@ class TestAnthropicToolsToOpenAI:
 
     def test_empty_list(self):
         assert anthropic_tools_to_openai([]) == []
+
+    def test_server_tools_are_not_converted_to_openai_functions(self):
+        tools = [
+            {"type": "web_fetch_20250910", "name": "web_fetch"},
+            {"type": "web_search_20250305", "name": "web_search"},
+        ]
+        assert anthropic_tools_to_openai(tools) == []
+
+    def test_server_tool_selection_merges_enabled_tools_extension(self):
+        all_tools = [
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "function": {"name": "python"}},
+            {"type": "function", "function": {"name": "terminal"}},
+        ]
+
+        result = _select_anthropic_server_tools(
+            all_tools,
+            requested_studio_tools = {"web_search"},
+            enabled_tools = ["python"],
+        )
+
+        assert [tool["function"]["name"] for tool in result] == [
+            "web_search",
+            "python",
+        ]
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(
@@ -772,3 +957,343 @@ class TestAnthropicPassthroughEmitter:
         parsed = self._parse(events[1])
         assert parsed["content_block"]["name"] == "Read"
         assert parsed["content_block"]["id"] == "c2"
+
+
+# =====================================================================
+# Vision guard + PNG normalization (/v1/messages)
+# =====================================================================
+
+
+def _jpeg_data_url() -> str:
+    from PIL import Image
+
+    img = Image.new("RGB", (2, 2), (255, 0, 0))
+    buf = _BytesIO()
+    img.save(buf, format = "JPEG")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
+
+
+class TestNormalizeAnthropicOpenAIImages:
+    def test_noop_when_no_images(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        has_image = _normalize_anthropic_openai_images(msgs, is_vision = False)
+        assert has_image is False
+        assert msgs == [{"role": "user", "content": "hi"}]
+
+    def test_returns_true_when_image_present(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _jpeg_data_url()}},
+                ],
+            }
+        ]
+        assert _normalize_anthropic_openai_images(msgs, is_vision = True) is True
+
+    def test_rejects_image_when_model_not_vision(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _jpeg_data_url()},
+                    },
+                ],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _normalize_anthropic_openai_images(msgs, is_vision = False)
+        assert exc.value.status_code == 400
+
+    def test_reencodes_jpeg_data_url_to_png(self):
+        original_url = _jpeg_data_url()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "?"},
+                    {"type": "image_url", "image_url": {"url": original_url}},
+                ],
+            }
+        ]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        new_url = msgs[0]["content"][1]["image_url"]["url"]
+        assert new_url.startswith("data:image/png;base64,")
+        assert new_url != original_url
+
+    def test_remote_url_left_unchanged(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://x.example/y.png"},
+                    },
+                ],
+            }
+        ]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert msgs[0]["content"][0]["image_url"]["url"] == "https://x.example/y.png"
+
+    def test_bad_base64_raises_400(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64,!!!not-b64!!!"},
+                    },
+                ],
+            }
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert exc.value.status_code == 400
+
+
+# =====================================================================
+# Studio-tool alias detection (/v1/messages tool routing)
+# =====================================================================
+
+
+class TestAnthropicRequestedStudioTools:
+    def test_recognizes_server_tool_by_type(self):
+        tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    def test_bare_name_without_type_is_not_treated_as_server_tool(self):
+        # Anthropic dispatches server tools by `type`; bare-name matching
+        # would let a malformed client tool (e.g. user forgot input_schema)
+        # silently flip the request into server-execution mode.
+        tools = [{"name": "python"}]
+        assert _anthropic_requested_studio_tools(tools) == set()
+
+    def test_client_tool_named_python_is_not_misclassified(self):
+        # input_schema is the client-tool discriminator; presence of it
+        # must prevent the name from being treated as a Studio alias.
+        tools = [
+            {
+                "name": "python",
+                "description": "user's own python",
+                "input_schema": {"type": "object"},
+            }
+        ]
+        assert _anthropic_requested_studio_tools(tools) == set()
+
+    def test_mixed_request_only_extracts_server_tools(self):
+        tools = [
+            {"type": "web_search_20250305", "name": "web_search"},
+            {"name": "custom_tool", "input_schema": {"type": "object"}},
+        ]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    def test_pydantic_model_input(self):
+        tools = [
+            AnthropicTool(type = "web_fetch_20250910", name = "web_fetch"),
+            AnthropicTool(name = "x", input_schema = {"type": "object"}),
+        ]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    def test_empty_and_none(self):
+        assert _anthropic_requested_studio_tools(None) == set()
+        assert _anthropic_requested_studio_tools([]) == set()
+
+
+# =====================================================================
+# Route-level tool routing (/v1/messages)
+# =====================================================================
+
+
+class _PlainPathCalled(Exception):
+    pass
+
+
+class _ToolPathCalled(Exception):
+    pass
+
+
+def _mock_backend(monkeypatch, **overrides):
+    """Install a minimal stub backend on routes.inference.
+
+    Generation methods raise sentinel exceptions so the caller can assert
+    which path the route entered.
+    """
+    import routes.inference as inf_mod
+
+    def _gen_plain(**kwargs):
+        raise _PlainPathCalled()
+
+    def _gen_tools(**kwargs):
+        raise _ToolPathCalled()
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = True,
+        model_identifier = "test-model",
+        generate_chat_completion = _gen_plain,
+        generate_chat_completion_with_tools = _gen_tools,
+    )
+    backend.__dict__.update(overrides)
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+def _drive(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def _basic_payload(**fields) -> AnthropicMessagesRequest:
+    base = {
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    base.update(fields)
+    return AnthropicMessagesRequest(**base)
+
+
+@pytest.fixture(autouse = True)
+def _reset_policy():
+    reset_tool_policy()
+    yield
+    reset_tool_policy()
+
+
+class TestAnthropicMessagesToolRouting:
+    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {"type": "web_search_20250305", "name": "web_search"},
+                {"name": "custom", "input_schema": {"type": "object"}},
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
+    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(
+        self, monkeypatch
+    ):
+        # Regression: a client tool sharing a name with a mapped server
+        # tool (e.g. user defines their own "web_search") must still
+        # trigger the mixed-mode 400 — the post-name filter would
+        # otherwise drop the client tool and silently route to server-only.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [
+                {"type": "web_search_20250305", "name": "web_search"},
+                {"name": "web_search", "input_schema": {"type": "object"}},
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
+    def test_client_tool_missing_input_schema_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"name": "my_tool", "description": "oops, schema typo"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "input_schema" in exc.value.detail
+
+    def test_client_tool_missing_name_rejected_with_400(self, monkeypatch):
+        # Regression: AnthropicTool.name was relaxed to Optional for server
+        # tools, so a client-tool payload that has input_schema but omits
+        # `name` (e.g. typo) now parses successfully but would be silently
+        # dropped by anthropic_tools_to_openai, leaving the request with
+        # tool calling disabled. Reject at the boundary instead.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"input_schema": {"type": "object"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "name" in exc.value.detail
+
+    def test_client_tool_empty_name_rejected_with_400(self, monkeypatch):
+        # Same silent-disable class as missing-name: `name: ""` passes the
+        # isinstance check but is dropped by anthropic_tools_to_openai's
+        # `if not name` guard. Reject at the boundary so the typo surfaces.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"name": "", "input_schema": {"type": "object"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "name" in exc.value.detail
+
+    def test_alias_named_client_tool_without_schema_rejected_with_400(
+        self, monkeypatch
+    ):
+        # Regression: a typo'd client tool whose name happens to collide
+        # with a Studio alias (e.g. user meant a custom "python" tool but
+        # forgot input_schema) must surface a 400, not silently switch
+        # the request into Studio's built-in python execution.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = [{"name": "python"}])
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "input_schema" in exc.value.detail
+
+    def test_unrecognized_server_tool_accepted_as_noop(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "code_execution_20250825", "name": "code_execution"}],
+        )
+
+        with pytest.raises(_PlainPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+    def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
+        # CLI `unsloth run --disable-tools` sets policy=False. A request
+        # carrying a Studio server-tool alias must NOT enter the agentic
+        # loop in that configuration.
+        _mock_backend(monkeypatch)
+        set_tool_policy(False)
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(_PlainPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
+        # Mirror of the previous test for the default (None) policy.
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(_ToolPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+    def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = False,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(_PlainPathCalled):
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))

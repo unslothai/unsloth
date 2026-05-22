@@ -70,7 +70,9 @@ export function nodeDataFromConfig(
         ? "Hugging Face dataset"
         : seedSourceType === "local"
           ? "CSV or JSON file"
-          : "Document file";
+          : seedSourceType === "github_repo"
+            ? "GitHub repositories"
+            : "Document file";
     return {
       title: "Source data",
       kind: "seed",

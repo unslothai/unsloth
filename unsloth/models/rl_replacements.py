@@ -30,6 +30,8 @@ from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
     chunked_selective_log_softmax,
+    _unsloth_get_mm_token_id,
+    _unsloth_fix_mm_token_type_ids,
 )
 from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
@@ -54,6 +56,12 @@ RL_PRE_ITEMS = defaultdict(list)
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
+
+_DPO_VISION_KEYS = (
+    "pixel_position_ids",
+    "image_position_ids",
+    "mm_token_type_ids",
+)
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -118,6 +126,272 @@ def dpo_trainer_fix_columns(call_args, extra_args):
 
 
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
+
+
+def dpo_trainer_fix_data_collator(call_args, extra_args):
+    if (
+        "data_collator" in call_args
+        and "train_dataset" in call_args
+        and "processing_class" in call_args
+    ):
+        fix_collator = (
+            "if hasattr(train_dataset, 'column_names'):\n"
+            "    column_names = set(train_dataset.column_names)\n"
+            "    is_dpo_dataset = ({'chosen', 'rejected'}.issubset(column_names) or\n"
+            "                      {'prompt_input_ids', 'chosen_input_ids', 'rejected_input_ids'}.issubset(column_names))\n"
+            "    if is_dpo_dataset and isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
+            "        data_collator = None\n"
+            "    del is_dpo_dataset, column_names\n"
+        )
+        return fix_collator
+    return ""
+
+
+RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_data_collator)
+
+
+def dpo_trainer_vision_process_row(
+    features,
+    processing_class,
+    max_prompt_length = None,
+    max_completion_length = None,
+    add_special_tokens = True,
+    is_chat = False,
+):
+    text = features.get("prompt", "")
+    images = features.get("images")
+    processor, tokenizer = processing_class, processing_class.tokenizer
+    processed_features = processor(
+        images = images,
+        text = text,
+        add_special_tokens = False,
+    )
+
+    prompt_input_ids = processed_features["input_ids"][0]
+    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)[
+        "input_ids"
+    ]
+    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)[
+        "input_ids"
+    ]
+
+    if add_special_tokens:
+        if tokenizer.bos_token_id is not None:
+            prompt_input_ids = [tokenizer.bos_token_id] + prompt_input_ids
+        if tokenizer.eos_token_id is not None:
+            prompt_input_ids = prompt_input_ids + [tokenizer.eos_token_id]
+    if not is_chat and tokenizer.eos_token_id is not None:
+        chosen_input_ids = chosen_input_ids + [tokenizer.eos_token_id]
+        rejected_input_ids = rejected_input_ids + [tokenizer.eos_token_id]
+
+    if max_prompt_length is not None:
+        prompt_input_ids = prompt_input_ids[-max_prompt_length:]
+    if max_completion_length is not None:
+        chosen_input_ids = chosen_input_ids[:max_completion_length]
+        rejected_input_ids = rejected_input_ids[:max_completion_length]
+
+    output = {
+        "prompt_input_ids": prompt_input_ids,
+        "chosen_input_ids": chosen_input_ids,
+        "rejected_input_ids": rejected_input_ids,
+    }
+    if "pixel_values" in processed_features:
+        output["pixel_values"] = processed_features["pixel_values"][0]
+    if "pixel_attention_mask" in processed_features:
+        output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
+    if "image_sizes" in processed_features:
+        output["image_sizes"] = processed_features["image_sizes"][0]
+    if "token_type_ids" in processed_features:
+        token_type_ids = processed_features["token_type_ids"][0]
+        if max_prompt_length is not None:
+            token_type_ids = token_type_ids[-max_prompt_length:]
+        output["token_type_ids"] = token_type_ids
+    if "pixel_position_ids" in processed_features:
+        output["pixel_position_ids"] = processed_features["pixel_position_ids"][0]
+    if "image_position_ids" in processed_features:
+        output["image_position_ids"] = processed_features["image_position_ids"][0]
+    if "mm_token_type_ids" in processed_features:
+        mm_token_type_ids = processed_features["mm_token_type_ids"][0]
+        if max_prompt_length is not None:
+            mm_token_type_ids = mm_token_type_ids[-max_prompt_length:]
+        output["mm_token_type_ids"] = mm_token_type_ids
+
+    return output
+
+
+def dpo_trainer_vision_signature_columns(function_name, function):
+    if function_name != "_set_signature_columns_if_needed":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
+    new_function = function.replace(
+        '                "image_sizes",\n' '                "token_type_ids",\n',
+        f'                "image_sizes",\n'
+        f"{_extra_columns}"
+        f'                "token_type_ids",\n',
+    )
+    if new_function != function:
+        return new_function
+    return function.replace(
+        '                "image_sizes",\n' '                "ref_chosen_logps",\n',
+        f'                "image_sizes",\n'
+        f"{_extra_columns}"
+        f'                "ref_chosen_logps",\n',
+    )
+
+
+def dpo_trainer_concatenated_inputs(function_name, function):
+    if function_name != "concatenated_inputs":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_inputs = "".join(
+        f'        if "{_k}" in batch:\n'
+        f'            output["{_k}"] = torch.cat((batch["{_k}"], batch["{_k}"]), dim=0)\n'
+        for _k in _DPO_VISION_KEYS
+    )
+
+    image_sizes_block = (
+        '        if "image_sizes" in batch:\n'
+        '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
+    )
+    new_function = function.replace(
+        image_sizes_block + '        if "token_type_ids" in batch:\n',
+        image_sizes_block + _extra_inputs + '        if "token_type_ids" in batch:\n',
+    )
+    if new_function != function:
+        return new_function
+    if image_sizes_block in function:
+        return function.replace(image_sizes_block, image_sizes_block + _extra_inputs, 1)
+    return function
+
+
+def _dpo_trainer_extend_vision_model_kwargs(function):
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_forward = "".join(
+        f'        if "{_k}" in concatenated_batch:\n'
+        f'            model_kwargs["{_k}"] = concatenated_batch["{_k}"]\n'
+        for _k in (
+            "pixel_values",
+            "pixel_attention_mask",
+            "image_sizes",
+            *_DPO_VISION_KEYS,
+        )
+    )
+
+    return function.replace(
+        '        if "pixel_values" in concatenated_batch:\n'
+        '            model_kwargs["pixel_values"] = concatenated_batch["pixel_values"]\n'
+        '        if "pixel_attention_mask" in concatenated_batch:\n'
+        '            model_kwargs["pixel_attention_mask"] = concatenated_batch["pixel_attention_mask"]\n'
+        '        if "image_sizes" in concatenated_batch:\n'
+        '            model_kwargs["image_sizes"] = concatenated_batch["image_sizes"]\n',
+        f"{_extra_forward}",
+    )
+
+
+def dpo_trainer_concatenated_forward(function_name, function):
+    if function_name != "concatenated_forward":
+        return function
+    return _dpo_trainer_extend_vision_model_kwargs(function)
+
+
+def dpo_trainer_compute_loss_liger(function_name, function):
+    if function_name != "_compute_loss_liger":
+        return function
+    return _dpo_trainer_extend_vision_model_kwargs(function)
+
+
+def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
+    if "data_collator" not in call_args:
+        return ""
+
+    _vision_keys = str(_DPO_VISION_KEYS)
+    return (
+        "from trl.trainer.dpo_trainer import DataCollatorForPreference\n"
+        "if not hasattr(DataCollatorForPreference, '_unsloth_vision_keys_patch'):\n"
+        "    _old_dpo_collator_torch_call = DataCollatorForPreference.torch_call\n"
+        "\n"
+        "    def _unsloth_dpo_torch_call(self, examples):\n"
+        "        output = _old_dpo_collator_torch_call(self, examples)\n"
+        "        import torch as _unsloth_torch\n"
+        "        try:\n"
+        "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
+        "        except Exception:\n"
+        "            _unsloth_trl_pad = None\n"
+        "        for _k in " + _vision_keys + ":\n"
+        "            if not all(_k in example for example in examples):\n"
+        "                continue\n"
+        "            _is_position_key = _k.endswith('position_ids')\n"
+        "            _padding_value = -1 if _is_position_key else 0\n"
+        "            _padding_side = 'right' if _is_position_key else 'left'\n"
+        "            _values = [_unsloth_torch.as_tensor(example[_k]) for example in examples]\n"
+        "            try:\n"
+        "                if _unsloth_trl_pad is not None:\n"
+        "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side=_padding_side)\n"
+        "                else:\n"
+        "                    from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
+        "                    output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
+        "            except Exception:\n"
+        "                from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
+        "                output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
+        "        return output\n"
+        "\n"
+        "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
+        "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
+
+
+def dpo_trainer_prepare_dataset(function_name, function):
+    if function_name != "_prepare_dataset":
+        return function
+
+    legacy_call = "self.tokenize_row if not self.is_vision_model else self.process_row"
+    if legacy_call not in function:
+        return function
+
+    function = function.replace(
+        legacy_call,
+        "self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row",
+    )
+
+    legacy_tokenize_block = (
+        "            # Tokenize the dataset\n"
+        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
+        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
+        "\n"
+        "            dataset = dataset.map(\n"
+        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
+    )
+    patched_tokenize_block = (
+        "            # Tokenize the dataset\n"
+        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
+        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
+        "            if self.is_vision_model:\n"
+        '                map_kwargs.pop("num_proc", None)\n'
+        "\n"
+        "            dataset = dataset.map(\n"
+        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
+    )
+    if legacy_tokenize_block in function:
+        function = function.replace(legacy_tokenize_block, patched_tokenize_block, 1)
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
+RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
 # Fix tokenizer double BOS
@@ -229,6 +503,79 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
+# Use the underlying text tokenizer for ORPO row tokenization when a
+# multimodal processor is supplied as the processing class.
+def orpo_trainer_text_tokenizer(function_name, function):
+    if function_name == "build_tokenized_answer":
+        function = re.sub(
+            r"(?m)^([ \t]*)full_tokenized = self\.processing_class\(prompt \+ answer, add_special_tokens=False\)\n"
+            r'\1prompt_input_ids = self\.processing_class\(prompt, add_special_tokens=False\)\["input_ids"\]\n',
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n"
+            r"\1full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)"
+            "\n"
+            r'\1prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]'
+            "\n",
+            function,
+            count = 1,
+        )
+        return function
+
+    if function_name != "tokenize_row":
+        return function
+
+    if (
+        'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+        not in function
+    ):
+        new_function = re.sub(
+            r"(?m)^([ \t]*)batch = \{\}\n",
+            r"\1batch = {}"
+            "\n"
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n",
+            function,
+            count = 1,
+        )
+        if new_function == function:
+            return function
+        function = new_function
+    function = function.replace("self.processing_class(", "tokenizer(")
+    function = function.replace(
+        "self.processing_class.bos_token_id", "tokenizer.bos_token_id"
+    )
+    function = function.replace(
+        "self.processing_class.eos_token_id", "tokenizer.eos_token_id"
+    )
+    return function
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
+
+
+# Resolve `processing_class.pad_token_id` through the underlying tokenizer when
+# a multimodal processor is supplied (processors lack `pad_token_id`). Without
+# this, ORPOTrainer.__init__ raises AttributeError on
+# `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
+# and on `self.padding_value = ... else processing_class.pad_token_id`.
+_PAD_FALLBACK = (
+    "(getattr(processing_class, 'pad_token_id', None) "
+    "if getattr(processing_class, 'pad_token_id', None) is not None "
+    "else getattr(getattr(processing_class, 'tokenizer', None), 'pad_token_id', None))"
+)
+
+
+def orpo_trainer_processor_pad_token(function_name, function):
+    if function_name != "__init__":
+        return function
+    if "processing_class.pad_token_id" not in function:
+        return function
+    return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_processor_pad_token)
+
+
 # Fix bare pop("push_to_hub_token") in compiled SFT/IterativeSFT trainer __init__
 # On transformers 5.0+, to_dict() no longer includes push_to_hub_token, so bare pop KeyErrors
 def sft_trainer_push_to_hub_token(function_name, function):
@@ -323,6 +670,23 @@ def grpo_trainer__generate_single_turn(function_name, function):
     ]:
         function = re.sub(pattern, "", function)
 
+    string_to_find = (
+        "            generate_inputs = super()._prepare_inputs(generate_inputs)"
+    )
+    replacement_string = (
+        string_to_find
+        + """
+            if "mm_token_type_ids" in generate_inputs or "image_grid_thw" in generate_inputs:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class,
+                    generate_inputs["input_ids"],
+                    generate_inputs.get("mm_token_type_ids", None),
+                )
+                if mm_token_type_ids is not None:
+                    generate_inputs["mm_token_type_ids"] = mm_token_type_ids"""
+    )
+    function = function.replace(string_to_find, replacement_string)
+
     return function
 
 
@@ -359,7 +723,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        self.model.for_training()"""
+        self.model.for_training(use_gradient_checkpointing=getattr(self.args, 'gradient_checkpointing', True))"""
 
     function = function.replace(line_to_replace, replacement_lines)
 
@@ -542,36 +906,45 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
         function = patched
 
-    # Transformers 5.x: Extend mm_token_type_ids for completion tokens (Qwen3VL M-RoPE).
-    # TRL handles token_type_ids but not mm_token_type_ids.
-    _tt_search = (
-        'if "token_type_ids" in forward_kwargs:\n'
-        '            token_type_ids = forward_kwargs["token_type_ids"]\n'
-        '            forward_kwargs["token_type_ids"] = torch.cat(\n'
-        "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
-        "            )"
-    )
-    _tt_replace = (
-        _tt_search + "\n"
-        '        if "mm_token_type_ids" in forward_kwargs:\n'
-        '            mm_tti = forward_kwargs["mm_token_type_ids"]\n'
-        '            forward_kwargs["mm_token_type_ids"] = torch.cat(\n'
-        "                [mm_tti, mm_tti.new_zeros(completion_ids.shape)], dim=1\n"
-        "            )"
-    )
-    function = function.replace(_tt_search, _tt_replace)
+    _mm_alignment = """
+        if "mm_token_type_ids" in forward_kwargs or "image_grid_thw" in forward_kwargs:
+            _mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                prompt_completion_ids,
+                forward_kwargs.get("mm_token_type_ids", None),
+                completion_ids = completion_ids,
+            )
+            if _mm_token_type_ids is not None:
+                forward_kwargs["mm_token_type_ids"] = _mm_token_type_ids
+"""
+    _tool_image_marker = "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
+    if _tool_image_marker in function:
+        function = function.replace(
+            _tool_image_marker, _mm_alignment + "\n" + _tool_image_marker
+        )
+    else:
+        _tt_search = (
+            'if "token_type_ids" in forward_kwargs:\n'
+            '            token_type_ids = forward_kwargs["token_type_ids"]\n'
+            '            forward_kwargs["token_type_ids"] = torch.cat(\n'
+            "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
+            "            )"
+        )
+        function = function.replace(
+            _tt_search, _tt_search + "\n" + _mm_alignment.rstrip()
+        )
 
-    # Save mm_token_type_ids to output dict alongside token_type_ids
     _save_search = (
         'if "token_type_ids" in forward_kwargs:\n'
         '            output["token_type_ids"] = forward_kwargs["token_type_ids"]'
     )
-    _save_replace = (
-        _save_search + "\n"
-        '        if "mm_token_type_ids" in forward_kwargs:\n'
-        '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
-    )
-    function = function.replace(_save_search, _save_replace)
+    if 'output["mm_token_type_ids"]' not in function:
+        _save_replace = (
+            _save_search + "\n"
+            '        if "mm_token_type_ids" in forward_kwargs:\n'
+            '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
+        )
+        function = function.replace(_save_search, _save_replace)
 
     return function
 
@@ -745,9 +1118,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            num_images = kwargs.get("num_images", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
             token_type_ids = kwargs.get("token_type_ids", None)
             mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
+            if mm_token_type_ids is not None or image_grid_thw is not None:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class, input_ids, mm_token_type_ids
+                )
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -795,64 +1173,136 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
-
-            def chunk_optional(tensor, chunks):
-                if tensor is None:
-                    return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+            def slice_sample_axis(value, start, end):
+                if value is None:
+                    return None
+                return value[start:end]
 
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
+            if isinstance(num_images, torch.Tensor):
+                num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
+                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_sample = torch.split(rows_per_image, num_images)
+                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                # why: cum_rows is indexed via .item() inside the per-chunk loop;
+                # keeping it on CPU avoids per-iteration GPU->CPU sync.
+                cum_rows = torch.cat(
+                    [
+                        torch.tensor([0], device = rows_per_sample.device),
+                        rows_per_sample.cumsum(0),
+                    ]
+                ).cpu()
+                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+            else:
+                cum_rows = None
+                cum_imgs = None
+
+            def _first_dim_len(value):
+                if value is None:
+                    return None
+                if hasattr(value, "shape"):
+                    return value.shape[0]
+                try:
+                    return len(value)
+                except TypeError:
+                    return None
+
+            total_images = sum(num_images) if num_images is not None else None
+            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            image_sizes_chunks = []
+            token_type_ids_chunks = []
+            mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
-                end = start + batch_size
+                end = min(start + batch_size, total_samples)
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    grid_slice = image_grid_thw[start:end]
+                    if num_images is None:
+                        grid_slice = image_grid_thw[start:end]
+                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        start_pixel_idx = current_pixel_idx
+                        end_pixel_idx = current_pixel_idx + batch_pixel_count
+                        current_pixel_idx = end_pixel_idx
+                        img_start = img_end = None
+                    else:
+                        start_pixel_idx = cum_rows[start].item()
+                        end_pixel_idx = cum_rows[end].item()
+                        img_start = cum_imgs[start].item()
+                        img_end = cum_imgs[end].item()
+                        grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
-
-                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-
-                    start_pixel_idx = current_pixel_idx
-                    end_pixel_idx = current_pixel_idx + batch_pixel_count
 
                     pixel_values_chunks.append(
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
-                    if pixel_attention_mask is not None:
+                    if image_sizes is None:
+                        image_sizes_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and _image_sizes_n == total_images
+                        and img_start is not None
+                    ):
+                        image_sizes_chunks.append(image_sizes[img_start:img_end])
+                    else:
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
+
+                    if pixel_attention_mask is None:
+                        pixel_attention_mask_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and img_start is not None
+                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
+                    elif (
+                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
+                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
+                    ):
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
-                        pixel_attention_mask_chunks.append(None)
-
-                    current_pixel_idx = end_pixel_idx
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-
-            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
-            else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
             logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
@@ -862,10 +1312,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             logit_scale_divide = getattr(model.config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
-
-            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
-            token_type_ids_chunks = chunk_optional(token_type_ids, B)
-            mm_token_type_ids_chunks = chunk_optional(mm_token_type_ids, B)
 
             zipped_inputs = zip(
                 input_ids_chunks,
@@ -1034,6 +1480,8 @@ grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(
     inspect.getsource(_unsloth_get_final_logit_softcapping)
 )
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -1069,6 +1517,7 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        num_images = inputs.get("num_images", None)
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
         token_type_ids = inputs.get("token_type_ids", None)
         mm_token_type_ids = inputs.get("mm_token_type_ids", None)
@@ -1080,6 +1529,13 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
+        if mm_token_type_ids is not None or image_grid_thw is not None:
+            mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                input_ids,
+                mm_token_type_ids,
+                completion_ids = completion_ids,
+            )
         # attention_mask = None
         logits_to_keep = completion_ids.size(
             1
@@ -1177,6 +1633,35 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
+
+            def _unsloth_requires_multi_image_zoo(value):
+                if value is None:
+                    return False
+                if isinstance(value, torch.Tensor):
+                    counts = value.detach().cpu().reshape(-1).tolist()
+                else:
+                    counts = list(value)
+                return any(int(n) != 1 for n in counts)
+
+            if _unsloth_requires_multi_image_zoo(num_images) and not getattr(
+                self, "_unsloth_grpo_zoo_checked", False
+            ):
+                _supports_num_images = (
+                    "num_images" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_num_images:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_num_images = "num_images" in _zoo_src
+                if not _supports_num_images:
+                    raise RuntimeError(
+                        "Multi-image GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles num_images. Please upgrade "
+                        "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
+                    )
+                self._unsloth_grpo_zoo_checked = True
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -1191,6 +1676,9 @@ def grpo_trainer_compute_loss(function_name, function):
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -1222,6 +1710,11 @@ def grpo_trainer_compute_loss(function_name, function):
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
@@ -1467,7 +1960,27 @@ def openenv_vllm_reload_weights():
         patch_target_name = "generate_rollout_completions"
         patch_target = getattr(openenv_utils, patch_target_name)
 
-    src = inspect.getsource(patch_target)
+    # TRL 0.29.1+ ships some openenv helpers as compiled bytecode without
+    # accessible source on disk; inspect.getsource raises OSError("could
+    # not get source code") in that case. Skip the source-rewrite patch
+    # rather than crash. The unmodified TRL openenv path will run, which
+    # means the duplicate `collective_rpc("reload_weights")` is NOT
+    # stripped (line 1800 below) and `wake_up(tags=["kv_cache"])` is NOT
+    # retagged to `wake_up()` (line 1804). Users who do not use openenv
+    # GRPO are unaffected; openenv GRPO users on this TRL build may see
+    # redundant reload_weights calls or partial wake_up behavior.
+    try:
+        src = inspect.getsource(patch_target)
+    except OSError as e:
+        logger.warning(
+            f"Unsloth: Could not retrieve source for trl openenv "
+            f"{patch_target_name} ({e}); skipping rewrite. The unmodified "
+            f"TRL openenv path will run, so the duplicate reload_weights "
+            f"strip and the wake_up tag rewrite are NOT applied. Open an "
+            f"issue if you see redundant reload_weights or partial wake_up "
+            f"on openenv GRPO with this TRL build."
+        )
+        return
     src = textwrap.dedent(src)
     original_src = src
 

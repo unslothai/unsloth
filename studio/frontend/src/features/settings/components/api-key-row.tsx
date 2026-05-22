@@ -83,7 +83,7 @@ export function ApiKeyRow({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => copyToClipboard(prefix)}>
+          <DropdownMenuItem onClick={async () => { await copyToClipboard(prefix); }}>
             <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             Copy prefix
           </DropdownMenuItem>
@@ -92,7 +92,7 @@ export function ApiKeyRow({
             className="text-destructive focus:text-destructive"
           >
             <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
-            Revoke key
+            Revoke token
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

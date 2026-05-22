@@ -3,8 +3,8 @@
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { usePlatformStore } from "@/config/env";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -12,11 +12,28 @@ import {
   Outlet,
   createRootRoute,
   redirect,
+  useMatches,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { AppProvider } from "../provider";
+
+// Type `staticData.title` on every route so the matched-title selector
+// below stays type-safe without an inline cast.
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    title?: string;
+  }
+}
+
+// Fallback while a lazy route bundle (Train/Recipes/Export) loads.
+// /chat is synchronous and never hits this.
+const RouteFallback: ReactNode = (
+  <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
+    Loading...
+  </div>
+);
 
 const CHAT_ONLY_ALLOWED = new Set([
   "/",
@@ -33,7 +50,10 @@ function isChatOnlyAllowed(pathname: string): boolean {
 }
 
 export const Route = createRootRoute({
-  beforeLoad: ({ location }) => {
+  beforeLoad: async ({ location }) => {
+    // Ensure platform info is fetched before checking chat-only guard.
+    // fetchDeviceType caches after first call, so subsequent navigations are instant.
+    await fetchDeviceType();
     const chatOnly = usePlatformStore.getState().isChatOnly();
     if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
       throw redirect({ to: "/chat" });
@@ -44,6 +64,9 @@ export const Route = createRootRoute({
 
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
+// Fallback when no matched route declares a `staticData.title`.
+const DEFAULT_DOCUMENT_TITLE = "Unsloth Studio";
+
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
@@ -51,6 +74,30 @@ function RootLayout() {
   const { pinned, setPinned, togglePinned } = useSidebarPin();
 
   useTrainingUnloadGuard();
+
+  // Walk matches deepest-first; each route declares its own title.
+  const matchedTitle = useMatches({
+    select: (matches) => {
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const title = matches[i].staticData.title;
+        if (title) return title;
+      }
+      return null;
+    },
+  });
+
+  // `/settings` redirects in `beforeLoad`, so its route never stays
+  // matched; surface the modal's title via the store instead.
+  const settingsDialogOpen = useSettingsDialogStore((s) => s.open);
+  const documentTitle = settingsDialogOpen ? "Settings" : matchedTitle;
+
+  // useLayoutEffect updates the tab title before paint, avoiding a
+  // one-frame flash of the previous route's title on navigation.
+  useLayoutEffect(() => {
+    document.title = documentTitle
+      ? `${documentTitle} - ${DEFAULT_DOCUMENT_TITLE}`
+      : DEFAULT_DOCUMENT_TITLE;
+  }, [documentTitle]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -69,7 +116,7 @@ function RootLayout() {
       <SettingsDialog />
       {hideNavbar ? (
         <main className="flex-1">
-          <Suspense fallback={null}>
+          <Suspense fallback={RouteFallback}>
             <Outlet />
           </Suspense>
         </main>
@@ -78,7 +125,7 @@ function RootLayout() {
           pinned={pinned}
           setPinned={setPinned}
           togglePinned={togglePinned}
-          className="!min-h-0 h-dvh overflow-hidden"
+          className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
           <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
@@ -95,7 +142,7 @@ function RootLayout() {
                   transition={{ duration: 0.15 }}
                   className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"}`}
                 >
-                  <Suspense fallback={null}>
+                  <Suspense fallback={RouteFallback}>
                     <Outlet />
                   </Suspense>
                 </motion.div>
