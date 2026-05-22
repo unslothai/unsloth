@@ -504,10 +504,21 @@ def _request_matches_loaded_settings(
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
-    # spec_draft_n_max only matters when an MTP variant is engaged; None
-    # means "platform default" and matches whatever the backend chose.
-    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
-        if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
+    # spec_draft_n_max only matters when an MTP variant is ACTUALLY
+    # engaged. Mirror the backend-side guard's check against the
+    # RESOLVED spec mode (``llama_backend.speculative_type``) rather
+    # than the requested UI mode -- an Auto request that auto-promoted
+    # to ``draft-mtp`` has ``requested_spec_mode = "auto"`` but still
+    # honours user n_max changes. ``None`` on either side means
+    # "platform default"; reload when the explicit/default state flips
+    # (clear-to-default or set-from-default) or when both explicit
+    # values differ.
+    if llama_backend.speculative_type == "draft-mtp":
+        req_n = request.spec_draft_n_max
+        backend_n = llama_backend.spec_draft_n_max
+        if (req_n is None) != (backend_n is None):
+            return False
+        if req_n is not None and int(req_n) != int(backend_n):
             return False
     if (request.chat_template_override or None) != (
         llama_backend.chat_template_override or None

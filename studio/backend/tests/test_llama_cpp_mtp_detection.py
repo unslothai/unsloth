@@ -34,6 +34,9 @@ for _exc in (
     "ReadError",
     "RemoteProtocolError",
     "CloseError",
+    "HTTPError",
+    "HTTPStatusError",
+    "RequestError",
 ):
     setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
 _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
@@ -44,6 +47,19 @@ _httpx_stub.Client = type(
         "__init__": lambda s, **kw: None,
         "__enter__": lambda s: s,
         "__exit__": lambda s, *a: None,
+    },
+)
+# AsyncClient instantiated at module load time in
+# core/inference/external_provider.py; tests that import routes.inference
+# need this stub. The methods do not have to work -- nothing in the
+# route reload guard exercises them.
+_httpx_stub.AsyncClient = type(
+    "AC",
+    (),
+    {
+        "__init__": lambda s, **kw: None,
+        "__aenter__": lambda s: s,
+        "__aexit__": lambda s, *a: None,
     },
 )
 sys.modules.setdefault("httpx", _httpx_stub)
@@ -1198,3 +1214,305 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
     # _requested_spec_mode still reflects the user's choice.
     assert backend.requested_spec_mode == "mtp"
     assert backend.speculative_type is None
+
+
+# ---------------------------------------------------------------------------
+# Followup regression tests for #5582.
+#
+#   Bug A: route guard at routes/inference.py:509 compared `request.spec_draft_
+#          n_max` against the requested UI mode (which is "auto" for an
+#          auto-promoted draft-mtp load), so a slider change while running
+#          under Auto-promoted MTP returned `already_loaded` and kept the
+#          stale value.
+#   Bug B: both reload guards short-circuited the n_max comparison when the
+#          request cleared back to None ("platform default"), so an explicit
+#          override could never be cleared without a model swap.
+#   Bug C: legacy chained MTP+ngram emitted --draft-max twice (MTP's draft
+#          length, then ngram's size-N max); last-wins clobbered the MTP
+#          value.
+#   Bug D: forced ngram standalone emitted --spec-type ngram-mod even on
+#          binaries that did not advertise ngram-mod support, causing
+#          llama-server to refuse to start.
+#   Bug E: speculative_type="none" (the spelling llama.cpp itself uses for
+#          the disable case, as well as "disable" / "disabled" from
+#          external API callers) fell through the canonicaliser to "auto",
+#          silently enabling MTP when the user said disable.
+# ---------------------------------------------------------------------------
+
+
+# ---- Bug E: "none"/"disable" canonicalise to "off" ----
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize(
+    "value",
+    ["none", "None", "NONE", "  none  ", "disable", "Disabled", "DISABLED"],
+)
+def test_canonicalize_spec_mode_none_aliases_map_to_off(value):
+    """Without the followup these all fell through to "auto" and silently
+    re-enabled MTP. They must canonicalise to "off"."""
+    assert _canonicalize_spec_mode(value) == "off"
+
+
+# ---- Bug C: legacy chained MTP+ngram does not duplicate --draft-max ----
+
+
+def test_build_ngram_mod_flags_legacy_chained_omits_draft_max():
+    """When chaining ngram-mod alongside MTP on a legacy llama-server,
+    --draft-max collides with MTP's --draft-max (same flag, different
+    semantic in old builds). The chain_with_mtp flag must suppress the
+    ngram-mod --draft-max so MTP's draft length wins."""
+    caps = {"ngram_mod_flavor": "legacy"}
+    chained = _build_ngram_mod_flags(caps, chain_with_mtp = True)
+    assert "--draft-max" not in chained, (
+        f"chain_with_mtp=True must drop --draft-max on legacy; got {chained}"
+    )
+    # The other two knobs must still be present so ngram-mod actually
+    # tunes the chain.
+    assert "--spec-ngram-size-n" in chained
+    assert "--draft-min" in chained
+
+
+def test_build_ngram_mod_flags_legacy_standalone_keeps_draft_max():
+    """When NOT chaining, --draft-max is the ngram-mod size-N max and must
+    still be emitted on legacy."""
+    caps = {"ngram_mod_flavor": "legacy"}
+    standalone = _build_ngram_mod_flags(caps, chain_with_mtp = False)
+    assert "--draft-max" in standalone
+
+
+def test_build_ngram_mod_flags_new_flavor_always_emits_distinct_names():
+    """The post-rename flavor uses --spec-ngram-mod-* names that never
+    collide with MTP's --spec-draft-n-max, so chain_with_mtp does not
+    matter -- the full knob set is always emitted."""
+    caps = {"ngram_mod_flavor": "new"}
+    chained = _build_ngram_mod_flags(caps, chain_with_mtp = True)
+    standalone = _build_ngram_mod_flags(caps, chain_with_mtp = False)
+    assert chained == standalone
+    assert "--spec-ngram-mod-n-max" in chained
+
+
+def test_build_speculative_flags_chained_mtp_ngram_legacy_no_duplicate_draft_max(
+    monkeypatch,
+):
+    """End-to-end: forced mtp+ngram on a legacy llama-server must emit
+    --draft-max exactly once (the MTP draft length), not twice with a
+    last-wins overwrite from ngram-mod."""
+    fake = {
+        "found": True,
+        "mtp_token": "mtp",
+        "supports_mtp": True,
+        "ngram_mod_flavor": "legacy",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--draft-max",  # legacy n_max flag
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: fake),
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = 1  # is_mtp_model
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp+ngram",
+        spec_draft_n_max = 2,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    occurrences = [i for i, t in enumerate(flags) if t == "--draft-max"]
+    assert len(occurrences) == 1, (
+        f"--draft-max must appear exactly once on legacy chained MTP+ngram; "
+        f"got {len(occurrences)}: {flags}"
+    )
+    # And the value must be MTP's choice (2), not the ngram size-N max (64).
+    idx = occurrences[0]
+    assert flags[idx + 1] == "2", (
+        f"the single --draft-max must carry the MTP draft length, not "
+        f"ngram's size-N max; got {flags[idx + 1]!r} in {flags}"
+    )
+
+
+# ---- Bug D: forced ngram refuses on binaries with no ngram-mod support ----
+
+
+def test_build_speculative_flags_forced_ngram_without_support_skips_spec(monkeypatch):
+    """A forced ``speculative_type="ngram"`` request on a binary that
+    does not advertise ngram-mod support must NOT emit --spec-type
+    ngram-mod (llama-server would refuse to start); load without spec
+    instead, mirroring the auto-path sub-3B fallback."""
+    backend = _resolver_backend(monkeypatch, ngram_supported = False)
+    backend._nextn_predict_layers = None
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags, (
+        f"forced ngram must not emit --spec-type when binary lacks "
+        f"ngram-mod support; got {flags}"
+    )
+    assert backend.speculative_type is None
+    # User's UI choice is preserved on the requested-mode round-trip.
+    assert backend.requested_spec_mode == "ngram"
+
+
+def test_build_speculative_flags_forced_ngram_with_support_emits_spec(monkeypatch):
+    """Sanity check the positive case: forced ngram on a supporting
+    binary still emits --spec-type ngram-mod plus the knob set."""
+    backend = _resolver_backend(monkeypatch, ngram_supported = True)
+    backend._nextn_predict_layers = None
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+
+
+# ---- Bug B: clear-to-None forces reload on the backend guard ----
+
+
+def test_already_in_target_state_clear_explicit_n_max_to_none_forces_reload():
+    """Backend loaded with explicit ``spec_draft_n_max=8``; new request
+    clears the value to None (platform default). Without the followup
+    the guard short-circuited on ``spec_draft_n_max is not None`` and
+    returned True, leaving the old 8 in effect. Must now return False."""
+    backend = _mtp_backend(_spec_draft_n_max = 8)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            spec_draft_n_max = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_already_in_target_state_set_n_max_from_default_forces_reload():
+    """Mirror: backend loaded on default (None); new request adds an
+    explicit 8. Must reload."""
+    backend = _mtp_backend(_spec_draft_n_max = None)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            spec_draft_n_max = 8,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+# ---- Bug A + Bug B: route-level guard checks resolved mode + handles None ----
+
+
+class _FakeLoadRequest:
+    """Minimal LoadRequest stand-in for the route guard test."""
+    def __init__(self, **kw):
+        self.max_seq_length = kw.get("max_seq_length", 8192)
+        self.cache_type_kv = kw.get("cache_type_kv", None)
+        self.speculative_type = kw.get("speculative_type", "auto")
+        self.spec_draft_n_max = kw.get("spec_draft_n_max", None)
+        self.chat_template_override = kw.get("chat_template_override", None)
+        self.llama_extra_args = kw.get("llama_extra_args", None)
+
+
+def _auto_promoted_mtp_backend(**overrides):
+    """Backend that's running under draft-mtp because Auto auto-promoted
+    it (requested_spec_mode == "auto", speculative_type == "draft-mtp").
+    """
+    backend = _mtp_backend(
+        _requested_spec_mode = "auto",
+        _speculative_type = "draft-mtp",
+        _spec_draft_n_max = 8,
+        **overrides,
+    )
+    backend._extra_args = None
+    return backend
+
+
+def test_route_guard_auto_promoted_mtp_bounces_on_n_max_change():
+    """Without the followup, route guard compared n_max only when
+    ``backend_mode in ("mtp", "mtp+ngram")`` -- but an Auto-promoted
+    backend has ``requested_spec_mode == "auto"``, so a slider change
+    from 8 -> 2 returned ``already_loaded`` and kept the stale value.
+    Now must compare against the RESOLVED speculative_type."""
+    from routes.inference import _request_matches_loaded_settings
+
+    backend = _auto_promoted_mtp_backend()
+    request = _FakeLoadRequest(
+        speculative_type = "auto",
+        spec_draft_n_max = 2,  # was 8
+    )
+    assert _request_matches_loaded_settings(request, backend) is False
+
+
+def test_route_guard_auto_promoted_mtp_matches_when_n_max_unchanged():
+    """Same setup; same n_max value (8) on both sides; must still match."""
+    from routes.inference import _request_matches_loaded_settings
+
+    backend = _auto_promoted_mtp_backend()
+    request = _FakeLoadRequest(
+        speculative_type = "auto",
+        spec_draft_n_max = 8,
+    )
+    assert _request_matches_loaded_settings(request, backend) is True
+
+
+def test_route_guard_clear_explicit_n_max_to_none_forces_reload():
+    """Backend has explicit 8 (auto-promoted to draft-mtp); request
+    clears to None. Route guard must return False so the reload path
+    runs and re-resolves the default value."""
+    from routes.inference import _request_matches_loaded_settings
+
+    backend = _auto_promoted_mtp_backend()
+    request = _FakeLoadRequest(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+    )
+    assert _request_matches_loaded_settings(request, backend) is False
+
+
+def test_route_guard_ignores_n_max_when_resolved_spec_is_not_mtp():
+    """Backend resolved to ngram-mod (not draft-mtp); n_max is MTP-only
+    and must not force a reload."""
+    from routes.inference import _request_matches_loaded_settings
+
+    backend = _mtp_backend(
+        _requested_spec_mode = "ngram",
+        _speculative_type = "ngram-mod",
+        _spec_draft_n_max = None,
+    )
+    backend._extra_args = None
+    request = _FakeLoadRequest(
+        speculative_type = "ngram",
+        spec_draft_n_max = 8,  # would force reload if we checked, but shouldn't
+    )
+    assert _request_matches_loaded_settings(request, backend) is True

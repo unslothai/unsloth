@@ -487,6 +487,8 @@ def _build_ngram_mod_flags(
     n_match: int = 24,
     n_min: int = 48,
     n_max: int = 64,
+    *,
+    chain_with_mtp: bool = False,
 ) -> list[str]:
     """Emit the right ngram-mod knob flags for the running llama-server.
 
@@ -496,9 +498,19 @@ def _build_ngram_mod_flags(
     ``probe_server_capabilities``; ``ngram_mod_flavor`` tells us which
     set is real (vs a removal-stub entry). Returns ``[]`` when neither
     set is available so the caller can drop ngram-mod entirely.
+
+    ``chain_with_mtp`` is set by the chained MTP+ngram emit path on
+    legacy builds, where ``--draft-max`` is shared between MTP (number
+    of draft tokens per pass; small, e.g. 2) and ngram-mod (max ngram
+    size N; large, e.g. 64). Emitting both produces a duplicate flag
+    and last-wins clobbers the MTP draft-length the user picked. When
+    set, skip the ngram-mod ``--draft-max`` so MTP's emission wins.
     """
     flavor = caps.get("ngram_mod_flavor") if caps else None
     if flavor == "new":
+        # New-flavor knobs are distinct flag names (``--spec-ngram-mod-*``),
+        # so they never collide with MTP's ``--spec-draft-n-max``; emit all
+        # three regardless of chain_with_mtp.
         return [
             "--spec-ngram-mod-n-match",
             str(n_match),
@@ -511,14 +523,18 @@ def _build_ngram_mod_flags(
         # Legacy llama.cpp before the spec arg rename: same knobs lived
         # under --spec-ngram-size-n (lookup length) and the generic
         # --draft-min / --draft-max (ngram size N range).
-        return [
+        out = [
             "--spec-ngram-size-n",
             str(n_match),
             "--draft-min",
             str(n_min),
-            "--draft-max",
-            str(n_max),
         ]
+        if not chain_with_mtp:
+            # Only safe to set --draft-max here when MTP is NOT in the
+            # same emission; otherwise this duplicates MTP's --draft-max
+            # and last-wins clobbers the MTP draft length.
+            out.extend(["--draft-max", str(n_max)])
+        return out
     return []
 
 
@@ -531,6 +547,15 @@ _LEGACY_SPEC_MODE_MAP = {
     "default": "auto",
     "draft-mtp": "mtp",
     "ngram-mod": "ngram",
+    # llama.cpp's own ``--spec-type none`` spelling, plus the common
+    # English ``disable`` / ``disabled`` aliases external API callers
+    # use, all mean "do not engage speculative decoding". Without an
+    # explicit mapping these strings fall through the comma-parser
+    # below to ``auto``, which silently enables MTP -- the opposite of
+    # the user's intent. Map them to canonical ``off``.
+    "none": "off",
+    "disable": "off",
+    "disabled": "off",
 }
 
 
@@ -3504,7 +3529,10 @@ class LlamaCppBackend:
             draft_n_max = _resolved_draft_n_max()
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
             if chain_ngram:
-                ngram_knobs = _build_ngram_mod_flags(caps)
+                # chain_with_mtp suppresses ngram-mod's --draft-max on
+                # legacy builds so it does not collide with MTP's draft
+                # length set just above.
+                ngram_knobs = _build_ngram_mod_flags(caps, chain_with_mtp = True)
                 if ngram_knobs:
                     spec_value = f"ngram-mod,{mtp_token}"
                 else:
@@ -3539,9 +3567,27 @@ class LlamaCppBackend:
         def _emit_ngram_mod() -> bool:
             """Append --spec-type ngram-mod + flag-set knobs."""
             ngram_caps = self.probe_server_capabilities(binary)
+            # Skip emission when the binary advertises no ngram-mod
+            # support at all (no knobs probed under either flavor).
+            # llama-server rejects ``--spec-type ngram-mod`` on those
+            # builds, so emitting it would refuse to start the server
+            # instead of silently disabling spec. Mirror the auto-path
+            # fallback at the elif _mtp_too_small branch below: log and
+            # return False, leaving the caller to load without spec.
+            if not (ngram_caps and ngram_caps.get("supports_ngram_mod")):
+                logger.warning(
+                    "Requested ngram-mod speculative decoding but "
+                    "llama-server does not advertise ngram-mod support; "
+                    "run `unsloth studio update`. Loading without "
+                    "speculative decoding."
+                )
+                return False
             ngram_knobs = _build_ngram_mod_flags(ngram_caps)
             flags.extend(["--spec-type", "ngram-mod"])
             if not ngram_knobs:
+                # supports_ngram_mod is True but knobs returned empty
+                # (shouldn't happen given the flavor check, but kept
+                # for defensive logging).
                 logger.warning(
                     "llama-server lacks ngram-mod tuning "
                     "flags; loading without --spec-ngram-mod-* knobs"
@@ -3688,12 +3734,22 @@ class LlamaCppBackend:
         # engaged. Compare on the resolved spec rather than the requested
         # mode so an Auto request that auto-promoted to draft-mtp under
         # the hood still bounces a reload when the user changes n_max.
-        if (
-            self._speculative_type == "draft-mtp"
-            and spec_draft_n_max is not None
-            and int(spec_draft_n_max) != (self._spec_draft_n_max or 0)
-        ):
-            return False
+        #
+        # ``_spec_draft_n_max`` is None when the backend was loaded with
+        # the platform default (no explicit override); ``None`` on either
+        # side means "platform default". Reload when:
+        #   * both sides explicit and differ, OR
+        #   * request is None but backend has an explicit value (user is
+        #     clearing the override back to default), OR
+        #   * request is explicit but backend is on default (user is
+        #     setting a fresh override).
+        if self._speculative_type == "draft-mtp":
+            req_n = spec_draft_n_max
+            backend_n = self._spec_draft_n_max
+            if (req_n is None) != (backend_n is None):
+                return False
+            if req_n is not None and int(req_n) != int(backend_n):
+                return False
 
         if (self._chat_template_override or None) != (chat_template_override or None):
             return False
