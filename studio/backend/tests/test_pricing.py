@@ -527,9 +527,7 @@ def test_anthropic_chat_style_prompt_tokens_dedupes_cache_buckets():
     assert _isclose(chat["cache_write_usd"], raw["cache_write_usd"]), (chat, raw)
     assert _isclose(chat["cache_read_usd"], raw["cache_read_usd"]), (chat, raw)
     assert _isclose(chat["total_usd"], raw["total_usd"]), (chat, raw)
-    assert (
-        chat["billable_input_tokens"] == raw["billable_input_tokens"]
-    ), (chat, raw)
+    assert chat["billable_input_tokens"] == raw["billable_input_tokens"], (chat, raw)
 
 
 def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
