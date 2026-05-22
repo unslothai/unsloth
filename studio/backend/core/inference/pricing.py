@@ -142,11 +142,14 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
         return None
     if model in table:
         return table[model]
-    # Fall back to a prefix match so date-suffixed snapshots
-    # ("gpt-5.5-2026-04-23") inherit the canonical-id prices.
-    for key, val in table.items():
+    # Fall back to a longest-prefix match so dated snapshots
+    # ("gpt-5.5-2026-04-23") inherit the canonical-id prices AND ids
+    # like "gpt-5.4-mini-2026-..." match "gpt-5.4-mini" before they
+    # collide with the shorter "gpt-5.4" entry. Sorting keys by
+    # length descending picks the most specific table row first.
+    for key in sorted(table, key = len, reverse = True):
         if model.startswith(key):
-            return val
+            return table[key]
     return None
 
 
@@ -192,8 +195,17 @@ def calculate_cost(
         "priced": bool(prices),
     }
 
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
+    # Accept both shapes: raw Anthropic / OpenAI Responses usage
+    # carries ``input_tokens`` / ``output_tokens``; the OpenAI-Chat-
+    # style usage chunk Studio re-emits (``_build_usage_chunk``) uses
+    # ``prompt_tokens`` / ``completion_tokens``. Either is fine here
+    # so a caller can hand whichever envelope landed first.
+    input_tokens = int(
+        usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+    )
+    output_tokens = int(
+        usage.get("output_tokens") or usage.get("completion_tokens") or 0
+    )
     cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
     cache_read = int(usage.get("cache_read_input_tokens") or 0)
     # OpenAI Responses reports cached tokens under input_tokens_details

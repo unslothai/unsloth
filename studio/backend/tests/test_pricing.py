@@ -425,3 +425,71 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
     assert gpt55["long_context_threshold"] == 272_000
     assert gpt55["long_context_input_per_mtok"] == 10.0
     assert gpt55["long_context_output_per_mtok"] == 45.0
+
+
+# ── longest-prefix match: dated mini variant must not collide with the
+#    shorter family prefix (regression for PR 5690 review feedback). ──
+
+
+def test_longest_prefix_match_wins_for_dated_mini_snapshot():
+    """A `gpt-5.4-mini-2026-...` snapshot must inherit the `mini` rate,
+    not the (much higher) shorter `gpt-5.4` rate it would naively
+    match if `_lookup` returned the first prefix hit instead of the
+    longest one."""
+    out = calculate_cost(
+        "openai",
+        "gpt-5.4-mini-2026-04-23",
+        {"input_tokens": 1_000_000, "output_tokens": 0},
+    )
+    assert out["priced"] is True
+    # gpt-5.4-mini = 0.75 / MTok input. gpt-5.4 = 2.5 / MTok input.
+    # Exact match on the longer key gives 0.75; collision on the
+    # shorter one would give 2.5 (>3x overcharge).
+    assert _isclose(out["input_usd"], 0.75), out
+
+
+def test_longest_prefix_match_wins_for_dated_pro_snapshot():
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5-pro-2026-04-23",
+        {"input_tokens": 1_000_000, "output_tokens": 0},
+    )
+    assert out["priced"] is True
+    # gpt-5.5-pro = 30 / MTok. gpt-5.5 = 5 / MTok. Longest wins.
+    assert _isclose(out["input_usd"], 30.0), out
+
+
+# ── accept both prompt_tokens (chat-style) and input_tokens (Responses)
+#    so callers can hand either envelope shape. Regression for the
+#    Gemini review on PR 5690. ──
+
+
+def test_openai_chat_style_usage_keys_priced_correctly():
+    """A caller handing in `prompt_tokens` / `completion_tokens` (the
+    OpenAI-Chat-style envelope Studio re-emits) must still produce a
+    non-zero cost. Previously the calculator only read `input_tokens`
+    / `output_tokens` and silently zeroed the bill."""
+    out = calculate_cost(
+        "openai",
+        "gpt-5.4-mini",
+        {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000},
+    )
+    # gpt-5.4-mini: 0.75 input + 4.5 output per MTok.
+    assert _isclose(out["input_usd"], 0.75), out
+    assert _isclose(out["output_usd"], 4.5), out
+
+
+def test_input_tokens_preferred_when_both_keys_present():
+    """If a caller hands in both shapes, the raw key wins so the test
+    fixtures that mirror the upstream wire stay deterministic."""
+    out = calculate_cost(
+        "openai",
+        "gpt-5.4-mini",
+        {
+            "input_tokens": 2_000_000,
+            "prompt_tokens": 5_000_000,
+            "output_tokens": 0,
+        },
+    )
+    # input_tokens=2M wins -> 2 * 0.75 = 1.50.
+    assert _isclose(out["input_usd"], 1.50), out
