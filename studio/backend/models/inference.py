@@ -786,6 +786,20 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
+    parallel_calls: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 20,
+        description = (
+            "[x-unsloth] Codex provider only. When > 1, fan the chat turn "
+            "out across N parallel Codex calls and synthesise a unified "
+            "final answer. Each parallel attempt is rendered as its own tab "
+            "in the chat UI; a final 'Synthesis' tab carries the merged "
+            "output. Bounded to [1, 20] by pydantic so a runaway value can't "
+            "saturate the local CLI. Silently ignored on every provider "
+            "other than `codex`."
+        ),
+    )
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":

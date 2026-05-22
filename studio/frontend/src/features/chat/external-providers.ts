@@ -79,11 +79,45 @@ export function supportsProviderReasoningToggle(
   );
 }
 
+/**
+ * The Codex CLI / SDK provider. Surfaced only when the host has BOTH
+ * the ``codex`` CLI on PATH and the ``codex_app_server`` Python SDK
+ * importable -- the backend's ``GET /api/codex/status`` is the
+ * authoritative gate. We expose the type id here so the rest of the
+ * frontend can reference it without scattering "codex" string
+ * literals.
+ */
+export const CODEX_PROVIDER_TYPE = "codex";
+
+export function isCodexProviderType(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === CODEX_PROVIDER_TYPE;
+}
+
+/** Hard cap mirrors backend MAX_PARALLEL_CALLS to keep the UI honest. */
+export const CODEX_MAX_PARALLEL_CALLS = 20;
+export const CODEX_DEFAULT_PARALLEL_CALLS = 1;
+
+export function clampCodexParallelCalls(value: unknown): number {
+  const n = typeof value === "number" && Number.isFinite(value)
+    ? Math.floor(value)
+    : CODEX_DEFAULT_PARALLEL_CALLS;
+  if (n < 1) return 1;
+  if (n > CODEX_MAX_PARALLEL_CALLS) return CODEX_MAX_PARALLEL_CALLS;
+  return n;
+}
+
 // Known text-only providers on their main chat endpoint.
 const NON_VISION_PROVIDER_TYPES = new Set<string>([
   "cohere",
   "deepseek",
   "mistral",
+  // Codex SDK input is text-first; multimodal attachments are
+  // converted to placeholder text descriptors before the prompt
+  // reaches the local CLI. Mark text-only so the composer hides
+  // image-attach affordances when codex is selected.
+  CODEX_PROVIDER_TYPE,
 ]);
 // Providers whose vision-tier model selection accepts images.
 const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([

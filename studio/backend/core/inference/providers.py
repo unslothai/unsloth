@@ -270,6 +270,41 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         "hidden": True,
     },
+    "codex": {
+        "display_name": "OpenAI Codex (local CLI)",
+        # No remote base_url: Codex dispatches through the local CLI
+        # via the codex_app_server SDK. Routing skips the standard
+        # HTTP client entirely in _proxy_to_external_provider and
+        # hands the request to core.inference.codex_provider instead.
+        "base_url": "",
+        "default_models": [
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "o3",
+        ],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        # No auth header is sent on the wire; the Codex CLI handles
+        # auth via its own login flow (api key / chatgpt / device).
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # Codex models are picked from the local CLI catalogue; we
+        # never call a remote /models endpoint.
+        "model_list_mode": "curated",
+        # Hidden from the cross-provider dropdown until the frontend
+        # has confirmed availability via GET /api/codex/status. The
+        # chat-providers dialog conditionally surfaces the entry by
+        # merging the codex row in when status.installed is true.
+        "hidden": True,
+        "notes": (
+            "Dispatches chat turns through the local Codex CLI via "
+            "the codex_app_server Python SDK. Surfaced only when the "
+            "CLI and SDK are both installed; sign in with `codex auth "
+            "login`."
+        ),
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",

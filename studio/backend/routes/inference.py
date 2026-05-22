@@ -1807,10 +1807,13 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
-    # Fall back to registry default base URL
+    # Fall back to registry default base URL. Codex is the one
+    # provider with a deliberately empty base_url -- it dispatches
+    # through the local CLI rather than over HTTP -- so a missing
+    # base_url is only a 400 for every other provider type.
     if not base_url:
         base_url = get_base_url(provider_type)
-    if not base_url:
+    if not base_url and provider_type != "codex":
         raise HTTPException(
             status_code = 400,
             detail = f"Unknown provider type: {provider_type}",
@@ -1844,6 +1847,75 @@ async def _proxy_to_external_provider(
         _supports_vision,
         provider_type = provider_type,
     )
+
+    # Codex provider: dispatch through the local CLI / SDK instead of
+    # the HTTP client. The SDK is not an OpenAI-compatible HTTP
+    # endpoint; it's a thread-oriented Python API that wraps the CLI.
+    # ``stream_codex`` is the single entry point so the parallel-calls
+    # fan-out and the single-call path share the same SSE shape.
+    if provider_type == "codex":
+        from core.inference.codex_provider import (
+            CodexUnavailableError,
+            stream_codex,
+        )
+
+        async def _codex_stream():
+            try:
+                gen = stream_codex(
+                    messages = chat_messages,
+                    model = model,
+                    parallel_calls = payload.parallel_calls or 1,
+                )
+                sent_done = False
+                async for line in gen:
+                    yield f"{line}\n\n"
+                    if "[DONE]" in line:
+                        sent_done = True
+                if not sent_done:
+                    yield "data: [DONE]\n\n"
+            except CodexUnavailableError as exc:
+                logger.warning("codex_provider.unavailable", error = str(exc))
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "error": {
+                                "message": str(exc),
+                                "type": "provider_error",
+                                "code": "503",
+                                "provider": "codex",
+                            }
+                        }
+                    )
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+            except Exception as exc:
+                logger.error("codex_provider.stream_error", error = str(exc))
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "error": {
+                                "message": f"Codex error: {exc}",
+                                "type": "provider_error",
+                                "code": "502",
+                                "provider": "codex",
+                            }
+                        }
+                    )
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            _codex_stream(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     client = ExternalProviderClient(
         provider_type = provider_type,
