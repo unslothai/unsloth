@@ -1382,10 +1382,23 @@ class ExternalProviderClient:
             body.get("max_tokens"),
         )
 
-        _finish_reason_map = {
+        # Translate Anthropic stop reasons onto the OpenAI chat-completions
+        # `finish_reason` vocabulary. `pause_turn` maps to None so the
+        # adapter does NOT emit a finish_reason chunk: pause_turn means
+        # Claude paused a long server-tool turn (web_search / web_fetch)
+        # and will continue once the user (or our retry) sends back the
+        # partial assistant message. Forwarding it as "stop" makes the
+        # OpenAI client think the answer is done and truncates the
+        # rendered message. `refusal` maps to "content_filter" as the
+        # nearest semantic match. See
+        #   https://platform.claude.com/docs/en/api/messages#response-stop-reason
+        _finish_reason_map: dict[str, Optional[str]] = {
             "end_turn": "stop",
             "max_tokens": "length",
             "stop_sequence": "stop",
+            "tool_use": "tool_calls",
+            "refusal": "content_filter",
+            "pause_turn": None,
         }
 
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
@@ -2057,20 +2070,25 @@ class ExternalProviderClient:
                                 if thinking_open:
                                     yield _content_chunk("</think>")
                                     thinking_open = False
-                                chunk = {
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "choices": [
-                                        {
-                                            "index": 0,
-                                            "delta": {},
-                                            "finish_reason": _finish_reason_map.get(
-                                                stop_reason, "stop"
-                                            ),
-                                        }
-                                    ],
-                                }
-                                yield f"data: {_json.dumps(chunk)}"
+                                # `pause_turn` is in-progress, not terminal:
+                                # the SSE stream still ends with [DONE] via
+                                # message_stop but we skip emitting a
+                                # finish_reason="stop" chunk that would
+                                # truncate the rendered message in the UI.
+                                mapped = _finish_reason_map.get(stop_reason, "stop")
+                                if mapped is not None:
+                                    chunk = {
+                                        "id": completion_id,
+                                        "object": "chat.completion.chunk",
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "delta": {},
+                                                "finish_reason": mapped,
+                                            }
+                                        ],
+                                    }
+                                    yield f"data: {_json.dumps(chunk)}"
 
                         elif event_type == "message_stop":
                             if thinking_open:

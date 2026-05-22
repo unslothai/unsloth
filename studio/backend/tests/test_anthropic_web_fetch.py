@@ -356,6 +356,150 @@ def test_web_fetch_error_renders_error_code(monkeypatch):
     assert end["result"] == "Error: url_not_accessible"
 
 
+# ── pause_turn must not emit a truncating finish_reason ─────────────
+
+
+def _finish_reasons(lines: list[str]) -> list:
+    """Return the finish_reason fields from every chat.completion.chunk."""
+    out: list = []
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        raw = line[len("data:") :].strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if parsed.get("object") != "chat.completion.chunk":
+            continue
+        for choice in parsed.get("choices") or []:
+            if "finish_reason" in choice:
+                out.append(choice["finish_reason"])
+    return out
+
+
+def test_pause_turn_does_not_emit_finish_reason_chunk(monkeypatch):
+    # `pause_turn` is what Anthropic emits when a long server-tool turn
+    # (typically web_search / web_fetch) pauses and will resume on the
+    # next request. Treating it as finish_reason="stop" makes the
+    # OpenAI-formatted client truncate the rendered assistant message.
+    # The adapter must skip the chunk so the stream ends cleanly with
+    # [DONE] and no terminal finish_reason.
+    sse_events = [
+        {"type": "message_start", "message": {"usage": {}}},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "pause_turn"},
+            "usage": {"input_tokens": 100, "output_tokens": 10},
+        },
+        {"type": "message_stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        return await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "Search and read."}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enabled_tools = ["web_search", "web_fetch"],
+            )
+        )
+
+    lines = _drive(run())
+    # No finish_reason chunk for pause_turn -- the only completion
+    # signal is the [DONE] line.
+    assert _finish_reasons(lines) == [], lines
+    assert any(line.strip() == "data: [DONE]" for line in lines), lines
+
+
+def test_end_turn_still_emits_stop_finish_reason(monkeypatch):
+    # Sanity: the pause_turn -> None mapping must not regress normal
+    # end_turn handling.
+    sse_events = [
+        {"type": "message_start", "message": {"usage": {}}},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"input_tokens": 100, "output_tokens": 10},
+        },
+        {"type": "message_stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        return await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+            )
+        )
+
+    lines = _drive(run())
+    assert _finish_reasons(lines) == ["stop"], lines
+
+
+def test_refusal_maps_to_content_filter(monkeypatch):
+    sse_events = [
+        {"type": "message_start", "message": {"usage": {}}},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "refusal"},
+            "usage": {"input_tokens": 100, "output_tokens": 0},
+        },
+        {"type": "message_stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        return await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+            )
+        )
+
+    lines = _drive(run())
+    assert _finish_reasons(lines) == ["content_filter"], lines
+
+
 def test_web_fetch_titleless_document_falls_back_to_url(monkeypatch):
     # Anthropic may omit `document.title` on pages where the HTML
     # provides nothing usable. Without a fallback the formatter would

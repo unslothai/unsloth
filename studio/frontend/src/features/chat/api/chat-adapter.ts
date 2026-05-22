@@ -45,6 +45,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -1268,6 +1269,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         externalProvider.providerType,
                       )
                         ? ["web_search"]
+                        : []),
+                      // Pair web_fetch with the Search pill on any
+                      // provider that ships it (Anthropic today). The
+                      // common workflow is "search returns URLs, fetch
+                      // reads them"; without web_fetch the model can
+                      // surface a citation but cannot quote from the
+                      // page body, which is the whole point of the
+                      // tool. There is no separate UI toggle yet.
+                      ...(toolsEnabled &&
+                      providerSupportsBuiltinWebFetch(
+                        externalProvider.providerType,
+                      )
+                        ? ["web_fetch"]
                         : []),
                       ...(codeToolsEnabled &&
                       providerSupportsBuiltinCodeExecution(
