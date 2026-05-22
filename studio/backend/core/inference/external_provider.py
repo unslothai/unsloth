@@ -2129,7 +2129,16 @@ class ExternalProviderClient:
         # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
         # accept this parameter (gpt-5.5+ already defaults to "24h" and
         # rejects "in_memory", so it's a safe no-op there).
-        is_openai_cloud = "api.openai.com" in (self.base_url or "")
+        # OpenAI-family cloud: api.openai.com OR Azure OpenAI Foundry
+        # (*.openai.azure.com). Both expose the same Responses-API
+        # extensions used below -- prompt_cache_retention,
+        # context_management compaction, container shell tool -- so
+        # treat them uniformly. Non-cloud OpenAI-compatible servers
+        # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
+        # without these extensions and would 400 on the unknown body
+        # fields, so they intentionally fall outside this gate.
+        _base = (self.base_url or "").lower()
+        is_openai_cloud = "api.openai.com" in _base or ".openai.azure.com" in _base
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
 

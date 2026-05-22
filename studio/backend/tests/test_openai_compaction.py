@@ -115,6 +115,41 @@ def test_non_cloud_base_silently_drops_compaction(monkeypatch):
     assert "context_management" not in captured["body"]
 
 
+# ── Azure OpenAI Foundry is treated as cloud ────────────────────────
+
+
+def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
+    # Azure OpenAI Foundry exposes the same /v1/responses extensions
+    # (context_management, prompt_cache_retention, container shell)
+    # under a *.openai.azure.com base URL. Treat it as cloud so the
+    # compaction field actually reaches the API.
+    captured = _capture(
+        monkeypatch,
+        base_url = "https://my-resource.openai.azure.com/openai/v1",
+        threshold = 200_000,
+    )
+    assert captured["body"].get("context_management") == [
+        {"type": "compaction", "compact_threshold": 200_000}
+    ]
+    # Sibling Azure-cloud extension: prompt_cache_retention should also
+    # be set so caching works the same way on Azure deployments.
+    assert captured["body"].get("prompt_cache_retention") == "24h"
+
+
+def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
+    # The match is case-insensitive so URLs copy-pasted from the Azure
+    # portal (which sometimes capitalise the resource name) still get
+    # the cloud-only fields.
+    captured = _capture(
+        monkeypatch,
+        base_url = "https://My-Resource.OpenAI.Azure.Com/openai/v1",
+        threshold = 50_000,
+    )
+    assert captured["body"].get("context_management") == [
+        {"type": "compaction", "compact_threshold": 50_000}
+    ]
+
+
 # ── omitted threshold leaves body untouched ─────────────────────────
 
 
@@ -125,3 +160,37 @@ def test_omitted_threshold_no_body_field(monkeypatch):
         threshold = None,
     )
     assert "context_management" not in captured["body"]
+
+
+# ── schema floor matches what the upstream API actually accepts ────
+
+
+def test_chat_completion_request_rejects_sub_10k_compaction_threshold():
+    # The upstream Responses API surfaces a `compact_threshold is not
+    # enabled` 400 below the model's effective floor (per
+    # langchain-ai/langchain#35464 on Azure with 100k -- the real
+    # floor on cloud is similar). Reject obvious typos at the schema
+    # layer so the user sees a clean 422 instead of an opaque
+    # upstream 400.
+    import pytest as _pytest
+
+    from models.inference import ChatCompletionRequest
+
+    with _pytest.raises(Exception):
+        ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [{"role": "user", "content": "hi"}],
+                "compaction_threshold": 9_999,
+            }
+        )
+
+    # 10k is the inclusive floor.
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "default",
+            "messages": [{"role": "user", "content": "hi"}],
+            "compaction_threshold": 10_000,
+        }
+    )
+    assert req.compaction_threshold == 10_000

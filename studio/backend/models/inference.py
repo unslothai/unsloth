@@ -664,15 +664,20 @@ class ChatCompletionRequest(BaseModel):
     )
     compaction_threshold: Optional[int] = Field(
         None,
-        ge = 1_000,
+        ge = 10_000,
         le = 2_000_000,
         description = (
             "[x-unsloth] Server-side context compaction trigger, in tokens. "
-            "On OpenAI cloud, attaches "
+            "On OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
+            "(*.openai.azure.com), attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
             "so the Responses API summarises older turns once the rendered "
-            "prompt crosses the threshold. No-op on non-cloud OpenAI bases "
-            "and on every other provider."
+            "prompt crosses the threshold. The reasonable floor is ~10k "
+            "tokens; OpenAI's own examples use 200k. Values below the "
+            "model's effective minimum surface a `compact_threshold is "
+            "not enabled` 400 from the upstream API. No-op on non-cloud "
+            "OpenAI-compatible bases (ollama / llama.cpp / vLLM) and on "
+            "every other provider."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
