@@ -131,9 +131,9 @@ def test_stale_kill_skips_wait():
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(since_kill = long_ago, max_wait = 2.0, interval = 0.25)
         )
-    assert state["calls"] == 0, (
-        "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
-    )
+    assert (
+        state["calls"] == 0
+    ), "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
 
 
 def test_empty_first_sample_returns_immediately():
@@ -144,9 +144,7 @@ def test_empty_first_sample_returns_immediately():
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.25))
         elapsed = time.monotonic() - start
     assert state["calls"] == 1
-    assert elapsed < 0.5, (
-        "CPU-only short-circuit must not sleep through the interval"
-    )
+    assert elapsed < 0.5, "CPU-only short-circuit must not sleep through the interval"
 
 
 def test_first_probe_raises_returns_without_polling():
@@ -204,9 +202,7 @@ def test_max_wait_respected_when_never_settles():
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
         elapsed = time.monotonic() - start
     # We must stop near max_wait, not run forever. Generous upper bound for CI.
-    assert 0.3 <= elapsed < 2.0, (
-        f"helper ignored max_wait: elapsed={elapsed:.3f}s"
-    )
+    assert 0.3 <= elapsed < 2.0, f"helper ignored max_wait: elapsed={elapsed:.3f}s"
 
 
 def test_max_wait_respected_when_probe_is_slow():
@@ -225,9 +221,9 @@ def test_max_wait_respected_when_probe_is_slow():
         elapsed = time.monotonic() - start
     # First probe (0.30 s) + at most one short clipped sleep + bail.
     # Hard cap well below the old behaviour of 0.30 + 0.25 + 0.30 = 0.85.
-    assert elapsed < 0.85, (
-        f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
-    )
+    assert (
+        elapsed < 0.85
+    ), f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
 
 
 def test_gpu_index_set_change_returns():
@@ -249,8 +245,8 @@ def test_per_gpu_stability_one_still_draining():
     ctx, state = _patch_probe(
         [
             [(0, 10000), (1, 5000)],
-            [(0, 10050), (1, 6500)],   # GPU 1 still draining (1500 jump)
-            [(0, 10080), (1, 6520)],   # GPU 1 settles (20 delta)
+            [(0, 10050), (1, 6500)],  # GPU 1 still draining (1500 jump)
+            [(0, 10080), (1, 6520)],  # GPU 1 settles (20 delta)
         ]
     )
     with ctx:
@@ -263,7 +259,7 @@ def test_tolerance_two_percent_for_large_cards():
     ctx, state = _patch_probe(
         [
             [(0, 80000)],
-            [(0, 80700)],   # 700 MiB delta < 2% of 80000 = 1600 MiB
+            [(0, 80700)],  # 700 MiB delta < 2% of 80000 = 1600 MiB
         ]
     )
     with ctx:
@@ -277,6 +273,7 @@ def test_load_model_calls_helper_outside_lock_and_uses_last_kill_timestamp():
     ``inspect.getsource`` pattern from ``test_llama_cpp_no_context_shift``.
     """
     import inspect
+
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_wait_for_vram_settle" in src
     assert "since_kill" in src
@@ -302,10 +299,17 @@ def test_kill_process_records_timestamp_on_actual_kill():
     assert backend._last_kill_monotonic == 0.0
 
     class _FakeProcess:
-        def terminate(self): pass
-        def wait(self, timeout = None): return 0
-        def kill(self): pass
-        def poll(self): return 0
+        def terminate(self):
+            pass
+
+        def wait(self, timeout = None):
+            return 0
+
+        def kill(self):
+            pass
+
+        def poll(self):
+            return 0
 
     backend._process = _FakeProcess()
     before = time.monotonic()
