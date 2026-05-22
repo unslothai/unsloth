@@ -155,12 +155,12 @@ class TestParser:
         # Brace-balance scan must handle nested objects and braces
         # inside string literals.
         text = (
-            '[TOOL_CALLS]web_search'
-            '{"query":"a {nested} brace","opts":{"limit":5}}'
+            "[TOOL_CALLS]web_search" '{"query":"a {nested} brace","opts":{"limit":5}}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         import json as _json
+
         args = _json.loads(result[0]["function"]["arguments"])
         assert args["query"] == "a {nested} brace"
         assert args["opts"] == {"limit": 5}
@@ -169,16 +169,16 @@ class TestParser:
         # Bracket-tag preceded and followed by prose is still
         # recognised.
         text = (
-            'Sure, I will look that up.\n'
+            "Sure, I will look that up.\n"
             '[TOOL_CALLS]web_search{"query":"weather"}\n'
-            'Calling now.'
+            "Calling now."
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
 
     def test_mistral_bracket_bad_json_dropped(self):
-        text = '[TOOL_CALLS]web_search{not valid}'
+        text = "[TOOL_CALLS]web_search{not valid}"
         result = parse_tool_calls_from_text(text)
         # No usable tool call; callers fall back to text.
         assert result == []
@@ -202,15 +202,14 @@ class TestParser:
 
     def test_rehearsal_with_prose(self):
         text = (
-            'I should call the python tool. Like this: '
-            'python[ARGS]{"code":"x = 1"}'
+            "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
 
     def test_rehearsal_bad_json_dropped(self):
-        text = 'python[ARGS]{not valid json}'
+        text = "python[ARGS]{not valid json}"
         result = parse_tool_calls_from_text(text)
         assert result == []
 
@@ -221,7 +220,7 @@ class TestParser:
         # tool call. The think block must be stripped before pattern
         # matching so the post-thinking call is recognised.
         text = (
-            '<think>I will use web_search to find the weather.</think>'
+            "<think>I will use web_search to find the weather.</think>"
             '<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>'
         )
         result = parse_tool_calls_from_text(text)
@@ -230,7 +229,7 @@ class TestParser:
 
     def test_think_block_stripped_before_bracket_tag(self):
         text = (
-            '<think>Let me search for that.</think>\n'
+            "<think>Let me search for that.</think>\n"
             '[TOOL_CALLS]web_search{"query":"weather"}'
         )
         result = parse_tool_calls_from_text(text)
@@ -240,7 +239,7 @@ class TestParser:
     def test_uppercase_think_tag_stripped(self):
         # Some templates use [THINK]...[/THINK] instead of <think>.
         text = (
-            '[THINK]planning my next call[/THINK]'
+            "[THINK]planning my next call[/THINK]"
             '[TOOL_CALLS]python{"code":"print(1)"}'
         )
         result = parse_tool_calls_from_text(text)
@@ -252,10 +251,10 @@ class TestParser:
         # rehearsing, not an actual call. The <think> wrapper is
         # stripped first, removing the inner markup.
         text = (
-            '<think>I might call '
+            "<think>I might call "
             '<tool_call>{"name":"web_search","arguments":{}}</tool_call> '
-            'but I am not sure</think>\n'
-            'Let me just answer directly.'
+            "but I am not sure</think>\n"
+            "Let me just answer directly."
         )
         result = parse_tool_calls_from_text(text)
         assert result == []

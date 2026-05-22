@@ -89,9 +89,7 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 # Thinking blocks stripped before any tool-call pattern is matched.
-_THINK_TAG_RE = re.compile(
-    r"<think>.*?</think>|\[THINK\].*?\[/THINK\]", re.DOTALL
-)
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>|\[THINK\].*?\[/THINK\]", re.DOTALL)
 
 # Mistral ``[TOOL_CALLS]name{json}`` prefix. Args extracted via
 # brace-balance scan to handle nested JSON.

@@ -50,9 +50,7 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 # Thinking blocks stripped before any tool-call pattern is matched.
-_THINK_TAG_RE = re.compile(
-    r"<think>.*?</think>|\[THINK\].*?\[/THINK\]", re.DOTALL
-)
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>|\[THINK\].*?\[/THINK\]", re.DOTALL)
 
 # Mistral ``[TOOL_CALLS]name{json}`` prefix.
 _MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")
@@ -234,14 +232,16 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 continue
             if not isinstance(args, dict):
                 continue
-            tool_calls.append({
-                "id": f"call_{len(tool_calls)}",
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "arguments": json.dumps(args),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
 
     # Pattern 4: Rehearsal name[ARGS]{json}.
     if not tool_calls:
@@ -257,14 +257,16 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 continue
             if not isinstance(args, dict):
                 continue
-            tool_calls.append({
-                "id": f"call_{len(tool_calls)}",
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "arguments": json.dumps(args),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args),
+                    },
+                }
+            )
 
     return tool_calls
 
