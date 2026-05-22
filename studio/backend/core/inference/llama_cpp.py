@@ -2571,11 +2571,12 @@ class LlamaCppBackend:
                                 self._audio_probed = False
                                 return False
                     elif detected:
-                        # Guarded write -- racing /unload must win.
+                        # csm / whisper / audio_vlm: track type but keep
+                        # _is_audio False -- GGUF TTS routing only fires
+                        # for snac/bicodec/dac.
                         with self._lock:
                             if not self._healthy:
                                 return False
-                            self._is_audio = True
                             self._audio_type = detected
                 if not self._healthy:
                     return False
@@ -3317,11 +3318,11 @@ class LlamaCppBackend:
                         self._audio_probed = False
                         return False
             elif detected:
-                # csm / whisper / audio_vlm: guarded write vs racing /unload.
+                # csm / whisper / audio_vlm: track type but keep _is_audio
+                # False -- GGUF TTS routing only fires for snac/bicodec/dac.
                 with self._lock:
                     if not self._healthy:
                         return False
-                    self._is_audio = True
                     self._audio_type = detected
 
             if not self._healthy:
