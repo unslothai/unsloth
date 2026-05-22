@@ -92,14 +92,21 @@ function RootLayout() {
     },
   });
 
+  // `/settings` is a modal deep link: its route throws `redirect` in
+  // `beforeLoad`, so by the time `useMatches` resolves we're on the
+  // post-auth route (usually `/chat`). Prefer "Settings" while the
+  // dialog is open so the tab title matches what the user sees.
+  const settingsDialogOpen = useSettingsDialogStore((s) => s.open);
+  const documentTitle = settingsDialogOpen ? "Settings" : matchedTitle;
+
   // `useLayoutEffect` so the tab title is updated synchronously before the
   // browser paints the new route. Using `useEffect` here let the previous
   // route's title flash for one frame during in-app navigation.
   useLayoutEffect(() => {
-    document.title = matchedTitle
-      ? `${matchedTitle} | ${DEFAULT_DOCUMENT_TITLE}`
+    document.title = documentTitle
+      ? `${documentTitle} - ${DEFAULT_DOCUMENT_TITLE}`
       : DEFAULT_DOCUMENT_TITLE;
-  }, [matchedTitle]);
+  }, [documentTitle]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
