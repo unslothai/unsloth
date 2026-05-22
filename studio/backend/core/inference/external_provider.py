@@ -2685,9 +2685,7 @@ class ExternalProviderClient:
             # OpenAI may attach tool_calls on an assistant message.
             # Translate into Gemini's functionCall part so the prior
             # turn's tool request round-trips back to the model.
-            tool_calls = (
-                msg.get("tool_calls") if isinstance(msg, dict) else None
-            )
+            tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if not isinstance(tc, dict):
@@ -2717,9 +2715,7 @@ class ExternalProviderClient:
                 # OpenAI's role="tool" follow-up carries the function
                 # result. Gemini's matching shape is a role="user" turn
                 # with a functionResponse part.
-                tool_name = (
-                    msg.get("name") or msg.get("tool_name") or ""
-                )
+                tool_name = msg.get("name") or msg.get("tool_name") or ""
                 response_payload: Any
                 if isinstance(content, str):
                     try:
@@ -2770,9 +2766,8 @@ class ExternalProviderClient:
         # we translate to a tool_end with image_b64/image_mime so the
         # chat UI renders the picture inline. See
         # https://ai.google.dev/gemini-api/docs/image-generation.
-        is_image_model = (
-            "-image" in model.lower()
-            or bool(enabled_tools and "image_generation" in enabled_tools)
+        is_image_model = "-image" in model.lower() or bool(
+            enabled_tools and "image_generation" in enabled_tools
         )
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
@@ -2804,9 +2799,7 @@ class ExternalProviderClient:
         if isinstance(enable_prompt_caching, str) and enable_prompt_caching:
             body["cachedContent"] = enable_prompt_caching
 
-        url = (
-            f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
-        )
+        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
         logger.info(
@@ -2863,9 +2856,7 @@ class ExternalProviderClient:
 
         last_usage: Optional[dict[str, Any]] = None
         emitted_function_call_ids: set[str] = set()
-        web_search_active = bool(
-            enabled_tools and "web_search" in enabled_tools
-        )
+        web_search_active = bool(enabled_tools and "web_search" in enabled_tools)
         web_search_tool_id = "gemini_web_search"
         web_search_tool_started = False
         web_search_tool_ended = False
@@ -2918,7 +2909,7 @@ class ExternalProviderClient:
                             continue
                         if not line.startswith("data:"):
                             continue
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                         if not data_str or data_str == "[DONE]":
                             continue
                         try:
@@ -2962,16 +2953,13 @@ class ExternalProviderClient:
                                         if not u or not isinstance(u, str):
                                             continue
                                         if any(
-                                            c["url"] == u
-                                            for c in web_search_citations
+                                            c["url"] == u for c in web_search_citations
                                         ):
                                             continue
                                         web_search_citations.append(
                                             {
                                                 "url": u,
-                                                "title": (
-                                                    web.get("title") or u
-                                                ),
+                                                "title": (web.get("title") or u),
                                                 "snippet": "",
                                             }
                                         )
@@ -3037,10 +3025,7 @@ class ExternalProviderClient:
                                     inline = part.get("inlineData")
                                     if isinstance(inline, dict):
                                         b64 = inline.get("data") or ""
-                                        mime = (
-                                            inline.get("mimeType")
-                                            or "image/png"
-                                        )
+                                        mime = inline.get("mimeType") or "image/png"
                                         if b64:
                                             img_id = f"img_{time.time_ns()}"
                                             yield _emit_tool_event(
@@ -3065,9 +3050,7 @@ class ExternalProviderClient:
                                             )
                             finish_reason = cand.get("finishReason")
                             if isinstance(finish_reason, str):
-                                mapped = _finish_reason_map.get(
-                                    finish_reason, "stop"
-                                )
+                                mapped = _finish_reason_map.get(finish_reason, "stop")
                                 if mapped is not None:
                                     final_finish_reason = mapped
 
@@ -3083,9 +3066,7 @@ class ExternalProviderClient:
                     ):
                         blocks: list[str] = []
                         for cit in web_search_citations:
-                            line_out = (
-                                f"Title: {cit['title']}\nURL: {cit['url']}"
-                            )
+                            line_out = f"Title: {cit['title']}\nURL: {cit['url']}"
                             if cit.get("snippet"):
                                 line_out += f"\nSnippet: {cit['snippet']}"
                             blocks.append(line_out)
@@ -3123,16 +3104,13 @@ class ExternalProviderClient:
                     # already understand the shape).
                     if isinstance(last_usage, dict):
                         translated_usage = {
-                            "input_tokens": (
-                                last_usage.get("promptTokenCount") or 0
-                            ),
+                            "input_tokens": (last_usage.get("promptTokenCount") or 0),
                             "output_tokens": (
                                 last_usage.get("candidatesTokenCount") or 0
                             ),
                             "input_tokens_details": {
                                 "cached_tokens": (
-                                    last_usage.get("cachedContentTokenCount")
-                                    or 0
+                                    last_usage.get("cachedContentTokenCount") or 0
                                 )
                             },
                         }
@@ -3150,9 +3128,7 @@ class ExternalProviderClient:
                     raise
 
         except httpx.ConnectError as exc:
-            logger.error(
-                "Connection error to %s: %s", self.provider_type, exc
-            )
+            logger.error("Connection error to %s: %s", self.provider_type, exc)
             yield _error_sse_line(
                 502,
                 f"Failed to connect to {self.provider_type}: {exc}",

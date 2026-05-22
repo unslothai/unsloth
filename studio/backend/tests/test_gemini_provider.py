@@ -107,9 +107,7 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
 
     _mock_http(monkeypatch, handler)
 
-    messages = kwargs.pop(
-        "messages", [{"role": "user", "content": "hi"}]
-    )
+    messages = kwargs.pop("messages", [{"role": "user", "content": "hi"}])
     model = kwargs.pop("model", "gemini-2.5-flash")
     temperature = kwargs.pop("temperature", 0.7)
     top_p = kwargs.pop("top_p", 0.95)
@@ -144,9 +142,7 @@ def _collect(monkeypatch, sse_events, **kwargs) -> list[str]:
 
     _mock_http(monkeypatch, handler)
 
-    messages = kwargs.pop(
-        "messages", [{"role": "user", "content": "hi"}]
-    )
+    messages = kwargs.pop("messages", [{"role": "user", "content": "hi"}])
     model = kwargs.pop("model", "gemini-2.5-flash")
     temperature = kwargs.pop("temperature", 0.7)
     top_p = kwargs.pop("top_p", 0.95)
@@ -176,7 +172,7 @@ def _parse_chunks(lines: list[str]) -> list[dict]:
     for raw in lines:
         if not raw.startswith("data:"):
             continue
-        payload = raw[len("data:"):].strip()
+        payload = raw[len("data:") :].strip()
         if not payload or payload == "[DONE]":
             continue
         try:
@@ -202,9 +198,7 @@ def test_request_body_uses_contents_and_parts_shape(monkeypatch):
     )
     body = captured["body"]
     # system -> systemInstruction
-    assert body["systemInstruction"] == {
-        "parts": [{"text": "Be brief."}]
-    }, body
+    assert body["systemInstruction"] == {"parts": [{"text": "Be brief."}]}, body
     # user/assistant -> contents with role user/model
     assert body["contents"] == [
         {"role": "user", "parts": [{"text": "Hello"}]},
@@ -349,14 +343,10 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
         model = "gemini-2.5-flash-image",
     )
     chunks = _parse_chunks(lines)
-    tool_events = [
-        c["_toolEvent"] for c in chunks if "_toolEvent" in c
-    ]
+    tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
     starts = [e for e in tool_events if e.get("type") == "tool_start"]
     ends = [e for e in tool_events if e.get("type") == "tool_end"]
-    image_starts = [
-        e for e in starts if e.get("tool_name") == "image_generation"
-    ]
+    image_starts = [e for e in starts if e.get("tool_name") == "image_generation"]
     image_ends = [e for e in ends if e.get("image_b64")]
     assert len(image_starts) == 1, tool_events
     assert len(image_ends) == 1, tool_events
@@ -481,9 +471,7 @@ def test_usage_chunk_translates_gemini_token_counts(monkeypatch):
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
-    usage_chunks = [
-        c for c in chunks if c.get("choices") == [] and "usage" in c
-    ]
+    usage_chunks = [c for c in chunks if c.get("choices") == [] and "usage" in c]
     assert len(usage_chunks) == 1, chunks
     usage = usage_chunks[0]["usage"]
     assert usage["prompt_tokens"] == 1234
@@ -554,13 +542,10 @@ def test_finish_reason_translation(monkeypatch, gemini_reason, openai_reason):
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
     finish_chunks = [
-        c
-        for c in chunks
-        if any(ch.get("finish_reason") for ch in c.get("choices", []))
+        c for c in chunks if any(ch.get("finish_reason") for ch in c.get("choices", []))
     ]
     assert any(
-        ch["choices"][0]["finish_reason"] == openai_reason
-        for ch in finish_chunks
+        ch["choices"][0]["finish_reason"] == openai_reason for ch in finish_chunks
     ), finish_chunks
 
 
@@ -612,8 +597,7 @@ def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     web_search_ends = [
         e
         for e in tool_events
-        if e.get("type") == "tool_end"
-        and e.get("tool_call_id") == "gemini_web_search"
+        if e.get("type") == "tool_end" and e.get("tool_call_id") == "gemini_web_search"
     ]
     assert len(web_search_ends) == 1, tool_events
     result = web_search_ends[0]["result"]
