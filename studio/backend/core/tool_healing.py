@@ -50,7 +50,12 @@ _TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 # Thinking blocks stripped before any tool-call pattern is matched.
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>|\[THINK\].*?\[/THINK\]", re.DOTALL)
+# Accept an unclosed trailing block during streaming. Without that, a
+# rehearsed tool call inside an open <think> survives this pass and
+# may be executed as a real call when the surrounding parser sees it.
+_THINK_TAG_RE = re.compile(
+    r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL
+)
 
 # Mistral ``[TOOL_CALLS]name{json}`` prefix.
 _MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")

@@ -4703,7 +4703,17 @@ class LlamaCppBackend:
                                             if not stripped_buf:
                                                 continue
 
-                                            # Check tool signal prefixes
+                                            # Check tool signal prefixes. Most
+                                            # signals are emitted at the start
+                                            # of a tool call (so `startswith`
+                                            # is the right test), but rehearsal
+                                            # tags like `[ARGS]` arrive in the
+                                            # middle of the buffer (e.g.
+                                            # `web_search[ARGS]{...}`). For
+                                            # those, fall back to a substring
+                                            # check so the BUFFERING window can
+                                            # still catch rehearsal markup
+                                            # before it streams out as content.
                                             is_prefix = False
                                             is_match = False
                                             for sig in _TOOL_XML_SIGNALS:
@@ -4712,6 +4722,12 @@ class LlamaCppBackend:
                                                     break
                                                 if sig.startswith(stripped_buf):
                                                     is_prefix = True
+                                                    break
+                                                if (
+                                                    sig.startswith("[")
+                                                    and sig in stripped_buf
+                                                ):
+                                                    is_match = True
                                                     break
 
                                             if is_match:

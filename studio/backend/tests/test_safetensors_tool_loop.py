@@ -142,6 +142,38 @@ class TestParser:
         assert isinstance(result[0]["function"]["arguments"], str)
         assert "weather" in result[0]["function"]["arguments"]
 
+    def test_rehearsal_inside_unclosed_think_is_ignored(self):
+        """Rehearsal-shaped markup inside an unclosed <think> block must
+        not be executed as a real tool call. Mid-stream the </think>
+        tag has not arrived yet, so the strip regex has to accept
+        end-of-string as a terminator. Regression for the Gemini
+        high-severity flag on this PR."""
+        text = (
+            "<think>I should call web_search[ARGS]"
+            '{"query":"weather"} next to find the answer.'
+        )
+        result = parse_tool_calls_from_text(text)
+        # Inside an unclosed think block, parse_tool_calls_from_text
+        # must yield no calls.
+        assert result == []
+
+    def test_rehearsal_inside_unclosed_bracket_think_is_ignored(self):
+        text = (
+            "[THINK]planning to use python[ARGS]"
+            '{"code":"print(1)"} but not yet.'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert result == []
+
+    def test_rehearsal_after_closed_think_still_parsed(self):
+        text = (
+            "<think>planning</think>"
+            'python[ARGS]{"code":"print(1)"}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "python"
+
     def test_mistral_bracket_with_whitespace(self):
         # Optional whitespace (including newlines) is permitted between
         # the name and the opening brace.
