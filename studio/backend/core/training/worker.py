@@ -2230,13 +2230,31 @@ def run_training_process(
                 _job_id = config.get("job_id")
 
                 class _StudioActivationCapture(ActivationCapture):
-                    """Extends ActivationCapture to also write to the Studio DB."""
+                    """ActivationCapture variant that writes only to the Studio SQLite DB.
+
+                    No JSONL files are created.  The base-class output_dir is
+                    pointed at a throwaway temp dir so ``super().__init__``
+                    doesn't crash, but ``_log_path`` is immediately redirected
+                    to ``os.devnull`` so the base-class flush path can never
+                    touch the filesystem.
+                    """
 
                     def __init__(self, model, cfg, job_id):
                         super().__init__(model, cfg)
+                        # Redirect all base-class file writes to /dev/null
+                        self._log_path = os.devnull
                         self._studio_job_id = job_id
                         if job_id:
                             try:
+                                # Collect LoRA target names now that
+                                # _lora_modules has been populated by super().
+                                _lora_targets: list = []
+                                if self._lora_modules:
+                                    _all_t: set = set()
+                                    for _mods in self._lora_modules.values():
+                                        for _name, _, _ in _mods:
+                                            _all_t.add(_name)
+                                    _lora_targets = sorted(_all_t)
                                 _meta = {
                                     "model_name": getattr(self, "_model_name", None),
                                     "num_layers": len(getattr(self, "_layers", [])),
@@ -2252,7 +2270,7 @@ def run_training_process(
                                     "capture_mlp_out": cfg.capture_mlp_out,
                                     "capture_gradients": cfg.capture_gradients,
                                     "capture_lora_norms": cfg.capture_lora_norms,
-                                    "lora_targets": [],
+                                    "lora_targets": _lora_targets,
                                 }
                                 upsert_activation_metadata(job_id, _meta)
                             except Exception as _e:
@@ -2261,19 +2279,37 @@ def run_training_process(
                                 )
 
                     def flush(self):
-                        # Snapshot buffer BEFORE super().flush() clears it
-                        has_data = bool(self._buffer or self._grad_buffer)
-                        if has_data:
-                            _step = self._step
-                            _loss = self._loss
-                            _layers = {str(k): v for k, v in self._buffer.items()}
-                            _grad_norms = (
-                                {str(k): v for k, v in self._grad_buffer.items()}
-                                if self._grad_buffer
-                                else None
-                            )
-                        super().flush()
-                        if has_data and self._studio_job_id:
+                        """Write to SQLite DB only — no JSONL file I/O."""
+                        if not self._buffer and not self._grad_buffer:
+                            self._should_capture = False
+                            return
+
+                        _step = self._step
+                        _loss = self._loss
+                        _layers = {str(k): v for k, v in self._buffer.items()}
+                        _grad_norms = (
+                            {str(k): v for k, v in self._grad_buffer.items()}
+                            if self._grad_buffer
+                            else None
+                        )
+
+                        # Compute LoRA norms (mirrors base-class logic)
+                        _lora_norms = None
+                        if self.config.capture_lora_norms and self._lora_modules:
+                            _raw = self._compute_lora_norms()
+                            if _raw:
+                                _lora_norms = {
+                                    f"{_li}.{_tgt}": _norm
+                                    for _li, _tgts in _raw.items()
+                                    for _tgt, _norm in _tgts.items()
+                                }
+
+                        # Clear capture state (same as base class)
+                        self._buffer.clear()
+                        self._grad_buffer.clear()
+                        self._should_capture = False
+
+                        if self._studio_job_id:
                             try:
                                 insert_activation_record(
                                     self._studio_job_id,
@@ -2281,7 +2317,7 @@ def run_training_process(
                                     _loss,
                                     _layers,
                                     _grad_norms,
-                                    None,
+                                    _lora_norms,
                                 )
                             except Exception as _e:
                                 logger.warning(
@@ -2293,8 +2329,11 @@ def run_training_process(
                 _act_interval = (
                     max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
                 )
+                import tempfile as _tempfile
                 _act_config = ActivationCaptureConfig(
-                    output_dir = os.path.join(output_dir, "activation_logs"),
+                    # output_dir is required by the base class but we redirect
+                    # _log_path to os.devnull in __init__ so no files are kept.
+                    output_dir = _tempfile.mkdtemp(prefix = "unsloth_act_"),
                     capture_interval = _act_interval,
                 )
                 _act_capture = _StudioActivationCapture(

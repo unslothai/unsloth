@@ -914,22 +914,22 @@ def get_activations(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Return activation log data for the current (or specified) training run.
+    Return activation data for a training run from the Studio SQLite DB.
 
-    Tries the Studio DB first (keyed by job_id), then falls back to reading
-    ``activation_logs/metadata.json`` and ``activation_logs/activation_log.jsonl``
-    from the training output directory.  Returns ``{"metadata": {...}, "records": [...]}``
-    with an empty records list when no data is available yet.
+    Resolves the job_id from the query param or the active training backend,
+    then reads from ``activation_run_metadata`` and ``activation_records``.
+    Returns ``{"metadata": {...}, "records": [...]}`` with an empty records
+    list when no data is available yet.
+
+    The ``output_dir`` parameter is accepted for API compatibility but ignored
+    — all activation data is stored in the DB.
     """
-    import json as _json_mod
-
-    # ── DB-first lookup ───────────────────────────────────────────────────────
-    # Resolve job_id from query param or from the active training backend.
+    # Resolve job_id from the query param or from the active training backend.
     _job_id = job_id
     if not _job_id:
         try:
             backend = get_training_backend()
-            _job_id = getattr(backend, "current_job_id", None)
+            _job_id = getattr(backend, "current_job_id", None) or None
         except Exception:
             pass
 
@@ -943,71 +943,21 @@ def get_activations(
                         "step": r["step"],
                         "loss": r["loss"],
                         "layers": r["layers"],
-                        **({"grad_norms": r["grad_norms"]} if r.get("grad_norms") else {}),
-                        **({"lora_norms": r["lora_norms"]} if r.get("lora_norms") else {}),
+                        **(
+                            {"grad_norms": r["grad_norms"]}
+                            if r.get("grad_norms")
+                            else {}
+                        ),
+                        **(
+                            {"lora_norms": r["lora_norms"]}
+                            if r.get("lora_norms")
+                            else {}
+                        ),
                     }
                     for r in db_records
                 ]
                 return {"metadata": db_meta, "records": wire_records}
         except Exception as exc:
-            logger.warning("DB activation read failed, falling back to files: %s", exc)
+            logger.warning("DB activation read failed: %s", exc)
 
-    # ── JSONL file fallback ───────────────────────────────────────────────────
-    candidate_dirs: list[Path] = []
-
-    if output_dir:
-        candidate_dirs.append(Path(output_dir))
-    else:
-        # Try the current backend's active output dir (set as soon as training begins)
-        # then fall back to _output_dir (set on completion)
-        try:
-            backend = get_training_backend()
-            active_out = getattr(backend, "_active_output_dir", None)
-            if active_out:
-                candidate_dirs.append(Path(active_out))
-            backend_out = getattr(backend, "_output_dir", None)
-            if backend_out and backend_out != active_out:
-                candidate_dirs.append(Path(backend_out))
-        except Exception:
-            pass
-
-    # Find the activation_logs directory
-    activation_dir: Optional[Path] = None
-    for base in candidate_dirs:
-        candidate = base / "activation_logs"
-        if candidate.is_dir():
-            activation_dir = candidate
-            break
-
-    if activation_dir is None:
-        return {"metadata": None, "records": []}
-
-    metadata_path = activation_dir / "metadata.json"
-    log_path = activation_dir / "activation_log.jsonl"
-
-    metadata = None
-    if metadata_path.exists():
-        try:
-            with open(metadata_path, "r", encoding = "utf-8") as f:
-                metadata = _json_mod.load(f)
-        except Exception as exc:
-            logger.warning("Failed to read activation metadata: %s", exc)
-
-    records: list[dict] = []
-    if log_path.exists():
-        try:
-            with open(log_path, "r", encoding = "utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = _json_mod.loads(line)
-                        if since_step is None or record.get("step", 0) > since_step:
-                            records.append(record)
-                    except _json_mod.JSONDecodeError:
-                        pass
-        except Exception as exc:
-            logger.warning("Failed to read activation log: %s", exc)
-
-    return {"metadata": metadata, "records": records}
+    return {"metadata": None, "records": []}
