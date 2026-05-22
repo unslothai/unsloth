@@ -5020,6 +5020,15 @@ class LlamaCppBackend:
                 # tool-result tied to the hallucinated call id and
                 # re-enter the model. Skips when the budget is spent so
                 # the existing error path still runs.
+                #
+                # ``malformed_args`` (non-object arguments) only fires
+                # when auto-heal is OFF. With auto_heal_tool_calls=True
+                # the dispatch path downstream coerces bare-string
+                # arguments (e.g. a raw web_search query) into a valid
+                # `{"query": ...}` shape, and rejecting those calls
+                # here would defeat the heal. The unknown-tool branch
+                # still runs in either mode because no amount of
+                # healing can invent a tool that isn't registered.
                 _validation_problem = None
                 if (
                     tool_calls
@@ -5032,6 +5041,10 @@ class LlamaCppBackend:
                         if _vname not in _allowed_tool_names:
                             _validation_problem = ("unknown_tool", _vtc, _vname)
                             break
+                        if auto_heal_tool_calls:
+                            # Dispatch will heal non-object arguments; do
+                            # not pre-empt it by rejecting them here.
+                            continue
                         _vraw = _vfn.get("arguments", "")
                         if isinstance(_vraw, str):
                             try:
