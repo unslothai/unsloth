@@ -109,18 +109,14 @@ def test_anthropic_stop_sequences_dedup_and_drop_empties(monkeypatch):
     """Whitespace-only / duplicate chips shouldn't reach the wire and
     waste budget against Anthropic's 16-entry cap."""
     captured = _install_mock(monkeypatch)
-    body = _drive_anthropic(
-        captured, stop = ["END", "", "END", "DONE", "  ", "END"]
-    )
+    body = _drive_anthropic(captured, stop = ["END", "", "END", "DONE", "  ", "END"])
     # Order preserved on first sight, duplicates and empties dropped.
     assert body.get("stop_sequences") == ["END", "DONE", "  "], body
 
 
 def test_anthropic_stop_sequences_truncated_to_16(monkeypatch):
     captured = _install_mock(monkeypatch)
-    body = _drive_anthropic(
-        captured, stop = [f"S{i}" for i in range(20)]
-    )
+    body = _drive_anthropic(captured, stop = [f"S{i}" for i in range(20)])
     assert len(body.get("stop_sequences", [])) == 16, body
     assert body["stop_sequences"][0] == "S0"
     assert body["stop_sequences"][-1] == "S15"
@@ -242,9 +238,7 @@ def test_openai_compat_truncates_stop_to_four(monkeypatch):
 def test_openai_compat_stop_dedup_and_drop_empties(monkeypatch):
     """Duplicates and empties shouldn't eat into the 4-entry cap."""
     captured = _install_mock(monkeypatch, sse_payload = _oai_done_payload())
-    body = _drive_openai_compat(
-        captured, stop = ["END", "", "END", "DONE", "FIN", "END"]
-    )
+    body = _drive_openai_compat(captured, stop = ["END", "", "END", "DONE", "FIN", "END"])
     assert body.get("stop") == ["END", "DONE", "FIN"], body
 
 
