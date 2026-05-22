@@ -117,9 +117,7 @@ class CompactStrategy(ABC):
     """Interface for context-compaction strategies."""
 
     @abstractmethod
-    def compact(
-        self, messages: list[dict], budget_tokens: int
-    ) -> list[dict]:
+    def compact(self, messages: list[dict], budget_tokens: int) -> list[dict]:
         """Return a (possibly shorter) list of messages within
         ``budget_tokens``. Returns ``messages`` unchanged when no
         compaction is needed or possible.
@@ -130,9 +128,7 @@ class CompactStrategy(ABC):
 class NoCompact(CompactStrategy):
     """Passthrough strategy. Returns ``messages`` unchanged."""
 
-    def compact(
-        self, messages: list[dict], budget_tokens: int
-    ) -> list[dict]:
+    def compact(self, messages: list[dict], budget_tokens: int) -> list[dict]:
         return list(messages)
 
 
@@ -147,9 +143,7 @@ class SlidingWindowCompact(CompactStrategy):
     within ``budget_tokens`` or when there is nothing left to drop.
     """
 
-    def __init__(
-        self, keep_recent: int = 2, compact_threshold: float = 0.85
-    ) -> None:
+    def __init__(self, keep_recent: int = 2, compact_threshold: float = 0.85) -> None:
         if keep_recent < 0:
             raise ValueError("keep_recent must be >= 0")
         if not (0.0 < compact_threshold <= 1.0):
@@ -157,9 +151,7 @@ class SlidingWindowCompact(CompactStrategy):
         self.keep_recent = keep_recent
         self.compact_threshold = compact_threshold
 
-    def compact(
-        self, messages: list[dict], budget_tokens: int
-    ) -> list[dict]:
+    def compact(self, messages: list[dict], budget_tokens: int) -> list[dict]:
         if budget_tokens <= 0 or not messages:
             return list(messages)
 
@@ -224,10 +216,7 @@ class SlidingWindowCompact(CompactStrategy):
         # Drop oldest-first until under threshold or nothing left.
         dropped: set[int] = set()
         for i in droppable:
-            kept = [
-                m for j, m in enumerate(messages)
-                if j not in dropped and j != i
-            ]
+            kept = [m for j, m in enumerate(messages) if j not in dropped and j != i]
             if estimate_tokens(kept) <= threshold:
                 dropped.add(i)
                 break

@@ -65,11 +65,13 @@ class TestEstimateTokens:
             _msg(
                 "assistant",
                 content = "",
-                tool_calls = [{
-                    "id": "c1",
-                    "type": "function",
-                    "function": {"name": "web_search", "arguments": '{"q":"hi"}'},
-                }],
+                tool_calls = [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"q":"hi"}'},
+                    }
+                ],
             )
         ]
         # 10 char arguments -> 2 tokens.
@@ -88,7 +90,11 @@ class TestNoCompact:
 
 class TestSlidingWindowUnderBudget:
     def test_no_op_when_already_fits(self):
-        msgs = [_msg("system", "be concise"), _msg("user", "hi"), _msg("assistant", "bye")]
+        msgs = [
+            _msg("system", "be concise"),
+            _msg("user", "hi"),
+            _msg("assistant", "bye"),
+        ]
         out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 1000)
         assert out == msgs
 
@@ -164,16 +170,23 @@ class TestSlidingWindowToolPairs:
             _msg(
                 "assistant",
                 content = "",
-                tool_calls = [{
-                    "id": "call_42",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": '{"q":"x"}',
-                    },
-                }],
+                tool_calls = [
+                    {
+                        "id": "call_42",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q":"x"}',
+                        },
+                    }
+                ],
             ),
-            _msg("tool", content = "result for x", tool_call_id = "call_42", name = "web_search"),
+            _msg(
+                "tool",
+                content = "result for x",
+                tool_call_id = "call_42",
+                name = "web_search",
+            ),
             _long("assistant", 800),
             _long("user", 800),
             _long("assistant", 800),
@@ -185,7 +198,8 @@ class TestSlidingWindowToolPairs:
         # Force aggressive compaction.
         out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 50)
         kept_assistant_with_calls = [
-            m for m in out
+            m
+            for m in out
             if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list)
         ]
         kept_tool_msgs = [m for m in out if m.get("role") == "tool"]
@@ -215,22 +229,27 @@ class TestSlidingWindowToolPairs:
             _msg(
                 "assistant",
                 content = "",
-                tool_calls = [{
-                    "id": "call_42",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": '{"q":"x"}',
-                    },
-                }],
+                tool_calls = [
+                    {
+                        "id": "call_42",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q":"x"}',
+                        },
+                    }
+                ],
             ),
             _msg("tool", content = "result", tool_call_id = "call_42", name = "web_search"),
             _msg("user", "thanks"),
         ]
         out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 50)
         ids = [
-            (m.get("role"), m.get("tool_call_id") or
-             (m.get("tool_calls") and m["tool_calls"][0].get("id")))
+            (
+                m.get("role"),
+                m.get("tool_call_id")
+                or (m.get("tool_calls") and m["tool_calls"][0].get("id")),
+            )
             for m in out
         ]
         assert ("assistant", "call_42") in ids
@@ -250,11 +269,13 @@ class TestStrategyRegistry:
 class TestConstructorValidation:
     def test_negative_keep_recent_raises(self):
         import pytest
+
         with pytest.raises(ValueError):
             SlidingWindowCompact(keep_recent = -1)
 
     def test_invalid_threshold_raises(self):
         import pytest
+
         with pytest.raises(ValueError):
             SlidingWindowCompact(compact_threshold = 0.0)
         with pytest.raises(ValueError):
