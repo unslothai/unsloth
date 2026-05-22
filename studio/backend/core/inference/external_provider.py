@@ -362,6 +362,23 @@ class ExternalProviderClient:
         treat them as opt-in here.
         """
         if not self._is_openai_compatible():
+            # Gemini speaks its own native REST shape (contents/parts);
+            # `_stream_gemini` translates request/response into the OpenAI
+            # Chat Completions chunk format the rest of Studio expects.
+            # API reference: https://ai.google.dev/gemini-api/docs
+            if self.provider_type == "gemini":
+                async for line in self._stream_gemini(
+                    messages,
+                    model,
+                    temperature,
+                    top_p,
+                    max_tokens,
+                    top_k,
+                    enabled_tools,
+                    enable_prompt_caching,
+                ):
+                    yield line
+                return
             async for line in self._stream_anthropic(
                 messages,
                 model,
@@ -2525,6 +2542,617 @@ class ExternalProviderClient:
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
+            yield _error_sse_line(
+                502,
+                f"Failed to connect to {self.provider_type}: {exc}",
+                self.provider_type,
+            )
+        except httpx.ReadTimeout as exc:
+            logger.error("Read timeout from %s: %s", self.provider_type, exc)
+            yield _error_sse_line(
+                504,
+                f"Timeout waiting for {self.provider_type} response",
+                self.provider_type,
+            )
+        except httpx.HTTPError as exc:
+            logger.error("HTTP error from %s: %s", self.provider_type, exc)
+            yield _error_sse_line(
+                502,
+                f"Error communicating with {self.provider_type}: {exc}",
+                self.provider_type,
+            )
+
+    async def _stream_gemini(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: Optional[int],
+        top_k: Optional[int] = None,
+        enabled_tools: Optional[list[str]] = None,
+        enable_prompt_caching: Optional[Any] = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Call Google's native Gemini API and translate its streaming
+        ``streamGenerateContent`` response into OpenAI Chat Completions
+        chunk format.
+
+        Gemini does NOT speak the OpenAI Chat Completions contract on
+        its primary endpoint. The wire shape is:
+
+          POST /v1beta/models/{model}:streamGenerateContent?alt=sse
+          {
+            "contents": [{"role": "user|model", "parts": [{"text": "..."}]}],
+            "systemInstruction": {"parts": [{"text": "..."}]},
+            "generationConfig": {"temperature": 0.7, "topP": 0.95, "topK": 40,
+                                  "maxOutputTokens": 1024},
+            "tools": [{"googleSearch": {}}, {"codeExecution": {}}],
+            "cachedContent": "<cache name>"  // optional, see caching docs
+          }
+
+        Streamed responses are SSE frames carrying partial
+        ``GenerateContentResponse`` objects:
+
+          {"candidates": [{"content": {"parts": [{"text": "Hello"}]},
+                            "finishReason": "STOP"}],
+           "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}}
+
+        Image generation uses the same endpoint with model
+        ``gemini-2.5-flash-image`` (also called Nano Banana); the
+        response carries an ``inlineData`` part with the base64 PNG
+        bytes and a ``mimeType``. We surface that through the same
+        ``tool_start`` / ``tool_end`` ``image_b64`` envelope the OpenAI
+        image_generation path uses, so the chat UI renders the image
+        inline with no extra plumbing.
+
+        References:
+          - https://ai.google.dev/gemini-api/docs/text-generation
+          - https://ai.google.dev/gemini-api/docs/function-calling
+          - https://ai.google.dev/gemini-api/docs/grounding
+          - https://ai.google.dev/gemini-api/docs/caching
+          - https://ai.google.dev/gemini-api/docs/image-generation
+        """
+        import json as _json
+
+        # Translate OpenAI messages -> Gemini contents. The `system`
+        # role becomes a top-level `systemInstruction`; user / assistant
+        # turns map to role="user" / role="model" with `parts` carrying
+        # text (and for vision turns, inline image data via
+        # `inlineData`).
+        system_text_parts: list[str] = []
+        contents: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "system":
+                if isinstance(content, str):
+                    if content:
+                        system_text_parts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "text"
+                            and part.get("text")
+                        ):
+                            system_text_parts.append(part["text"])
+                continue
+            # Map OpenAI roles to Gemini's two-role contract.
+            gemini_role = "model" if role == "assistant" else "user"
+            parts: list[dict[str, Any]] = []
+            if isinstance(content, str):
+                if content:
+                    parts.append({"text": content})
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype == "text":
+                        text = part.get("text", "")
+                        if text:
+                            parts.append({"text": text})
+                    elif ptype == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:"):
+                            header, _, b64data = url.partition(",")
+                            media_type = (
+                                header.split(";")[0].replace("data:", "")
+                                or "image/jpeg"
+                            )
+                            if b64data:
+                                parts.append(
+                                    {
+                                        "inlineData": {
+                                            "mimeType": media_type,
+                                            "data": b64data,
+                                        }
+                                    }
+                                )
+                        elif url:
+                            # Remote image. Gemini's `fileData` part takes
+                            # a `fileUri` for both Files-API uploads and
+                            # public https URLs.
+                            parts.append(
+                                {
+                                    "fileData": {
+                                        "fileUri": url,
+                                        "mimeType": "image/jpeg",
+                                    }
+                                }
+                            )
+            # OpenAI may attach tool_calls on an assistant message.
+            # Translate into Gemini's functionCall part so the prior
+            # turn's tool request round-trips back to the model.
+            tool_calls = (
+                msg.get("tool_calls") if isinstance(msg, dict) else None
+            )
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    if not isinstance(fn, dict):
+                        continue
+                    args_raw = fn.get("arguments") or "{}"
+                    if isinstance(args_raw, str):
+                        try:
+                            args = _json.loads(args_raw)
+                        except Exception:
+                            args = {"_raw": args_raw}
+                    elif isinstance(args_raw, dict):
+                        args = args_raw
+                    else:
+                        args = {}
+                    parts.append(
+                        {
+                            "functionCall": {
+                                "name": fn.get("name", ""),
+                                "args": args,
+                            }
+                        }
+                    )
+            if role == "tool":
+                # OpenAI's role="tool" follow-up carries the function
+                # result. Gemini's matching shape is a role="user" turn
+                # with a functionResponse part.
+                tool_name = (
+                    msg.get("name") or msg.get("tool_name") or ""
+                )
+                response_payload: Any
+                if isinstance(content, str):
+                    try:
+                        response_payload = _json.loads(content)
+                    except Exception:
+                        response_payload = {"result": content}
+                else:
+                    response_payload = content or {}
+                parts = [
+                    {
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": (
+                                response_payload
+                                if isinstance(response_payload, dict)
+                                else {"result": response_payload}
+                            ),
+                        }
+                    }
+                ]
+                gemini_role = "user"
+            if parts:
+                contents.append({"role": gemini_role, "parts": parts})
+
+        body: dict[str, Any] = {"contents": contents}
+        if system_text_parts:
+            body["systemInstruction"] = {
+                "parts": [{"text": "\n\n".join(system_text_parts)}]
+            }
+
+        # Generation config -- temperature / topP / topK / maxOutputTokens
+        # map straight across. The frontend capability matrix restricts
+        # the sliders the UI exposes for Gemini to this set.
+        gen_config: dict[str, Any] = {}
+        if temperature is not None:
+            gen_config["temperature"] = temperature
+        if top_p is not None:
+            gen_config["topP"] = top_p
+        if top_k is not None and top_k > 0:
+            gen_config["topK"] = top_k
+        if max_tokens is not None:
+            gen_config["maxOutputTokens"] = max_tokens
+
+        # Nano Banana image generation. When the user picked the image
+        # model (or asked for image_generation as a tool), tell Gemini
+        # to return image bytes by setting `responseModalities`. The
+        # response carries an `inlineData` part on each candidate which
+        # we translate to a tool_end with image_b64/image_mime so the
+        # chat UI renders the picture inline. See
+        # https://ai.google.dev/gemini-api/docs/image-generation.
+        is_image_model = (
+            "-image" in model.lower()
+            or bool(enabled_tools and "image_generation" in enabled_tools)
+        )
+        if is_image_model:
+            gen_config["responseModalities"] = ["TEXT", "IMAGE"]
+
+        if gen_config:
+            body["generationConfig"] = gen_config
+
+        # Server-side tool wiring.
+        # - `{googleSearch: {}}` -- grounded web search; citations come
+        #   back on `candidates[0].groundingMetadata.groundingChunks[].web`.
+        #   https://ai.google.dev/gemini-api/docs/grounding
+        # - `{codeExecution: {}}` -- sandboxed Python tool.
+        #   https://ai.google.dev/gemini-api/docs/code-execution
+        tools_array: list[dict[str, Any]] = []
+        if enabled_tools and "web_search" in enabled_tools:
+            tools_array.append({"googleSearch": {}})
+        if enabled_tools and "code_execution" in enabled_tools:
+            tools_array.append({"codeExecution": {}})
+        if tools_array:
+            body["tools"] = tools_array
+
+        # Prompt caching. The Gemini caching contract is "create a
+        # CachedContent resource, then pass its name on
+        # `cachedContent`". The cache itself is created out of band by
+        # the caller via POST /cachedContents; here we forward an
+        # explicit cache id when the dispatcher hands us one (a string
+        # value on enable_prompt_caching means "use this cache name").
+        # https://ai.google.dev/gemini-api/docs/caching
+        if isinstance(enable_prompt_caching, str) and enable_prompt_caching:
+            body["cachedContent"] = enable_prompt_caching
+
+        url = (
+            f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        )
+        completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
+
+        logger.info(
+            "Proxying Gemini streamGenerateContent to %s (model=%s, "
+            "tools=%s, image=%s)",
+            url,
+            model,
+            [list(t.keys())[0] for t in tools_array] if tools_array else [],
+            is_image_model,
+        )
+
+        def _emit_tool_event(payload: dict[str, Any]) -> str:
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": None,
+                    }
+                ],
+                "_toolEvent": payload,
+            }
+            return f"data: {_json.dumps(chunk)}"
+
+        def _text_chunk(text: str) -> str:
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": text},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            return f"data: {_json.dumps(chunk)}"
+
+        # Gemini finish reasons -> OpenAI vocabulary. Reference:
+        # https://ai.google.dev/api/rest/v1beta/Candidate#FinishReason
+        _finish_reason_map: dict[str, Optional[str]] = {
+            "STOP": "stop",
+            "MAX_TOKENS": "length",
+            "SAFETY": "content_filter",
+            "RECITATION": "content_filter",
+            "PROHIBITED_CONTENT": "content_filter",
+            "BLOCKLIST": "content_filter",
+            "MALFORMED_FUNCTION_CALL": "stop",
+            "OTHER": "stop",
+            "FINISH_REASON_UNSPECIFIED": None,
+        }
+
+        last_usage: Optional[dict[str, Any]] = None
+        emitted_function_call_ids: set[str] = set()
+        web_search_active = bool(
+            enabled_tools and "web_search" in enabled_tools
+        )
+        web_search_tool_id = "gemini_web_search"
+        web_search_tool_started = False
+        web_search_tool_ended = False
+        web_search_citations: list[dict[str, str]] = []
+
+        try:
+            async with _http_client.stream(
+                "POST",
+                url,
+                json = body,
+                headers = self._auth_headers(),
+                timeout = self._stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "Gemini returned %d: %s",
+                        response.status_code,
+                        error_text[:500],
+                    )
+                    yield _error_sse_line(
+                        response.status_code, error_text, self.provider_type
+                    )
+                    return
+
+                if web_search_active:
+                    yield _emit_tool_event(
+                        {
+                            "type": "tool_start",
+                            "tool_name": "web_search",
+                            "tool_call_id": web_search_tool_id,
+                            "arguments": {},
+                        }
+                    )
+                    web_search_tool_started = True
+
+                # NOTE: same manual __anext__ loop pattern as the other
+                # streaming helpers (see stream_chat_completion for the
+                # Python 3.13 + httpcore 1.0.x GeneratorExit ordering).
+                lines_gen = response.aiter_lines().__aiter__()
+                final_finish_reason: Optional[str] = None
+                try:
+                    while True:
+                        try:
+                            line = await lines_gen.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        if not line.strip():
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
+                        try:
+                            event = _json.loads(data_str)
+                        except Exception:
+                            logger.warning(
+                                "Gemini: failed to parse SSE chunk: %s",
+                                data_str[:200],
+                            )
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+
+                        # Latch usageMetadata across deltas -- the final
+                        # fragment carries the complete totals.
+                        usage_meta = event.get("usageMetadata")
+                        if isinstance(usage_meta, dict):
+                            last_usage = usage_meta
+
+                        candidates = event.get("candidates") or []
+                        if not isinstance(candidates, list):
+                            continue
+                        for cand in candidates:
+                            if not isinstance(cand, dict):
+                                continue
+                            # Citations / grounding metadata.
+                            # `groundingMetadata.groundingChunks[].web`
+                            # carries `uri` + `title`. Collect for the
+                            # tool_end emission at stream close.
+                            gm = cand.get("groundingMetadata")
+                            if isinstance(gm, dict) and web_search_active:
+                                chunks_list = gm.get("groundingChunks") or []
+                                if isinstance(chunks_list, list):
+                                    for ch in chunks_list:
+                                        if not isinstance(ch, dict):
+                                            continue
+                                        web = ch.get("web") or {}
+                                        if not isinstance(web, dict):
+                                            continue
+                                        u = web.get("uri") or ""
+                                        if not u or not isinstance(u, str):
+                                            continue
+                                        if any(
+                                            c["url"] == u
+                                            for c in web_search_citations
+                                        ):
+                                            continue
+                                        web_search_citations.append(
+                                            {
+                                                "url": u,
+                                                "title": (
+                                                    web.get("title") or u
+                                                ),
+                                                "snippet": "",
+                                            }
+                                        )
+
+                            content_obj = cand.get("content") or {}
+                            parts = (
+                                content_obj.get("parts")
+                                if isinstance(content_obj, dict)
+                                else None
+                            )
+                            if isinstance(parts, list):
+                                for part in parts:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    # Text delta.
+                                    text = part.get("text")
+                                    if isinstance(text, str) and text:
+                                        yield _text_chunk(text)
+                                    # functionCall -> OpenAI tool_calls
+                                    # delta envelope.
+                                    fc = part.get("functionCall")
+                                    if isinstance(fc, dict):
+                                        fc_name = fc.get("name") or ""
+                                        fc_args = fc.get("args") or {}
+                                        fc_id = (
+                                            fc.get("id")
+                                            or f"call_{fc_name}_{time.time_ns()}"
+                                        )
+                                        if fc_id in emitted_function_call_ids:
+                                            continue
+                                        emitted_function_call_ids.add(fc_id)
+                                        tool_chunk = {
+                                            "id": completion_id,
+                                            "object": "chat.completion.chunk",
+                                            "choices": [
+                                                {
+                                                    "index": 0,
+                                                    "delta": {
+                                                        "tool_calls": [
+                                                            {
+                                                                "index": 0,
+                                                                "id": fc_id,
+                                                                "type": "function",
+                                                                "function": {
+                                                                    "name": fc_name,
+                                                                    "arguments": _json.dumps(
+                                                                        fc_args
+                                                                    ),
+                                                                },
+                                                            }
+                                                        ]
+                                                    },
+                                                    "finish_reason": None,
+                                                }
+                                            ],
+                                        }
+                                        yield f"data: {_json.dumps(tool_chunk)}"
+                                    # inlineData -> Nano Banana image
+                                    # output. Same tool_start/tool_end
+                                    # envelope as the OpenAI image
+                                    # generation path so the existing
+                                    # chat-adapter renderer just works.
+                                    inline = part.get("inlineData")
+                                    if isinstance(inline, dict):
+                                        b64 = inline.get("data") or ""
+                                        mime = (
+                                            inline.get("mimeType")
+                                            or "image/png"
+                                        )
+                                        if b64:
+                                            img_id = f"img_{time.time_ns()}"
+                                            yield _emit_tool_event(
+                                                {
+                                                    "type": "tool_start",
+                                                    "tool_name": "image_generation",
+                                                    "tool_call_id": img_id,
+                                                    "arguments": {
+                                                        "kind": "image",
+                                                        "prompt": "",
+                                                    },
+                                                }
+                                            )
+                                            yield _emit_tool_event(
+                                                {
+                                                    "type": "tool_end",
+                                                    "tool_call_id": img_id,
+                                                    "result": "",
+                                                    "image_b64": b64,
+                                                    "image_mime": mime,
+                                                }
+                                            )
+                            finish_reason = cand.get("finishReason")
+                            if isinstance(finish_reason, str):
+                                mapped = _finish_reason_map.get(
+                                    finish_reason, "stop"
+                                )
+                                if mapped is not None:
+                                    final_finish_reason = mapped
+
+                    # End-of-stream emission order: web_search tool_end
+                    # (with citations) -> finish_reason chunk -> usage
+                    # chunk -> [DONE]. Matches the Anthropic / OpenAI
+                    # helpers' contract so the frontend handler does
+                    # not need provider-specific ordering knowledge.
+                    if (
+                        web_search_active
+                        and web_search_tool_started
+                        and not web_search_tool_ended
+                    ):
+                        blocks: list[str] = []
+                        for cit in web_search_citations:
+                            line_out = (
+                                f"Title: {cit['title']}\nURL: {cit['url']}"
+                            )
+                            if cit.get("snippet"):
+                                line_out += f"\nSnippet: {cit['snippet']}"
+                            blocks.append(line_out)
+                        yield _emit_tool_event(
+                            {
+                                "type": "tool_end",
+                                "tool_call_id": web_search_tool_id,
+                                "result": (
+                                    "\n---\n".join(blocks)
+                                    if blocks
+                                    else "(search complete)"
+                                ),
+                            }
+                        )
+                        web_search_tool_ended = True
+
+                    if final_finish_reason:
+                        finish_chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": final_finish_reason,
+                                }
+                            ],
+                        }
+                        yield f"data: {_json.dumps(finish_chunk)}"
+
+                    # Translate Gemini's usageMetadata into the OpenAI
+                    # include_usage shape so the existing
+                    # `_build_usage_chunk` emitter handles wire
+                    # formatting (and downstream cost calculators
+                    # already understand the shape).
+                    if isinstance(last_usage, dict):
+                        translated_usage = {
+                            "input_tokens": (
+                                last_usage.get("promptTokenCount") or 0
+                            ),
+                            "output_tokens": (
+                                last_usage.get("candidatesTokenCount") or 0
+                            ),
+                            "input_tokens_details": {
+                                "cached_tokens": (
+                                    last_usage.get("cachedContentTokenCount")
+                                    or 0
+                                )
+                            },
+                        }
+                        usage_line = _build_usage_chunk(
+                            completion_id, "openai", translated_usage
+                        )
+                        if usage_line:
+                            yield usage_line
+
+                    yield "data: [DONE]"
+                    await response.aclose()
+                except GeneratorExit:
+                    await response.aclose()
+                    await lines_gen.aclose()
+                    raise
+
+        except httpx.ConnectError as exc:
+            logger.error(
+                "Connection error to %s: %s", self.provider_type, exc
+            )
             yield _error_sse_line(
                 502,
                 f"Failed to connect to {self.provider_type}: {exc}",

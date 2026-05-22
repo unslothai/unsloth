@@ -37,7 +37,9 @@ export interface ExternalProviderConfig {
   updatedAt: number;
 }
 
-const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
+// Gemini exposes opt-in caching via the `cachedContent` field on
+// generateContent. See https://ai.google.dev/gemini-api/docs/caching.
+const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic", "gemini"]);
 
 export function supportsProviderPromptCaching(
   providerType: string | null | undefined,

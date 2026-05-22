@@ -65,27 +65,40 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "gemini": {
         "display_name": "Google Gemini",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        # Curated lineup — Google's /v1beta/openai/models returns dozens
-        # of historical / experimental / embedding ids. Cap to the current
-        # 3.x family plus the rolling `*-latest` aliases.
+        # Native Gemini REST endpoint -- the Gemini API does NOT speak
+        # OpenAI Chat Completions on this base. Requests/responses are
+        # translated in `_stream_gemini` in external_provider.py.
+        # API reference: https://ai.google.dev/gemini-api/docs
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        # Curated lineup -- the live ListModels response returns dozens
+        # of historical / experimental / embedding ids. Cap to the
+        # current 2.5/2.0 family plus the Nano Banana image model and
+        # the rolling `*-latest` aliases.
         "default_models": [
-            "gemini-3.1-pro-preview",
-            "gemini-3.1-flash-lite",
-            "gemini-3-flash-preview",
-            "gemini-pro-latest",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash-image",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible endpoint. API key from https://aistudio.google.com/apikey.",
+        # The native API takes the API key on the `x-goog-api-key`
+        # header. An empty `auth_prefix` ensures we send the bare key.
+        "auth_header": "x-goog-api-key",
+        "auth_prefix": "",
+        "openai_compatible": False,
+        "notes": (
+            "Native Gemini API. Translation lives in _stream_gemini. "
+            "API key from https://aistudio.google.com/apikey. "
+            "See https://ai.google.dev/gemini-api/docs for endpoint shapes."
+        ),
         "model_id_allowlist": re.compile(
-            r"^(gemini-3\.1-flash-lite|gemini-3-flash-preview|"
-            r"gemini-3\.1-pro-preview|gemini-pro-latest|"
+            r"^(gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
+            r"gemini-2\.5-flash-image|gemini-2\.0-flash|"
+            r"gemini-2\.0-flash-exp|gemini-pro-latest|"
             r"gemini-flash-latest|gemini-flash-lite-latest)$"
         ),
     },

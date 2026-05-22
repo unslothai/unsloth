@@ -117,7 +117,12 @@ export function providerSupportsBuiltinWebSearch(
     providerType === "openai" ||
     providerType === "anthropic" ||
     providerType === "openrouter" ||
-    providerType === "kimi"
+    providerType === "kimi" ||
+    // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on
+    // every 2.x model. Backend translation lives in `_stream_gemini`,
+    // citations surface on the response's `groundingMetadata`. See
+    // https://ai.google.dev/gemini-api/docs/grounding.
+    providerType === "gemini"
   );
 }
 
@@ -214,6 +219,15 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
+  if (providerType === "gemini") {
+    // Gemini's `tools: [{codeExecution: {}}]` is supported on every 2.x
+    // model except the image-only Nano Banana variant. Wire-up lives in
+    // `_stream_gemini` on the backend; output comes back inline as
+    // executableCode/codeExecutionResult parts. See
+    // https://ai.google.dev/gemini-api/docs/code-execution.
+    if (normalized.includes("-image")) return false;
+    return normalized.startsWith("gemini-");
+  }
   return false;
 }
 
@@ -246,13 +260,25 @@ export function providerSupportsBuiltinImageGeneration(
   modelId: string | null | undefined,
   baseUrl?: string | null,
 ): boolean {
-  if (providerType !== "openai") return false;
-  if (!isOpenAICloudBaseUrl(baseUrl)) return false;
   const normalized = modelId?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
-  return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
-    normalized.startsWith(prefix),
-  );
+  if (providerType === "openai") {
+    if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+    return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
+      normalized.startsWith(prefix),
+    );
+  }
+  if (providerType === "gemini") {
+    // Gemini's Nano Banana image-output models carry `-image` in the id
+    // (e.g. `gemini-2.5-flash-image`). The backend flips
+    // generationConfig.responseModalities to ["TEXT", "IMAGE"] when this
+    // model is picked, and translates inlineData parts into the same
+    // image_b64 tool_end envelope the OpenAI path emits so the chat UI
+    // renders the picture inline. See
+    // https://ai.google.dev/gemini-api/docs/image-generation.
+    return normalized.includes("-image");
+  }
+  return false;
 }
 
 /**
@@ -326,7 +352,20 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     presencePenalty: false,
   },
   mistral: OPENAI_COMPAT_BASE,
-  gemini: OPENAI_COMPAT_BASE,
+  // Gemini's native generationConfig accepts temperature, topP, topK and
+  // presencePenalty (plus a separate frequencyPenalty we do not surface
+  // today). minP and repetitionPenalty are not part of the contract --
+  // see https://ai.google.dev/api/rest/v1beta/GenerationConfig. Backend
+  // request shaping lives in _stream_gemini in
+  // studio/backend/core/inference/external_provider.py.
+  gemini: {
+    temperature: true,
+    topP: true,
+    topK: true,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: true,
+  },
   // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and
   // top_p to fixed defaults and 400s on any other value:
   //   "invalid temperature: only 1 is allowed for this model".
