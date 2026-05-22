@@ -843,17 +843,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           disabledToolGuard =
             "You do not have web search or code execution tools in this conversation. " +
             "Answer from your own knowledge. " +
-            "If a request genuinely requires live data or running code, say so plainly, instead of emitting tool-call syntax.";
+            "If a request genuinely requires tool use, live data fetch or running code, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
         } else if (!webSearchEnabledForThisTurn) {
           disabledToolGuard =
             "You do not have web search tools in this conversation. " +
             "You may still use code execution tools when they are available and useful. " +
-            "If a request genuinely requires live data, say so plainly, instead of emitting web-search tool-call syntax.";
+            "If a request genuinely requires live data fetch or web search tool use, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
         } else if (!codeExecEnabledForThisTurn) {
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
             "You may still use web search tools when they are available and useful. " +
-            "If a request genuinely requires running code, say so plainly, instead of emitting code-execution tool-call syntax.";
+            "If a request genuinely requires running code or code execution tool use, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
         }
       }
       if (disabledToolGuard) {
