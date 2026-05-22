@@ -200,9 +200,7 @@ def calculate_cost(
     # style usage chunk Studio re-emits (``_build_usage_chunk``) uses
     # ``prompt_tokens`` / ``completion_tokens``. Either is fine here
     # so a caller can hand whichever envelope landed first.
-    input_tokens = int(
-        usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-    )
+    input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
     output_tokens = int(
         usage.get("output_tokens") or usage.get("completion_tokens") or 0
     )
