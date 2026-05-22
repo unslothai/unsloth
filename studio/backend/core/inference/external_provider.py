@@ -177,6 +177,42 @@ def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
 
 
+def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
+    """Stable dedup key for an Anthropic ``citations_delta.citation``.
+
+    Shape varies per document type per
+    https://platform.claude.com/docs/en/build-with-claude/citations
+    and https://platform.claude.com/docs/en/build-with-claude/search-results :
+
+    * ``char_location``: ``document_index`` + ``start_char_index``
+    * ``page_location``: ``document_index`` + ``start_page_number``
+    * ``content_block_location``: ``document_index`` + ``start_block_index``
+    * ``search_result_location``: ``document_index`` + ``source`` +
+      ``start_block_index``
+
+    Anything unrecognised falls back to a stringified copy so a future
+    shape still dedupes (worst case: more entries, never collisions).
+    """
+    ctype = citation.get("type")
+    doc = citation.get("document_index")
+    title = citation.get("document_title") or ""
+    if ctype == "char_location":
+        return (ctype, doc, title, citation.get("start_char_index"))
+    if ctype == "page_location":
+        return (ctype, doc, title, citation.get("start_page_number"))
+    if ctype == "content_block_location":
+        return (ctype, doc, title, citation.get("start_block_index"))
+    if ctype == "search_result_location":
+        return (
+            ctype,
+            doc,
+            title,
+            citation.get("source"),
+            citation.get("start_block_index"),
+        )
+    return (ctype, _json.dumps(citation, sort_keys = True))
+
+
 class _MistralThinkingSpec(NamedTuple):
     models: tuple[str, ...]
     style: Literal["prompt_mode", "reasoning_effort", "disabled"]
