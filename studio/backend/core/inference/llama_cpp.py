@@ -3026,6 +3026,26 @@ class LlamaCppBackend:
                     )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+                    # ROCm: the llama.cpp prebuilt bundles its own rocblas.dll
+                    # but NOT the Tensile kernel library files it needs
+                    # (rocblas/library/TensileLibrary*.dat + *.hsaco).  The
+                    # bundled DLL searches relative to its own location by
+                    # default (i.e. <binary_dir>/rocblas/library/) which does
+                    # not exist, causing a silent crash on the first GEMM.
+                    # ROCBLAS_TENSILE_LIBPATH overrides that search to point at
+                    # the ROCm installation where the kernel files actually are.
+                    _hip_path = os.environ.get(
+                        "HIP_PATH", os.environ.get("ROCM_PATH", "")
+                    )
+                    if _hip_path:
+                        _rocblas_lib = os.path.join(
+                            _hip_path, "bin", "rocblas", "library"
+                        )
+                        if os.path.isdir(_rocblas_lib):
+                            env.setdefault(
+                                "ROCBLAS_TENSILE_LIBPATH", _rocblas_lib
+                            )
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)
