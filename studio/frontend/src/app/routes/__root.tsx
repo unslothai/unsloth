@@ -16,8 +16,18 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useEffect, type ReactNode } from "react";
+import { Suspense, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { AppProvider } from "../provider";
+
+// Augment TanStack Router's empty `StaticDataRouteOption` interface so
+// `createRoute({ staticData: { title: "..." } })` is typed at every leaf
+// route and the layout below can read `match.staticData.title` without
+// an `as { staticData?: { title?: string } }` escape hatch.
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    title?: string;
+  }
+}
 
 // Fallback while a lazy route bundle (Train/Recipes/Export) loads.
 // /chat is synchronous and never hits this.
@@ -75,17 +85,19 @@ function RootLayout() {
   const matchedTitle = useMatches({
     select: (matches) => {
       for (let i = matches.length - 1; i >= 0; i--) {
-        const title = (matches[i] as { staticData?: { title?: string } })
-          .staticData?.title;
+        const title = matches[i].staticData.title;
         if (title) return title;
       }
       return null;
     },
   });
 
-  useEffect(() => {
+  // `useLayoutEffect` so the tab title is updated synchronously before the
+  // browser paints the new route. Using `useEffect` here let the previous
+  // route's title flash for one frame during in-app navigation.
+  useLayoutEffect(() => {
     document.title = matchedTitle
-      ? `${matchedTitle} - ${DEFAULT_DOCUMENT_TITLE}`
+      ? `${matchedTitle} | ${DEFAULT_DOCUMENT_TITLE}`
       : DEFAULT_DOCUMENT_TITLE;
   }, [matchedTitle]);
 
