@@ -240,4 +240,12 @@ Pytest, alongside the module.
   transitive dependency).
 - `python-dateutil` — format-agnostic date parsing.
 - `anls_star` — **test-only**, for the reference cross-check.
+
+Declared as a new optional extra `unsloth[eval] = ["rapidfuzz", "scipy",
+"python-dateutil"]` (not added to the minimal core `dependencies`). Because the
+module lives under the `unsloth` package, importing it runs `unsloth/__init__.py`
+and therefore requires the full unsloth/torch install; the scorer submodules
+themselves stay torch-free. Unit tests live under `tests/` and rely on the
+existing GPU-free `tests/conftest.py` harness so `import unsloth` works without an
+accelerator.
 ```
