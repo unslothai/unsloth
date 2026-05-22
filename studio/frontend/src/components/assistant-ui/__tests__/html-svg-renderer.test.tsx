@@ -35,7 +35,7 @@ describe("HtmlSvgRenderer", () => {
     expect(iframe.getAttribute("srcdoc") ?? iframe.srcdoc).toContain("hello");
   });
 
-  it("renders an SVG preview and strips malicious <script> + on* payloads", () => {
+  it("renders an SVG preview inside a no-script sandboxed iframe with srcdoc carrying the sanitized markup", () => {
     const malicious = `<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <circle cx="25" cy="25" r="20" fill="blue" onclick="alert('pwn')" />
   <script>window.parent.alert("pwn")</script>
@@ -43,15 +43,22 @@ describe("HtmlSvgRenderer", () => {
 
     render(<HtmlSvgRenderer language="svg" source={malicious} />);
 
-    const previewHost = screen.getByTestId("html-svg-renderer-svg-preview");
-    // The circle survives, but every script tag and on* handler must be
-    // stripped by DOMPurify before the SVG is inserted into the DOM.
-    const circle = previewHost.querySelector("circle");
-    expect(circle).not.toBeNull();
-    expect(circle?.getAttribute("onclick")).toBeNull();
-    expect(previewHost.querySelector("script")).toBeNull();
-    expect(previewHost.innerHTML.toLowerCase()).not.toContain("onclick");
-    expect(previewHost.innerHTML.toLowerCase()).not.toContain("alert");
+    const iframe = screen.getByTestId(
+      "html-svg-renderer-svg-preview",
+    ) as HTMLIFrameElement;
+    expect(iframe.tagName).toBe("IFRAME");
+    // SECURITY: SVG iframe must NEVER allow scripts or same-origin -- those
+    // would re-introduce the host-page-leak / XSS regressions the iframe
+    // boundary is here to prevent.
+    expect(iframe.getAttribute("sandbox")).toBe("");
+    const srcdoc = (iframe.getAttribute("srcdoc") ?? iframe.srcdoc).toLowerCase();
+    expect(srcdoc).toContain("<circle");
+    expect(srcdoc).not.toContain("<script");
+    expect(srcdoc).not.toContain("onclick");
+    expect(srcdoc).not.toContain("alert");
+    // CSP is the second line of defence: block all network egress except
+    // data: images so a future sanitizer regression cannot beacon out.
+    expect(srcdoc).toContain("default-src 'none'");
   });
 
   it("toggles between Preview and Code tabs", () => {
@@ -163,5 +170,29 @@ describe("sanitizeSvgSource", () => {
     const clean = sanitizeSvgSource(svg);
     expect(clean.startsWith("<?xml")).toBe(false);
     expect(clean).toContain("<rect");
+  });
+
+  it("strips inline <style> blocks so SVG CSS cannot retarget host selectors", () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg"><style>body{display:none!important}</style><rect/></svg>`;
+    const clean = sanitizeSvgSource(svg).toLowerCase();
+    expect(clean).not.toContain("<style");
+    expect(clean).not.toContain("display:none");
+    expect(clean).toContain("<rect");
+  });
+
+  it("strips style attributes so inline CSS cannot fire url()/@import requests", () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg"><circle style="background:url(https://evil.example/x)"/></svg>`;
+    const clean = sanitizeSvgSource(svg).toLowerCase();
+    expect(clean).toContain("<circle");
+    expect(clean).not.toContain("style=");
+    expect(clean).not.toContain("evil.example");
+  });
+
+  it("drops <image>/<use> tags so SVG cannot beacon to external URLs", () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image href="https://evil.example/pixel"/><use xlink:href="https://evil.example/use"/></svg>`;
+    const clean = sanitizeSvgSource(svg).toLowerCase();
+    expect(clean).not.toContain("<image");
+    expect(clean).not.toContain("<use");
+    expect(clean).not.toContain("evil.example");
   });
 });

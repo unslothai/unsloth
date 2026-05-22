@@ -42,14 +42,38 @@ const COPY_RESET_MS = 2000;
 const HEURISTIC_UNSAFE_SVG_RE =
   /<script[\s>]|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
-// SVGs may legitimately reference fonts/images via href, so we keep those.
-// We strip every event handler attribute (on*) and any tag DOMPurify would
-// otherwise allow that could escape the SVG sandbox.
+// SVG previews used to live inside a `<img src="data:image/svg+xml,...">` tag
+// where the browser treats the SVG as an image and disables scripts and
+// external resource loads. Mounting sanitized SVG directly into the host
+// Studio document loses those guarantees, so we now (a) strip every node that
+// can leak into the host page (`<style>`, `<image>`, `<use>`, scripts, etc.)
+// and (b) render the surviving markup in a fully sandboxed iframe at
+// `SvgPreview` below for defence in depth. See:
+// https://developer.mozilla.org/en-US/docs/Web/SVG/Guides/SVG_as_an_image
 const SVG_PURIFY_CONFIG = {
   USE_PROFILES: { svg: true, svgFilters: true },
-  FORBID_TAGS: ["script", "foreignObject", "iframe", "embed", "object"],
-  // DOMPurify already drops on* handlers when USE_PROFILES is set, but we
-  // call this out explicitly so the intent is obvious to future readers.
+  // ``style`` -- inline CSS would otherwise leak to the host page selectors.
+  // ``image`` / ``use`` -- carry ``href``/``xlink:href`` and would let an
+  //   assistant fetch attacker-controlled URLs from the user's browser.
+  // ``foreignObject`` -- can embed HTML inside the SVG and re-introduce XSS.
+  FORBID_TAGS: [
+    "script",
+    "style",
+    "foreignObject",
+    "iframe",
+    "embed",
+    "object",
+    "image",
+    "use",
+    "link",
+    "meta",
+  ],
+  // Drop URL-bearing attributes that would still trigger network requests on
+  // surviving SVG elements (filter url(...), animateMotion mpath, etc.), and
+  // strip inline ``style`` because CSS ``@import`` / ``url()`` would do the
+  // same. DOMPurify already drops on* handlers under USE_PROFILES, but we
+  // call ALLOW_DATA_ATTR off explicitly so the intent is obvious.
+  FORBID_ATTR: ["href", "xlink:href", "style"],
   ALLOW_DATA_ATTR: false,
 };
 
@@ -148,14 +172,44 @@ function TabButton({
   );
 }
 
+// SVG preview goes inside a sandboxed iframe (no allow-scripts, no
+// allow-same-origin) plus a `default-src 'none'` CSP so the sanitizer is
+// not the only line of defence -- even if a future DOMPurify regression
+// leaks a URL-bearing attribute, the browser blocks the request.
+const SVG_IFRAME_CSP =
+  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:;";
+
+function buildSvgSrcDoc(safeSvg: string): string {
+  return [
+    "<!doctype html>",
+    `<meta http-equiv="Content-Security-Policy" content="${SVG_IFRAME_CSP}">`,
+    "<style>html,body{margin:0;padding:0;background:white;}",
+    "body{display:flex;align-items:center;justify-content:center;padding:16px;}",
+    "svg{max-width:100%;height:auto;}</style>",
+    safeSvg,
+  ].join("");
+}
+
 function SvgPreview({ source }: { source: string }) {
-  const safe = useMemo(() => sanitizeSvgSource(source), [source]);
+  const srcDoc = useMemo(() => buildSvgSrcDoc(sanitizeSvgSource(source)), [
+    source,
+  ]);
   return (
-    <div
+    <iframe
       data-testid="html-svg-renderer-svg-preview"
-      className="flex justify-center bg-white p-4 dark:bg-neutral-100"
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify above.
-      dangerouslySetInnerHTML={{ __html: safe }}
+      title="SVG preview"
+      srcDoc={srcDoc}
+      // SECURITY: sandbox="" forbids scripts AND blocks the iframe from
+      // inheriting the host origin, so even sanitized SVG cannot reach the
+      // Studio document or run network requests against host-cookied URLs.
+      sandbox=""
+      style={{
+        width: "100%",
+        height: 360,
+        border: "none",
+        display: "block",
+        background: "white",
+      }}
     />
   );
 }
