@@ -605,7 +605,13 @@ class ChatCompletionRequest(BaseModel):
     )
     enabled_tools: Optional[list[str]] = Field(
         None,
-        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
+        description = (
+            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
+            "['web_search', 'python', 'terminal']. External providers accept "
+            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
+            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
+            "all local tools are enabled and no server-side tools are forwarded."
+        ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -660,6 +666,19 @@ class ChatCompletionRequest(BaseModel):
             "automatic for prompts >=1024 tokens and this flag is informational. "
             "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
             "vllm, local, etc.). Treated as enabled when omitted."
+        ),
+    )
+    prompt_cache_ttl: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic cache_control TTL. Defaults to the 5-minute "
+            "ephemeral pool when omitted. Pass `1h` to write into the 1-hour "
+            "pool instead -- 1h writes are billed at 2x base input vs 1.25x "
+            "for 5m, but reads stay at 0.1x for both, so 1h pays off the "
+            "moment a single extra read lands more than 5 minutes after the "
+            "write. Only `5m` and `1h` are forwarded; any other value is "
+            "silently ignored downstream so a stale frontend can't make the "
+            "API 422 on the request. No-op on every non-Anthropic provider."
         ),
     )
     compaction_threshold: Optional[int] = Field(
