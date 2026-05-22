@@ -1048,6 +1048,7 @@ def _run_setup_script(*, verbose: bool = False) -> None:
             stdout = _stream_for_subprocess(sys.stdout),
             stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
+            )
     else:
         result = subprocess.run(["bash", str(script)], env = env)
 
