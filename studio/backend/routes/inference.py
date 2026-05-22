@@ -608,6 +608,10 @@ async def load_model(
                 # Also require runtime settings to match so Apply changes
                 # aren't silently dropped (#5401).
                 and _request_matches_loaded_settings(request, llama_backend)
+                # Fall through to load_model's fast path if the previous
+                # audio probe or codec init failed transiently, so the
+                # backend can retry under _serial_load_lock.
+                and getattr(llama_backend, "_audio_probed", True)
             ):
                 logger.info(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"

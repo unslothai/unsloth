@@ -2573,8 +2573,15 @@ class LlamaCppBackend:
                                     exc,
                                 )
                                 self._audio_probed = False
+                                return False
                     elif detected:
-                        self._audio_type = detected
+                        # Mirror fresh-load: guarded write so a racing
+                        # /unload cannot be silently overwritten.
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            self._is_audio = True
+                            self._audio_type = detected
                 if not self._healthy:
                     return False
                 return True
@@ -3309,15 +3316,27 @@ class LlamaCppBackend:
                         self._is_audio = True
                         self._audio_type = detected
                     except Exception as exc:
+                        # Codec init failure must surface visibly: pre-PR
+                        # the route awaited init_audio_codec and any
+                        # exception failed /load. Returning False here
+                        # preserves that contract (route raises HTTP 500).
                         logger.warning(
                             "Failed to init audio codec '%s': %s",
                             detected,
                             exc,
                         )
-                        # Clear probe cache so next load retries init.
                         self._audio_probed = False
+                        return False
             elif detected:
-                self._audio_type = detected
+                # csm / whisper / audio_vlm: no codec init needed but
+                # the metadata write must still observe _healthy under
+                # _lock so a concurrent /unload cannot be silently
+                # repopulated after it cleared state.
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    self._is_audio = True
+                    self._audio_type = detected
 
             if not self._healthy:
                 return False
@@ -5261,8 +5280,14 @@ class LlamaCppBackend:
         with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
             def _detok(tid: int) -> str:
+                # HTTP 4xx/5xx is itself a definitive non-match for this
+                # marker (e.g. token id out of vocab) -- keep probing the
+                # other codec families. Transport errors and malformed
+                # JSON still raise so the caller can leave _audio_probed
+                # cleared.
                 r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
-                r.raise_for_status()
+                if r.status_code != 200:
+                    return ""
                 return r.json().get("content", "")
 
             def _tok(text: str) -> list[int]:
@@ -5270,7 +5295,8 @@ class LlamaCppBackend:
                     f"{self.base_url}/tokenize",
                     json = {"content": text, "add_special": False},
                 )
-                r.raise_for_status()
+                if r.status_code != 200:
+                    return []
                 return r.json().get("tokens", [])
 
             # Check codec-specific tokens (not generic ones that may exist in non-audio models)
