@@ -46,7 +46,11 @@ def test_passthrough_when_no_marker_present():
 def test_marker_rewritten_to_link_when_annotation_known():
     text = f"The capital is Paris {_marker('turn0view0')}."
     citations = [
-        {"source_id": "turn0view0", "url": "https://example.com/paris", "title": "Paris"},
+        {
+            "source_id": "turn0view0",
+            "url": "https://example.com/paris",
+            "title": "Paris",
+        },
     ]
     out = _replace_openai_citation_markers(text, citations)
     assert not _has_marker_codepoints(out)
@@ -67,9 +71,7 @@ def test_unknown_source_marker_dropped_silently():
 def test_multiple_concatenated_markers_resolved_in_order():
     """Real-world wire shape: a string of markers butted up against each other
     after a sentence, as in the user-reported bug."""
-    markers = "".join(
-        _marker(f"turn{i}view{j}") for i, j in [(1, 0), (1, 1), (3, 0)]
-    )
+    markers = "".join(_marker(f"turn{i}view{j}") for i, j in [(1, 0), (1, 1), (3, 0)])
     text = f"All animals ranked. {markers}"
     citations = [
         {"source_id": "turn1view0", "url": "https://a.example/dog", "title": "Dog"},

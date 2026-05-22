@@ -78,9 +78,7 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # on this stream, or drop it silently when the source_id is unknown.
 # Group 1 is the source id; an optional `<locator>` suffix is
 # discarded (we link the whole source rather than per-line locators).
-_OPENAI_CITATION_MARKER = re.compile(
-    "cite([^]+)(?:[^]*)?"
-)
+_OPENAI_CITATION_MARKER = re.compile("cite([^]+)(?:[^]*)?")
 
 
 def _replace_openai_citation_markers(
