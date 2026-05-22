@@ -497,11 +497,7 @@ def test_function_call_ids_forwarded_into_gemini_function_call_part(monkeypatch)
     captured = _capture_body(monkeypatch, messages = messages)
     contents = captured["body"]["contents"]
     assistant_parts = next(c for c in contents if c["role"] == "model")["parts"]
-    call_ids = [
-        p["functionCall"]["id"]
-        for p in assistant_parts
-        if "functionCall" in p
-    ]
+    call_ids = [p["functionCall"]["id"] for p in assistant_parts if "functionCall" in p]
     assert call_ids == ["call_alpha", "call_beta"], assistant_parts
     response_ids = [
         p["functionResponse"]["id"]

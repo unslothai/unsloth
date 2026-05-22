@@ -4409,8 +4409,12 @@ class ExternalProviderClient:
             if not isinstance(entry, dict):
                 continue
             methods = entry.get("supportedGenerationMethods") or []
-            if isinstance(methods, list) and methods and not any(
-                m in methods for m in ("generateContent", "streamGenerateContent")
+            if (
+                isinstance(methods, list)
+                and methods
+                and not any(
+                    m in methods for m in ("generateContent", "streamGenerateContent")
+                )
             ):
                 continue
             base_id = entry.get("baseModelId")
