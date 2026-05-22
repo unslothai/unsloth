@@ -26,14 +26,24 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Keep the model picker scoped to the current generation. The remote
-        # /v1/models listing returns dozens of historical snapshots, fine-tunes
-        # and non-chat models (embeddings, TTS, image, moderation) that we
-        # never want to surface in the chat UI. Filtering here so backend
-        # is the single source of truth.
-        "model_id_allowlist": re.compile(r"^(gpt-5\.[345]|gpt-4\.5|o3)(?:[-.]|$)"),
-        # Hide dated snapshots and the retired plain gpt-5.3 id.
-        "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
+        # The remote /v1/models listing returns the full account catalog,
+        # including non-chat models (embeddings, TTS, image, moderation,
+        # whisper, dall-e) and fine-tunes. Previously we used a hardcoded
+        # family allowlist (`gpt-5\.[345]|gpt-4\.5|o3`) which silently
+        # dropped every new family OpenAI shipped, including the gpt-5.5
+        # generation today. Switch to a non-chat denylist instead so any
+        # new chat family auto-appears the moment OpenAI lists it. The
+        # patterns below cover every non-chat model id OpenAI has ever
+        # published; chat ids never start with these prefixes.
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:embedding|tts|whisper|moderation|image|search|audio|"
+            r"realtime|transcribe|babbage|davinci|ada|curie|sora)\b"
+            r"|^dall-e\b"
+            r"|^computer-use\b"
+            r"|^text-(?:embedding|moderation|davinci|curie|babbage|ada)\b"
+            r"|^ft:"
+            r"|-\d{4}-\d{2}-\d{2}$"
+        ),
     },
     "anthropic": {
         "display_name": "Anthropic",
@@ -42,16 +52,17 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-6",
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20251001",
         ],
-        # Anthropic /v1/models returns dated snapshot ids alongside the
-        # canonical names (e.g. claude-3-5-sonnet-20241022). Hide the
-        # YYYYMMDD-suffixed variants from the picker — same intent as the
-        # OpenAI denylist, just a different date format (no dashes between
-        # year/month/day).
-        "model_id_denylist": re.compile(r"-\d{8}$"),
+        # Anthropic's /v1/models returns dated ids for every model in the
+        # pre-4.6 generation -- `claude-opus-4-5-20251101`,
+        # `claude-haiku-4-5-20251001`, `claude-sonnet-4-5-20250929`,
+        # `claude-opus-4-1-20250805`. Per the models overview, those
+        # dated ids ARE the canonical names for that generation, not
+        # snapshots to hide. Dropping the previous `-\d{8}$` denylist
+        # so every live model the API returns reaches the picker.
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": False,
