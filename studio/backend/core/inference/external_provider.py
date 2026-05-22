@@ -1905,6 +1905,16 @@ class ExternalProviderClient:
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
+                            # Final include_usage-style chunk so callers can
+                            # see cache_creation / cache_read without
+                            # scraping the server log.
+                            usage_line = _build_usage_chunk(
+                                completion_id,
+                                "anthropic",
+                                last_usage,
+                            )
+                            if usage_line:
+                                yield usage_line
                             yield "data: [DONE]"
                             await (
                                 response.aclose()
@@ -2730,6 +2740,16 @@ class ExternalProviderClient:
                                     ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
+                                # Emit include_usage-style chunk after the
+                                # finish_reason so callers can surface
+                                # cached_tokens in their UI.
+                                usage_line = _build_usage_chunk(
+                                    completion_id,
+                                    "openai",
+                                    last_usage,
+                                )
+                                if usage_line:
+                                    yield usage_line
 
                             elif event_type == "response.incomplete":
                                 incomplete_usage = (event.get("response") or {}).get(
@@ -2776,6 +2796,17 @@ class ExternalProviderClient:
                                     ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
+                                # Emit include_usage-style chunk after the
+                                # length-truncated finish_reason too, so
+                                # incomplete responses still report
+                                # cached_tokens.
+                                usage_line = _build_usage_chunk(
+                                    completion_id,
+                                    "openai",
+                                    last_usage,
+                                )
+                                if usage_line:
+                                    yield usage_line
 
                             elif event_type in ("response.failed", "error"):
                                 # Surface the failure to the client; let the
@@ -3168,3 +3199,88 @@ def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
         }
     }
     return f"data: {json.dumps(error_obj)}"
+
+
+def _build_usage_chunk(
+    completion_id: str,
+    provider: Literal["anthropic", "openai"],
+    last_usage: Optional[dict],
+) -> Optional[str]:
+    """Build an OpenAI ``include_usage``-style SSE chunk that carries the
+    upstream prompt-cache accounting back to the client.
+
+    Until now Studio captured ``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens`` (Anthropic) and
+    ``input_tokens_details.cached_tokens`` (OpenAI Responses) on
+    ``last_usage`` and only wrote them to the structlog stream.
+    Browser / SDK clients had no way to see how many tokens hit the cache
+    -- so the "you saved $X" UX in the chat panel was impossible without
+    scraping the server log.
+
+    This helper emits the standard OpenAI chunk shape -- ``choices: []``
+    with a populated ``usage`` block -- so any client that already
+    consumes ``stream_options={"include_usage": true}`` keeps working,
+    and the Anthropic-native counts are surfaced as extra keys on the
+    same ``usage`` dict:
+
+        usage.prompt_tokens_details.cached_tokens
+            normalised cache-read count, present for both providers.
+        usage.cache_creation_input_tokens
+            Anthropic-only; tokens billed at the cache-write premium.
+        usage.cache_read_input_tokens
+            Anthropic-only; same value as cached_tokens, kept for
+            callers that already key off the native Anthropic name.
+
+    Anthropic's ``input_tokens`` excludes the cache buckets -- the
+    real prompt size is ``input_tokens + cache_creation_input_tokens
+    + cache_read_input_tokens``. Emitting ``input_tokens`` alone as
+    ``prompt_tokens`` undercounts cache-heavy turns and breaks
+    downstream context / cost displays, so we add all three input
+    buckets together. OpenAI Responses already folds cached tokens
+    into ``input_tokens`` so no extra arithmetic is needed there.
+
+    Returns ``None`` when there are no usage numbers to report (e.g. an
+    upstream error before ``message_start`` / ``response.completed``).
+    """
+    if not isinstance(last_usage, dict):
+        return None
+
+    completion_tokens = last_usage.get("output_tokens") or 0
+
+    if provider == "anthropic":
+        uncached_input = last_usage.get("input_tokens") or 0
+        cache_creation = last_usage.get("cache_creation_input_tokens") or 0
+        cache_read = last_usage.get("cache_read_input_tokens") or 0
+        prompt_tokens = uncached_input + cache_creation + cache_read
+        if not (prompt_tokens or completion_tokens):
+            return None
+        usage_block: dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": cache_read},
+            "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": cache_read,
+        }
+    else:
+        prompt_tokens = last_usage.get("input_tokens") or 0
+        cached = 0
+        details = last_usage.get("input_tokens_details")
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens") or 0
+        if not (prompt_tokens or completion_tokens or cached):
+            return None
+        usage_block = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": cached},
+        }
+
+    chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "choices": [],
+        "usage": usage_block,
+    }
+    return f"data: {_json.dumps(chunk)}"
