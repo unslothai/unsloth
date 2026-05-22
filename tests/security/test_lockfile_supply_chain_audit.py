@@ -406,12 +406,12 @@ def test_unsupported_lockfile_version_blocks_default(tmp_path):
     """
     p = tmp_path / "package-lock.json"
     p.write_text(
-        '{\n'
+        "{\n"
         '  "name": "test",\n'
         '  "version": "1.0.0",\n'
         '  "lockfileVersion": 1,\n'
         '  "dependencies": {"react": {"version": "18.2.0"}}\n'
-        '}\n'
+        "}\n"
     )
     proc = _run_auditor(root = tmp_path, npm_lockfiles = [p])
     combined = proc.stdout + proc.stderr
@@ -509,9 +509,9 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         timeout = 30,
         env = env_b,
     )
-    assert "%0A" in proc_b.stderr, (
-        f"value with embedded \\n must be %0A-escaped; stderr was:\n{proc_b.stderr}"
-    )
+    assert (
+        "%0A" in proc_b.stderr
+    ), f"value with embedded \\n must be %0A-escaped; stderr was:\n{proc_b.stderr}"
     cmd_lines_b = _physical_lines_starting_with_double_colon(proc_b.stderr)
     assert all(ln.startswith("::warning::") for ln in cmd_lines_b), (
         f"injection split the message into a non-::warning:: physical "
@@ -533,8 +533,12 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
     # ``run:`` lines specifically so the prose comment block above
     # each step (which mentions both audit and `npm install`) does
     # not bias the ordering check.
-    audit_re = re.compile(r"^\s*run:\s*python3\s+scripts/lockfile_supply_chain_audit\.py", re.MULTILINE)
-    install_re = re.compile(r"^\s*run:\s*(?:.*&&\s*)?npm\s+(?:install|ci)\b", re.MULTILINE)
+    audit_re = re.compile(
+        r"^\s*run:\s*python3\s+scripts/lockfile_supply_chain_audit\.py", re.MULTILINE
+    )
+    install_re = re.compile(
+        r"^\s*run:\s*(?:.*&&\s*)?npm\s+(?:install|ci)\b", re.MULTILINE
+    )
     for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
         wf = workflows_dir / wf_name
         assert wf.is_file(), f"missing workflow: {wf}"
