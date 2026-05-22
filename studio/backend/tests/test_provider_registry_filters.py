@@ -36,14 +36,27 @@ def _apply(provider_type: str, candidate_ids: list[str]) -> list[str]:
 def test_openai_keeps_every_known_chat_family():
     live = [
         # Current generation (must survive).
-        "gpt-5.5", "gpt-5.5-pro",
-        "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano",
-        "gpt-5.3-codex", "gpt-5.3-chat-latest",
-        "o3", "o3-pro", "o3-mini", "o3-deep-research",
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.3-codex",
+        "gpt-5.3-chat-latest",
+        "o3",
+        "o3-pro",
+        "o3-mini",
+        "o3-deep-research",
         # Hypothetical future families that the old allowlist would have
         # silently dropped -- they MUST surface under the new denylist.
-        "gpt-5.6", "gpt-5.6-mini", "gpt-6", "gpt-6-pro",
-        "o4", "o4-pro", "o5",
+        "gpt-5.6",
+        "gpt-5.6-mini",
+        "gpt-6",
+        "gpt-6-pro",
+        "o4",
+        "o4-pro",
+        "o5",
     ]
     surviving = _apply("openai", live)
     assert surviving == live, surviving
@@ -52,30 +65,46 @@ def test_openai_keeps_every_known_chat_family():
 def test_openai_drops_non_chat_ids():
     noise = [
         # Embeddings / TTS / image / moderation / whisper / audio etc.
-        "text-embedding-3-small", "text-embedding-3-large",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
         "text-embedding-ada-002",
-        "text-moderation-latest", "text-moderation-stable",
-        "tts-1", "tts-1-hd", "gpt-4o-tts",
+        "text-moderation-latest",
+        "text-moderation-stable",
+        "tts-1",
+        "tts-1-hd",
+        "gpt-4o-tts",
         "whisper-1",
-        "dall-e-2", "dall-e-3",
-        "gpt-image-1", "gpt-image-2", "gpt-image-1-mini",
+        "dall-e-2",
+        "dall-e-3",
+        "gpt-image-1",
+        "gpt-image-2",
+        "gpt-image-1-mini",
         "chatgpt-image-latest",
-        "gpt-audio-1.5", "gpt-realtime-2", "gpt-4o-realtime-preview",
-        "gpt-4o-transcribe", "gpt-4o-search-preview",
-        "gpt-4o-mini-search-preview", "gpt-4o-mini-transcribe",
+        "gpt-audio-1.5",
+        "gpt-realtime-2",
+        "gpt-4o-realtime-preview",
+        "gpt-4o-transcribe",
+        "gpt-4o-search-preview",
+        "gpt-4o-mini-search-preview",
+        "gpt-4o-mini-transcribe",
         "gpt-4o-mini-tts",
         "omni-moderation-latest",
         # Video generation.
-        "sora-2", "sora-2-pro",
+        "sora-2",
+        "sora-2-pro",
         # Computer-use is an agentic harness, not a chat id.
         "computer-use-preview",
         # Legacy bases.
-        "babbage-002", "davinci-002", "text-davinci-003",
-        "text-curie-001", "text-ada-001",
+        "babbage-002",
+        "davinci-002",
+        "text-davinci-003",
+        "text-curie-001",
+        "text-ada-001",
         # Fine-tunes.
         "ft:gpt-4o-mini:acme:abc:xyz",
         # Dated snapshots are still hidden.
-        "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18",
+        "gpt-4o-2024-08-06",
+        "gpt-4o-mini-2024-07-18",
         "gpt-5.5-2026-04-23",
     ]
     surviving = _apply("openai", noise)
