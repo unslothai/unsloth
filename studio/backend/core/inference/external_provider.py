@@ -3026,6 +3026,15 @@ class ExternalProviderClient:
                                         if fc_id in emitted_function_call_ids:
                                             continue
                                         emitted_function_call_ids.add(fc_id)
+                                        # Each distinct functionCall in an
+                                        # assistant turn needs its own
+                                        # tool_calls[*].index. Consumers
+                                        # that reassemble tool_calls by
+                                        # index collapse all calls onto
+                                        # the same slot when this is
+                                        # hardcoded to 0, breaking
+                                        # parallel/multi-tool turns.
+                                        tc_index = len(emitted_function_call_ids) - 1
                                         tool_chunk = {
                                             "id": completion_id,
                                             "object": "chat.completion.chunk",
@@ -3035,7 +3044,7 @@ class ExternalProviderClient:
                                                     "delta": {
                                                         "tool_calls": [
                                                             {
-                                                                "index": 0,
+                                                                "index": tc_index,
                                                                 "id": fc_id,
                                                                 "type": "function",
                                                                 "function": {

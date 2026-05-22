@@ -457,6 +457,61 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     assert fc_part["functionCall"]["args"] == {"location": "Paris"}
 
 
+def test_parallel_function_calls_get_distinct_tool_call_indices(monkeypatch):
+    """Each emitted functionCall in one assistant turn needs its own
+    tool_calls[*].index. Hardcoding index=0 collapses parallel calls
+    onto a single slot in OpenAI-style reassemblers."""
+    sse = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "call_alpha",
+                                    "name": "search",
+                                    "args": {"q": "alpha"},
+                                }
+                            },
+                            {
+                                "functionCall": {
+                                    "id": "call_beta",
+                                    "name": "search",
+                                    "args": {"q": "beta"},
+                                }
+                            },
+                        ],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 4,
+            },
+        }
+    ]
+    lines = _collect(monkeypatch, sse)
+    chunks = _parse_chunks(lines)
+    tool_call_chunks = [
+        c
+        for c in chunks
+        if "_toolEvent" not in c
+        and any(
+            (isinstance(ch.get("delta"), dict) and "tool_calls" in ch["delta"])
+            for ch in c.get("choices", [])
+        )
+    ]
+    assert len(tool_call_chunks) == 2, tool_call_chunks
+    indices = [
+        c["choices"][0]["delta"]["tool_calls"][0]["index"]
+        for c in tool_call_chunks
+    ]
+    assert indices == [0, 1], indices
+
+
 def test_function_call_ids_forwarded_into_gemini_function_call_part(monkeypatch):
     """OpenAI tool_call id rides functionCall.id so parallel calls disambiguate."""
     messages = [
