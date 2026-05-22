@@ -495,8 +495,7 @@ def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatc
     code_starts = [
         e
         for e in tool_events
-        if e.get("type") == "tool_start"
-        and e.get("tool_name") == "code_execution"
+        if e.get("type") == "tool_start" and e.get("tool_name") == "code_execution"
     ]
     code_ends = [
         e

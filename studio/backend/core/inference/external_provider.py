@@ -3081,9 +3081,7 @@ class ExternalProviderClient:
                                             )
                                     exec_result = part.get("codeExecutionResult")
                                     if isinstance(exec_result, dict):
-                                        outcome = (
-                                            exec_result.get("outcome") or ""
-                                        )
+                                        outcome = exec_result.get("outcome") or ""
                                         output = exec_result.get("output") or ""
                                         # Gemini returns
                                         # OUTCOME_OK / OUTCOME_FAILED /
