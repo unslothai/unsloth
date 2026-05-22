@@ -554,6 +554,43 @@ def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
     assert _isclose(chat["total_usd"], raw["total_usd"]), (chat, raw)
 
 
+def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
+    """``_build_usage_chunk`` emits cached tokens under
+    ``prompt_tokens_details.cached_tokens`` (chat-style), not
+    ``input_tokens_details``. The cost calculator must honour
+    both so cache-heavy chat-style turns get the discounted rate."""
+    base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
+    raw = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "input_tokens": 100_000,
+            "input_tokens_details": {"cached_tokens": 80_000},
+            "output_tokens": 0,
+        },
+    )
+    chat_style = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "prompt_tokens": 100_000,
+            "prompt_tokens_details": {"cached_tokens": 80_000},
+            "completion_tokens": 0,
+        },
+    )
+    # Both envelopes must price identically.
+    assert _isclose(chat_style["input_usd"], raw["input_usd"]), (chat_style, raw)
+    assert _isclose(chat_style["cache_read_usd"], raw["cache_read_usd"]), (
+        chat_style,
+        raw,
+    )
+    # And the discount is real: 80k charged at 0.1x base, 20k at full.
+    assert _isclose(
+        chat_style["cache_read_usd"],
+        80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT,
+    )
+
+
 def test_explicit_zero_output_tokens_wins_over_stale_completion_tokens():
     """``output_tokens: 0`` must beat a stale ``completion_tokens: 50``.
 

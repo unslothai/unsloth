@@ -230,9 +230,19 @@ def calculate_cost(
     else:
         output_tokens = int(usage.get("completion_tokens") or 0)
     if provider == "openai":
-        details = usage.get("input_tokens_details") or {}
-        if isinstance(details, dict):
-            cache_read = max(cache_read, int(details.get("cached_tokens") or 0))
+        # Cached prompt tokens live on different sub-objects depending on
+        # which envelope landed here. Raw OpenAI Responses usage uses
+        # ``input_tokens_details.cached_tokens``; the OpenAI Chat
+        # Completions envelope Studio re-emits via ``_build_usage_chunk``
+        # uses ``prompt_tokens_details.cached_tokens``. Check both so
+        # cache-heavy chat-style turns get the 0.1x cache_read_mult
+        # discount instead of full input pricing.
+        for key in ("input_tokens_details", "prompt_tokens_details"):
+            details = usage.get(key) or {}
+            if isinstance(details, dict):
+                cache_read = max(
+                    cache_read, int(details.get("cached_tokens") or 0)
+                )
         # OpenAI: cache_read already counted inside input_tokens.
         out["billable_input_tokens"] = input_tokens + cache_creation
     else:
