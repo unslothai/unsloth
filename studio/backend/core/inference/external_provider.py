@@ -3120,11 +3120,17 @@ class ExternalProviderClient:
                                 return existing
                         summary_text = ""
                         part = payload.get("part")
-                        if isinstance(part, dict) and part.get("type") == "summary_text":
+                        if (
+                            isinstance(part, dict)
+                            and part.get("type") == "summary_text"
+                        ):
                             text = part.get("text")
                             if isinstance(text, str):
                                 summary_text = text
-                        elif payload.get("type") == "response.reasoning_summary_text.done":
+                        elif (
+                            payload.get("type")
+                            == "response.reasoning_summary_text.done"
+                        ):
                             text = payload.get("text")
                             if isinstance(text, str):
                                 summary_text = text
@@ -3136,9 +3142,14 @@ class ExternalProviderClient:
                                     "type": "summary_text",
                                     "text": summary_text,
                                 }
-                                if isinstance(summary_index, int) and summary_index >= 0:
+                                if (
+                                    isinstance(summary_index, int)
+                                    and summary_index >= 0
+                                ):
                                     while len(summary) <= summary_index:
-                                        summary.append({"type": "summary_text", "text": ""})
+                                        summary.append(
+                                            {"type": "summary_text", "text": ""}
+                                        )
                                     summary[summary_index] = summary_part
                                 else:
                                     summary.append(summary_part)
@@ -3462,11 +3473,13 @@ class ExternalProviderClient:
                                 isinstance(event_type, str)
                                 and "reasoning" in event_type
                             ):
-                                recorded_reasoning = _record_openai_reasoning_replay_item(
-                                    event
+                                recorded_reasoning = (
+                                    _record_openai_reasoning_replay_item(event)
                                 )
                                 if recorded_reasoning:
-                                    last_openai_reasoning_replay_item = recorded_reasoning
+                                    last_openai_reasoning_replay_item = (
+                                        recorded_reasoning
+                                    )
                                 reasoning_delta = _extract_reasoning_text(event)
                                 if reasoning_delta:
                                     if not reasoning_open:
