@@ -253,7 +253,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", True),
             mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
-            mock.patch.object(ips, "has_nvidia_gpu", return_value = True),
+            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = True),
             mock.patch.object(ips, "install_optional_kernel", install_mock),
         ):
             ips._ensure_flash_attn()
@@ -368,7 +368,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
-            mock.patch.object(ips, "has_nvidia_gpu", return_value = False),
+            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
             mock.patch.object(ips, "install_optional_kernel") as install_mock,
             mock.patch.object(ips, "_step", side_effect = fake_step),
         ):

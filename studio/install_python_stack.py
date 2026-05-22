@@ -223,21 +223,12 @@ def _has_rocm_gpu() -> bool:
 
 
 def _has_usable_nvidia_gpu() -> bool:
-    """Return True only when nvidia-smi exists AND reports at least one GPU."""
-    exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "-L"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 10,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0 and "GPU " in result.stdout
+    """Return True only when nvidia-smi exists AND reports at least one GPU.
+
+    Thin wrapper around ``wheel_utils.has_nvidia_gpu`` so tests can keep
+    mocking ``_has_usable_nvidia_gpu`` at the ``ips`` module level.
+    """
+    return has_nvidia_gpu()
 
 
 def _ensure_rocm_torch() -> None:
@@ -637,7 +628,7 @@ def _ensure_flash_attn() -> None:
     if IS_WINDOWS or IS_MACOS:
         return
     # NVIDIA-only for now; AMD/Intel/CPU have no working flash-attn path.
-    if not has_nvidia_gpu():
+    if not _has_usable_nvidia_gpu():
         _step(
             "warning",
             "Skipping flash-attn: no NVIDIA GPU detected",
