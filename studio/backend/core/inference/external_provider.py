@@ -1101,7 +1101,12 @@ class ExternalProviderClient:
 
             content = msg.get("content")
             if isinstance(content, list):
-                # Translate OpenAI image_url parts → Anthropic native image format
+                # Translate OpenAI multimodal parts -> Anthropic native shapes.
+                # - `image_url`     -> `{type:"image", source:...}`
+                # - `input_document` -> `{type:"document", source:...}`
+                #   (Studio extension; mirrors Anthropic's document block,
+                #   which supports PDFs as base64 or URL per
+                #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
                 for part in content:
                     if part.get("type") == "text":
@@ -1109,7 +1114,7 @@ class ExternalProviderClient:
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         if url.startswith("data:"):
-                            # data:image/png;base64,<DATA> → split header and data
+                            # data:image/png;base64,<DATA> -> split header and data
                             header, _, b64data = url.partition(",")
                             media_type = (
                                 header.split(";")[0].replace("data:", "")
@@ -1126,7 +1131,7 @@ class ExternalProviderClient:
                                 }
                             )
                         else:
-                            # Remote URL — Anthropic supports url source type natively.
+                            # Remote URL -- Anthropic supports url source type natively.
                             # See: https://docs.anthropic.com/en/docs/build-with-claude/vision#url-based-images
                             anthropic_parts.append(
                                 {
@@ -1137,6 +1142,45 @@ class ExternalProviderClient:
                                     },
                                 }
                             )
+                    elif part.get("type") == "input_document":
+                        # `input_document` is Studio's normalised content type
+                        # for PDFs / docs. The frontend sends either
+                        # `{type:"input_document", file_data:"data:application/pdf;base64,..."}`
+                        # or `{type:"input_document", file_url:"https://..."}`,
+                        # plus optional `filename` and `media_type`.
+                        # Translate to Anthropic's native `document` block.
+                        url = part.get("file_url") or ""
+                        data_uri = part.get("file_data") or ""
+                        title = part.get("filename")
+                        if data_uri.startswith("data:"):
+                            header, _, b64data = data_uri.partition(",")
+                            media_type = (
+                                part.get("media_type")
+                                or header.split(";")[0].replace("data:", "")
+                                or "application/pdf"
+                            )
+                            doc_block: dict[str, Any] = {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64data,
+                                },
+                            }
+                            if title:
+                                doc_block["title"] = title
+                            anthropic_parts.append(doc_block)
+                        elif url:
+                            doc_block = {
+                                "type": "document",
+                                "source": {
+                                    "type": "url",
+                                    "url": url,
+                                },
+                            }
+                            if title:
+                                doc_block["title"] = title
+                            anthropic_parts.append(doc_block)
                 filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
                 filtered.append(msg)
@@ -2060,6 +2104,27 @@ class ExternalProviderClient:
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
                             )
+                    elif part_type == "input_document":
+                        # OpenAI Responses accepts PDFs / docs as
+                        # `{type:"input_file", file_data:"data:application/pdf;base64,..."}`
+                        # or `{type:"input_file", file_url:"https://..."}`,
+                        # with optional `filename`. See
+                        # https://developers.openai.com/api/docs/guides/images-vision
+                        # Map Studio's normalised `input_document` shape
+                        # straight onto Responses' `input_file`.
+                        file_url = part.get("file_url")
+                        file_data = part.get("file_data")
+                        filename = part.get("filename")
+                        block: dict[str, Any] = {"type": "input_file"}
+                        if file_data:
+                            block["file_data"] = file_data
+                        elif file_url:
+                            block["file_url"] = file_url
+                        else:
+                            continue
+                        if filename:
+                            block["filename"] = filename
+                        translated_parts.append(block)
                 if translated_parts:
                     input_items.append({"role": role, "content": translated_parts})
 
