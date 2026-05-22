@@ -457,7 +457,8 @@ class CompactionContentPart(BaseModel):
 
     type: Literal["compaction"]
     content: str = Field(
-        ..., description = "Anthropic-produced summary of the compacted-away conversation prefix."
+        ...,
+        description = "Anthropic-produced summary of the compacted-away conversation prefix.",
     )
 
 

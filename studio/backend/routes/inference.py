@@ -1715,9 +1715,7 @@ def _build_external_messages(
                     elif part.type == "compaction":
                         # Pass through; the Anthropic stream helper
                         # forwards it as a native `compaction` block.
-                        parts.append(
-                            {"type": "compaction", "content": part.content}
-                        )
+                        parts.append({"type": "compaction", "content": part.content})
                 result.append({"role": msg.role, "content": parts})
             else:
                 # Non-vision provider — strip images but preserve
@@ -1730,9 +1728,7 @@ def _build_external_messages(
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
                     elif p.type == "compaction":
-                        preserved.append(
-                            {"type": "compaction", "content": p.content}
-                        )
+                        preserved.append({"type": "compaction", "content": p.content})
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses back to a string for
                     # providers that don't accept content arrays.
