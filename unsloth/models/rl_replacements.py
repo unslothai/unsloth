@@ -62,14 +62,14 @@ def _unsloth_clear_stateful_mrope(model):
 
     cleared = False
     for module in modules():
-        if (
-            hasattr(module, "compute_3d_position_ids")
-            and hasattr(module, "rope_deltas")
+        if hasattr(module, "compute_3d_position_ids") and hasattr(
+            module, "rope_deltas"
         ):
             module.rope_deltas = None
             cleared = True
     return cleared
-pass
+
+
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
@@ -899,7 +899,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if _generate_return in function and "_unsloth_clear_stateful_mrope" not in function:
         function = function.replace(
             _generate_return,
-            _generate_return + """
+            _generate_return
+            + """
 
         _unsloth_clear_stateful_mrope(
             self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)
