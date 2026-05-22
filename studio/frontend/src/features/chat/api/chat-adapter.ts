@@ -143,6 +143,46 @@ async function updateStoredChatThreadEventually(
   }
 }
 
+/** Convert an Anthropic document citation dict into a Sources-panel source. */
+function documentCitationToSource(
+  cit: Record<string, unknown>,
+  fallbackIdx: number,
+): {
+  type: "source";
+  sourceType: "url";
+  id: string;
+  url: string;
+  title: string;
+  metadata?: { description: string };
+} | null {
+  const source =
+    typeof cit.source === "string" && cit.source ? cit.source : "";
+  const docTitle =
+    (typeof cit.document_title === "string" && cit.document_title) ||
+    (typeof cit.title === "string" && cit.title) ||
+    "";
+  const docIndex =
+    typeof cit.document_index === "number" ? cit.document_index : undefined;
+  // Use the search-result source URL when present; otherwise fall back
+  // to a stable doc anchor so the panel can still dedupe by id.
+  const url =
+    source || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+  const title = docTitle || source || `Document ${fallbackIdx + 1}`;
+  const cited =
+    typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
+  // Trim the cited snippet so the Sources panel stays scannable.
+  const description =
+    cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
+  return {
+    type: "source" as const,
+    sourceType: "url" as const,
+    id: url,
+    url,
+    title,
+    ...(description ? { metadata: { description } } : {}),
+  };
+}
+
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
 function parseSourcesFromResult(raw: string): {
   type: "source";
@@ -1136,6 +1176,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Tool call content parts — accumulated and yielded cumulatively.
       // result is set directly on the tool-call part when tool_end arrives.
       const toolCallParts: ToolCallMessagePart[] = [];
+      // Anthropic document citations collected from
+      // `_toolEvent.type === "document_citations"` (emitted on
+      // message_stop). Converted into Sources-panel source parts at
+      // end-of-stream so the inline [N] markers have matching entries.
+      const documentCitationParts: Array<{
+        type: "source";
+        sourceType: "url";
+        id: string;
+        url: string;
+        title: string;
+        metadata?: { description: string };
+      }> = [];
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
@@ -1583,6 +1635,28 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                   continue;
                 }
+                if (toolEvent.type === "document_citations") {
+                  // Anthropic citations_delta footnotes. Convert into
+                  // Sources-panel entries so the inline [N] markers
+                  // emitted by the backend have matching links.
+                  const cits = toolEvent.citations;
+                  if (Array.isArray(cits)) {
+                    cits.forEach((entry, idx) => {
+                      if (!entry || typeof entry !== "object") return;
+                      const part = documentCitationToSource(
+                        entry as Record<string, unknown>,
+                        idx,
+                      );
+                      if (
+                        part &&
+                        !documentCitationParts.some((p) => p.id === part.id)
+                      ) {
+                        documentCitationParts.push(part);
+                      }
+                    });
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "container_invalidated") {
                   if (resolvedThreadId) {
                     const field =
@@ -1911,6 +1985,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...toolCallParts,
             ...parseAssistantContent(cumulativeText),
             ...sourceParts,
+            ...documentCitationParts,
           ],
           metadata: {
             timing: finalTiming,
