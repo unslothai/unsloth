@@ -23,6 +23,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "../provider-capabilities";
@@ -830,7 +831,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Re-read store after potential auto-load / model ready wait
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled } = runtime;
+      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -1322,6 +1323,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   externalProvider.providerType,
                   externalSelection.modelId,
                   externalProvider.baseUrl,
+                )) ||
+              (imageToolsEnabled &&
+                providerSupportsBuiltinImageGeneration(
+                  externalProvider.providerType,
+                  externalSelection.modelId,
+                  externalProvider.baseUrl,
                 ))
                 ? {
                     enable_tools: true,
@@ -1352,6 +1359,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         externalProvider.baseUrl,
                       )
                         ? ["code_execution"]
+                        : []),
+                      // OpenAI Responses-API only: `image_generation`
+                      // returns inline image_generation_call output
+                      // items; the backend's _stream_openai_responses
+                      // path translates them to assistant tool events.
+                      ...(imageToolsEnabled &&
+                      providerSupportsBuiltinImageGeneration(
+                        externalProvider.providerType,
+                        externalSelection.modelId,
+                        externalProvider.baseUrl,
+                      )
+                        ? ["image_generation"]
                         : []),
                     ],
                   }

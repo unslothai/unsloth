@@ -23,6 +23,7 @@ const HF_TOKEN_KEY = "unsloth_hf_token";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
+export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
 export type ReasoningEffort =
@@ -218,8 +219,16 @@ type ChatRuntimeStore = {
    * execution server-side. Read by both composers' Code pill gate.
    */
   supportsBuiltinCodeExecution: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * image-generation tool (OpenAI's Responses-API `image_generation`
+   * today). Gates the chat composer's Images pill. Local models never
+   * receive the tool because their runtime cannot dispatch it.
+   */
+  supportsBuiltinImageGeneration: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
+  imageToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -278,6 +287,7 @@ type ChatRuntimeStore = {
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
+  setImageToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -508,8 +518,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsTools: false,
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
+  supportsBuiltinImageGeneration: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -673,8 +685,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       supportsTools: false,
       supportsBuiltinWebSearch: false,
       supportsBuiltinCodeExecution: false,
+      supportsBuiltinImageGeneration: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
+      imageToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -727,6 +741,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       return { codeToolsEnabled };
+    }),
+  setImageToolsEnabled: (imageToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
+      return { imageToolsEnabled };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),

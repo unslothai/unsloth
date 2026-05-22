@@ -68,6 +68,7 @@ import {
   DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
+  ImageIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -870,6 +871,42 @@ const CodeToolsToggle: FC = () => {
   );
 };
 
+const ImagesToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  // OpenAI cloud Responses-API models advertise image_generation as a
+  // server-side tool; no local runtime fallback exists. Mirror of
+  // shared-composer's imageDisabled / showImagePill so the in-thread
+  // composer surfaces the same control as the empty-state composer.
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  if (!supportsBuiltinImageGeneration) {
+    return null;
+  }
+  const disabled = !modelLoaded;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+      className="composer-pill-btn"
+      data-active={imageToolsEnabled && !disabled ? "true" : "false"}
+      aria-label={
+        imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+      }
+    >
+      <ImageIcon className="size-3.5" />
+      <span>Images</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -941,6 +978,7 @@ const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
         <PreserveThinkingToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
+        <ImagesToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

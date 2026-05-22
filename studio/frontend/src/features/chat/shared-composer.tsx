@@ -21,7 +21,7 @@ import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
-import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, GlobeIcon, HeadphonesIcon, ImageIcon, LightbulbIcon, LightbulbOffIcon, MicIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
@@ -33,6 +33,7 @@ import {
 import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
@@ -331,6 +332,10 @@ export function SharedComposer({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -416,10 +421,22 @@ export function SharedComposer({
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
   );
+  const supportsBuiltinImageGeneration = providerSupportsBuiltinImageGeneration(
+    selectedExternalProvider?.providerType,
+    effectiveExternalModelId,
+    selectedExternalProvider?.baseUrl,
+  );
   const searchDisabled =
     !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
   const codeDisabled =
     !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
+  // Images pill is only ever lit on OpenAI cloud's Responses-API models.
+  // No local tool runtime fallback because the only image-generation
+  // server tool we wire today is OpenAI's; local models cannot dispatch
+  // it. Hidden entirely when the active model does not advertise it so
+  // the pill row stays compact for providers without the capability.
+  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  const showImagePill = supportsBuiltinImageGeneration;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -1074,6 +1091,21 @@ export function SharedComposer({
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
           </button>
+          {showImagePill && (
+            <button
+              type="button"
+              disabled={imageDisabled}
+              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
+              aria-label={
+                imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+              }
+            >
+              <ImageIcon className="size-3.5" />
+              <span>Images</span>
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (
