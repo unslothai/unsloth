@@ -838,7 +838,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
       }
       let disabledToolGuard: string | null = null;
-      if (externalProvider?.providerType === "anthropic") {
+      const disabledToolGuardProviderType = externalProvider?.providerType;
+      if (
+        disabledToolGuardProviderType === "anthropic" ||
+        disabledToolGuardProviderType === "openai"
+      ) {
         if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           disabledToolGuard =
             "You do not have web search or code execution tools in this conversation. " +
