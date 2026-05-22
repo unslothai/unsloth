@@ -1682,16 +1682,21 @@ def _extract_content_parts(
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
+    provider_type: Optional[str] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
 
-    - Vision providers: preserve multimodal content arrays (image_url
-      and compaction parts intact for downstream translation).
-    - Non-vision providers: flatten to text-only (images dropped;
-      compaction parts forwarded so Anthropic-style compaction state
-      survives the round-trip even on a non-vision pipeline).
+    Behaviour per content-part type:
+    - `text`: always preserved.
+    - `image_url`: preserved on vision providers; stripped on non-vision.
+    - `compaction`: Anthropic-only synthetic part (round-trips server-side
+      compaction state). Forwarded ONLY when provider_type=="anthropic";
+      stripped for every other provider so the unknown part doesn't
+      reach generic /chat/completions passthrough where it would 400
+      (e.g. DeepSeek, Mistral, Gemini, Kimi, OpenRouter, etc.).
     """
+    anthropic = (provider_type == "anthropic")
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1712,22 +1717,23 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
-                    elif part.type == "compaction":
-                        # Pass through; the Anthropic stream helper
-                        # forwards it as a native `compaction` block.
+                    elif part.type == "compaction" and anthropic:
+                        # Anthropic stream helper forwards this as a
+                        # native `compaction` block; every other
+                        # provider would 400 on the unknown part, so
+                        # gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
                 result.append({"role": msg.role, "content": parts})
             else:
-                # Non-vision provider — strip images but preserve
-                # text AND compaction parts. Compaction is Anthropic-
-                # specific; the OpenAI / kimi / etc. external_provider
-                # translator will pass them through (their stream
-                # helpers ignore unknown content_part types).
+                # Non-vision provider: keep text, optionally keep
+                # compaction (Anthropic only -- compaction-capable
+                # Anthropic models all report supports_vision=True
+                # today, but the gate is here for safety).
                 preserved = []
                 for p in msg.content:
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
-                    elif p.type == "compaction":
+                    elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses back to a string for
@@ -1805,7 +1811,11 @@ async def _proxy_to_external_provider(
 
     _pinfo = _get_provider_info(provider_type) or {}
     _supports_vision = _pinfo.get("supports_vision", False)
-    chat_messages = _build_external_messages(payload.messages, _supports_vision)
+    chat_messages = _build_external_messages(
+        payload.messages,
+        _supports_vision,
+        provider_type = provider_type,
+    )
 
     client = ExternalProviderClient(
         provider_type = provider_type,

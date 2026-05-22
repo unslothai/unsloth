@@ -533,7 +533,70 @@ def test_compaction_content_part_accepted_by_chat_message_schema():
     assert msg.content[1].type == "text"
 
 
-def test_build_external_messages_passes_compaction_for_vision_provider():
+def test_build_external_messages_passes_compaction_for_anthropic_only():
+    # Compaction is an Anthropic-only synthetic content part. The
+    # builder MUST gate it on provider_type=="anthropic"; every other
+    # provider would 400 on the unknown content type via generic
+    # /chat/completions passthrough (Codex P1 follow-up).
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    msgs = [
+        ChatMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "compaction", "content": "prior summary"},
+                    {"type": "text", "text": "answer"},
+                ],
+            }
+        )
+    ]
+    out = _build_external_messages(
+        msgs, supports_vision = True, provider_type = "anthropic"
+    )
+    assert len(out) == 1
+    parts = out[0]["content"]
+    assert parts[0] == {"type": "compaction", "content": "prior summary"}
+    assert parts[1] == {"type": "text", "text": "answer"}
+
+
+def test_build_external_messages_strips_compaction_for_non_anthropic_providers():
+    # Provider switch (or reused history) hands compaction blocks to a
+    # non-Anthropic provider. Those land on generic /chat/completions
+    # passthrough where the unknown content type fails the upstream
+    # validator. Builder must strip the part for every non-anthropic
+    # provider, including OpenAI/DeepSeek/Mistral/Gemini/Kimi/OpenRouter.
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    msgs = [
+        ChatMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "compaction", "content": "prior summary"},
+                    {"type": "text", "text": "answer"},
+                ],
+            }
+        )
+    ]
+    for provider in ("openai", "deepseek", "mistral", "gemini", "kimi", "openrouter"):
+        out = _build_external_messages(
+            msgs, supports_vision = True, provider_type = provider
+        )
+        assert len(out) == 1, (provider, out)
+        parts = out[0]["content"]
+        types = [p.get("type") for p in parts if isinstance(p, dict)]
+        assert "compaction" not in types, (provider, parts)
+        # Text part survives.
+        assert {"type": "text", "text": "answer"} in parts, (provider, parts)
+
+
+def test_build_external_messages_strips_compaction_when_provider_type_unknown():
+    # Defensive: if provider_type is None (legacy path) the part must
+    # also be stripped -- forwarding to an unknown destination is
+    # never safe.
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -549,18 +612,15 @@ def test_build_external_messages_passes_compaction_for_vision_provider():
         )
     ]
     out = _build_external_messages(msgs, supports_vision = True)
-    assert len(out) == 1
     parts = out[0]["content"]
-    assert parts[0] == {"type": "compaction", "content": "prior summary"}
-    assert parts[1] == {"type": "text", "text": "answer"}
+    types = [p.get("type") for p in parts if isinstance(p, dict)]
+    assert "compaction" not in types, parts
 
 
-def test_build_external_messages_passes_compaction_even_without_vision():
-    # Compaction is Anthropic-specific, but the message-builder runs
-    # before provider routing -- it doesn't know whether the request
-    # will land on Anthropic or another provider. Always pass
-    # compaction parts through; the per-provider stream helper is
-    # responsible for handling/ignoring them.
+def test_build_external_messages_non_vision_anthropic_keeps_compaction():
+    # Defensive: even though compaction-capable Anthropic models all
+    # currently report supports_vision=True, gate the non-vision branch
+    # by provider_type too so future config changes don't drop it.
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -575,8 +635,14 @@ def test_build_external_messages_passes_compaction_even_without_vision():
             }
         )
     ]
-    out = _build_external_messages(msgs, supports_vision = False)
-    assert len(out) == 1
-    # Compaction part survives even on non-vision route.
+    out = _build_external_messages(
+        msgs, supports_vision = False, provider_type = "anthropic"
+    )
     parts = out[0]["content"]
     assert {"type": "compaction", "content": "prior summary"} in parts
+    # Non-anthropic + non-vision -> compaction stripped, text collapsed
+    # back to a string.
+    out2 = _build_external_messages(
+        msgs, supports_vision = False, provider_type = "deepseek"
+    )
+    assert out2[0]["content"] == "answer", out2
