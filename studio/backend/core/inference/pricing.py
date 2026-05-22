@@ -38,12 +38,23 @@ from typing import Any, Optional
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-7": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
     "claude-opus-4-6": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+    # Canonical 4.5 ids are referenced from backend defaults (e.g.
+    # PROVIDER_REGISTRY['anthropic'].default_models) without the date
+    # suffix. The dated ids ARE the canonical names per Anthropic's
+    # models overview, but lookups for the bare id ("claude-opus-4-5")
+    # don't prefix-match the dated key the other way around, so we
+    # alias both forms here. Otherwise calculate_cost returns
+    # priced=False + zero cost for the common ids.
+    "claude-opus-4-5": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
     "claude-opus-4-5-20251101": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+    "claude-opus-4-1": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
     "claude-opus-4-1-20250805": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
     "claude-opus-4-20250514": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
     "claude-sonnet-4-6": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-sonnet-4-5": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
     "claude-sonnet-4-5-20250929": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
     "claude-sonnet-4-20250514": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-haiku-4-5": {"input_per_mtok": 1.0, "output_per_mtok": 5.0},
     "claude-haiku-4-5-20251001": {"input_per_mtok": 1.0, "output_per_mtok": 5.0},
 }
 
@@ -52,9 +63,30 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
     # 2026-05-22. Update against the live pricing page on every model launch.
     # Initial commit underbilled every gpt-5.x family 2-6x -- fixed here
     # after PR review caught it via doc cross-check.
-    "gpt-5.5": {"input_per_mtok": 5.0, "output_per_mtok": 30.0},
+    #
+    # `long_context_input_per_mtok` / `long_context_output_per_mtok` /
+    # `long_context_threshold` are populated when OpenAI publishes a
+    # second pricing tier for prompts above N input tokens. gpt-5.5 and
+    # gpt-5.4 cross over at 272k input tokens; the long-context rates
+    # are double the headline input price (and ~1.5x on output). Other
+    # families currently ship with a single rate (no `long_context_*`
+    # keys = no tier crossover). Reference:
+    #   https://developers.openai.com/api/docs/pricing
+    "gpt-5.5": {
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 30.0,
+        "long_context_threshold": 272_000,
+        "long_context_input_per_mtok": 10.0,
+        "long_context_output_per_mtok": 45.0,
+    },
     "gpt-5.5-pro": {"input_per_mtok": 30.0, "output_per_mtok": 180.0},
-    "gpt-5.4": {"input_per_mtok": 2.5, "output_per_mtok": 15.0},
+    "gpt-5.4": {
+        "input_per_mtok": 2.5,
+        "output_per_mtok": 15.0,
+        "long_context_threshold": 272_000,
+        "long_context_input_per_mtok": 5.0,
+        "long_context_output_per_mtok": 22.5,
+    },
     "gpt-5.4-pro": {"input_per_mtok": 30.0, "output_per_mtok": 180.0},
     "gpt-5.4-mini": {"input_per_mtok": 0.75, "output_per_mtok": 4.5},
     "gpt-5.4-nano": {"input_per_mtok": 0.20, "output_per_mtok": 1.25},
@@ -78,13 +110,24 @@ ANTHROPIC_CACHE_READ_MULT = 0.1
 # separately (the first prefix-write request just pays normal input).
 OPENAI_CACHE_READ_MULT = 0.1
 
-# Server-tool surcharges (Anthropic-only today).
+# Server-tool surcharges.
+# Anthropic: $10 / 1000 web searches; code_execution is $0.05/hr after
+# 50 free hours/day per org (no per-org visibility here, so the
+# calculator reports the marginal rate).
 ANTHROPIC_WEB_SEARCH_USD_PER_1K = 10.0
-# code_execution: 50 free hours/day per org, $0.05/hour beyond that.
-# We don't have per-org usage visibility here so the calculator
-# reports the marginal rate; the frontend can mark the first 50
-# hours as "free" if it wants to.
 ANTHROPIC_CODE_EXEC_USD_PER_HOUR = 0.05
+
+# OpenAI: web_search is billed at $10/1000 calls plus the model's
+# token rate for the returned search content (already captured under
+# input/output_tokens). The hosted shell tool bills per 20-minute
+# session per container memory tier (1g/4g/16g/64g at
+# $0.03/$0.12/$0.48/$1.92). Since Studio doesn't surface the memory
+# tier in the cost ledger and most users land on the default 1g, we
+# bill the 1g rate ($0.09/hour) and let the user inspect the OpenAI
+# dashboard for the exact figure on heavier configs.
+# Source: developers.openai.com/api/docs/pricing 2026-05-22.
+OPENAI_WEB_SEARCH_USD_PER_1K = 10.0
+OPENAI_CONTAINER_USD_PER_HOUR = 0.09  # 1g default tier; 3 x $0.03 / 60min
 
 
 def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
@@ -172,8 +215,25 @@ def calculate_cost(
     if not prices:
         return out
 
-    base = prices["input_per_mtok"]
-    out_per = prices["output_per_mtok"]
+    # Long-context tier crossover (gpt-5.5 / gpt-5.4 today). OpenAI
+    # bills the whole turn at the long-context rate once the prompt
+    # crosses the threshold, NOT a per-token blend, so we pick a
+    # single (base, out_per) pair for this turn based on
+    # billable_input_tokens.
+    lc_thresh = prices.get("long_context_threshold")
+    in_long_context_tier = (
+        lc_thresh is not None
+        and out["billable_input_tokens"] >= int(lc_thresh)
+        and "long_context_input_per_mtok" in prices
+        and "long_context_output_per_mtok" in prices
+    )
+    if in_long_context_tier:
+        base = prices["long_context_input_per_mtok"]
+        out_per = prices["long_context_output_per_mtok"]
+        out["model_priced"] = f"{model} (long-context >{lc_thresh})"
+    else:
+        base = prices["input_per_mtok"]
+        out_per = prices["output_per_mtok"]
 
     out["input_usd"] = (input_tokens / 1_000_000.0) * base
     out["output_usd"] = (output_tokens / 1_000_000.0) * out_per
@@ -216,6 +276,21 @@ def calculate_cost(
             out["cache_read_usd"] = (
                 (cache_read / 1_000_000.0) * base * OPENAI_CACHE_READ_MULT
             )
+        # Server-tool surcharges. OpenAI doesn't include these on its
+        # `usage` object directly -- web_search invocations are counted
+        # from `ResponseFunctionWebSearch` items in the output array,
+        # and container hours come from the SSE translator's shell-tool
+        # accounting. Studio surfaces both under a normalised
+        # `openai_tool_use` key on the usage dict the SSE finaliser
+        # hands to this calculator.
+        srv = usage.get("openai_tool_use") or {}
+        if isinstance(srv, dict):
+            web_searches = int(srv.get("web_search_requests") or 0)
+            container_hours = float(srv.get("container_hours") or 0.0)
+            out["server_tools_usd"] = (
+                web_searches / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
+                + container_hours * OPENAI_CONTAINER_USD_PER_HOUR
+            )
 
     out["total_usd"] = round(
         out["input_usd"]
@@ -246,5 +321,7 @@ def pricing_snapshot() -> dict[str, Any]:
         "openai": {
             "models": dict(OPENAI_PRICING),
             "cache_read_mult": OPENAI_CACHE_READ_MULT,
+            "web_search_usd_per_1k": OPENAI_WEB_SEARCH_USD_PER_1K,
+            "container_usd_per_hour": OPENAI_CONTAINER_USD_PER_HOUR,
         },
     }

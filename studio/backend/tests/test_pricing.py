@@ -16,7 +16,9 @@ from core.inference.pricing import (
     ANTHROPIC_CACHE_READ_MULT,
     ANTHROPIC_PRICING,
     OPENAI_CACHE_READ_MULT,
+    OPENAI_CONTAINER_USD_PER_HOUR,
     OPENAI_PRICING,
+    OPENAI_WEB_SEARCH_USD_PER_1K,
     calculate_cost,
     pricing_snapshot,
 )
@@ -161,78 +163,91 @@ def test_anthropic_dated_id_falls_back_to_canonical_prefix():
 
 
 def test_openai_gpt55_input_output_math():
+    # Sub-272k input keeps us in the short-context tier ($5/$30).
+    # The dedicated long-context tests below exercise the crossover.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
-        {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        {"input_tokens": 200_000, "output_tokens": 50_000},
     )
-    assert _isclose(out["input_usd"], 5.0)
-    assert _isclose(out["output_usd"], 30.0)
-    assert _isclose(out["total_usd"], 35.0)
+    assert _isclose(out["input_usd"], 200_000 / 1_000_000.0 * 5.0)
+    assert _isclose(out["output_usd"], 50_000 / 1_000_000.0 * 30.0)
+    assert _isclose(out["total_usd"], 1.0 + 1.5)
 
 
 def test_openai_cache_read_subtracted_from_input_at_discount():
     # OpenAI folds cached tokens into input_tokens, unlike Anthropic.
     # The calculator must subtract cached_tokens from the "full price"
-    # bucket and re-bill them at 0.1x.
+    # bucket and re-bill them at 0.1x. Use a sub-272k total so the
+    # short-context tier applies (long-context crossover is exercised
+    # in its own test below).
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     out = calculate_cost(
         "openai",
         "gpt-5.5",
         {
-            "input_tokens": 1_000_000,
+            "input_tokens": 100_000,
             "output_tokens": 0,
-            "input_tokens_details": {"cached_tokens": 800_000},
+            "input_tokens_details": {"cached_tokens": 80_000},
         },
     )
-    # 200k charged at full price, 800k charged at 0.1x
-    assert _isclose(out["input_usd"], 0.2 * base)
-    assert _isclose(out["cache_read_usd"], 0.8 * base * OPENAI_CACHE_READ_MULT)
+    # 20k charged at full price, 80k charged at 0.1x
+    assert _isclose(out["input_usd"], 20_000 / 1_000_000.0 * base)
+    assert _isclose(
+        out["cache_read_usd"], 80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT
+    )
 
 
 def test_openai_billable_input_tokens_does_not_double_count_cache_read():
     # OpenAI's input_tokens already includes cached_tokens, so the
     # billable counter must NOT add cache_read on top -- otherwise the
-    # tooltip says 1.8M input when the bill is for 1.0M.
+    # tooltip says 180k input when the bill is for 100k.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
         {
-            "input_tokens": 1_000_000,
+            "input_tokens": 100_000,
             "output_tokens": 0,
-            "input_tokens_details": {"cached_tokens": 800_000},
+            "input_tokens_details": {"cached_tokens": 80_000},
         },
     )
-    assert out["billable_input_tokens"] == 1_000_000
+    assert out["billable_input_tokens"] == 100_000
 
 
 def test_openai_dated_snapshot_inherits_canonical_pricing():
+    # Sub-272k stays in the short-context tier; the prefix-match
+    # fallback is what proves the dated snapshot inherits gpt-5.5
+    # pricing.
     out = calculate_cost(
         "openai",
         "gpt-5.5-2026-04-23",
-        {"input_tokens": 1_000_000, "output_tokens": 0},
+        {"input_tokens": 200_000, "output_tokens": 0},
     )
     assert out["priced"] is True
-    assert _isclose(out["input_usd"], 5.0)
+    assert _isclose(out["input_usd"], 200_000 / 1_000_000.0 * 5.0)
 
 
 def test_openai_gpt54_family_uses_verified_prices():
     # Spot-check the lower-tier rows that previously underbilled.
+    # gpt-5.4 has a long-context tier so the input has to stay
+    # below 272k; the mini/nano/codex rows have no crossover so
+    # 1M tokens is fine.
     cases = {
-        "gpt-5.4": (2.5, 15.0),
-        "gpt-5.4-mini": (0.75, 4.5),
-        "gpt-5.4-nano": (0.20, 1.25),
-        "gpt-5.3-codex": (1.75, 14.0),
+        # (input_tokens, expected_input_usd, expected_output_usd)
+        "gpt-5.4": (200_000, 200_000 / 1_000_000.0 * 2.5, 200_000 / 1_000_000.0 * 15.0),
+        "gpt-5.4-mini": (1_000_000, 0.75, 4.5),
+        "gpt-5.4-nano": (1_000_000, 0.20, 1.25),
+        "gpt-5.3-codex": (1_000_000, 1.75, 14.0),
     }
-    for model, (inp, outp) in cases.items():
+    for model, (in_tokens, exp_in, exp_out) in cases.items():
         out = calculate_cost(
             "openai",
             model,
-            {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+            {"input_tokens": in_tokens, "output_tokens": in_tokens},
         )
         assert out["priced"] is True, model
-        assert _isclose(out["input_usd"], inp), model
-        assert _isclose(out["output_usd"], outp), model
+        assert _isclose(out["input_usd"], exp_in), model
+        assert _isclose(out["output_usd"], exp_out), model
 
 
 def test_openai_unlisted_model_priced_false_not_zero_default():
@@ -251,6 +266,138 @@ def test_openai_unlisted_model_priced_false_not_zero_default():
         assert out["billable_output_tokens"] == 1_000_000, model
 
 
+# ── canonical Anthropic 4.5 ids now resolve to a price ─────────────
+
+
+def test_anthropic_canonical_4_5_ids_are_priced():
+    # Codex P1: claude-opus-4-5 (no date) is the canonical id used
+    # in backend defaults but was missing from the table, so the
+    # calculator returned priced=False + zero cost. Pin the aliases.
+    cases = {
+        "claude-opus-4-5":   (5.0, 25.0),
+        "claude-sonnet-4-5": (3.0, 15.0),
+        "claude-haiku-4-5":  (1.0, 5.0),
+        # Opus 4.1 has the same problem.
+        "claude-opus-4-1":   (15.0, 75.0),
+    }
+    for model, (inp, outp) in cases.items():
+        out = calculate_cost(
+            "anthropic",
+            model,
+            {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        )
+        assert out["priced"] is True, model
+        assert _isclose(out["input_usd"], inp), model
+        assert _isclose(out["output_usd"], outp), model
+
+
+# ── OpenAI long-context tier crossover ──────────────────────────────
+
+
+def test_openai_gpt55_short_context_under_272k_uses_base_rates():
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {"input_tokens": 100_000, "output_tokens": 5_000},
+    )
+    assert _isclose(out["input_usd"], 100_000 / 1_000_000.0 * 5.0)
+    assert _isclose(out["output_usd"], 5_000 / 1_000_000.0 * 30.0)
+    # No long-context marker on the model id when we stayed under.
+    assert "long-context" not in out["model_priced"], out["model_priced"]
+
+
+def test_openai_gpt55_long_context_crossover_uses_higher_rates():
+    # 300k billable input > 272k threshold -> long-context tier
+    # applies to the WHOLE turn, not a per-token blend.
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {"input_tokens": 300_000, "output_tokens": 10_000},
+    )
+    assert _isclose(out["input_usd"], 300_000 / 1_000_000.0 * 10.0)
+    assert _isclose(out["output_usd"], 10_000 / 1_000_000.0 * 45.0)
+    assert "long-context" in out["model_priced"], out["model_priced"]
+
+
+def test_openai_gpt54_long_context_crossover():
+    out = calculate_cost(
+        "openai",
+        "gpt-5.4",
+        {"input_tokens": 500_000, "output_tokens": 20_000},
+    )
+    assert _isclose(out["input_usd"], 500_000 / 1_000_000.0 * 5.0)
+    assert _isclose(out["output_usd"], 20_000 / 1_000_000.0 * 22.5)
+
+
+def test_openai_gpt54_mini_has_no_long_context_tier():
+    # Mini/nano/codex don't publish a long-context price; the base
+    # rate must keep applying even at very large prompts.
+    out = calculate_cost(
+        "openai",
+        "gpt-5.4-mini",
+        {"input_tokens": 500_000, "output_tokens": 0},
+    )
+    assert _isclose(out["input_usd"], 500_000 / 1_000_000.0 * 0.75)
+    assert "long-context" not in out["model_priced"], out["model_priced"]
+
+
+# ── OpenAI server-tool surcharges ──────────────────────────────────
+
+
+def test_openai_web_search_charged_per_thousand():
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "openai_tool_use": {"web_search_requests": 250},
+        },
+    )
+    assert _isclose(out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
+    assert _isclose(out["total_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
+
+
+def test_openai_container_hours_charged():
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "openai_tool_use": {"container_hours": 1.5},
+        },
+    )
+    assert _isclose(out["server_tools_usd"], 1.5 * OPENAI_CONTAINER_USD_PER_HOUR)
+
+
+def test_openai_tool_surcharges_added_to_total():
+    # End-to-end: input + output + web_search + container in one
+    # turn. Total must sum all four buckets.
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "input_tokens": 100_000,
+            "output_tokens": 5_000,
+            "openai_tool_use": {
+                "web_search_requests": 3,
+                "container_hours": 0.25,
+            },
+        },
+    )
+    expected_input = 100_000 / 1_000_000.0 * 5.0
+    expected_output = 5_000 / 1_000_000.0 * 30.0
+    expected_tools = (
+        3 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
+        + 0.25 * OPENAI_CONTAINER_USD_PER_HOUR
+    )
+    assert _isclose(
+        out["total_usd"],
+        round(expected_input + expected_output + expected_tools, 6),
+    )
+
+
 # ── snapshot endpoint includes the multipliers ───────────────────────
 
 
@@ -267,3 +414,12 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
     assert "code_execution_usd_per_hour" in a
     assert "models" in o and "gpt-5.5" in o["models"]
     assert o["cache_read_mult"] == OPENAI_CACHE_READ_MULT
+    # OpenAI tool surcharge constants are also exposed so the frontend
+    # tooltip can render the per-call rate.
+    assert o["web_search_usd_per_1k"] == OPENAI_WEB_SEARCH_USD_PER_1K
+    assert o["container_usd_per_hour"] == OPENAI_CONTAINER_USD_PER_HOUR
+    # Long-context tier metadata travels with the model row.
+    gpt55 = o["models"]["gpt-5.5"]
+    assert gpt55["long_context_threshold"] == 272_000
+    assert gpt55["long_context_input_per_mtok"] == 10.0
+    assert gpt55["long_context_output_per_mtok"] == 45.0
