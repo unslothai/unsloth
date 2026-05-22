@@ -219,7 +219,7 @@ def test_openai_dated_snapshot_inherits_canonical_pricing():
 def test_openai_gpt54_family_uses_verified_prices():
     # Spot-check the lower-tier rows that previously underbilled.
     cases = {
-        "gpt-5.4":      (2.5,  15.0),
+        "gpt-5.4": (2.5, 15.0),
         "gpt-5.4-mini": (0.75, 4.5),
         "gpt-5.4-nano": (0.20, 1.25),
         "gpt-5.3-codex": (1.75, 14.0),

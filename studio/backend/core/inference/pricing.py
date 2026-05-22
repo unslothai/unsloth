@@ -52,17 +52,17 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
     # 2026-05-22. Update against the live pricing page on every model launch.
     # Initial commit underbilled every gpt-5.x family 2-6x -- fixed here
     # after PR review caught it via doc cross-check.
-    "gpt-5.5":             {"input_per_mtok": 5.0,  "output_per_mtok": 30.0},
-    "gpt-5.5-pro":         {"input_per_mtok": 30.0, "output_per_mtok": 180.0},
-    "gpt-5.4":             {"input_per_mtok": 2.5,  "output_per_mtok": 15.0},
-    "gpt-5.4-pro":         {"input_per_mtok": 30.0, "output_per_mtok": 180.0},
-    "gpt-5.4-mini":        {"input_per_mtok": 0.75, "output_per_mtok": 4.5},
-    "gpt-5.4-nano":        {"input_per_mtok": 0.20, "output_per_mtok": 1.25},
-    "gpt-5.3-codex":       {"input_per_mtok": 1.75, "output_per_mtok": 14.0},
+    "gpt-5.5": {"input_per_mtok": 5.0, "output_per_mtok": 30.0},
+    "gpt-5.5-pro": {"input_per_mtok": 30.0, "output_per_mtok": 180.0},
+    "gpt-5.4": {"input_per_mtok": 2.5, "output_per_mtok": 15.0},
+    "gpt-5.4-pro": {"input_per_mtok": 30.0, "output_per_mtok": 180.0},
+    "gpt-5.4-mini": {"input_per_mtok": 0.75, "output_per_mtok": 4.5},
+    "gpt-5.4-nano": {"input_per_mtok": 0.20, "output_per_mtok": 1.25},
+    "gpt-5.3-codex": {"input_per_mtok": 1.75, "output_per_mtok": 14.0},
     # chat-latest / gpt-5.3-chat-latest is an alias for the current
     # ChatGPT model; same price as gpt-5.5.
-    "gpt-5.3-chat-latest": {"input_per_mtok": 5.0,  "output_per_mtok": 30.0},
-    "chat-latest":         {"input_per_mtok": 5.0,  "output_per_mtok": 30.0},
+    "gpt-5.3-chat-latest": {"input_per_mtok": 5.0, "output_per_mtok": 30.0},
+    "chat-latest": {"input_per_mtok": 5.0, "output_per_mtok": 30.0},
     # o-series and gpt-4.5: NOT currently listed on the pricing page.
     # Removed to avoid silent-underbilling drift. Returning priced=False
     # is honest; the UI can still render token counts. Restore with
@@ -166,9 +166,7 @@ def calculate_cost(
         out["billable_input_tokens"] = input_tokens + cache_creation
     else:
         # Anthropic: input_tokens excludes cache_* buckets, add them all.
-        out["billable_input_tokens"] = (
-            input_tokens + cache_creation + cache_read
-        )
+        out["billable_input_tokens"] = input_tokens + cache_creation + cache_read
     out["billable_output_tokens"] = output_tokens
 
     if not prices:
