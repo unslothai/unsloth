@@ -486,9 +486,9 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
     last = contents[-1]
     fr = last["parts"][0].get("functionResponse")
     assert fr is not None, last
-    assert fr["name"] == "get_weather", (
-        "name should fall back to the prior tool_call's function name"
-    )
+    assert (
+        fr["name"] == "get_weather"
+    ), "name should fall back to the prior tool_call's function name"
 
 
 # ── usage chunk surfaces promptTokenCount / candidatesTokenCount ─────
