@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -262,22 +262,47 @@ def test_orchestrator_rejects_gguf_before_spawning(caplog, tmp_path):
 
 
 def test_inference_backend_rejects_gguf_before_fast_model(monkeypatch, tmp_path):
-    from core.inference.inference import FastLanguageModel, InferenceBackend
-
-    gguf = tmp_path / "model.gguf"
-    gguf.write_bytes(b"GGUF")
-    monkeypatch.setattr(
-        FastLanguageModel,
-        "from_pretrained",
-        Mock(side_effect = AssertionError("FastLanguageModel should not run")),
+    fast_language_model = SimpleNamespace(
+        from_pretrained = Mock(
+            side_effect = AssertionError("FastLanguageModel should not run")
+        ),
+        for_inference = Mock(),
     )
-    backend = InferenceBackend.__new__(InferenceBackend)
-    config = SimpleNamespace(identifier = str(gguf), is_gguf = True)
+    fast_vision_model = SimpleNamespace(from_pretrained = Mock(), for_inference = Mock())
+    unsloth_stub = ModuleType("unsloth")
+    unsloth_stub.FastLanguageModel = fast_language_model
+    unsloth_stub.FastVisionModel = fast_vision_model
+    chat_templates_stub = ModuleType("unsloth.chat_templates")
+    chat_templates_stub.get_chat_template = Mock()
+    peft_stub = ModuleType("peft")
+    peft_stub.PeftModel = type("PeftModel", (), {})
+    peft_stub.PeftModelForCausalLM = type("PeftModelForCausalLM", (), {})
 
-    with pytest.raises(ValueError, match = "llama.cpp backend"):
-        backend.load_model(config)
+    monkeypatch.delitem(sys.modules, "core.inference.inference", raising = False)
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth_stub)
+    monkeypatch.setitem(sys.modules, "unsloth.chat_templates", chat_templates_stub)
+    monkeypatch.setitem(sys.modules, "peft", peft_stub)
 
-    FastLanguageModel.from_pretrained.assert_not_called()
+    try:
+        from core.inference.inference import FastLanguageModel, InferenceBackend
+
+        gguf = tmp_path / "model.gguf"
+        gguf.write_bytes(b"GGUF")
+        backend = InferenceBackend.__new__(InferenceBackend)
+        config = SimpleNamespace(identifier = str(gguf), is_gguf = True)
+
+        with pytest.raises(ValueError, match = "llama.cpp backend"):
+            backend.load_model(config)
+
+        FastLanguageModel.from_pretrained.assert_not_called()
+    finally:
+        inference_module = sys.modules.pop("core.inference.inference", None)
+        inference_pkg = sys.modules.get("core.inference")
+        if (
+            inference_pkg is not None
+            and getattr(inference_pkg, "inference", None) is inference_module
+        ):
+            delattr(inference_pkg, "inference")
 
 
 def test_worker_build_model_config_rejects_gguf(tmp_path):
