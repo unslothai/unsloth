@@ -255,7 +255,7 @@ function ModelSelectorContent({
           <Tabs defaultValue={chatOnlyTabsDefault} className="w-full">
             <TabsList className="mb-2 w-full">
               <TabsTrigger value="hub">Hub models</TabsTrigger>
-              <TabsTrigger value="external">External</TabsTrigger>
+              <TabsTrigger value="external">Connected</TabsTrigger>
             </TabsList>
             <TabsContent value="hub" className="m-0">
               <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
@@ -276,7 +276,7 @@ function ModelSelectorContent({
           <TabsList className="mb-2 w-full">
             <TabsTrigger value="hub">Hub models</TabsTrigger>
             <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
-            {hasExternal ? <TabsTrigger value="external">External</TabsTrigger> : null}
+            {hasExternal ? <TabsTrigger value="external">Connected</TabsTrigger> : null}
           </TabsList>
 
           <TabsContent value="hub" className="m-0">
@@ -530,15 +530,22 @@ function ExternalModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search external models"
+          placeholder="Search models"
           className="h-9 pl-8"
         />
       </div>
       <div className="max-h-64 overflow-y-auto">
         <div className="space-y-2 p-1">
           {grouped.length === 0 ? (
-            <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No external models configured.
+            <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+              {externalModels.length === 0 ? (
+                <>
+                  No models from your connections. Set up in Settings →
+                  Connections.
+                </>
+              ) : (
+                "No models match your search."
+              )}
             </div>
           ) : (
             grouped.map((group) => (
