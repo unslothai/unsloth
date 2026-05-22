@@ -19,6 +19,7 @@ non-cloud bases drop the tool silently.
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 
@@ -221,8 +222,36 @@ def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
         ],
     )
     input_items = captured["body"].get("input") or []
-    assert {"type": "image_generation_call", "id": "img_abc"} in input_items
-    assert {"role": "user", "content": "make it more realistic"} in input_items
+    assert input_items[-2:] == [
+        {"role": "user", "content": "make it more realistic"},
+        {"type": "image_generation_call", "id": "img_abc"},
+    ]
+
+
+def test_external_message_builder_preserves_openai_image_generation_refs():
+    from routes.inference import _build_external_messages
+
+    messages = [
+        SimpleNamespace(
+            role = "assistant",
+            content = [
+                SimpleNamespace(type = "image_generation_call", id = "img_abc"),
+            ],
+        ),
+        SimpleNamespace(role = "user", content = "make it more realistic"),
+    ]
+
+    assert _build_external_messages(
+        messages,
+        supports_vision = True,
+        provider_type = "openai",
+    ) == [
+        {
+            "role": "assistant",
+            "content": [{"type": "image_generation_call", "id": "img_abc"}],
+        },
+        {"role": "user", "content": "make it more realistic"},
+    ]
 
 
 # ── output translation surfaces tool_start + tool_end ────────────────

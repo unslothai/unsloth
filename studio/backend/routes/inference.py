@@ -1701,6 +1701,9 @@ def _build_external_messages(
       see ``_INPUT_DOCUMENT_PROVIDERS``). For every other provider the
       part is stripped so the unknown content type doesn't reach generic
       /chat/completions passthrough and 400 the request.
+    - `image_generation_call`: OpenAI-only Responses image reference.
+      Forwarded ONLY when provider_type=="openai" so follow-up image
+      edits can reference prior generated images.
     - `compaction`: Anthropic-only synthetic part (round-trips server-side
       compaction state). Forwarded ONLY when provider_type=="anthropic";
       stripped for every other provider so the unknown part doesn't
@@ -1709,6 +1712,7 @@ def _build_external_messages(
     """
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
+    openai = provider_type == "openai"
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
@@ -1729,6 +1733,10 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
+                    elif part.type == "image_generation_call" and openai:
+                        # ExternalProviderClient maps this onto a top-level
+                        # Responses input item after the current user prompt.
+                        parts.append({"type": "image_generation_call", "id": part.id})
                     elif part.type == "input_document" and document_provider:
                         # ExternalProviderClient maps this onto
                         # Anthropic's `document` or OpenAI Responses'
@@ -1761,6 +1769,8 @@ def _build_external_messages(
                 for p in msg.content:
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
+                    elif p.type == "image_generation_call" and openai:
+                        preserved.append({"type": "image_generation_call", "id": p.id})
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
                 if len(preserved) == 1 and preserved[0]["type"] == "text":

@@ -2576,6 +2576,7 @@ class ExternalProviderClient:
         # translate user/assistant messages into the Responses input shape.
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
+        image_generation_call_refs: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -2613,12 +2614,7 @@ class ExternalProviderClient:
                     elif part_type == "image_generation_call":
                         call_id = part.get("id") or part.get("image_generation_call_id")
                         if isinstance(call_id, str) and call_id:
-                            if translated_parts:
-                                input_items.append(
-                                    {"role": role, "content": translated_parts}
-                                )
-                                translated_parts = []
-                            input_items.append(
+                            image_generation_call_refs.append(
                                 {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
@@ -2660,6 +2656,8 @@ class ExternalProviderClient:
                         translated_parts.append(block)
                 if translated_parts:
                     input_items.append({"role": role, "content": translated_parts})
+
+        input_items.extend(image_generation_call_refs)
 
         # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
         # temperature and top_p with `Unsupported parameter` 400s on
