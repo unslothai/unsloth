@@ -239,6 +239,7 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -286,6 +287,7 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 openai_code_exec_container_id,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -2008,6 +2010,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -2129,6 +2132,28 @@ class ExternalProviderClient:
         is_openai_cloud = "api.openai.com" in (self.base_url or "")
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
+
+        # OpenAI server-side context compaction — see
+        #   https://developers.openai.com/api/docs/guides/compaction
+        # When `compaction_threshold` is provided on a cloud OpenAI
+        # request, attach `context_management: [{type:"compaction",
+        # compact_threshold:N}]` so the API runs server-side
+        # compaction when the rendered prompt crosses the threshold.
+        # No beta header is required; no dated version pin. The field
+        # is silently dropped for non-cloud backends because ollama /
+        # llama.cpp / "custom" presets land in this helper and would
+        # 400 on an unknown body field.
+        if (
+            is_openai_cloud
+            and compaction_threshold is not None
+            and compaction_threshold > 0
+        ):
+            body["context_management"] = [
+                {
+                    "type": "compaction",
+                    "compact_threshold": int(compaction_threshold),
+                }
+            ]
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools

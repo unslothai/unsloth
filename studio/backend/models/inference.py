@@ -662,6 +662,19 @@ class ChatCompletionRequest(BaseModel):
             "vllm, local, etc.). Treated as enabled when omitted."
         ),
     )
+    compaction_threshold: Optional[int] = Field(
+        None,
+        ge = 1_000,
+        le = 2_000_000,
+        description = (
+            "[x-unsloth] Server-side context compaction trigger, in tokens. "
+            "On OpenAI cloud, attaches "
+            "`context_management:[{type:'compaction', compact_threshold:N}]` "
+            "so the Responses API summarises older turns once the rendered "
+            "prompt crosses the threshold. No-op on non-cloud OpenAI bases "
+            "and on every other provider."
+        ),
+    )
     openai_code_exec_container_id: Optional[str] = Field(
         None,
         description = (
