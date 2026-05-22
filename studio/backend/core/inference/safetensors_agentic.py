@@ -134,6 +134,18 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+
+    # Inject the synthetic respond tool so the model has a structured
+    # exit for plain text. Unwrap below emits the message as content
+    # and returns. ``inject_respond_tool`` skips when ``tools`` is empty
+    # or already carries a tool named "respond".
+    from core.inference.tools import (
+        extract_respond_message,
+        inject_respond_tool,
+        is_respond_call,
+    )
+    tools, _respond_injected = inject_respond_tool(tools)
+
     tool_call_history: list[tuple[str, bool]] = []
     final_attempt_done = False
     allowed_tool_names = {
@@ -300,6 +312,16 @@ def run_safetensors_tool_loop(
         conversation.append(assistant_msg)
 
         for tc in tool_calls or []:
+            # Synthetic respond unwrap: emit the message as content and
+            # end the loop. Empty status resets the consumer's prev_text
+            # so the message streams as a fresh cumulative.
+            if _respond_injected and is_respond_call(tc):
+                message = extract_respond_message(tc)
+                yield {"type": "status", "text": ""}
+                if message:
+                    yield {"type": "content", "text": message}
+                return
+
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
             arguments = _coerce_arguments(

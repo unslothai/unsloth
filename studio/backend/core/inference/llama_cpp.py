@@ -4437,12 +4437,22 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import execute_tool
+        from core.inference.tools import (
+            execute_tool,
+            extract_respond_message,
+            inject_respond_tool,
+            is_respond_call,
+        )
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+
+        # Inject the synthetic respond tool so the model has a structured
+        # exit for plain assistant text. The unwrap path below strips
+        # the call and emits ``message`` as content.
+        tools, _respond_injected = inject_respond_tool(tools)
         url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -5000,6 +5010,17 @@ class LlamaCppBackend:
                 conversation.append(assistant_msg)
 
                 for tc in tool_calls or []:
+                    # Synthetic respond unwrap: emit the message as
+                    # plain content and end the loop. The status reset
+                    # below clears prev_text in the SSE consumer so the
+                    # message streams as a fresh cumulative.
+                    if _respond_injected and is_respond_call(tc):
+                        message = extract_respond_message(tc)
+                        yield {"type": "status", "text": ""}
+                        if message:
+                            yield {"type": "content", "text": message}
+                        return
+
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
                     raw_args = func.get("arguments", {})

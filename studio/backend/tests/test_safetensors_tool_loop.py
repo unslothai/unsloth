@@ -41,6 +41,13 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from core.inference.tools import (
+    RESPOND_TOOL,
+    RESPOND_TOOL_NAME,
+    extract_respond_message,
+    inject_respond_tool,
+    is_respond_call,
+)
 from utils.datasets import is_gpt_oss_model_name
 
 
@@ -496,6 +503,158 @@ class TestLoopControl:
         contents = [e for e in events if e["type"] == "content"]
         # Final content must include the final answer.
         assert contents and "final answer" in contents[-1]["text"]
+
+
+class TestRespondToolHelpers:
+    """Unit coverage for the synthetic respond tool helpers."""
+
+    def test_inject_into_real_tools(self):
+        base = [{"type": "function", "function": {"name": "web_search"}}]
+        out, injected = inject_respond_tool(base)
+        assert injected is True
+        # Original list not mutated.
+        assert len(base) == 1
+        assert len(out) == 2
+        assert out[-1]["function"]["name"] == RESPOND_TOOL_NAME
+
+    def test_inject_skips_empty(self):
+        out, injected = inject_respond_tool([])
+        assert injected is False
+        assert out == []
+
+    def test_inject_skips_none(self):
+        out, injected = inject_respond_tool(None)
+        assert injected is False
+        assert out is None
+
+    def test_inject_skips_on_collision(self):
+        base = [
+            {"type": "function", "function": {"name": "respond"}},
+            {"type": "function", "function": {"name": "python"}},
+        ]
+        out, injected = inject_respond_tool(base)
+        assert injected is False
+        assert out is base
+
+    def test_is_respond_call(self):
+        assert is_respond_call(
+            {"function": {"name": "respond", "arguments": "{}"}}
+        )
+        assert not is_respond_call(
+            {"function": {"name": "web_search", "arguments": "{}"}}
+        )
+        assert not is_respond_call({})
+
+    def test_extract_message_from_json_string(self):
+        tc = {"function": {"name": "respond", "arguments": '{"message":"hi"}'}}
+        assert extract_respond_message(tc) == "hi"
+
+    def test_extract_message_from_dict(self):
+        tc = {"function": {"name": "respond", "arguments": {"message": "hi"}}}
+        assert extract_respond_message(tc) == "hi"
+
+    def test_extract_message_bad_json_returns_empty(self):
+        tc = {"function": {"name": "respond", "arguments": "{not json}"}}
+        assert extract_respond_message(tc) == ""
+
+    def test_extract_message_missing_key_returns_empty(self):
+        tc = {"function": {"name": "respond", "arguments": '{"other":"x"}'}}
+        assert extract_respond_message(tc) == ""
+
+    def test_extract_message_non_string_returns_empty(self):
+        tc = {"function": {"name": "respond", "arguments": '{"message":123}'}}
+        assert extract_respond_message(tc) == ""
+
+
+class TestRespondToolUnwrap:
+    """Loop-level coverage for the unwrap path in the agentic loop."""
+
+    def test_respond_call_emits_message_as_content(self):
+        # Model calls respond({message:"hi"}); loop must emit content
+        # "hi" and end without executing any real tool.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"respond",'
+                    '"arguments":{"message":"hi"}}</tool_call>'
+                ],
+            ],
+            exec_results = [],
+        )
+        events = _collect_events(loop)
+        contents = [e for e in events if e["type"] == "content"]
+        assert any(e.get("text") == "hi" for e in contents)
+        assert exec_fn.calls == []
+
+    def test_respond_call_with_empty_message(self):
+        # An empty message string still terminates cleanly with no
+        # crash and no leaked tool execution.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"respond",'
+                    '"arguments":{"message":""}}</tool_call>'
+                ],
+            ],
+            exec_results = [],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        # Status reset is yielded even when the message is empty.
+        statuses = [e for e in events if e["type"] == "status"]
+        assert statuses
+
+    def test_real_tool_call_does_not_unwrap(self):
+        # A non-respond tool call goes through the normal execute path.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search",'
+                    '"arguments":{"query":"weather"}}</tool_call>'
+                ],
+                ["The weather is sunny."],
+            ],
+            exec_results = ["Sunny and 22C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert any("sunny" in c.get("text", "").lower() for c in contents)
+
+    def test_respond_call_when_client_owns_tool(self):
+        # When the caller supplies a real "respond" tool, the synthetic
+        # one is NOT injected and the call goes through execute_tool
+        # like any other tool, preserving the client's semantics.
+        turn_iter = iter([
+            [
+                '<tool_call>{"name":"respond",'
+                '"arguments":{"message":"hi"}}</tool_call>'
+            ],
+            ["thanks"],
+        ])
+
+        def _gen(_messages):
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool(["ack"])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [
+                {"type": "function", "function": {"name": "respond"}},
+            ],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        # The client's respond tool was executed, not unwrapped.
+        assert exec_fn.calls == [("respond", {"message": "hi"})]
 
 
 class TestStatusFormatting:

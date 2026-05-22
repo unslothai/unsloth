@@ -9,6 +9,7 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 
 import ast
 import http.client
+import json
 import os
 import signal
 
@@ -503,6 +504,73 @@ TERMINAL_TOOL = {
 }
 
 ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
+
+
+# Synthetic respond tool. Adapted from forge
+# (https://github.com/antoinezambelli/forge, MIT). The model calls
+# respond(message=...) instead of producing bare text so the agentic
+# loop has a structured exit. The unwrap path strips the call from the
+# response and emits the message as plain assistant content.
+RESPOND_TOOL_NAME = "respond"
+
+RESPOND_TOOL = {
+    "type": "function",
+    "function": {
+        "name": RESPOND_TOOL_NAME,
+        "description": (
+            "Respond to the user with a message. Use this when the user "
+            "is chatting, asking a question, when you need to ask a "
+            "clarifying question before proceeding, or when no other "
+            "tool action is needed. Also use this after completing the "
+            "user's request to report the result."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message to send to the user.",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+}
+
+
+def inject_respond_tool(tools: list[dict] | None) -> tuple[list[dict] | None, bool]:
+    """Defensively append ``RESPOND_TOOL`` to ``tools``. Skips when the
+    list is empty/None or a tool named ``respond`` already exists.
+    Returns ``(new_tools, was_injected)``. The input list is not mutated.
+    """
+    if not tools:
+        return tools, False
+    for t in tools:
+        if (t.get("function") or {}).get("name") == RESPOND_TOOL_NAME:
+            return tools, False
+    return list(tools) + [RESPOND_TOOL], True
+
+
+def is_respond_call(tc: dict) -> bool:
+    """True if ``tc`` is a tool call to the synthetic ``respond`` tool."""
+    return (tc.get("function") or {}).get("name") == RESPOND_TOOL_NAME
+
+
+def extract_respond_message(tc: dict) -> str:
+    """Pull the ``message`` arg out of a respond call. Tolerates
+    arguments arriving as either a JSON string or a dict. Returns ``""``
+    if missing or malformed.
+    """
+    args = (tc.get("function") or {}).get("arguments", "")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (json.JSONDecodeError, ValueError):
+            return ""
+    if not isinstance(args, dict):
+        return ""
+    msg = args.get("message", "")
+    return msg if isinstance(msg, str) else ""
 
 
 _TIMEOUT_UNSET = object()
