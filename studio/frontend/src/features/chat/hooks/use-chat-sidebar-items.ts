@@ -23,6 +23,7 @@ export interface SidebarItem {
   id: string;
   title: string;
   createdAt: number;
+  projectId?: string | null;
 }
 
 export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
@@ -43,6 +44,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         id: t.pairId,
         title: t.title,
         createdAt: t.createdAt,
+        projectId: t.projectId ?? null,
       });
     } else if (!t.pairId) {
       items.push({
@@ -50,6 +52,7 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
         id: t.id,
         title: t.title,
         createdAt: t.createdAt,
+        projectId: t.projectId ?? null,
       });
     }
   }
@@ -62,7 +65,9 @@ export function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
 // discards stale responses.
 const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
 
-export function useChatSidebarItems() {
+export function useChatSidebarItems(options?: {
+  projectId?: string | null;
+}) {
   const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
 
   useEffect(() => {
@@ -74,6 +79,7 @@ export function useChatSidebarItems() {
       try {
         const threads = await listStoredChatThreadsWithMessages({
           includeArchived: false,
+          projectId: options?.projectId,
         });
         // Discard the response if a newer request was scheduled while we
         // were in flight, or if the effect was torn down.
@@ -106,7 +112,7 @@ export function useChatSidebarItems() {
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
     };
-  }, []);
+  }, [options?.projectId]);
 
   const items = groupThreads(allThreads ?? []);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));

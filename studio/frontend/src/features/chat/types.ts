@@ -4,8 +4,22 @@
 export type ModelType = "base" | "lora" | "model1" | "model2";
 
 export type ChatView =
-  | { mode: "single"; threadId?: string; newThreadNonce?: string }
-  | { mode: "compare"; pairId: string };
+  | {
+      mode: "single";
+      threadId?: string;
+      newThreadNonce?: string;
+      projectId?: string | null;
+    }
+  | { mode: "compare"; pairId: string; projectId?: string | null };
+
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  instructions?: string;
+  archived: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface ThreadRecord {
   id: string;
@@ -13,6 +27,7 @@ export interface ThreadRecord {
   modelType: ModelType;
   modelId?: string;
   pairId?: string;
+  projectId?: string | null;
   archived: boolean;
   createdAt: number;
   /**

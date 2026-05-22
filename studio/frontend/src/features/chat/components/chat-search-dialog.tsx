@@ -92,8 +92,14 @@ export function ChatSearchDialog() {
                     to: "/chat",
                     search:
                       item.type === "single"
-                        ? { thread: item.id }
-                        : { compare: item.id },
+                        ? {
+                            thread: item.id,
+                            ...(item.projectId ? { project: item.projectId } : {}),
+                          }
+                        : {
+                            compare: item.id,
+                            ...(item.projectId ? { project: item.projectId } : {}),
+                          },
                   });
                   close();
                 }}

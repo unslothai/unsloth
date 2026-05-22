@@ -40,6 +40,7 @@ import type { ChatModelSummary } from "../types/runtime";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   getStoredChatThread,
+  getStoredChatProject,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
@@ -463,6 +464,28 @@ async function resolveUseAdapter(
   } catch {
     return undefined;
   }
+}
+
+async function resolveProjectInstructions(
+  threadId: string | undefined,
+): Promise<string> {
+  let projectId: string | null | undefined;
+  if (threadId) {
+    const thread = await getStoredChatThread(threadId).catch(() => null);
+    projectId = thread?.projectId ?? null;
+  }
+  if (!projectId) {
+    projectId = useChatRuntimeStore.getState().activeProjectId;
+  }
+  if (!projectId) {
+    return "";
+  }
+
+  const project = await getStoredChatProject(projectId).catch(() => null);
+  if (!project || project.archived) {
+    return "";
+  }
+  return project.instructions?.trim() ?? "";
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -926,10 +949,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+      const projectInstructions =
+        await resolveProjectInstructions(resolvedThreadId);
+      const combinedSystemPrompt = [
+        projectInstructions
+          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+          : "",
+        safeSystemPrompt.trim(),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: combinedSystemPrompt,
         });
       }
       let disabledToolGuard: string | null = null;

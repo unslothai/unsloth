@@ -37,6 +37,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
@@ -47,6 +48,8 @@ import {
   Delete02Icon,
   DownloadSquare01Icon,
   Edit03Icon,
+  FolderAddIcon,
+  Folder02Icon,
   Globe02Icon,
   HelpCircleIcon,
   Logout01Icon,
@@ -54,6 +57,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
+  NoteEditIcon,
   Settings02Icon,
   TestTube01Icon,
   ZapIcon,
@@ -68,11 +72,18 @@ import { ChevronDown, ChevronsUpDown, MoreHorizontalIcon, Moon, Sun } from "luci
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   ChatSearchDialog,
+  createChatProject,
+  deleteChatProject,
   deleteChatItem,
+  moveChatItemToProject,
   renameChatItem,
+  renameChatProject,
+  updateChatProjectInstructions,
   useChatRuntimeStore,
+  useChatProjects,
   useChatSearchStore,
   useChatSidebarItems,
+  type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -208,6 +219,8 @@ export function AppSidebar() {
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [projectChatsOpen, setProjectChatsOpen] = useState(true);
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => { if (isChatRoute) setChatOpen(true); }, [isChatRoute]);
@@ -227,7 +240,22 @@ export function AppSidebar() {
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
-  const { items: chatItems } = useChatSidebarItems();
+  const { projects } = useChatProjects();
+  const activeProjectId = isChatRoute
+    ? ((search.project as string | undefined) ?? null)
+    : null;
+  const activeProject =
+    activeProjectId !== null
+      ? (projects.find((project) => project.id === activeProjectId) ?? null)
+      : null;
+  useEffect(() => { if (activeProjectId) setProjectChatsOpen(true); }, [activeProjectId]);
+  const { items: activeScopeChatItems } = useChatSidebarItems({
+    projectId: activeProjectId,
+  });
+  const { items: recentChatItems } = useChatSidebarItems({
+    projectId: null,
+  });
+  const chatItems = activeProjectId ? activeScopeChatItems : recentChatItems;
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = isChatRoute
@@ -247,28 +275,55 @@ export function AppSidebar() {
 
   const chatDisabled = isTrainingRunning;
 
+  function chatSearchForProject(projectId: string | null) {
+    return {
+      new: createNavigationNonce(),
+      ...(projectId ? { project: projectId } : {}),
+    };
+  }
+
+  function openNewChat(projectId = activeProjectId) {
+    if (chatDisabled) return;
+    setActiveThreadId(null);
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: chatSearchForProject(projectId) });
+    closeMobileIfOpen();
+  }
+
   async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
     await deleteChatItem(item, activeThreadId, (view) => {
       navigate({
         to: "/chat",
-        search: { new: view.newThreadNonce },
+        search: {
+          new: view.newThreadNonce,
+          ...(item.projectId ? { project: item.projectId } : {}),
+        },
       });
     });
   }
 
   type RenameTarget =
     | { kind: "chat"; item: SidebarItem; current: string }
+    | { kind: "project"; project: ProjectRecord; current: string }
     | { kind: "run"; run: TrainingRunSummary; current: string };
   const [renamingTarget, setRenamingTarget] = useState<RenameTarget | null>(
     null,
   );
   const [renameDraft, setRenameDraft] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [editingProjectInstructions, setEditingProjectInstructions] =
+    useState<ProjectRecord | null>(null);
+  const [projectInstructionsDraft, setProjectInstructionsDraft] = useState("");
+  const [movingChat, setMovingChat] = useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
   const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =
     renamingTarget !== null &&
     (renamingTarget.kind === "chat"
       ? renameTrimmed.length > 0 && renameTrimmed !== renamingTarget.current
+      : renamingTarget.kind === "project"
+        ? renameTrimmed.length > 0 && renameTrimmed !== renamingTarget.current
       : renameTrimmed.length > 0
         ? renameTrimmed !== renamingTarget.current
         : renamingTarget.run.display_name != null);
@@ -276,6 +331,14 @@ export function AppSidebar() {
   function openRenameChat(item: SidebarItem) {
     setRenameDraft(item.title);
     setRenamingTarget({ kind: "chat", item, current: item.title });
+  }
+  function openRenameProject(project: ProjectRecord) {
+    setRenameDraft(project.name);
+    setRenamingTarget({ kind: "project", project, current: project.name });
+  }
+  function openProjectInstructions(project: ProjectRecord) {
+    setProjectInstructionsDraft(project.instructions ?? "");
+    setEditingProjectInstructions(project);
   }
   function openRenameRun(run: TrainingRunSummary) {
     const current = run.display_name ?? run.model_name;
@@ -296,6 +359,16 @@ export function AppSidebar() {
       }
       return;
     }
+    if (target.kind === "project") {
+      try {
+        await renameChatProject(target.project.id, renameTrimmed);
+      } catch (err) {
+        toast.error("Failed to rename project", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+      return;
+    }
     try {
       const updated = await renameTrainingRun(target.run.id, nextRunDisplayName);
       emitTrainingRunUpdated(updated);
@@ -308,6 +381,7 @@ export function AppSidebar() {
 
   type DeleteTarget =
     | { kind: "chat"; item: SidebarItem }
+    | { kind: "project"; project: ProjectRecord }
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
@@ -321,6 +395,20 @@ export function AppSidebar() {
         await handleDeleteThread(target.item);
       } catch (err) {
         toast.error("Failed to delete chat", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+      return;
+    }
+    if (target.kind === "project") {
+      try {
+        await deleteChatProject(target.project.id);
+        if (activeProjectId === target.project.id) {
+          useChatRuntimeStore.getState().setActiveProjectId(null);
+          navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+        }
+      } catch (err) {
+        toast.error("Failed to delete project", {
           description: err instanceof Error ? err.message : undefined,
         });
       }
@@ -343,6 +431,142 @@ export function AppSidebar() {
     }
   }
 
+  async function commitCreateProject() {
+    const name = projectNameDraft.trim();
+    if (!name) return;
+    try {
+      const project = await createChatProject(name);
+      setCreatingProject(false);
+      setProjectNameDraft("");
+      openNewChat(project.id);
+    } catch (err) {
+      toast.error("Failed to create project", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function commitProjectInstructions() {
+    const project = editingProjectInstructions;
+    if (!project) return;
+    try {
+      await updateChatProjectInstructions(
+        project.id,
+        projectInstructionsDraft,
+      );
+      setEditingProjectInstructions(null);
+      setProjectInstructionsDraft("");
+    } catch (err) {
+      toast.error("Failed to save instructions", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function moveActiveChatToProject(projectId: string | null) {
+    const item = movingChat;
+    if (!item) return;
+    try {
+      await moveChatItemToProject(item, projectId);
+      setMovingChat(null);
+      if (activeThreadId === item.id) {
+        useChatRuntimeStore.getState().setActiveProjectId(projectId);
+      }
+    } catch (err) {
+      toast.error("Failed to move chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  function renderChatSidebarItem(
+    item: SidebarItem,
+    variant: "project" | "recent",
+  ) {
+    const itemClass =
+      variant === "project"
+        ? "group/project-chat-item relative"
+        : "group/recent-item relative";
+    const actionClass =
+      variant === "project"
+        ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+        : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
+    const buttonClass = cn(
+      "sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      variant === "project"
+        ? "group-hover/project-chat-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-10"
+        : "group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10",
+    );
+
+    return (
+      <SidebarMenuItem key={item.id} className={itemClass}>
+        <SidebarMenuButton
+          data-testid="recent-thread"
+          data-thread-type={item.type}
+          data-thread-id={item.id}
+          isActive={activeThreadId === item.id}
+          className={buttonClass}
+          onClick={() => {
+            navigate({
+              to: "/chat",
+              search:
+                item.type === "single"
+                  ? {
+                      thread: item.id,
+                      ...(item.projectId ? { project: item.projectId } : {}),
+                    }
+                  : {
+                      compare: item.id,
+                      ...(item.projectId ? { project: item.projectId } : {}),
+                    },
+            });
+            closeMobileIfOpen();
+          }}
+        >
+          <span className="truncate">{item.title}</span>
+        </SidebarMenuButton>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              aria-label="Chat options"
+              className={actionClass}
+            >
+              <span className="sidebar-row-action-glyph">
+                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+              </span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="bottom"
+            align="end"
+            sideOffset={4}
+            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+          >
+            <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+              <span>Rename</span>
+            </DropdownMenuItem>
+            {projects.length > 0 || item.projectId ? (
+              <DropdownMenuItem onSelect={() => setMovingChat(item)}>
+                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                <span>{item.projectId ? "Move" : "Move to project"}</span>
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => setConfirmingDelete({ kind: "chat", item })}
+            >
+              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <span>Delete</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    );
+  }
+
   return (
     <>
     <Sidebar
@@ -358,12 +582,7 @@ export function AppSidebar() {
             onClick={(event) => {
               event.preventDefault();
               if (chatDisabled) return;
-              setActiveThreadId(null);
-              closeMobileIfOpen();
-              void navigate({
-                to: "/chat",
-                search: { new: createNavigationNonce() },
-              });
+              openNewChat(null);
             }}
             className="flex items-center gap-[6px] select-none"
             aria-label="Unsloth home"
@@ -437,12 +656,7 @@ export function AppSidebar() {
               label="New Chat"
               active={false}
               disabled={chatDisabled}
-              onClick={() => {
-                if (chatDisabled) return;
-                setActiveThreadId(null);
-                navigate({ to: "/chat", search: { new: createNavigationNonce() } });
-                closeMobileIfOpen();
-              }}
+              onClick={() => openNewChat()}
             />
             <NavItem
               icon={ColumnInsertIcon}
@@ -453,7 +667,16 @@ export function AppSidebar() {
               onClick={() => {
                 if (chatDisabled) return;
                 setActiveThreadId(null);
-                navigate({ to: "/chat", search: { compare: createNavigationNonce() } });
+                useChatRuntimeStore
+                  .getState()
+                  .setActiveProjectId(activeProjectId);
+                navigate({
+                  to: "/chat",
+                  search: {
+                    compare: createNavigationNonce(),
+                    ...(activeProjectId ? { project: activeProjectId } : {}),
+                  },
+                });
                 closeMobileIfOpen();
               }}
             />
@@ -513,47 +736,47 @@ export function AppSidebar() {
       </SidebarGroup>
 
       <SidebarContent ref={scrollRef} className="gap-0 overflow-y-auto overscroll-contain min-h-0">
-        {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
-        {!isStudioRoute && chatItems.length > 0 && (
-          <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
+        {!isStudioRoute && (
+          <Collapsible open={projectsOpen} onOpenChange={setProjectsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
             <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
-                Recents
-                <ChevronDown className="size-3.5 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                Projects
+                <ChevronDown className="size-4 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
             <SidebarGroupContent className="px-2">
               <SidebarMenu>
-                {chatItems.map((item) => (
-                  <SidebarMenuItem key={item.id} className="group/recent-item relative">
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 text-[14.5px] leading-[19px] font-medium tracking-nav"
+                    onClick={() => {
+                      setProjectNameDraft("");
+                      setCreatingProject(true);
+                    }}
+                  >
+                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon shrink-0 text-current opacity-80" />
+                    <span className="truncate">New project</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                {projects.map((project) => (
+                  <SidebarMenuItem key={project.id} className="group/project-item relative">
                     <SidebarMenuButton
-                      data-testid="recent-thread"
-                      data-thread-type={item.type}
-                      data-thread-id={item.id}
-                      isActive={activeThreadId === item.id}
-                      className="sidebar-nav-btn h-[32px] rounded-[10px] pl-2.5 pr-2.5 group-hover/recent-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-10 text-[14.5px] leading-[19px] tracking-nav font-medium"
-                      onClick={() => {
-                        navigate({
-                          to: "/chat",
-                          search:
-                            item.type === "single"
-                              ? { thread: item.id }
-                              : { compare: item.id },
-                        });
-                        closeMobileIfOpen();
-                      }}
+                      isActive={activeProjectId === project.id}
+                      className="sidebar-nav-btn h-[35px] gap-[8.5px] rounded-[10px] pl-2.5 pr-2.5 group-hover/project-item:pr-10 group-has-[.sidebar-row-action[data-state=open]]/project-item:pr-10 text-[14.5px] leading-[19px] font-medium tracking-nav"
+                      onClick={() => openNewChat(project.id)}
                     >
-                      <span className="truncate">{item.title}</span>
+                      <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon shrink-0 text-current opacity-80" />
+                      <span className="truncate">{project.name}</span>
                     </SidebarMenuButton>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <button
                           type="button"
                           onClick={(e) => e.stopPropagation()}
-                          aria-label="Chat options"
-                          className="sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                          aria-label="Project options"
+                          className="sidebar-row-action group-hover/project-item:opacity-100 group-hover/project-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                         >
                           <span className="sidebar-row-action-glyph">
                             <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
@@ -564,15 +787,23 @@ export function AppSidebar() {
                         side="bottom"
                         align="end"
                         sideOffset={4}
-                        className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+                        className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 py-2 font-heading rounded-[14px] border-0"
                       >
-                        <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+                        <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
+                          <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                          <span>New chat</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openRenameProject(project)}>
                           <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                           <span>Rename</span>
                         </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openProjectInstructions(project)}>
+                          <HugeiconsIcon icon={NoteEditIcon} strokeWidth={1.75} className="size-icon" />
+                          <span>Instructions</span>
+                        </DropdownMenuItem>
                         <DropdownMenuItem
                           variant="destructive"
-                          onSelect={() => setConfirmingDelete({ kind: "chat", item })}
+                          onSelect={() => setConfirmingDelete({ kind: "project", project })}
                         >
                           <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                           <span>Delete</span>
@@ -581,6 +812,55 @@ export function AppSidebar() {
                     </DropdownMenu>
                   </SidebarMenuItem>
                 ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {!isStudioRoute && activeProject && activeScopeChatItems.length > 0 && (
+          <Collapsible
+            open={projectChatsOpen}
+            onOpenChange={setProjectChatsOpen}
+            asChild
+          >
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                {activeProject.name}
+                <ChevronDown className="size-4 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent className="px-2">
+                <SidebarMenu>
+                  {activeScopeChatItems.map((item) =>
+                    renderChatSidebarItem(item, "project"),
+                  )}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {/* Recent Chats — hide on Studio only (Eyera fac13); chatOpen = ec695 clickability */}
+        {!isStudioRoute && (
+          <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center justify-between">
+                Recents
+                <ChevronDown className="size-4 transition-transform duration-200 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+            <SidebarGroupContent className="px-2">
+              <SidebarMenu>
+                {recentChatItems.map((item) =>
+                  renderChatSidebarItem(item, "recent"),
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
             </CollapsibleContent>
@@ -801,6 +1081,8 @@ export function AppSidebar() {
           <DialogTitle>
             {confirmingDelete?.kind === "run"
               ? "Delete training run"
+              : confirmingDelete?.kind === "project"
+                ? "Delete project"
               : "Delete chat"}
           </DialogTitle>
           <DialogDescription>
@@ -813,6 +1095,11 @@ export function AppSidebar() {
               <>
                 Are you sure you want to delete this chat{" "}
                 <em>{confirmingDelete.item.title}</em>?
+              </>
+            ) : confirmingDelete?.kind === "project" ? (
+              <>
+                Delete <em>{confirmingDelete.project.name}</em>? Its chats will
+                be permanently deleted.
               </>
             ) : null}
           </DialogDescription>
@@ -844,7 +1131,11 @@ export function AppSidebar() {
       <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {renamingTarget?.kind === "run" ? "Rename run" : "Rename chat"}
+            {renamingTarget?.kind === "run"
+              ? "Rename run"
+              : renamingTarget?.kind === "project"
+                ? "Rename project"
+                : "Rename chat"}
           </DialogTitle>
         </DialogHeader>
         <Input
@@ -858,8 +1149,20 @@ export function AppSidebar() {
           }}
           autoFocus
           maxLength={120}
-          placeholder={renamingTarget?.kind === "run" ? "Run name" : "Chat title"}
-          aria-label={renamingTarget?.kind === "run" ? "Run name" : "Chat title"}
+          placeholder={
+            renamingTarget?.kind === "run"
+              ? "Run name"
+              : renamingTarget?.kind === "project"
+                ? "Project name"
+                : "Chat title"
+          }
+          aria-label={
+            renamingTarget?.kind === "run"
+              ? "Run name"
+              : renamingTarget?.kind === "project"
+                ? "Project name"
+                : "Chat title"
+          }
           className="focus-visible:border-input focus-visible:ring-0"
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
@@ -878,6 +1181,116 @@ export function AppSidebar() {
             Save
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog
+      open={creatingProject}
+      onOpenChange={(open) => {
+        setCreatingProject(open);
+        if (!open) setProjectNameDraft("");
+      }}
+    >
+      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>New project</DialogTitle>
+        </DialogHeader>
+        <Input
+          value={projectNameDraft}
+          onChange={(event) => setProjectNameDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commitCreateProject();
+            }
+          }}
+          autoFocus
+          maxLength={120}
+          placeholder="Project name"
+          aria-label="Project name"
+          className="focus-visible:border-input focus-visible:ring-0"
+        />
+        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+          <Button type="button" variant="ghost" onClick={() => setCreatingProject(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => void commitCreateProject()}
+            disabled={!projectNameDraft.trim()}
+          >
+            Create
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog
+      open={editingProjectInstructions !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          setEditingProjectInstructions(null);
+          setProjectInstructionsDraft("");
+        }
+      }}
+    >
+      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Project instructions</DialogTitle>
+        </DialogHeader>
+        <Textarea
+          value={projectInstructionsDraft}
+          onChange={(event) => setProjectInstructionsDraft(event.target.value)}
+          rows={8}
+          placeholder="Shared instructions"
+          aria-label="Project instructions"
+          className="resize-none focus-visible:border-input focus-visible:ring-0"
+        />
+        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setEditingProjectInstructions(null)}
+          >
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void commitProjectInstructions()}>
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog
+      open={movingChat !== null}
+      onOpenChange={(open) => {
+        if (!open) setMovingChat(null);
+      }}
+    >
+      <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Move chat</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <Button
+            type="button"
+            variant={!movingChat?.projectId ? "secondary" : "ghost"}
+            className="justify-start"
+            onClick={() => void moveActiveChatToProject(null)}
+          >
+            Recents
+          </Button>
+          {projects.map((project) => (
+            <Button
+              key={project.id}
+              type="button"
+              variant={
+                movingChat?.projectId === project.id ? "secondary" : "ghost"
+              }
+              className="justify-start"
+              onClick={() => void moveActiveChatToProject(project.id)}
+            >
+              {project.name}
+            </Button>
+          ))}
+        </div>
       </DialogContent>
     </Dialog>
     </>
