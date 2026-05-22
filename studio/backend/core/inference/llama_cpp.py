@@ -683,6 +683,10 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        # True once a probe has completed; cleared on transient failure.
+        self._is_audio: bool = False
+        self._audio_type: Optional[str] = None
+        self._audio_probed: bool = False
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -2542,6 +2546,40 @@ class LlamaCppBackend:
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
                 )
+                # Retry probe only if a prior attempt didn't complete.
+                if not self._audio_probed:
+                    try:
+                        detected = self._detect_audio_type_strict()
+                        self._audio_probed = True
+                    except Exception as exc:
+                        logger.debug("Fast-path audio probe failed: %s", exc)
+                        detected = None
+                    if detected in ("snac", "bicodec", "dac"):
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            try:
+                                self.init_audio_codec(detected)
+                                self._is_audio = True
+                                self._audio_type = detected
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to init audio codec '%s': %s",
+                                    detected,
+                                    exc,
+                                )
+                                self._audio_probed = False
+                                return False
+                    elif detected:
+                        # csm / whisper / audio_vlm: track type but keep
+                        # _is_audio False -- GGUF TTS routing only fires
+                        # for snac/bicodec/dac.
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            self._audio_type = detected
+                if not self._healthy:
+                    return False
                 return True
 
             self._cancel_event.clear()
@@ -3251,7 +3289,45 @@ class LlamaCppBackend:
                     f"llama-server ready on port {self._port} "
                     f"for model '{model_identifier}'"
                 )
-                return True
+
+            # Probe outside _lock (interruptible by /unload); init inside.
+            self._is_audio = False
+            self._audio_type = None
+            self._audio_probed = False
+            try:
+                detected = self._detect_audio_type_strict()
+                self._audio_probed = True
+            except Exception as exc:
+                logger.debug("Audio probe failed: %s", exc)
+                detected = None
+            if detected in ("snac", "bicodec", "dac"):
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    try:
+                        self.init_audio_codec(detected)
+                        self._is_audio = True
+                        self._audio_type = detected
+                    except Exception as exc:
+                        # Surface as HTTP 500 -- matches pre-PR contract.
+                        logger.warning(
+                            "Failed to init audio codec '%s': %s",
+                            detected,
+                            exc,
+                        )
+                        self._audio_probed = False
+                        return False
+            elif detected:
+                # csm / whisper / audio_vlm: track type but keep _is_audio
+                # False -- GGUF TTS routing only fires for snac/bicodec/dac.
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    self._audio_type = detected
+
+            if not self._healthy:
+                return False
+            return True
 
     def _build_speculative_flags(
         self,
@@ -3591,6 +3667,7 @@ class LlamaCppBackend:
             self._is_vision = False
             self._is_audio = False
             self._audio_type = None
+            self._audio_probed = False
             self._port = None
             self._healthy = False
             self._context_length = None
@@ -5167,48 +5244,57 @@ class LlamaCppBackend:
     # ── TTS support ────────────────────────────────────────────
 
     def detect_audio_type(self) -> Optional[str]:
-        """Detect audio/TTS codec by probing the loaded model's vocabulary."""
-        if not self.is_loaded:
-            return None
+        """Detect audio/TTS codec; swallows errors (use _strict variant to distinguish)."""
         try:
-            _auth_headers = (
-                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            )
-            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
-
-                def _detok(tid: int) -> str:
-                    r = client.post(
-                        f"{self.base_url}/detokenize", json = {"tokens": [tid]}
-                    )
-                    return r.json().get("content", "") if r.status_code == 200 else ""
-
-                def _tok(text: str) -> list[int]:
-                    r = client.post(
-                        f"{self.base_url}/tokenize",
-                        json = {"content": text, "add_special": False},
-                    )
-                    return r.json().get("tokens", []) if r.status_code == 200 else []
-
-                # Check codec-specific tokens (not generic ones that may exist in non-audio models)
-                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
-                    128259
-                ):
-                    return "snac"
-                if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
-                    return "csm"
-                if len(_tok("<|startoftranscript|>")) == 1:
-                    return "whisper"
-                if len(_tok("<audio_soft_token>")) == 1:
-                    return "audio_vlm"
-                if (
-                    len(_tok("<|bicodec_semantic_0|>")) == 1
-                    and len(_tok("<|bicodec_global_0|>")) == 1
-                ):
-                    return "bicodec"
-                if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
-                    return "dac"
+            return self._detect_audio_type_strict()
         except Exception as e:
             logger.debug(f"Audio type detection failed: {e}")
+            return None
+
+    def _detect_audio_type_strict(self) -> Optional[str]:
+        """Codec name on match, None on definitive non-audio, raises on transport/JSON errors."""
+        if not self.is_loaded:
+            return None
+        _auth_headers = (
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        )
+        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+
+            def _detok(tid: int) -> str:
+                # Non-200 means "marker not in vocab" -- keep probing.
+                # Transport / JSON errors still raise.
+                r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
+                if r.status_code != 200:
+                    return ""
+                return r.json().get("content", "")
+
+            def _tok(text: str) -> list[int]:
+                r = client.post(
+                    f"{self.base_url}/tokenize",
+                    json = {"content": text, "add_special": False},
+                )
+                if r.status_code != 200:
+                    return []
+                return r.json().get("tokens", [])
+
+            # Check codec-specific tokens (not generic ones that may exist in non-audio models)
+            if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
+                128259
+            ):
+                return "snac"
+            if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
+                return "csm"
+            if len(_tok("<|startoftranscript|>")) == 1:
+                return "whisper"
+            if len(_tok("<audio_soft_token>")) == 1:
+                return "audio_vlm"
+            if (
+                len(_tok("<|bicodec_semantic_0|>")) == 1
+                and len(_tok("<|bicodec_global_0|>")) == 1
+            ):
+                return "bicodec"
+            if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
+                return "dac"
         return None
 
     # Prompt format per codec: (template, stop_tokens, needs_token_ids)
