@@ -3,11 +3,34 @@
 
 "use client";
 
+import type { CreateTypes as ConfettiInstance } from "canvas-confetti";
+
 type FireworksOpts = {
   durationMs?: number;
   intervalMs?: number;
   zIndex?: number;
 };
+
+// Studio CSP (`script-src 'self'`) blocks canvas-confetti's default
+// blob: worker, so we mount a dedicated overlay canvas once and drive it
+// via `confetti.create(...)` with `useWorker: false`. The shared instance
+// is reused across calls so we don't leak canvases per tour completion.
+let _sharedCanvas: HTMLCanvasElement | null = null;
+let _sharedFire: ConfettiInstance | null = null;
+async function getSharedFire(): Promise<ConfettiInstance | null> {
+  if (typeof document === "undefined") return null;
+  if (_sharedFire) return _sharedFire;
+  const confetti = (await import("canvas-confetti")).default;
+  _sharedCanvas = document.createElement("canvas");
+  _sharedCanvas.style.cssText =
+    "position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999";
+  document.body.appendChild(_sharedCanvas);
+  _sharedFire = confetti.create(_sharedCanvas, {
+    resize: true,
+    useWorker: false,
+  });
+  return _sharedFire;
+}
 
 export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
   try {
@@ -17,7 +40,8 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
       window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     if (prefersReduce) return;
 
-    const confetti = (await import("canvas-confetti")).default;
+    const fire = await getSharedFire();
+    if (!fire) return;
 
     const duration = opts.durationMs ?? 1200;
     const intervalMs = opts.intervalMs ?? 240;
@@ -45,12 +69,12 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
         Math.floor(36 * (timeLeft / duration)),
       );
 
-      confetti({
+      fire({
         ...defaults,
         particleCount,
         origin: { x: randomInRange(0.12, 0.3), y: Math.random() - 0.2 },
       });
-      confetti({
+      fire({
         ...defaults,
         particleCount,
         origin: { x: randomInRange(0.7, 0.88), y: Math.random() - 0.2 },

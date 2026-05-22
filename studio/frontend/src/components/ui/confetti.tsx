@@ -36,11 +36,38 @@ export type ConfettiRef = Api | null;
 
 const ConfettiContext = createContext<Api>({} as Api);
 
+// Studio's CSP is `script-src 'self'` (no `blob:`, no `unsafe-eval`).
+// canvas-confetti's default `useWorker: true` spawns
+// `new Worker(URL.createObjectURL(new Blob([...])))`, which is blocked.
+// Force `useWorker: false` at every callsite that ends up in `confetti.create`
+// (or in the global `confetti()` path via the shared instance below), and
+// keep the default object module-scoped so the prop default has a stable
+// identity across renders (`canvasRef` depends on `globalOptions`).
+const DEFAULT_GLOBAL_OPTIONS: ConfettiGlobalOptions = {
+  resize: true,
+  useWorker: false,
+};
+
+// Lazily-created CSP-safe singleton for callers that would otherwise reach
+// for the global `confetti()` (e.g. `ConfettiButton` below). Allocating a
+// dedicated overlay canvas once means even ad-hoc bursts honour our CSP.
+let _sharedFire: ConfettiInstance | null = null;
+function getSharedConfettiFire(): ConfettiInstance | null {
+  if (typeof document === "undefined") return null;
+  if (_sharedFire) return _sharedFire;
+  const canvas = document.createElement("canvas");
+  canvas.style.cssText =
+    "position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999";
+  document.body.appendChild(canvas);
+  _sharedFire = confetti.create(canvas, DEFAULT_GLOBAL_OPTIONS);
+  return _sharedFire;
+}
+
 // Define component first
 const ConfettiComponent = forwardRef<ConfettiRef, Props>((props, ref) => {
   const {
     options,
-    globalOptions = { resize: true, useWorker: false },
+    globalOptions = DEFAULT_GLOBAL_OPTIONS,
     manualstart = false,
     children,
     ...rest
@@ -54,6 +81,10 @@ const ConfettiComponent = forwardRef<ConfettiRef, Props>((props, ref) => {
         instanceRef.current = confetti.create(node, {
           ...globalOptions,
           resize: true,
+          // Always force `useWorker: false` regardless of what the caller
+          // passed in `globalOptions`; otherwise a caller that only sets
+          // `{ resize: true }` silently re-enables the worker and trips CSP.
+          useWorker: false,
         });
       } else {
         if (instanceRef.current) {
@@ -126,7 +157,11 @@ const ConfettiButtonComponent = ({
       const rect = event.currentTarget.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
-      await confetti({
+      // Route through the shared CSP-safe instance instead of the global
+      // `confetti()` so we never spawn a `blob:` worker.
+      const fire = getSharedConfettiFire();
+      if (!fire) return;
+      await fire({
         ...options,
         origin: {
           x: x / window.innerWidth,
