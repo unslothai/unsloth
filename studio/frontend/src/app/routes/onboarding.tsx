@@ -17,6 +17,7 @@ const WizardLayout = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/onboarding",
+  staticData: { title: "Onboarding" },
   beforeLoad: () => requireAuth(),
   validateSearch: (search: Record<string, unknown>): OnboardingSearch => ({
     redirectTo: typeof search.redirectTo === "string" ? search.redirectTo : undefined,

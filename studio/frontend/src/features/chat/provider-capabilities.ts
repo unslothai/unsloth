@@ -122,6 +122,20 @@ export function providerSupportsBuiltinWebSearch(
 }
 
 /**
+ * Whether the external provider exposes a server-side web_fetch tool
+ * that retrieves a single URL (text or PDF) and emits a document block.
+ * Only Anthropic ships one today (`web_fetch_20250910`); the chat
+ * composer pairs it with the Search pill because the typical workflow
+ * is "search returns URLs, fetch reads them" and the UI doesn't (yet)
+ * expose web_fetch as an independent toggle.
+ */
+export function providerSupportsBuiltinWebFetch(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "anthropic";
+}
+
+/**
  * Whether the selected external provider/model exposes a server-side
  * code-execution tool. Two providers ship one today:
  *
@@ -201,6 +215,44 @@ export function providerSupportsBuiltinCodeExecution(
     );
   }
   return false;
+}
+
+/**
+ * Whether the selected external provider/model exposes OpenAI's
+ * Responses-API server-side image_generation tool. Lit on for OpenAI
+ * cloud (`api.openai.com`) when the picked model is a Responses-API
+ * family id (gpt-5.x today). The backend additionally gates on
+ * `is_openai_cloud`; mirror that here so the pill is hidden on custom
+ * OpenAI-compat backends (ollama / llama.cpp / vLLM) that report
+ * `provider_type="openai"` but would 400 on a `{type:"image_generation"}`
+ * tool. See backend/core/inference/external_provider.py near line 2770
+ * for the dispatch and backend/tests/test_openai_image_generation.py
+ * for the round-trip coverage.
+ */
+const OPENAI_IMAGE_GENERATION_MODEL_PREFIXES = [
+  "gpt-5.5-pro",
+  "gpt-5.5",
+  "gpt-5.4-pro",
+  "gpt-5.4",
+  "gpt-5.3",
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5",
+  "o3",
+] as const;
+
+export function providerSupportsBuiltinImageGeneration(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  baseUrl?: string | null,
+): boolean {
+  if (providerType !== "openai") return false;
+  if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  const normalized = modelId?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
+    normalized.startsWith(prefix),
+  );
 }
 
 /**
