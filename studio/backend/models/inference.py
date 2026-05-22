@@ -667,22 +667,20 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         le = 2_000_000,
         description = (
-            "[x-unsloth] Server-side context compaction trigger, in tokens. "
-            "Per-provider routing:\n"
-            "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
-            "(*.openai.azure.com): attaches "
+            "[x-unsloth] OpenAI Responses-API server-side context compaction "
+            "trigger, in tokens. When set on a cloud OpenAI request "
+            "(api.openai.com) or Azure OpenAI Foundry "
+            "(*.openai.azure.com), Studio attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
             "to /v1/responses. The model's effective floor is around 200k "
             "(OpenAI's canonical example); values below it surface "
-            "`compact_threshold is not enabled` 400s from the upstream API.\n"
-            "  - Anthropic (Opus 4.6+, Sonnet 4.6, Mythos preview): attaches "
-            "the `compact_20260112` edit. The upstream floor is 50k; "
-            "_stream_anthropic clamps lower values up.\n"
+            "`compact_threshold is not enabled` 400s from the upstream API. "
+            "Silent no-op on non-cloud OpenAI-compatible bases (ollama / "
+            "llama.cpp / vLLM) and on every other provider. "
             "Schema floor stays at ge=1 (any positive int) so the field is "
-            "a silent no-op on non-cloud OpenAI-compatible bases and every "
-            "non-compaction-capable provider rather than returning 422 at "
-            "request validation time. Per-provider floors are enforced in "
-            "the corresponding stream helpers."
+            "silently ignored on unsupported routes rather than returning "
+            "422 at request validation time; per-provider floors are "
+            "enforced in the corresponding stream helpers."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
