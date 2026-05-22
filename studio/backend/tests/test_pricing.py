@@ -157,7 +157,7 @@ def test_anthropic_dated_id_falls_back_to_canonical_prefix():
     assert _isclose(out["input_usd"], 5.0)
 
 
-# ── OpenAI base math (gpt-5.5: 1.25/10 per MTok) ─────────────────────
+# ── OpenAI base math (gpt-5.5: 5/30 per MTok) ────────────────────────
 
 
 def test_openai_gpt55_input_output_math():
@@ -166,9 +166,9 @@ def test_openai_gpt55_input_output_math():
         "gpt-5.5",
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
     )
-    assert _isclose(out["input_usd"], 1.25)
-    assert _isclose(out["output_usd"], 10.0)
-    assert _isclose(out["total_usd"], 11.25)
+    assert _isclose(out["input_usd"], 5.0)
+    assert _isclose(out["output_usd"], 30.0)
+    assert _isclose(out["total_usd"], 35.0)
 
 
 def test_openai_cache_read_subtracted_from_input_at_discount():
@@ -190,6 +190,22 @@ def test_openai_cache_read_subtracted_from_input_at_discount():
     assert _isclose(out["cache_read_usd"], 0.8 * base * OPENAI_CACHE_READ_MULT)
 
 
+def test_openai_billable_input_tokens_does_not_double_count_cache_read():
+    # OpenAI's input_tokens already includes cached_tokens, so the
+    # billable counter must NOT add cache_read on top -- otherwise the
+    # tooltip says 1.8M input when the bill is for 1.0M.
+    out = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "input_tokens_details": {"cached_tokens": 800_000},
+        },
+    )
+    assert out["billable_input_tokens"] == 1_000_000
+
+
 def test_openai_dated_snapshot_inherits_canonical_pricing():
     out = calculate_cost(
         "openai",
@@ -197,7 +213,42 @@ def test_openai_dated_snapshot_inherits_canonical_pricing():
         {"input_tokens": 1_000_000, "output_tokens": 0},
     )
     assert out["priced"] is True
-    assert _isclose(out["input_usd"], 1.25)
+    assert _isclose(out["input_usd"], 5.0)
+
+
+def test_openai_gpt54_family_uses_verified_prices():
+    # Spot-check the lower-tier rows that previously underbilled.
+    cases = {
+        "gpt-5.4":      (2.5,  15.0),
+        "gpt-5.4-mini": (0.75, 4.5),
+        "gpt-5.4-nano": (0.20, 1.25),
+        "gpt-5.3-codex": (1.75, 14.0),
+    }
+    for model, (inp, outp) in cases.items():
+        out = calculate_cost(
+            "openai",
+            model,
+            {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        )
+        assert out["priced"] is True, model
+        assert _isclose(out["input_usd"], inp), model
+        assert _isclose(out["output_usd"], outp), model
+
+
+def test_openai_unlisted_model_priced_false_not_zero_default():
+    # o-series / gpt-4.5 are no longer on the pricing page, so we
+    # intentionally drop them rather than silently underbill at $0.
+    for model in ("o3", "o4-mini", "gpt-4.5", "gpt-4.5-preview"):
+        out = calculate_cost(
+            "openai",
+            model,
+            {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+        )
+        assert out["priced"] is False, model
+        assert out["total_usd"] == 0.0, model
+        # Token counts still report so the UI can render usage.
+        assert out["billable_input_tokens"] == 1_000_000, model
+        assert out["billable_output_tokens"] == 1_000_000, model
 
 
 # ── snapshot endpoint includes the multipliers ───────────────────────
