@@ -98,6 +98,13 @@ Fields present in the data but **absent from the schema** fall back to a
 configurable `default_comparator` (default `string`, matching ANLS\* behavior),
 so the schema only needs to call out fields needing special treatment.
 
+**Acceptable alternatives.** In the **ground-truth data** (not the schema), a
+`tuple` marks a set of acceptable values for that node — e.g.
+`"name": ("Acme Inc", "Acme Incorporated")`. The schema node is unchanged; the
+tuple wraps alternatives that each match that node. A `list` remains an actual
+array (Hungarian-matched). JSON has no tuple type, so alternatives only appear
+when ground truth is constructed in Python — exactly when they're wanted.
+
 `schema.py` normalizes this user-facing dict into internal node objects
 (`LeafNode(comparator, params)`, `ObjectNode(fields)`, `ArrayNode(item)`).
 
@@ -145,6 +152,13 @@ Dispatch by schema node kind:
   total) — order-independent.
 - Array score = `sum(matched pair scores) / max(len(gt), len(pred))` → unmatched
   items on **either** side (missing and extra) are penalized.
+
+**Options** (ground-truth value is a non-empty `tuple` of alternatives — checked
+before kind dispatch, since it's data-driven): score the prediction against each
+option under the same schema node and take the **max**;
+`score = max(_score(opt, pred, node) for opt in gt)`, with `n_leaves` taken from
+the selected (max-scoring) option. The `ScoreNode` records which alternative
+matched. An empty tuple is invalid and scores `0`.
 
 **Type mismatch** (schema expects object/array but data is scalar, or vice-versa)
 → subtree scores `0`, with a note recorded on the `ScoreNode`.
@@ -198,6 +212,8 @@ def score_from_text(
 | Empty object/array on both sides | `1.0` (vacuously correct) |
 | `gt` empty, `pred` non-empty | penalized as hallucinations |
 | Field in schema but absent from both gt & pred | not counted (no leaf) |
+| Ground-truth value is a `tuple` of alternatives | best alternative wins (max) |
+| Empty alternatives tuple | invalid → `0.0` |
 
 ## Testing strategy
 
@@ -208,7 +224,8 @@ Pytest, alongside the module.
    across formats (`2024-01-05` == `05/01/2024`) and day-tolerance.
 2. **Core traversal tests** — nested objects; missing key; hallucinated key; list
    **order-invariance** (shuffled `line_items` → same score); list length mismatch
-   penalty; `None` handling; type mismatch.
+   penalty; `None` handling; type mismatch; tuple-of-alternatives (max over
+   options, including options at object/array level).
 3. **Reference cross-check** — with an all-`string` schema, our score must match
    `anls_star.anls_score` on a battery of documents (validates our reimplemented
    matching/aggregation against the published metric). `anls_star` is a
