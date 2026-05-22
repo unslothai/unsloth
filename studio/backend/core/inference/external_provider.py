@@ -11,6 +11,7 @@ Anthropic uses native Messages API with translation in this client.
 import json as _json
 import re
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -32,6 +33,34 @@ logger = structlog.get_logger(__name__)
 # 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
 # the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
 # anchor keeps future versions (e.g. claude-opus-5) unaffected.
+def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
+    """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
+
+    Anchored to the URL host so an attacker can't bypass the gate with a
+    path or subdomain like ``https://evil.com/api.openai.com/v1`` or
+    ``https://api.openai.com.attacker.com/v1`` (CodeQL py/incomplete-url-
+    substring-sanitization). Used to scope cloud-only Responses-API
+    extensions (prompt_cache_retention, context_management compaction,
+    container shell tool) that 400 on non-cloud OpenAI-compatible
+    servers (ollama / llama.cpp / vLLM).
+
+    Azure Foundry resources are scoped to
+    ``<resource-name>.openai.azure.com``; match any subdomain via an
+    `endswith` on the lowercased hostname, with the leading dot so
+    `openai.azure.com` itself doesn't slip through (there is no
+    apex-hosted Azure Foundry endpoint).
+    """
+    if not base_url:
+        return False
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+
+
 _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
@@ -2137,8 +2166,7 @@ class ExternalProviderClient:
         # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
         # without these extensions and would 400 on the unknown body
         # fields, so they intentionally fall outside this gate.
-        _base = (self.base_url or "").lower()
-        is_openai_cloud = "api.openai.com" in _base or ".openai.azure.com" in _base
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
 

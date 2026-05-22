@@ -150,6 +150,28 @@ def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
     ]
 
 
+def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
+    # CodeQL py/incomplete-url-substring-sanitization: an attacker who
+    # controls the configured base_url could embed `api.openai.com` or
+    # `.openai.azure.com` as part of a path or a subdomain on an
+    # arbitrary host to slip the cloud-only request body fields to a
+    # server they control. The hostname-anchored helper must reject
+    # both shapes.
+    for evil in [
+        "https://evil.com/api.openai.com/v1",
+        "https://api.openai.com.attacker.com/v1",
+        "https://attacker.com/.openai.azure.com/v1",
+        "https://my-resource.openai.azure.com.attacker.com/openai/v1",
+    ]:
+        captured = _capture(
+            monkeypatch,
+            base_url = evil,
+            threshold = 200_000,
+        )
+        assert "context_management" not in captured["body"], evil
+        assert "prompt_cache_retention" not in captured["body"], evil
+
+
 # ── omitted threshold leaves body untouched ─────────────────────────
 
 
