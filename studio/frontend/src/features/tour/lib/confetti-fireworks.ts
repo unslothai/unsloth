@@ -15,6 +15,14 @@ type FireworksOpts = {
 // blob: worker, so we mount a dedicated overlay canvas once and drive it
 // via `confetti.create(...)` with `useWorker: false`. The shared instance
 // is reused across calls so we don't leak canvases per tour completion.
+//
+// Stacking note: when canvas-confetti runs against a caller-provided
+// canvas, the per-fire `zIndex` option no longer drives stacking; the
+// canvas element's own CSS `z-index` does. We therefore apply
+// `opts.zIndex` (or the default) to the shared canvas's style on each
+// call so callers that want to lower/raise the fireworks layer still
+// get that behavior.
+const DEFAULT_FIREWORKS_Z_INDEX = 99999;
 let _sharedCanvas: HTMLCanvasElement | null = null;
 let _sharedFire: ConfettiInstance | null = null;
 async function getSharedFire(): Promise<ConfettiInstance | null> {
@@ -23,7 +31,7 @@ async function getSharedFire(): Promise<ConfettiInstance | null> {
   const confetti = (await import("canvas-confetti")).default;
   _sharedCanvas = document.createElement("canvas");
   _sharedCanvas.style.cssText =
-    "position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999";
+    `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:${DEFAULT_FIREWORKS_Z_INDEX}`;
   document.body.appendChild(_sharedCanvas);
   _sharedFire = confetti.create(_sharedCanvas, {
     resize: true,
@@ -41,7 +49,12 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
     if (prefersReduce) return;
 
     const fire = await getSharedFire();
-    if (!fire) return;
+    if (!fire || !_sharedCanvas) return;
+
+    // Honor `opts.zIndex` even though canvas-confetti's per-fire `zIndex`
+    // is ignored for caller-provided canvases (see note above).
+    const zIndex = opts.zIndex ?? DEFAULT_FIREWORKS_Z_INDEX;
+    _sharedCanvas.style.zIndex = String(zIndex);
 
     const duration = opts.durationMs ?? 1200;
     const intervalMs = opts.intervalMs ?? 240;
@@ -50,7 +63,7 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
       startVelocity: 28,
       spread: 360,
       ticks: 58,
-      zIndex: opts.zIndex ?? 99999,
+      zIndex,
       disableForReducedMotion: true,
     } as const;
 
