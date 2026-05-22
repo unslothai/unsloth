@@ -257,6 +257,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "gpu_ids": request.gpu_ids,
+            "enable_activation_capture": request.enable_activation_capture,
         }
 
         # Training page has no trust_remote_code toggle — the value comes from
@@ -934,12 +935,22 @@ def get_activations(
 
     if _job_id:
         try:
-            db_metadata = get_activation_metadata(_job_id)
-            if db_metadata is not None:
+            db_meta = get_activation_metadata(_job_id)
+            if db_meta is not None:
                 db_records = get_activation_records(_job_id, since_step)
-                return {"metadata": db_metadata, "records": db_records}
+                wire_records = [
+                    {
+                        "step": r["step"],
+                        "loss": r["loss"],
+                        "layers": r["layers"],
+                        **({"grad_norms": r["grad_norms"]} if r.get("grad_norms") else {}),
+                        **({"lora_norms": r["lora_norms"]} if r.get("lora_norms") else {}),
+                    }
+                    for r in db_records
+                ]
+                return {"metadata": db_meta, "records": wire_records}
         except Exception as exc:
-            logger.warning("DB activation lookup failed, falling back to files: %s", exc)
+            logger.warning("DB activation read failed, falling back to files: %s", exc)
 
     # ── JSONL file fallback ───────────────────────────────────────────────────
     candidate_dirs: list[Path] = []

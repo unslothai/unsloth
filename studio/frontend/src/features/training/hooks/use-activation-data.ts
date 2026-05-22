@@ -52,7 +52,7 @@ export function useActivationData({
   const doFetch = useCallback(async () => {
     try {
       setLoading(true);
-      const result = await fetchActivations(jobId, outputDir, lastStepRef.current);
+      const result = await fetchActivations(jobId ?? undefined, outputDir, lastStepRef.current);
       if (mountedRef.current) {
         if (result.records.length > 0) {
           lastStepRef.current = Math.max(...result.records.map((r) => r.step));
