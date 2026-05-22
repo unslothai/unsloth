@@ -2330,6 +2330,7 @@ def run_training_process(
                     max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
                 )
                 import tempfile as _tempfile
+
                 _act_config = ActivationCaptureConfig(
                     # output_dir is required by the base class but we redirect
                     # _log_path to os.devnull in __init__ so no files are kept.
