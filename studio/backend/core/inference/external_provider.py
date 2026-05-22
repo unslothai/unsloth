@@ -12,6 +12,7 @@ import json as _json
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -25,6 +26,7 @@ import structlog
 # sites use printf-style positional args, which structlog accepts.
 logger = structlog.get_logger(__name__)
 
+
 # Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
 # the API returns 400 "<param> is deprecated for this model" if any of
 # them is set to a non-default value. The "Sampling parameters removed"
@@ -33,6 +35,34 @@ logger = structlog.get_logger(__name__)
 # 3.x and 4.5/4.6 still accept all three; match the 4-7 line strictly so
 # the knobs keep working on earlier families. The trailing -4-7[-.]/EOL
 # anchor keeps future versions (e.g. claude-opus-5) unaffected.
+def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
+    """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
+
+    Anchored to the URL host so an attacker can't bypass the gate with a
+    path or subdomain like ``https://evil.com/api.openai.com/v1`` or
+    ``https://api.openai.com.attacker.com/v1`` (CodeQL py/incomplete-url-
+    substring-sanitization). Used to scope cloud-only Responses-API
+    extensions (prompt_cache_retention, context_management compaction,
+    container shell tool) that 400 on non-cloud OpenAI-compatible
+    servers (ollama / llama.cpp / vLLM).
+
+    Azure Foundry resources are scoped to
+    ``<resource-name>.openai.azure.com``; match any subdomain via an
+    `endswith` on the lowercased hostname, with the leading dot so
+    `openai.azure.com` itself doesn't slip through (there is no
+    apex-hosted Azure Foundry endpoint).
+    """
+    if not base_url:
+        return False
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+
+
 _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
     r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
 )
@@ -367,6 +397,7 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 openai_code_exec_container_id,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -2466,6 +2497,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -2584,9 +2616,39 @@ class ExternalProviderClient:
         # is registry-scoped to gpt-5.x / o3 / gpt-4.5, all of which
         # accept this parameter (gpt-5.5+ already defaults to "24h" and
         # rejects "in_memory", so it's a safe no-op there).
-        is_openai_cloud = "api.openai.com" in (self.base_url or "")
+        # OpenAI-family cloud: api.openai.com OR Azure OpenAI Foundry
+        # (*.openai.azure.com). Both expose the same Responses-API
+        # extensions used below -- prompt_cache_retention,
+        # context_management compaction, container shell tool -- so
+        # treat them uniformly. Non-cloud OpenAI-compatible servers
+        # (ollama / llama.cpp / vLLM / "custom" preset) hit /v1/responses
+        # without these extensions and would 400 on the unknown body
+        # fields, so they intentionally fall outside this gate.
+        is_openai_cloud = _is_openai_family_cloud(self.base_url)
         if is_openai_cloud and enable_prompt_caching is not False:
             body["prompt_cache_retention"] = "24h"
+
+        # OpenAI server-side context compaction — see
+        #   https://developers.openai.com/api/docs/guides/compaction
+        # When `compaction_threshold` is provided on a cloud OpenAI
+        # request, attach `context_management: [{type:"compaction",
+        # compact_threshold:N}]` so the API runs server-side
+        # compaction when the rendered prompt crosses the threshold.
+        # No beta header is required; no dated version pin. The field
+        # is silently dropped for non-cloud backends because ollama /
+        # llama.cpp / "custom" presets land in this helper and would
+        # 400 on an unknown body field.
+        if (
+            is_openai_cloud
+            and compaction_threshold is not None
+            and compaction_threshold > 0
+        ):
+            body["context_management"] = [
+                {
+                    "type": "compaction",
+                    "compact_threshold": int(compaction_threshold),
+                }
+            ]
 
         # OpenAI server-side tools — see
         #   https://developers.openai.com/api/docs/guides/tools

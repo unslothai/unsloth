@@ -709,16 +709,23 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         le = 2_000_000,
         description = (
-            "[x-unsloth] Anthropic server-side context compaction trigger, in "
-            "input tokens. When set on a compaction-capable model (Opus 4.6+, "
-            "Opus 4.7, Sonnet 4.6, Mythos preview), Studio attaches the "
-            "`compact_20260112` edit and the `compact-2026-01-12` beta header. "
-            "The minimum upstream-accepted threshold is 50k input tokens; "
-            "any value below that is clamped UP server-side in "
-            "`_stream_anthropic`. Kept permissive at the schema layer so the "
-            "in-helper clamp can run instead of returning 422 on a sub-50k "
-            "value the frontend may have stashed in localStorage. No-op on "
-            "any other provider or unsupported model."
+            "[x-unsloth] Server-side context compaction trigger, in tokens. "
+            "Per-provider routing:\n"
+            "  - Anthropic (Opus 4.6+, Sonnet 4.6, Mythos preview): attaches "
+            "the `compact_20260112` edit and the `compact-2026-01-12` beta "
+            "header. The upstream floor is 50k; `_stream_anthropic` clamps "
+            "lower values up.\n"
+            "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
+            "(*.openai.azure.com): attaches "
+            "`context_management:[{type:'compaction', compact_threshold:N}]` "
+            "to /v1/responses. Effective floor is around 200k (OpenAI's "
+            "canonical example); values below it surface "
+            "`compact_threshold is not enabled` 400s upstream.\n"
+            "Schema floor stays at ge=1 (any positive int) so the field is a "
+            "silent no-op on non-cloud OpenAI-compatible bases (ollama / "
+            "llama.cpp / vLLM) and every non-compaction-capable provider "
+            "rather than returning 422 at request validation time. Per-"
+            "provider floors are enforced in the corresponding stream helpers."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
