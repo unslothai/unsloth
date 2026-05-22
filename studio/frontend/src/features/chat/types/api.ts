@@ -197,6 +197,7 @@ export type OpenAIMessageContent =
   | Array<
       | { type: "text"; text: string }
       | { type: "image_url"; image_url: { url: string } }
+      | { type: "image_generation_call"; id: string }
     >;
 
 export interface OpenAIChatMessage {

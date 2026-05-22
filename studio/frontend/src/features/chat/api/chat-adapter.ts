@@ -340,7 +340,38 @@ function collectImageParts(
   return parts;
 }
 
-function toOpenAIMessage(message: RunMessage): {
+function collectOpenAIImageGenerationCallParts(
+  message: RunMessage,
+): Array<{ type: "image_generation_call"; id: string }> {
+  if (message.role !== "assistant") {
+    return [];
+  }
+  const parts: Array<{ type: "image_generation_call"; id: string }> = [];
+  for (const part of message.content ?? []) {
+    if (part.type !== "tool-call" || part.toolName !== "image_generation") {
+      continue;
+    }
+    const args = part.args as
+      | { openai_image_generation_call_id?: unknown }
+      | undefined;
+    const argsId =
+      typeof args?.openai_image_generation_call_id === "string"
+        ? args.openai_image_generation_call_id
+        : "";
+    const fallbackId = part.toolCallId;
+    const id =
+      argsId || (/^img_\d{16,}$/.test(fallbackId) ? "" : fallbackId);
+    if (id) {
+      parts.push({ type: "image_generation_call", id });
+    }
+  }
+  return parts;
+}
+
+function toOpenAIMessage(
+  message: RunMessage,
+  options?: { includeOpenAIImageGenerationCalls?: boolean },
+): {
   role: "system" | "user" | "assistant";
   content: OpenAIMessageContent;
 } | null {
@@ -363,10 +394,17 @@ function toOpenAIMessage(message: RunMessage): {
   }
 
   const imageParts = collectImageParts(message);
-  if (imageParts.length > 0) {
+  const imageGenerationCallParts = options?.includeOpenAIImageGenerationCalls
+    ? collectOpenAIImageGenerationCallParts(message)
+    : [];
+  if (imageParts.length > 0 || imageGenerationCallParts.length > 0) {
     return {
       role: message.role,
-      content: [{ type: "text", text: textContent }, ...imageParts],
+      content: [
+        ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
+        ...imageParts,
+        ...imageGenerationCallParts,
+      ],
     };
   }
 
@@ -919,7 +957,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
 
       const outboundMessages = messages
-        .map(toOpenAIMessage)
+        .map((message) =>
+          toOpenAIMessage(message, {
+            includeOpenAIImageGenerationCalls:
+              imageGenerationEnabledForThisTurn,
+          }),
+        )
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );

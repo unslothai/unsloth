@@ -2610,6 +2610,19 @@ class ExternalProviderClient:
                             translated_parts.append(
                                 {"type": "input_image", "image_url": url}
                             )
+                    elif part_type == "image_generation_call":
+                        call_id = part.get("id") or part.get(
+                            "image_generation_call_id"
+                        )
+                        if isinstance(call_id, str) and call_id:
+                            if translated_parts:
+                                input_items.append(
+                                    {"role": role, "content": translated_parts}
+                                )
+                                translated_parts = []
+                            input_items.append(
+                                {"type": "image_generation_call", "id": call_id}
+                            )
                     elif part_type == "input_document":
                         # OpenAI Responses accepts PDFs / docs as
                         # `{type:"input_file", file_data:"data:application/pdf;base64,..."}`
@@ -3288,23 +3301,27 @@ class ExternalProviderClient:
                                     # millisecond resolution so synthesised
                                     # ids stay unique even when two image
                                     # generations resolve in the same ms.
-                                    item_id = item.get("id", "") or (
-                                        f"img_{time.time_ns()}"
-                                    )
+                                    raw_item_id = item.get("id")
+                                    item_id = raw_item_id or f"img_{time.time_ns()}"
                                     prompt_in = (
                                         item.get("revised_prompt")
                                         or item.get("prompt")
                                         or ""
                                     )
+                                    arguments = {
+                                        "kind": "image",
+                                        "prompt": prompt_in,
+                                    }
+                                    if isinstance(raw_item_id, str) and raw_item_id:
+                                        arguments[
+                                            "openai_image_generation_call_id"
+                                        ] = raw_item_id
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
                                             "tool_name": "image_generation",
                                             "tool_call_id": item_id,
-                                            "arguments": {
-                                                "kind": "image",
-                                                "prompt": prompt_in,
-                                            },
+                                            "arguments": arguments,
                                         }
                                     )
                                     b64 = (

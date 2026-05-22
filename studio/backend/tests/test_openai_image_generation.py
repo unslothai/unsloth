@@ -30,7 +30,13 @@ def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
+def _capture_body(
+    monkeypatch,
+    *,
+    base_url: str,
+    enabled_tools,
+    messages: list[dict] | None = None,
+) -> dict:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -59,7 +65,11 @@ def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
             api_key = "sk-test",
         )
         async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "draw a cat"}],
+            messages = (
+                messages
+                if messages is not None
+                else [{"role": "user", "content": "draw a cat"}]
+            ),
             model = "gpt-5.5",
             temperature = 0.7,
             top_p = 0.95,
@@ -192,6 +202,29 @@ def test_omitted_image_generation_pill_no_tool(monkeypatch):
     assert all(t.get("type") != "image_generation" for t in tools)
 
 
+# ── follow-up edits forward previous image_generation_call refs ──────
+
+
+def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        base_url = "https://api.openai.com/v1",
+        enabled_tools = ["image_generation"],
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "image_generation_call", "id": "img_abc"},
+                ],
+            },
+            {"role": "user", "content": "make it more realistic"},
+        ],
+    )
+    input_items = captured["body"].get("input") or []
+    assert {"type": "image_generation_call", "id": "img_abc"} in input_items
+    assert {"role": "user", "content": "make it more realistic"} in input_items
+
+
 # ── output translation surfaces tool_start + tool_end ────────────────
 
 
@@ -210,6 +243,7 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
+        "openai_image_generation_call_id": "img_abc",
     }
     assert ends[0]["image_b64"] == "AAAA"
     assert ends[0]["image_mime"] == "image/png"

@@ -471,6 +471,23 @@ class InputDocumentContentPart(BaseModel):
     )
 
 
+class ImageGenerationCallContentPart(BaseModel):
+    """OpenAI Responses image_generation call reference.
+
+    OpenAI accepts prior ``image_generation_call`` items in the next
+    Responses ``input`` array so follow-up prompts can edit or refine a
+    generated image without resending the base64 payload. The frontend
+    forwards this as a synthetic assistant content part when building
+    the next OpenAI Responses request; ``external_provider`` translates
+    it back to the provider-specific top-level input item.
+    """
+
+    type: Literal["image_generation_call"]
+    id: str = Field(
+        ..., description = "OpenAI image_generation_call output item id."
+    )
+
+
 class CompactionContentPart(BaseModel):
     """Anthropic server-side compaction state, attached to an assistant
     message for round-tripping on the next turn.
@@ -504,6 +521,7 @@ ContentPart = Annotated[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
