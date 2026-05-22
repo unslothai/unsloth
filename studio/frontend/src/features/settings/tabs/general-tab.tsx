@@ -202,7 +202,7 @@ export function GeneralTab() {
         <SettingsRow
           destructive
           label="Reset all local preferences"
-          description="Clears theme, tokens, sidebar state, and presets. Chats and API access are not affected."
+          description="Clears local-only preferences. Chats, API access, and DB-backed chat settings are not affected."
         >
           <Button
             variant="outline"
@@ -220,8 +220,8 @@ export function GeneralTab() {
           <DialogHeader>
             <DialogTitle>Reset all local preferences?</DialogTitle>
             <DialogDescription>
-              This clears your theme, tokens, and stored settings, then reloads
-              Studio. Chats and API access are not affected.
+              This clears local-only preferences, then reloads Studio. Chats,
+              API access, and DB-backed chat settings are not affected.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

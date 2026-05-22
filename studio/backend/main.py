@@ -114,6 +114,7 @@ from datetime import datetime
 # Import routers
 from routes import (
     auth_router,
+    chat_history_router,
     data_recipe_router,
     datasets_router,
     export_router,
@@ -367,6 +368,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
+    "/api/chat",
     "/api/train",
     "/api/export",
 )
@@ -509,6 +511,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
+app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Studio-only inference endpoints (cancel, etc.) are intentionally NOT
 # exposed on the /v1 OpenAI-compat prefix below.

@@ -116,13 +116,16 @@ def test_code_execution_tool_appended_to_request_body(monkeypatch):
 
     body = captured["body"]
     tools = body.get("tools") or []
+    # Opus 4.7 gets the newer date-pinned variant (`_20260120`) that
+    # supports REPL state persistence + programmatic tool calling.
     assert {
-        "type": "code_execution_20250825",
+        "type": "code_execution_20260120",
         "name": "code_execution",
     } in tools
     # No web_search entry when only code_execution is enabled.
-    assert all(t.get("type") != "web_search_20250305" for t in tools)
-    # Beta header carries the documented flag.
+    assert all("web_search" not in (t.get("type") or "") for t in tools)
+    # Beta header still carries the documented flag; both `_20250825`
+    # and `_20260120` are unlocked by the same header per upstream docs.
     beta_header = captured["headers"].get("anthropic-beta", "")
     assert "code-execution-2025-08-25" in beta_header
 
@@ -158,8 +161,9 @@ def test_code_execution_with_web_search_sends_both_tools(monkeypatch):
 
     tools = captured["body"].get("tools") or []
     tool_types = {t.get("type") for t in tools if isinstance(t, dict)}
-    assert "web_search_20250305" in tool_types
-    assert "code_execution_20250825" in tool_types
+    # Opus 4.7 picks the newer pinned versions for both tools.
+    assert "web_search_20260209" in tool_types
+    assert "code_execution_20260120" in tool_types
     assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
 
 
@@ -192,9 +196,11 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    assert all(t.get("type") != "code_execution_20250825" for t in tools)
+    # Pill off -- neither the legacy nor the new code_execution variant
+    # may appear on the wire.
+    assert all("code_execution" not in (t.get("type") or "") for t in tools)
     # Beta header must NOT mention code-execution when the tool isn't on
-    # — that flag is opt-in only.
+    # -- that flag is opt-in only.
     assert "code-execution-2025-08-25" not in captured["headers"].get(
         "anthropic-beta", ""
     )
