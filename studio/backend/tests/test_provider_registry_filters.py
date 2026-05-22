@@ -48,6 +48,14 @@ def test_openai_keeps_every_known_chat_family():
         "o3-pro",
         "o3-mini",
         "o3-deep-research",
+        # `gpt-4o-search-preview` and the mini variant are chat-with-
+        # retrieval models that respond to standard /v1/chat/completions
+        # and absolutely belong in the picker. The previous regex
+        # dropped them as a false positive of `(?:^|-)search`; the
+        # tightened denylist intentionally only catches the standalone
+        # search-api suffix.
+        "gpt-4o-search-preview",
+        "gpt-4o-mini-search-preview",
         # Hypothetical future families that the old allowlist would have
         # silently dropped -- they MUST surface under the new denylist.
         "gpt-5.6",
@@ -84,11 +92,13 @@ def test_openai_drops_non_chat_ids():
         "gpt-realtime-2",
         "gpt-4o-realtime-preview",
         "gpt-4o-transcribe",
-        "gpt-4o-search-preview",
-        "gpt-4o-mini-search-preview",
         "gpt-4o-mini-transcribe",
         "gpt-4o-mini-tts",
         "omni-moderation-latest",
+        # Standalone search API endpoint (distinct from the
+        # `*-search-preview` chat models above).
+        "gpt-5-search-api",
+        "gpt-5-search-api-2025-10-14",
         # Video generation.
         "sora-2",
         "sora-2-pro",
@@ -109,6 +119,58 @@ def test_openai_drops_non_chat_ids():
     ]
     surviving = _apply("openai", noise)
     assert surviving == [], surviving
+
+
+def test_openai_search_preview_is_kept_search_api_is_dropped():
+    # Pin the search-vs-search-api distinction so a future regex tweak
+    # doesn't silently regress to dropping chat-with-search models.
+    kept = _apply(
+        "openai",
+        [
+            "gpt-4o-search-preview",
+            "gpt-4o-mini-search-preview",
+        ],
+    )
+    assert kept == [
+        "gpt-4o-search-preview",
+        "gpt-4o-mini-search-preview",
+    ], kept
+
+    dropped = _apply(
+        "openai",
+        [
+            "gpt-5-search-api",
+            "gpt-5-search-api-2025-10-14",
+        ],
+    )
+    assert dropped == [], dropped
+
+
+def test_openai_legacy_completion_names_only_match_at_id_start():
+    # Hypothetical future chat ids that happen to contain a legacy
+    # completion-family name mid-string must NOT be dropped. The
+    # `^(?:babbage|davinci|ada|curie)\b` anchor is what makes this safe.
+    kept = _apply(
+        "openai",
+        [
+            "gpt-7-davinci-edition",
+            "gpt-7-ada-chat",
+            "gpt-7-curie-pro",
+            "gpt-7-babbage-mini",
+        ],
+    )
+    assert kept == [
+        "gpt-7-davinci-edition",
+        "gpt-7-ada-chat",
+        "gpt-7-curie-pro",
+        "gpt-7-babbage-mini",
+    ], kept
+    # ...but the actual legacy-base ids stay dropped.
+    dropped = _apply(
+        "openai",
+        ["babbage-002", "davinci-002", "text-davinci-003"],
+    )
+    assert dropped == [], dropped
 
 
 # ── Anthropic: empty denylist; dated ids ARE canonical ───────────────

@@ -32,16 +32,51 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # family allowlist (`gpt-5\.[345]|gpt-4\.5|o3`) which silently
         # dropped every new family OpenAI shipped, including the gpt-5.5
         # generation today. Switch to a non-chat denylist instead so any
-        # new chat family auto-appears the moment OpenAI lists it. The
-        # patterns below cover every non-chat model id OpenAI has ever
-        # published; chat ids never start with these prefixes.
+        # new chat family auto-appears the moment OpenAI lists it.
+        #
+        # Pattern strategy:
+        # - Unambiguous *feature* indicators (tts/whisper/transcribe/audio/
+        #   realtime/image/embedding/moderation/sora) match anywhere in
+        #   the id with `(?:^|-)` because OpenAI uses them as the
+        #   primary qualifier on every variant -- e.g. canonical
+        #   `tts-1` AND family variants `gpt-4o-tts`, `gpt-4o-mini-tts`.
+        #   These words don't appear in legitimate chat model ids
+        #   mid-string, so the mid-id match is intentional and safe.
+        # - `search` is INTENTIONALLY NOT in the mid-id set because
+        #   `gpt-4o-search-preview` and `gpt-4o-mini-search-preview` are
+        #   chat-with-retrieval models that absolutely belong in the
+        #   picker. The standalone search API is caught separately by
+        #   `-search-api` (suffix) which never appears on a chat id.
+        # - Legacy completion bases (babbage / davinci / ada / curie)
+        #   are ^-anchored: they ONLY ever begin a legacy id like
+        #   `babbage-002`, `davinci-002`, `text-davinci-003`. A future
+        #   hypothetical `gpt-7-davinci-edition` chat model would NOT
+        #   be dropped, which is the right default for a denylist.
+        # - Prefix-only patterns (`^dall-e`, `^computer-use`, `^ft:`,
+        #   `^gpt-image`) cover canonical non-chat families without
+        #   risk of mid-id false positives.
+        #
+        # Verified against the live /v1/models listing 2026-05-22.
         "model_id_denylist": re.compile(
-            r"(?:^|-)(?:embedding|tts|whisper|moderation|image|search|audio|"
-            r"realtime|transcribe|babbage|davinci|ada|curie|sora)\b"
+            # Feature suffixes that mark a non-chat variant on any base.
+            r"(?:^|-)(?:embedding|tts|whisper|moderation|image|audio|"
+            r"realtime|transcribe|sora)\b"
+            # Legacy completion bases -- ^-anchored to avoid false
+            # positives on hypothetical future chat ids containing
+            # those words mid-string.
+            r"|^(?:babbage|davinci|ada|curie)\b"
+            r"|^text-(?:embedding|moderation|davinci|curie|babbage|ada)\b"
+            # Standalone search API (separate endpoint shape).
+            # `gpt-4o-search-preview` (chat-with-search) is intentionally
+            # NOT matched here.
+            r"|-search-api(?:-\d{4}-\d{2}-\d{2})?$"
+            # Canonical non-chat prefixes.
             r"|^dall-e\b"
             r"|^computer-use\b"
-            r"|^text-(?:embedding|moderation|davinci|curie|babbage|ada)\b"
+            # Fine-tunes carry the user's tenant in the id.
             r"|^ft:"
+            # Dated snapshot suffixes hide behind the canonical id
+            # which is also in the listing.
             r"|-\d{4}-\d{2}-\d{2}$"
         ),
     },
