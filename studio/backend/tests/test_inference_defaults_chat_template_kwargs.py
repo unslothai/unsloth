@@ -45,9 +45,7 @@ class TestLoadInferenceConfig:
         assert cfg["chat_template_kwargs"] == {"reasoning_effort": "medium"}
 
     def test_nemotron_load_surfaces_dict(self):
-        cfg = load_inference_config(
-            "unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF"
-        )
+        cfg = load_inference_config("unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF")
         assert cfg["chat_template_kwargs"] == {"enable_thinking": True}
 
     def test_qwen3_load_returns_none_for_kwargs(self):
@@ -73,14 +71,10 @@ class TestLoadInferenceConfig:
 class TestTemperatureBumps:
     def test_devstral_temperature_lowered_to_card_value(self):
         # Devstral-Small-2 card recommends T=0.15.
-        cfg = load_inference_config(
-            "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF"
-        )
+        cfg = load_inference_config("unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF")
         assert cfg["temperature"] == 0.15
 
     def test_ministral_temperature_below_one_tenth(self):
         # Ministral-3 card says "temperature below 0.1 for production".
-        cfg = load_inference_config(
-            "unsloth/Ministral-3-8B-Instruct-2512-GGUF"
-        )
+        cfg = load_inference_config("unsloth/Ministral-3-8B-Instruct-2512-GGUF")
         assert cfg["temperature"] < 0.1

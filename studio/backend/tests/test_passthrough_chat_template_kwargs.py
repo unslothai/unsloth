@@ -32,9 +32,7 @@ class TestFamilyDefaults:
         body = _build_openai_passthrough_body(
             payload, model_identifier = "unsloth/gpt-oss-120b-GGUF"
         )
-        assert body.get("chat_template_kwargs") == {
-            "reasoning_effort": "medium"
-        }
+        assert body.get("chat_template_kwargs") == {"reasoning_effort": "medium"}
 
     def test_nemotron_family_default_reaches_outbound(self):
         payload = _make_payload()
@@ -67,9 +65,7 @@ class TestPerRequestOverrides:
         assert body["chat_template_kwargs"]["reasoning_effort"] == "high"
 
     def test_extra_body_chat_template_kwargs_wins_outright(self):
-        payload = _make_payload(
-            chat_template_kwargs = {"reasoning_effort": "low"}
-        )
+        payload = _make_payload(chat_template_kwargs = {"reasoning_effort": "low"})
         body = _build_openai_passthrough_body(
             payload, model_identifier = "unsloth/gpt-oss-120b-GGUF"
         )

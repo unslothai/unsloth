@@ -5318,7 +5318,9 @@ def _extract_response_format(payload):
 
 
 def _build_openai_passthrough_body(
-    payload, backend_ctx = None, model_identifier: str | None = None,
+    payload,
+    backend_ctx = None,
+    model_identifier: str | None = None,
 ) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
@@ -5346,7 +5348,8 @@ def _build_openai_passthrough_body(
         except Exception as exc:
             logger.warning(
                 "openai_passthrough.family_defaults_lookup_failed model=%s err=%s",
-                model_identifier, exc,
+                model_identifier,
+                exc,
             )
     # Per-request enable_thinking already lifted from extra_body upstream.
     if payload.enable_thinking is not None:
