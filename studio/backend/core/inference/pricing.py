@@ -197,20 +197,33 @@ def calculate_cost(
 
     # Accept both shapes: raw Anthropic / OpenAI Responses usage
     # carries ``input_tokens`` / ``output_tokens``; the OpenAI-Chat-
-    # style usage chunk Studio re-emits (``_build_usage_chunk``) uses
-    # ``prompt_tokens`` / ``completion_tokens``. Either is fine here
-    # so a caller can hand whichever envelope landed first.
-    input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+    # style envelope Studio re-emits (``_build_usage_chunk``) uses
+    # ``prompt_tokens`` / ``completion_tokens``. Normalise to a single
+    # ``uncached_input`` view because the two envelopes treat the
+    # cache buckets differently:
+    #
+    #   raw Anthropic:    input_tokens EXCLUDES cache_creation + cache_read
+    #   raw OpenAI:       input_tokens INCLUDES cache_read (no cache_create)
+    #   Studio Anthropic: prompt_tokens INCLUDES cache_creation + cache_read
+    #   Studio OpenAI:    prompt_tokens == raw input_tokens (includes cache_read)
+    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    has_input_tokens = "input_tokens" in usage and usage.get("input_tokens") is not None
+    if has_input_tokens:
+        # Raw upstream envelope.
+        input_tokens = int(usage.get("input_tokens") or 0)
+    else:
+        # Studio chat-style envelope: prompt_tokens already folds the
+        # cache buckets for Anthropic, so peel them off to recover the
+        # raw uncached prompt count and keep downstream math symmetric.
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        if provider == "anthropic":
+            input_tokens = max(0, prompt_tokens - cache_creation - cache_read)
+        else:
+            input_tokens = prompt_tokens
     output_tokens = int(
         usage.get("output_tokens") or usage.get("completion_tokens") or 0
     )
-    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-    # OpenAI Responses reports cached tokens under input_tokens_details
-    # but ALSO folds them into the top-level input_tokens, so we don't
-    # add cache_read into the billable total again below (Anthropic
-    # excludes cache buckets from input_tokens, OpenAI includes them --
-    # the two providers differ here and the calculator must match).
     if provider == "openai":
         details = usage.get("input_tokens_details") or {}
         if isinstance(details, dict):
@@ -218,7 +231,8 @@ def calculate_cost(
         # OpenAI: cache_read already counted inside input_tokens.
         out["billable_input_tokens"] = input_tokens + cache_creation
     else:
-        # Anthropic: input_tokens excludes cache_* buckets, add them all.
+        # Anthropic: input_tokens (post-normalisation) excludes cache
+        # buckets, so add them all back.
         out["billable_input_tokens"] = input_tokens + cache_creation + cache_read
     out["billable_output_tokens"] = output_tokens
 

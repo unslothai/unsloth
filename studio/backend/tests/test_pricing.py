@@ -493,3 +493,64 @@ def test_input_tokens_preferred_when_both_keys_present():
     )
     # input_tokens=2M wins -> 2 * 0.75 = 1.50.
     assert _isclose(out["input_usd"], 1.50), out
+
+
+def test_anthropic_chat_style_prompt_tokens_dedupes_cache_buckets():
+    """Anthropic prompt_tokens (Studio's chat-style envelope) already
+    folds cache_creation + cache_read into the total. The calculator
+    must NOT add them again or it double-counts billable input.
+    Regression for the Codex P1 on the pricing follow-up PR."""
+    # 1M uncached + 200K cache_creation + 500K cache_read.
+    # Studio envelope: prompt_tokens = 1.7M (everything folded).
+    raw = calculate_cost(
+        "anthropic",
+        "claude-opus-4-7",
+        {
+            "input_tokens": 1_000_000,
+            "cache_creation_input_tokens": 200_000,
+            "cache_read_input_tokens": 500_000,
+            "output_tokens": 0,
+        },
+    )
+    chat = calculate_cost(
+        "anthropic",
+        "claude-opus-4-7",
+        {
+            "prompt_tokens": 1_700_000,
+            "cache_creation_input_tokens": 200_000,
+            "cache_read_input_tokens": 500_000,
+            "completion_tokens": 0,
+        },
+    )
+    # Both envelopes must price the same -- no double-count.
+    assert _isclose(chat["input_usd"], raw["input_usd"]), (chat, raw)
+    assert _isclose(chat["cache_write_usd"], raw["cache_write_usd"]), (chat, raw)
+    assert _isclose(chat["cache_read_usd"], raw["cache_read_usd"]), (chat, raw)
+    assert _isclose(chat["total_usd"], raw["total_usd"]), (chat, raw)
+    assert (
+        chat["billable_input_tokens"] == raw["billable_input_tokens"]
+    ), (chat, raw)
+
+
+def test_openai_chat_style_prompt_tokens_keeps_cache_read_semantics():
+    """For OpenAI, prompt_tokens already includes cache_read just like
+    raw input_tokens, so both envelopes should price identically."""
+    raw = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "input_tokens": 1_000_000,
+            "input_tokens_details": {"cached_tokens": 200_000},
+            "output_tokens": 100_000,
+        },
+    )
+    chat = calculate_cost(
+        "openai",
+        "gpt-5.5",
+        {
+            "prompt_tokens": 1_000_000,
+            "cache_read_input_tokens": 200_000,
+            "completion_tokens": 100_000,
+        },
+    )
+    assert _isclose(chat["total_usd"], raw["total_usd"]), (chat, raw)
