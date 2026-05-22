@@ -35,34 +35,31 @@ def _capture(monkeypatch, *, provider: str, base_url: str, messages) -> dict:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
         if provider == "anthropic":
-            body = (
-                b"event: message_stop\n"
-                b"data: {\"type\": \"message_stop\"}\n\n"
-            )
+            body = b"event: message_stop\n" b'data: {"type": "message_stop"}\n\n'
         else:
             body = (
                 b"event: response.completed\n"
-                b"data: {\"type\":\"response.completed\","
-                b"\"response\":{\"output\":[],\"usage\":{\"input_tokens\":0,"
-                b"\"output_tokens\":0}}}\n\n"
+                b'data: {"type":"response.completed",'
+                b'"response":{"output":[],"usage":{"input_tokens":0,'
+                b'"output_tokens":0}}}\n\n'
             )
         return httpx.Response(
             200,
-            content=body,
-            headers={"content-type": "text/event-stream"},
+            content = body,
+            headers = {"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
     )
 
     async def run():
         client = ExternalProviderClient(
-            provider_type=provider,
-            base_url=base_url,
-            api_key="sk-test",
+            provider_type = provider,
+            base_url = base_url,
+            api_key = "sk-test",
         )
         kwargs = {
             "messages": messages,
@@ -99,9 +96,9 @@ def _strip_cache(p: dict) -> dict:
 def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        messages=[
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -134,9 +131,9 @@ def test_anthropic_base64_pdf_becomes_document_block(monkeypatch):
 def test_anthropic_url_pdf_becomes_document_block(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        messages=[
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -160,9 +157,9 @@ def test_anthropic_url_pdf_becomes_document_block(monkeypatch):
 def test_anthropic_empty_document_part_is_dropped(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        messages=[
+        provider = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -183,9 +180,9 @@ def test_anthropic_empty_document_part_is_dropped(monkeypatch):
 def test_openai_base64_pdf_becomes_input_file(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        messages=[
+        provider = "openai",
+        base_url = "https://api.openai.com/v1",
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -212,9 +209,9 @@ def test_openai_base64_pdf_becomes_input_file(monkeypatch):
 def test_openai_url_pdf_becomes_input_file(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        messages=[
+        provider = "openai",
+        base_url = "https://api.openai.com/v1",
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -238,9 +235,9 @@ def test_openai_url_pdf_becomes_input_file(monkeypatch):
 def test_openai_empty_document_part_is_dropped(monkeypatch):
     captured = _capture(
         monkeypatch,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        messages=[
+        provider = "openai",
+        base_url = "https://api.openai.com/v1",
+        messages = [
             {
                 "role": "user",
                 "content": [
