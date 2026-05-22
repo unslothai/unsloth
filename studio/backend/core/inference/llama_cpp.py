@@ -683,15 +683,8 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
-        # Audio metadata cache. _audio_probed records whether the
-        # currently-loaded model has been probed for audio support
-        # (snac / bicodec / dac / csm / whisper / audio_vlm). For
-        # non-audio models detect_audio_type() returns None, so we
-        # cannot use _audio_type is None as a "not probed yet"
-        # sentinel -- doing so would re-run the 8 sequential
-        # /tokenize+/detokenize probes under _serial_load_lock on
-        # every no-op /load. Address of chatgpt-codex-connector P2
-        # review on PR #5669 commit f63ac224.
+        # _audio_probed distinguishes "probed, non-audio" (cached) from
+        # "not yet probed / transient probe error" (retry on next load).
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
@@ -2554,52 +2547,20 @@ class LlamaCppBackend:
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
                 )
-                # P2 follow-up on PR #5669 commit 237052ff
-                # (chatgpt-codex-connector): if the previous load's
-                # audio probe transiently failed (network error /
-                # malformed JSON inside detect_audio_type leaves
-                # _audio_type == None), the route-level read of the
-                # cached value would keep reporting non-audio
-                # indefinitely on subsequent /load calls that hit this
-                # fast path. Re-probe here so a one-off failure does
-                # not become sticky.
-                #
-                # Same lock discipline as the main load path
-                # (chatgpt-codex P2 on commit b8a7fe4a): detect
-                # outside self._lock so /unload can still acquire it
-                # mid-probe; init inside self._lock so it cannot race
-                # against an unload that already cleared backend
-                # state.
-                # Only re-probe on fast-path when the previous load
-                # never recorded a probe outcome (transient probe
-                # failure / exception). For non-audio models the
-                # previous load set _audio_probed=True with
-                # _audio_type=None, so this branch is skipped and
-                # no-op /load calls do not re-run the 8 HTTP probes
-                # under _serial_load_lock (chatgpt-codex P2 on
-                # commit f63ac224).
+                # Recover audio metadata only if no prior probe completed
+                # (transient failure). Detect outside _lock so /unload
+                # can interrupt; init inside _lock so it cannot race a
+                # concurrent /unload.
                 if not self._audio_probed:
                     try:
-                        # Strict variant: raise on transient HTTP /
-                        # JSON failure so we leave _audio_probed=False
-                        # and recover next /load. chatgpt-codex P2
-                        # 3284185168 on commit 0f55615d.
                         detected = self._detect_audio_type_strict()
                         self._audio_probed = True
                     except Exception as exc:
-                        logger.debug(
-                            "Fast-path audio probe failed transiently: %s",
-                            exc,
-                        )
+                        logger.debug("Fast-path audio probe failed: %s", exc)
                         detected = None
                     if detected in ("snac", "bicodec", "dac"):
                         with self._lock:
                             if not self._healthy:
-                                logger.info(
-                                    "load_model fast-path: unload won "
-                                    "race after re-probe; skipping "
-                                    "audio codec init"
-                                )
                                 return False
                             try:
                                 self.init_audio_codec(detected)
@@ -2607,26 +2568,13 @@ class LlamaCppBackend:
                                 self._audio_type = detected
                             except Exception as exc:
                                 logger.warning(
-                                    "Fast-path re-probe: failed to "
-                                    "init audio codec '%s': %s "
-                                    "(continuing as non-audio)",
-                                    detected,
-                                    exc,
+                                    "Failed to init audio codec '%s': %s",
+                                    detected, exc,
                                 )
-                                # Clear _audio_probed so next /load
-                                # re-probes and re-attempts codec
-                                # init (chatgpt-codex P2 3284516915).
                                 self._audio_probed = False
                     elif detected:
                         self._audio_type = detected
-                # Recheck _healthy: an unload between the original
-                # fast-path arrival and now could have torn down the
-                # backend (chatgpt-codex P2 3284185172).
                 if not self._healthy:
-                    logger.info(
-                        "load_model fast-path: unload won race; "
-                        "reporting load failure"
-                    )
                     return False
                 return True
 
@@ -3338,56 +3286,22 @@ class LlamaCppBackend:
                     f"for model '{model_identifier}'"
                 )
 
-            # Reset audio cache to safe defaults BEFORE probing so a
-            # transient probe failure (network / JSON error) does not
-            # leak the previous load's audio_type onto the next load's
-            # backend instance. The probe + init pair runs *outside*
-            # self._lock so /api/inference/unload can still acquire
-            # _lock and kill llama-server mid-probe if /tokenize or
-            # /detokenize hangs (chatgpt-codex P2 on commit b8a7fe4a:
-            # without this, unload blocks for up to 8 probes x 10s =
-            # 80s after the server is already healthy). The probe
-            # itself remains inside self._serial_load_lock so a
-            # concurrent /load still serialises.
+            # Audio probe runs outside self._lock so /unload can
+            # interrupt; init runs inside self._lock so it cannot
+            # race a concurrent /unload. Probe stays inside
+            # _serial_load_lock so concurrent loads still serialise.
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False
             try:
-                # Use the strict variant so transient HTTP / JSON
-                # failures raise and leave _audio_probed=False --
-                # only a definitive non-audio verdict (or a codec
-                # match) caches as probed. chatgpt-codex P2
-                # 3284185168 on commit 0f55615d.
                 detected = self._detect_audio_type_strict()
-                # Mark probed only after the strict probe returned
-                # without exception. detect_audio_type returns the
-                # same None for non-audio AND for transient errors;
-                # the strict variant separates the two so we can
-                # cache the definitive verdict here and still
-                # recover from transient failures on the next load.
                 self._audio_probed = True
             except Exception as exc:
-                # Transient probe failure (network blip, malformed
-                # JSON). Leave _audio_probed=False so the fast-path
-                # re-probe can recover on the next /load.
-                logger.debug("Audio probe failed transiently: %s", exc)
+                logger.debug("Audio probe failed: %s", exc)
                 detected = None
             if detected in ("snac", "bicodec", "dac"):
-                # init_audio_codec allocates codec GPU memory and
-                # writes to LlamaCppBackend._codec_mgr; serialize
-                # against unload via self._lock. Re-check _healthy
-                # inside the lock so that a /api/inference/unload
-                # that fired after detect_audio_type completed but
-                # before we re-acquired _lock wins cleanly.
                 with self._lock:
                     if not self._healthy:
-                        # Lost the race to unload. The backend is
-                        # already torn down; don't reattach codec
-                        # state to a dead server.
-                        logger.info(
-                            "load_model: unload won race after probe; "
-                            "skipping audio codec init"
-                        )
                         return False
                     try:
                         self.init_audio_codec(detected)
@@ -3395,37 +3309,14 @@ class LlamaCppBackend:
                         self._audio_type = detected
                     except Exception as exc:
                         logger.warning(
-                            "Failed to init audio codec '%s': %s "
-                            "(load continues as non-audio)",
-                            detected,
-                            exc,
+                            "Failed to init audio codec '%s': %s", detected, exc,
                         )
-                        # Codec init failure is often transient (HF
-                        # snapshot_download blip for bicodec, GPU
-                        # memory pressure, etc.). Clear _audio_probed
-                        # so the next /load on the same model
-                        # re-probes and re-attempts codec init
-                        # instead of getting stuck in non-audio mode
-                        # until a full unload+reload. chatgpt-codex
-                        # P2 3284516915 on commit eb3a52a1.
+                        # Clear probe cache so next load retries init.
                         self._audio_probed = False
             elif detected:
-                # csm / whisper / audio_vlm have no codec init step,
-                # but the audio_type is still informational metadata
-                # the route surfaces through LoadResponse.
                 self._audio_type = detected
 
-            # Recheck _healthy before reporting success. Audio probe
-            # runs outside self._lock, so /api/inference/unload can
-            # tear down the backend while we are in this post-health
-            # section. Without this recheck, a load request could
-            # report success even though unload already won the race
-            # and the backend is no longer active. chatgpt-codex P2
-            # 3284185172 on commit 0f55615d.
             if not self._healthy:
-                logger.info(
-                    "load_model: unload won race after probe; " "reporting load failure"
-                )
                 return False
             return True
 
@@ -5346,13 +5237,9 @@ class LlamaCppBackend:
     def detect_audio_type(self) -> Optional[str]:
         """Detect audio/TTS codec by probing the loaded model's vocabulary.
 
-        Backwards-compatible API: returns codec name on match, None
-        for non-audio models, and None on transient transport/JSON
-        errors. Callers that need to distinguish "completed probe,
-        non-audio" from "probe failed transiently" should use the
-        internal helper ``_detect_audio_type_strict`` instead --
-        that raises on transient errors so the caller can decide
-        whether to cache the result.
+        Swallows transport/JSON errors and returns None. Callers that
+        need to distinguish "non-audio" from "transient probe failure"
+        should use ``_detect_audio_type_strict``.
         """
         try:
             return self._detect_audio_type_strict()
@@ -5361,16 +5248,8 @@ class LlamaCppBackend:
             return None
 
     def _detect_audio_type_strict(self) -> Optional[str]:
-        """Same probe as detect_audio_type but raises on transient
-        transport / JSON errors instead of swallowing them. Returns
-        a codec name on definitive match, None on definitive
-        non-audio. The chatgpt-codex-connector P2 (3284185168) on
-        commit 0f55615d required this split so load_model can cache
-        a definitive non-audio outcome (avoiding the 8 HTTP probes
-        on every no-op /load -- chatgpt P2 3283860597) while
-        preserving recovery from transient probe failures (chatgpt
-        P2 3281943869 on commit 237052ff).
-        """
+        """Raises on transport/JSON errors; returns codec name or None
+        on definitive non-audio."""
         if not self.is_loaded:
             return None
         _auth_headers = (
@@ -5379,9 +5258,6 @@ class LlamaCppBackend:
         with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
             def _detok(tid: int) -> str:
-                # Raise on HTTP / network / JSON failure so the
-                # caller can distinguish a definitive non-audio
-                # verdict from a transient probe failure.
                 r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
                 r.raise_for_status()
                 return r.json().get("content", "")

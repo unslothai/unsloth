@@ -259,28 +259,11 @@ jobs:
               determinism_failures = []
               for i, (a, b) in enumerate(zip(first, second), start = 1):
                   print(f"[{label} turn {i}] {a!r}")
-                  # Both runs must produce a non-empty response. A
-                  # second-run empty / degraded reply (intermittent
-                  # backend or tool instability) is a real regression
-                  # in the second execution path the probe is meant
-                  # to exercise -- it must FAIL, not silently log
-                  # drift. Address of chatgpt-codex P2 review on PR
-                  # #5669 commit 7dbe4960.
+                  # Both runs must be non-empty; small-quant drift
+                  # across runs is WARN-only (grounding asserts below
+                  # are the stronger signal).
                   assert a, f"{label}: empty turn {i} response in first run"
                   assert b, f"{label}: empty turn {i} response in second run"
-                  # Compare on stripped content: llama-server can vary
-                  # trailing whitespace (specifically a final '\n') between
-                  # otherwise-identical greedy runs depending on the
-                  # batch-flush boundary at which the stream is closed. The
-                  # generated tokens are usually identical; only the
-                  # trailing whitespace differs. Beyond that, small-quant
-                  # Qwen3.5-2B at temperature=0.0 still produces minor
-                  # divergences across runs on faster Linux runners due to
-                  # KV-cache/speculative-decoding non-determinism (observed
-                  # across multiple unrelated PRs on `main`). Treat that as
-                  # a WARN, not a hard fail -- the grounding assertions
-                  # below ("1" in turn-1, "paris" somewhere) are stronger
-                  # signals of functional correctness.
                   if a.strip() != b.strip():
                       determinism_failures.append(
                           f"turn {i}: run1={a!r} run2={b!r}"
@@ -526,50 +509,13 @@ jobs:
           }
 
           def _tool_invoked(events):
-              """Inspect SSE event payloads for *strong, structural*
-              evidence that a server-side tool actually executed.
-              Returns True iff some event satisfies one of:
-
-                * Studio / Anthropic envelope: `ev["type"]` is one of
-                  tool_start / tool_end / tool_use / tool_result.
-                * OpenAI chat completion chunk: some choice has a
-                  non-null/non-empty `delta.tool_calls` or
-                  `message.tool_calls`, or `finish_reason == "tool_calls"`,
-                  or `delta.role == "tool"` / `message.role == "tool"`,
-                  or `delta.function_call` / `message.function_call` is
-                  present.
-                * OpenAI Responses API: some output item has type
-                  `tool_call` / `function_call` / `tool_use`.
-
-              Deliberately structural rather than substring-based: the
-              previous revision (commit ec753581) did `any(m in blob
-              for m in markers)` and false-positived on model content
-              text -- if the assistant's chat content contained any of
-              the marker substrings (e.g. literally typed "use the
-              tool_calls feature" or quoted JSON in its narration), the
-              substring matched and the test reported tool_invoked=True
-              despite no real tool execution. That mismatch was
-              observed in the failing Linux Studio GGUF CI run
-              26242445342 on sha ec753581: 3 deterministic attempts
-              all showed tool_invoked=True with tool_output_contains=
-              False and no tool_end envelope anywhere, indicating the
-              model never actually triggered the agentic loop.
-
-              Deliberately omitted from invocation evidence:
-
-                * `tool_status` envelopes -- Studio's GGUF tool stream
-                  yields an iteration-boundary status event regardless
-                  of whether a tool was actually invoked, including
-                  empty `{"type":"tool_status","content":""}` cursor
-                  resets. Trusting tool_status would re-introduce a
-                  false-green where the agentic loop initialised but
-                  the model never produced a tool_call. Address of
-                  chatgpt-codex-connector P1 on PR #5669 commit
-                  237052ff.
-
-                * Any output-substring fallback -- the literal answer
-                  appearing in the raw stream is not proof the tool
-                  ran; the model can emit those characters directly.
+              """Structural check: True iff some SSE payload is a real
+              tool envelope (Studio tool_start/tool_end, Anthropic
+              tool_use/tool_result, OpenAI non-empty delta.tool_calls /
+              message.tool_calls / finish_reason='tool_calls' /
+              role:'tool' / function_call). tool_status is NOT
+              evidence: Studio emits empty tool_status events on
+              iteration boundaries even when no tool ran.
               """
               for raw in events:
                   try:
@@ -578,11 +524,8 @@ jobs:
                       continue
                   if not isinstance(ev, dict):
                       continue
-                  # Studio / Anthropic envelope.
                   if ev.get("type") in _STUDIO_TOOL_TYPES:
                       return True
-                  # OpenAI chat completion chunks / non-stream
-                  # responses.
                   for choice in ev.get("choices", []) or []:
                       if not isinstance(choice, dict):
                           continue
@@ -599,13 +542,11 @@ jobs:
                               return True
                           if src.get("role") == "tool":
                               return True
-                  # OpenAI Responses API: top-level output array.
                   for item in ev.get("output", []) or []:
                       if isinstance(item, dict) and item.get("type") in {
                           "tool_call", "function_call", "tool_use",
                       }:
                           return True
-                  # Anthropic content blocks (nested).
                   content = ev.get("content")
                   if isinstance(content, list):
                       for blk in content:
@@ -616,65 +557,38 @@ jobs:
               return False
 
           def _tool_output_contains(events, *needles):
-              """Return True iff at least one needle appears inside the
-              `result` field of a Studio GGUF `tool_end` SSE event, or
-              inside a `tool_result.content` block for the Anthropic
-              path, or inside an OpenAI tool-role message's `content`.
-
-              This is the *tool's own output*, not the model's
-              narration. The tool's output is the canonical record of
-              what the server-side execution actually returned -- if
-              python computed `123*456` correctly, the python tool's
-              tool_end.result will literally contain "56088". The model
-              may then drift in how it narrates that answer (small
-              quant can produce "55,888" or paraphrase), and that
-              narration drift is acceptable as long as the tool itself
-              produced the right number.
-
-              Addresses chatgpt-codex-connector P1 review on PR #5669
-              commit 1a2fba84 ("Keep tool-output assertions hard-
-              failing"): a tool that ran but returned the wrong value
-              is a regression in tool correctness that must FAIL the
-              job, not WARN.
-              """
+              """True iff any tool_end.result / tool_result.content /
+              tool-role message content contains a needle. Inspects
+              the tool's own output, not the model's narration."""
               for raw in events:
                   try:
                       ev = json.loads(raw)
                   except (json.JSONDecodeError, TypeError):
                       continue
-                  # Studio GGUF agentic loop: {"type":"tool_end",
-                  # "tool_name":..., "tool_call_id":..., "result":...}
-                  if isinstance(ev, dict) and ev.get("type") == "tool_end":
+                  if not isinstance(ev, dict):
+                      continue
+                  if ev.get("type") == "tool_end":
                       result = ev.get("result")
-                      if isinstance(result, str):
-                          if any(n in result for n in needles if n):
-                              return True
-                  # Anthropic-style messages: tool_result blocks
-                  if isinstance(ev, dict) and ev.get("type") == "tool_result":
+                      if isinstance(result, str) and any(n in result for n in needles if n):
+                          return True
+                  if ev.get("type") == "tool_result":
                       content = ev.get("content")
-                      if isinstance(content, str):
-                          if any(n in content for n in needles if n):
-                              return True
+                      if isinstance(content, str) and any(n in content for n in needles if n):
+                          return True
                       if isinstance(content, list):
                           for blk in content:
                               if isinstance(blk, dict):
                                   text = blk.get("text") or blk.get("content")
-                                  if isinstance(text, str) and any(
-                                      n in text for n in needles if n
-                                  ):
+                                  if isinstance(text, str) and any(n in text for n in needles if n):
                                       return True
-                  # OpenAI chat-completion tool-role messages
-                  if isinstance(ev, dict):
-                      for choice in ev.get("choices", []) or []:
-                          delta = (choice or {}).get("delta") or {}
-                          msg = (choice or {}).get("message") or {}
-                          for src in (delta, msg):
-                              if src.get("role") == "tool":
-                                  content = src.get("content") or ""
-                                  if isinstance(content, str) and any(
-                                      n in content for n in needles if n
-                                  ):
-                                      return True
+                  for choice in ev.get("choices", []) or []:
+                      delta = (choice or {}).get("delta") or {}
+                      msg = (choice or {}).get("message") or {}
+                      for src in (delta, msg):
+                          if src.get("role") == "tool":
+                              content = src.get("content") or ""
+                              if isinstance(content, str) and any(n in content for n in needles if n):
+                                  return True
               return False
 
           # ── 1. Standard OpenAI function calling ──────────────────────
@@ -709,67 +623,24 @@ jobs:
           assert args.get("city"), f"missing city arg: {args}"
           print(f"[tools] PASS function calling -> {tc['function']['name']}({args})")
 
-          # Temperature for tool-probe retries: at T=0 llama.cpp does
-          # deterministic argmax sampling so rotating the seed is a
-          # no-op (verified by run 26242445342 producing three
-          # byte-identical 29-event streams across seeds 3407/3408/
-          # 3409). A small T gives the seed enough purchase to drive
-          # the retry into a distinct sampling trajectory without
-          # destroying tool-output correctness for the attempts that
-          # do invoke the tool.
+          # T=0 = deterministic argmax in llama.cpp; T>0 lets seed
+          # rotation explore distinct trajectories on retry.
           TOOL_PROBE_TEMP = 0.4
 
           def _run_tool_probe(*, label, prompt, enabled, session, needles,
                               max_attempts = 4):
-              """Drive a server-side tool through the agentic loop.
-
-              Hard assertion (per attempt): structural `_tool_invoked`
-              must be True at least once. This catches a real
-              regression where `enable_tools` is silently ignored or
-              the tool plumbing fails to surface ANY tool marker in
-              the SSE stream.
-
-              Soft assertion (across attempts): we *prefer* an attempt
-              where `_tool_output_contains` also holds (the tool's own
-              `tool_end.result` contains the expected literal), but do
-              NOT FAIL if none of the attempts produce it. The reason
-              is documented at length below.
-
-              Why tool output is WARN, not FAIL:
-
-                * The cheapest model that fits the CI minutes budget
-                  is Qwen3.5-2B-UD-IQ3_XXS. With small-quant sampling
-                  it may emit OpenAI-style tool_calls deltas (matching
-                  the structural marker for tool_invoked) without the
-                  Studio GGUF agentic loop intercepting them as
-                  Studio-native XML, which means no `tool_end`
-                  envelope is ever emitted.
-                * Main (sha 966d3cda) passes Studio GGUF CI with the
-                  old looser substring-based test, so the GGUF tool
-                  *plumbing* itself is not broken.
-                * Stricter `_tool_output_contains` was attempted on
-                  commits 1a2fba84 / ea539eb4 / ec753581 / b8a7fe4a /
-                  d4daa04c and red-failed every Linux Studio GGUF CI
-                  run, including under T=0.4 with 4 seeds (attempt
-                  trajectories ranged from 29 to 113 events without
-                  ever producing tool_end.result=56088).
-                * Forcing a strict tool-output assertion here would
-                  block #5642 (a real bug fix for the model-load UI
-                  freeze) on a Studio-wide GGUF-vs-OpenAI tool format
-                  mismatch that is well out of scope for this PR.
-                  That mismatch deserves a dedicated investigation
-                  + fix, not a CI patch on top of this PR.
-
-              Returns (content, events, attempts_log) of the winning
-              attempt -- "winning" means tool_invoked True AND, where
-              possible, tool_output_contains also True. Raises
-              AssertionError only if NO attempt achieves tool_invoked
-              True.
+              """Drive a server-side tool with retries. Hard FAIL if no
+              attempt has structural invocation evidence. WARN (not
+              FAIL) if invoked but no attempt produces the expected
+              literal in tool_end.result -- small-quant Qwen3.5-2B can
+              emit OpenAI tool_calls deltas without Studio's GGUF
+              agentic loop intercepting them, and that GGUF-vs-OpenAI
+              format mismatch is out of scope for #5642.
               """
               attempts_log = []
-              best = None  # (content, events) with tool_invoked True
+              best = None
               for attempt_i in range(max_attempts):
-                  attempt_seed = SEED + attempt_i  # 3407, 3408, ...
+                  attempt_seed = SEED + attempt_i
                   content, events = post_sse("/v1/chat/completions", {
                       "messages":      [{"role": "user", "content": prompt}],
                       "enable_tools":  True,
@@ -782,60 +653,28 @@ jobs:
                   invoked  = _tool_invoked(events)
                   produced = _tool_output_contains(events, *needles)
                   attempts_log.append({
-                      "attempt": attempt_i,
-                      "seed":    attempt_seed,
+                      "attempt": attempt_i, "seed": attempt_seed,
                       "n_events": len(events),
-                      "tool_invoked":          invoked,
-                      "tool_output_contains":  produced,
-                      "content_len":           len(content),
+                      "tool_invoked": invoked, "tool_output_contains": produced,
+                      "content_len": len(content),
                   })
                   if invoked and produced:
-                      print(
-                          f"[tools] PASS {label} attempt {attempt_i} "
-                          f"(seed={attempt_seed}, {len(events)} events, "
-                          "structural marker present AND tool_end."
-                          "result contains expected literal)"
-                      )
+                      print(f"[tools] PASS {label} attempt {attempt_i}")
                       return content, events, attempts_log
                   if invoked and best is None:
                       best = (content, events)
-                  print(
-                      f"[tools] retry {label} attempt {attempt_i}: "
-                      f"invoked={invoked} output_ok={produced} "
-                      f"events={len(events)}"
-                  )
-              # No attempt produced a winning (invoked AND output)
-              # combo. If at least one attempt had invocation
-              # evidence, accept that as a soft pass (tool-output is
-              # WARN, not FAIL -- see helper docstring).
+                  print(f"[tools] retry {label} attempt {attempt_i}: invoked={invoked} output_ok={produced} events={len(events)}")
               if best is not None:
-                  print(
-                      f"[tools] WARN {label}: tool was invoked but no "
-                      f"attempt produced the expected literal in "
-                      f"tool_end.result across {max_attempts} attempts. "
-                      f"Treating as small-quant flake. Attempts: "
-                      f"{attempts_log}"
-                  )
+                  print(f"[tools] WARN {label}: invoked but no tool_end.result match (small-quant flake). Attempts: {attempts_log}")
                   content, events = best
                   return content, events, attempts_log
-              # No attempt had ANY structural invocation marker --
-              # that IS a real plumbing regression and must FAIL.
               raise AssertionError(
-                  f"{label}: no structural evidence of tool invocation "
-                  f"across {max_attempts} attempts (no tool_calls / "
-                  f"tool_call / tool_use / tool_result / tool_start "
-                  f"/ tool_end / function_call / role:tool / non-empty "
-                  f"delta.tool_calls in any attempt's SSE stream). "
-                  f"enable_tools may be silently ignored. "
-                  f"Attempts: {attempts_log}"
+                  f"{label}: no structural tool-invocation evidence across "
+                  f"{max_attempts} attempts. enable_tools may be silently "
+                  f"ignored. Attempts: {attempts_log}"
               )
 
           # ── 2. Server-side python tool ───────────────────────────────
-          # Hard: _tool_invoked structural marker must be present in
-          # at least one attempt's SSE stream. Soft: tool_end.result
-          # *should* contain "56088"/"56,088" but we WARN rather than
-          # FAIL on absence (see _run_tool_probe docstring). Model
-          # narration is also WARN-only.
           content, events, _attempts = _run_tool_probe(
               label    = "python tool",
               prompt   = "What is 123 * 456? Use the python tool to compute it and tell me the number.",
@@ -844,16 +683,11 @@ jobs:
               needles  = ("56088", "56,088"),
           )
           if "56088" in content or "56,088" in content:
-              print(f"[tools] python tool narration OK ({len(content)} chars, found 56088 in content)")
+              print(f"[tools] python tool narration OK")
           else:
-              print(
-                  f"[tools] python tool narration drifted -- "
-                  f"content={content!r}"
-              )
+              print(f"[tools] python tool narration drifted -- content={content!r}")
 
           # ── 3. Server-side bash (terminal) tool ──────────────────────
-          # Same shape: hard structural invocation; soft tool output;
-          # soft narration.
           content, events, _attempts = _run_tool_probe(
               label    = "bash/terminal tool",
               prompt   = "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output.",
@@ -862,12 +696,9 @@ jobs:
               needles  = ("hello-bash-tool",),
           )
           if "hello-bash-tool" in content:
-              print(f"[tools] bash/terminal narration OK ({len(content)} chars, literal in content)")
+              print(f"[tools] bash/terminal narration OK")
           else:
-              print(
-                  f"[tools] bash/terminal narration dropped literal -- "
-                  f"content={content!r}"
-              )
+              print(f"[tools] bash/terminal narration dropped literal -- content={content!r}")
 
           # ── 4. Server-side web_search tool ───────────────────────────
           # DuckDuckGo is flaky from CI runners and small Qwen3.5-2B

@@ -860,20 +860,9 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Audio metadata is cached by LlamaCppBackend.load_model under
-            # self._serial_load_lock (#5642 follow-up, addresses the
-            # gemini-code-assist review on PR #5669). The route just
-            # surfaces the cached values to the client.
-            #
-            # detect_audio_type fires 8 sequential sync httpx.Client.post()
-            # calls. Calling it from the route would (a) block the FastAPI
-            # event loop on the sync httpx calls (the original #5642
-            # symptom) AND (b) open a race with concurrent /load requests
-            # that could kill the llama-server mid-probe and leave the
-            # route writing stale audio_type onto the next load's backend
-            # instance. Wrapping load_model itself in asyncio.to_thread
-            # (line 810 / 831) is sufficient now that all the audio
-            # detection happens inside it.
+            # Audio detection lives in LlamaCppBackend.load_model under
+            # _serial_load_lock (#5642): calling sync httpx probes from
+            # the async route blocked the event loop and froze the UI.
             _gguf_audio = llama_backend._audio_type
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = (

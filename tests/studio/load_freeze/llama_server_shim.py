@@ -215,12 +215,8 @@ class FakeLlamaServer:
         detok_body: Optional[bytes] = None,
         detok_map: Optional[dict] = None,
         completion_delay: float = 0.0,
-        # Cosmetic only -- only appears in the synthesised stdout
-        # template's "loading model '<path>'" line. The production code
-        # we drive from the tests does not parse this value. Default is
-        # OS-portable so the shim does not bake any one developer's
-        # machine path into the test surface (gemini-code-assist review
-        # on PR #5669).
+        # Cosmetic: appears in the stdout template only; production
+        # code under test does not parse this.
         model_path: str = "<test-fixture>/gemma-4.gguf",
     ) -> None:
         self.host = host
@@ -244,10 +240,8 @@ class FakeLlamaServer:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> "FakeLlamaServer":
-        # Pass requested port directly (port=0 lets ThreadingHTTPServer pick
-        # a free port atomically, avoiding the find-port-then-bind race the
-        # gemini-code-assist review on PR #5669 flagged). After bind, read
-        # the actually-bound port back via server_address[1].
+        # port=0 lets ThreadingHTTPServer pick a free port atomically
+        # (avoids find-port-then-bind race); read back via server_address[1].
         self._server = FakeLlamaServer._Server(
             (self.host, self._requested_port), _Handler
         )
