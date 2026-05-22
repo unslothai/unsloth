@@ -68,6 +68,52 @@ _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 
+# OpenAI's Responses stream emits inline citation markers shaped like
+# `citeSOURCE_ID` (private-use codepoints, see
+# https://developers.openai.com/api/docs/guides/citation-formatting).
+# Most fonts render the codepoints as garbled "E202" glyphs or empty
+# boxes, and markdown layers tend to strip them, leaving run-on text
+# like "citeturn1view0turn1view1...". We rewrite each marker into a
+# markdown link `[N](URL)` when the matching url_citation has arrived
+# on this stream, or drop it silently when the source_id is unknown.
+# Group 1 is the source id; an optional `<locator>` suffix is
+# discarded (we link the whole source rather than per-line locators).
+_OPENAI_CITATION_MARKER = re.compile(
+    "cite([^]+)(?:[^]*)?"
+)
+
+
+def _replace_openai_citation_markers(
+    text: str,
+    url_citations: list[dict[str, Any]],
+) -> str:
+    """Rewrite `\\ue200cite\\ue202SOURCE_ID\\ue201` markers in ``text``.
+
+    For each marker, look up the source_id against the running
+    ``url_citations`` list and replace with `[[N]](URL)` where N is the
+    1-based index of that citation. Unknown source_ids strip the marker
+    silently so garbled glyphs never reach the renderer. Idempotent on
+    text that contains no private-use codepoints.
+    """
+    if not text or "" not in text:
+        return text
+    by_source: dict[str, tuple[int, str]] = {}
+    for idx, cit in enumerate(url_citations, start = 1):
+        sid = cit.get("source_id")
+        url = cit.get("url")
+        if isinstance(sid, str) and sid and isinstance(url, str) and url:
+            by_source.setdefault(sid, (idx, url))
+
+    def _sub(match: re.Match[str]) -> str:
+        sid = match.group(1)
+        hit = by_source.get(sid)
+        if hit is None:
+            return ""
+        idx, url = hit
+        return f"[[{idx}]]({url})"
+
+    return _OPENAI_CITATION_MARKER.sub(_sub, text)
+
 
 class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
@@ -3000,16 +3046,32 @@ class ExternalProviderClient:
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation onto the shared all_url_citations
-                        list. Dedup by URL — the same source can be cited multiple
-                        times across deltas. We do NOT try to attribute citations
-                        to individual web_search_call invocations because OpenAI's
-                        annotation events don't carry that linkage."""
+                        list. Dedup by URL. We also capture the ``source_id``
+                        the upstream stream uses inside its inline
+                        ``\\ue200cite\\ue202SOURCE_ID\\ue201`` markers so the
+                        delta-text rewriter can resolve markers to
+                        ``[N](URL)`` links. The id may live under
+                        ``source_id``, ``id``, or ``locator`` across the
+                        Responses API revisions."""
                         if payload.get("type") != "url_citation":
                             return
                         url = payload.get("url", "")
                         if not url:
                             return
+                        source_id = (
+                            payload.get("source_id")
+                            or payload.get("id")
+                            or payload.get("locator")
+                            or ""
+                        )
                         if any(c["url"] == url for c in all_url_citations):
+                            # Backfill source_id on the existing entry if
+                            # the first annotation event omitted it.
+                            if source_id:
+                                for c in all_url_citations:
+                                    if c["url"] == url and not c.get("source_id"):
+                                        c["source_id"] = source_id
+                                        break
                             return
                         title = payload.get("title") or url
                         snippet = payload.get("snippet") or payload.get("quote") or ""
@@ -3018,6 +3080,7 @@ class ExternalProviderClient:
                                 "url": url,
                                 "title": title,
                                 "snippet": snippet,
+                                "source_id": source_id,
                             }
                         )
 
@@ -3088,17 +3151,26 @@ class ExternalProviderClient:
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
+                                # Process inline annotations FIRST so that
+                                # any source_ids referenced by markers in
+                                # the same delta are already in the lookup
+                                # table when the rewriter runs below. Some
+                                # API versions inline url citations on the
+                                # delta event itself rather than as a
+                                # separate response.output_text.annotation
+                                # .added event.
+                                for ann in event.get("annotations") or []:
+                                    if isinstance(ann, dict):
+                                        _record_url_citation(ann)
                                 if delta_text:
                                     if reasoning_open:
                                         yield _chunk_with_text("</think>")
                                         reasoning_open = False
-                                    yield _chunk_with_text(delta_text)
-                                # Some API versions inline url citations on the
-                                # delta event itself rather than as a separate
-                                # response.output_text.annotation.added event.
-                                for ann in event.get("annotations") or []:
-                                    if isinstance(ann, dict):
-                                        _record_url_citation(ann)
+                                    delta_text = _replace_openai_citation_markers(
+                                        delta_text, all_url_citations
+                                    )
+                                    if delta_text:
+                                        yield _chunk_with_text(delta_text)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
