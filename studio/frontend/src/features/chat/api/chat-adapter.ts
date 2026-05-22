@@ -886,6 +886,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               externalProvider.baseUrl,
             ),
         );
+      // web_fetch shares the Search pill with web_search (no separate
+      // UI toggle), so it follows toolsEnabled. Anthropic is the only
+      // provider that ships it today; on others providerSupportsBuiltinWebFetch
+      // returns false and this stays inert.
+      const webFetchEnabledForThisTurn =
+        Boolean(
+          externalProvider &&
+            toolsEnabled &&
+            providerSupportsBuiltinWebFetch(externalProvider.providerType),
+        );
+      const providerShipsWebFetch = Boolean(
+        externalProvider &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
@@ -907,16 +921,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         disabledToolGuardProviderType === "anthropic" ||
         disabledToolGuardProviderType === "openai"
       ) {
+        const webLabel = providerShipsWebFetch
+          ? "web search or web fetch"
+          : "web search";
         if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
           disabledToolGuard =
-            "You do not have web search or code execution tools in this conversation. " +
+            `You do not have ${webLabel} or code execution tools in this conversation. ` +
             "Answer from your own knowledge. " +
             "If a request genuinely requires tool use, live data fetch or running code, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         } else if (!webSearchEnabledForThisTurn) {
           disabledToolGuard =
-            "You do not have web search tools in this conversation. " +
+            `You do not have ${webLabel} tools in this conversation. ` +
             "You may still use code execution tools when they are available and useful. " +
             "If a request genuinely requires live data fetch or web search tool use, " +
             "inform the user that you do not have access to these capabilities. " +
@@ -924,7 +941,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         } else if (!codeExecEnabledForThisTurn) {
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
-            "You may still use web search tools when they are available and useful. " +
+            `You may still use ${webLabel} tools when they are available and useful. ` +
             "If a request genuinely requires running code or code execution tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
@@ -1377,7 +1394,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               // translates enabled_tools into each provider's tool
               // schema — for Anthropic that's the entries appended to
               // body["tools"] inside _stream_anthropic.
-              ...(webSearchEnabledForThisTurn || codeExecEnabledForThisTurn
+              ...(webSearchEnabledForThisTurn ||
+              webFetchEnabledForThisTurn ||
+              codeExecEnabledForThisTurn
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -1389,12 +1408,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       // surface a citation but cannot quote from the
                       // page body, which is the whole point of the
                       // tool. There is no separate UI toggle yet.
-                      ...(webSearchEnabledForThisTurn &&
-                      providerSupportsBuiltinWebFetch(
-                        externalProvider.providerType,
-                      )
-                        ? ["web_fetch"]
-                        : []),
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
                     ],
                   }
