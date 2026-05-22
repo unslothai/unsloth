@@ -459,8 +459,8 @@ export async function listStoredChatThreadsWithMessages(
       if (backendMessages.length > 0) {
         return { thread, hasContent: true };
       }
-      const legacy = await listStoredChatMessages(thread.id).catch(() => []);
-      return { thread, hasContent: legacy.length > 0 };
+      const legacy = await listStoredChatMessages(thread.id).catch(() => null);
+      return { thread, hasContent: legacy === null || legacy.length > 0 };
     }),
   );
   return entries.filter((e) => e.hasContent).map((e) => e.thread);
@@ -622,11 +622,7 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     if (isChatThreadDeleted(message.threadId)) continue;
     messagesById.set(message.id, message);
   }
-  const includeLegacyOnly =
-    backend === null ||
-    !isLegacyChatImportDone() ||
-    ((backend.threads.length === 0 || backend.messages.length === 0) &&
-      (legacyThreads.length > 0 || legacyMessages.length > 0));
+  const includeLegacyOnly = backend === null || !isLegacyChatImportDone();
   for (const thread of legacyThreads as ThreadRecord[]) {
     if (
       isChatThreadDeleted(thread.id) ||
