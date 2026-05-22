@@ -365,7 +365,15 @@ def test_web_fetch_error_renders_error_code(monkeypatch):
 
 
 def _finish_reasons(lines: list[str]) -> list:
-    """Return the finish_reason fields from every chat.completion.chunk."""
+    """Return the non-null finish_reason fields from every
+    chat.completion.chunk.
+
+    Content delta chunks carry ``finish_reason: None`` -- those are
+    not finish reasons, they are mid-stream deltas. We only care about
+    the chunks that actually announce the end of the assistant turn
+    (the post-PR refusal path emits a user-visible content notice
+    before the mapped content_filter chunk, which is exactly the
+    case this helper used to ignore on the older streams)."""
     out: list = []
     for line in lines:
         if not line.startswith("data:"):
@@ -380,8 +388,9 @@ def _finish_reasons(lines: list[str]) -> list:
         if parsed.get("object") != "chat.completion.chunk":
             continue
         for choice in parsed.get("choices") or []:
-            if "finish_reason" in choice:
-                out.append(choice["finish_reason"])
+            reason = choice.get("finish_reason")
+            if reason is not None:
+                out.append(reason)
     return out
 
 
