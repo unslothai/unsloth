@@ -49,6 +49,52 @@ function statusLabel(input: {
   return "Run status";
 }
 
+function formatSourceResource(value: string | null | undefined): string {
+  if (value === "pulls") {
+    return "PRs";
+  }
+  return value ?? "source";
+}
+
+function formatGitHubSourceSummary(
+  execution: RecipeExecutionRecord,
+): string | null {
+  const source = execution.source_progress;
+  if (!source || source.source !== "github") {
+    return null;
+  }
+  if (source.status === "rate_limited") {
+    const wait =
+      typeof source.retry_after_sec === "number" && source.retry_after_sec > 0
+        ? ` ~${formatMetricValue(source.retry_after_sec)}s`
+        : "";
+    return `Waiting for GitHub rate limit${wait}. Studio will resume automatically.`;
+  }
+  if (source.status === "retrying") {
+    return source.message ?? "GitHub request failed; retrying automatically.";
+  }
+
+  const parts = [
+    source.repo,
+    source.resource
+      ? `${formatSourceResource(source.resource)}${
+          typeof source.page === "number" ? ` page ${source.page}` : ""
+        }`
+      : null,
+    typeof source.fetched_items === "number"
+      ? `${formatMetricValue(source.fetched_items)} fetched`
+      : null,
+    typeof source.rate_remaining === "number"
+      ? `remaining ${formatMetricValue(source.rate_remaining)}`
+      : null,
+  ].filter(Boolean);
+
+  if (parts.length === 0) {
+    return source.message ?? "Crawling GitHub source";
+  }
+  return parts.join(" · ");
+}
+
 export function ExecutionProgressIsland({
   execution,
   currentColumnIcon,
@@ -58,14 +104,24 @@ export function ExecutionProgressIsland({
 }: ExecutionProgressIslandProps): ReactElement {
   const complete = execution.status === "completed";
   const inProgress = isExecutionInProgress(execution.status);
-  const progressPercent = execution.progress?.percent ?? (complete ? 100 : 0);
+  const sourceSummary = formatGitHubSourceSummary(execution);
+  const showSourceProgress = Boolean(
+    sourceSummary &&
+      inProgress &&
+      (execution.stage === "source" ||
+        execution.source_progress?.status === "rate_limited" ||
+        execution.source_progress?.status === "retrying"),
+  );
+  const sourcePercent = showSourceProgress ? execution.source_progress?.percent : null;
+  const progressPercent = sourcePercent ?? execution.progress?.percent ?? (complete ? 100 : 0);
   const hasProgressSignal = Boolean(
-    execution.progress &&
+    (execution.progress &&
       (typeof execution.progress.done === "number" ||
         typeof execution.progress.total === "number" ||
         typeof execution.progress.percent === "number" ||
         typeof execution.progress.rate === "number" ||
-        typeof execution.progress.eta_sec === "number"),
+        typeof execution.progress.eta_sec === "number")) ||
+      typeof sourcePercent === "number",
   );
   const showLoadingSpinner = inProgress && !hasProgressSignal;
   const batchTotal = execution.batch?.total ?? null;
@@ -136,18 +192,30 @@ export function ExecutionProgressIsland({
               ETA: {formatEta(execution.progress?.eta_sec)}
             </p>
           </div>
-          <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
-            <HugeiconsIcon
-              icon={currentColumnIcon}
-              className="size-3.5 shrink-0"
-            />
-            <p
-              className="truncate"
-              title={execution.current_column ?? "--"}
-            >
-              Column: {execution.current_column ?? "--"}
-            </p>
-          </div>
+          {showSourceProgress ? (
+            <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
+              <HugeiconsIcon
+                icon={Flag02Icon}
+                className="size-3.5 shrink-0 text-amber-700 dark:text-amber-300"
+              />
+              <p className="truncate" title={sourceSummary ?? undefined}>
+                GitHub source: {sourceSummary}
+              </p>
+            </div>
+          ) : (
+            <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
+              <HugeiconsIcon
+                icon={currentColumnIcon}
+                className="size-3.5 shrink-0"
+              />
+              <p
+                className="truncate"
+                title={execution.current_column ?? "--"}
+              >
+                Column: {execution.current_column ?? "--"}
+              </p>
+            </div>
+          )}
           {showBatch && (
             <div
               className="mt-1 truncate px-3 text-[11px] text-muted-foreground"

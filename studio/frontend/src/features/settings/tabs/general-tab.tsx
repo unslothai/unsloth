@@ -56,6 +56,8 @@ const PREFS_KEYS: string[] = [
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
+  // Profile personalization
+  "unsloth_user_profile",
   // Guided tour flags
   "tour:studio:v1",
 ];
@@ -197,7 +199,7 @@ export function GeneralTab() {
         <SettingsRow
           destructive
           label="Reset all local preferences"
-          description="Clears theme, tokens, sidebar state, and presets. Chats and API keys are not affected."
+          description="Clears local-only preferences. Chats, API access, and DB-backed chat settings are not affected."
         >
           <Button
             variant="outline"
@@ -215,8 +217,8 @@ export function GeneralTab() {
           <DialogHeader>
             <DialogTitle>Reset all local preferences?</DialogTitle>
             <DialogDescription>
-              This clears your theme, tokens, and stored settings, then reloads
-              Studio. Chats and API keys are not affected.
+              This clears local-only preferences, then reloads Studio. Chats,
+              API access, and DB-backed chat settings are not affected.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

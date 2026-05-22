@@ -6,18 +6,44 @@ import {
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
-import { MessageTiming } from "@/components/assistant-ui/message-timing";
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import {
+  thinkEffortAriaLabel,
+  thinkToggleAriaLabel,
+} from "@/components/assistant-ui/think-aria-label";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
-import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
+import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
+import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import {
+  IntentAwareScrollProvider,
+  useIntentAwareAutoScroll,
+  useIsThreadAtBottom,
+  useScrollThreadToBottom,
+} from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { parseExternalModelId } from "@/features/chat/external-providers";
+import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { isTauri } from "@/lib/api-base";
+import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
@@ -29,220 +55,203 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   useAui,
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { motion } from "motion/react";
+import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  CopyIcon,
   DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
+  ImageIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
   MoreHorizontalIcon,
-  LoaderIcon,
-  PencilIcon,
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
-  Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
-import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { Copy01Icon, Delete02Icon, Edit03Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  type ChangeEvent,
+  type CompositionEvent,
+  type FC,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { toast } from "@/lib/toast";
 
-export const Thread: FC<{ hideComposer?: boolean; hideWelcome?: boolean }> = ({
+export const Thread: FC<{
+  hideComposer?: boolean;
+  hideWelcome?: boolean;
+  targetThreadId?: string;
+}> = ({
   hideComposer,
   hideWelcome,
+  targetThreadId,
 }) => {
+  // Intent-aware autoscroll: replaces assistant-ui's built-in autoscroll
+  // to prevent the streaming-mutation race that makes the viewport snap
+  // back to the bottom while the user is scrolling up (see the hook for
+  // the full explanation).
+  const { ref: viewportRef, context: autoScrollContext } =
+    useIntentAwareAutoScroll();
+
+  const isComposerAttachPending = useAuiState(({ threads }) =>
+    targetThreadId ? threads.mainThreadId !== targetThreadId : false,
+  );
+
   return (
     <ThreadPrimitive.Root
-      className={cn(
-        "aui-root aui-thread-root @container flex flex-col",
-        hideComposer
-          ? "h-full"
-          : "relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
-      )}
+      className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       style={{
-        ["--thread-max-width" as string]: "44rem",
+        ["--thread-max-width" as string]: "48rem",
         ["--thread-content-max-width" as string]:
-          "calc(var(--thread-max-width) - 2.5rem)",
+          "calc(var(--thread-max-width) - 1.5rem)",
       }}
     >
-      <ThreadPrimitive.Viewport
-        className={cn(
-          "aui-thread-viewport relative flex min-w-0 flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-5",
-          hideComposer
-            ? "pt-4"
-            : "h-0 min-h-0 basis-0 pt-[56px]",
-        )}
-      >
-        {!hideWelcome && (
-          <AuiIf condition={({ thread }) => thread.isEmpty}>
-            <ThreadWelcome hideComposer={hideComposer} />
-          </AuiIf>
-        )}
-
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            EditComposer,
-            AssistantMessage,
-          }}
-        />
-
-        {/* Small overlap and extra slack so the last lines can scroll under the composer cleanly */}
-        {!hideComposer && <div className="h-40 shrink-0" aria-hidden />}
-
-        <ThreadPrimitive.ViewportFooter
+      <IntentAwareScrollProvider value={autoScrollContext}>
+        <ThreadPrimitive.Viewport
+          ref={viewportRef}
+          autoScroll={false}
+          scrollToBottomOnRunStart={false}
+          scrollToBottomOnInitialize={false}
+          scrollToBottomOnThreadSwitch={false}
           className={cn(
-            "aui-thread-viewport-footer sticky z-20 mt-auto flex w-full flex-col overflow-visible bg-transparent",
-            hideComposer
-              ? "bottom-0 gap-2"
-              : "bottom-[140px] shrink-0 gap-3",
-            // Compare: pointer-events pass-through so messages behind footer stay clickable
-            hideComposer
-              ? "pointer-events-none pb-3"
-              : "pb-2",
+            "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+            hideComposer ? "pt-4" : "pt-[48px]",
           )}
         >
-          <div
-            className={cn(
-              "flex justify-center",
-              hideComposer && "pointer-events-auto",
-            )}
-          >
-            <ThreadScrollToBottom />
-          </div>
-        </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
-      {!hideComposer && (
-        <AuiIf condition={({ thread }) => !thread.isEmpty}>
-          <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-2 z-20">
+          {!hideWelcome && (
+            <AuiIf condition={({ thread }) => thread.isEmpty && !thread.isLoading}>
+              <ThreadWelcome hideComposer={hideComposer} />
+            </AuiIf>
+          )}
+
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage,
+              EditComposer,
+              AssistantMessage,
+            }}
+          />
+
+          {/* Bottom slack so the last message has breathing room above the
+            sticky scroll-to-bottom button (and the floating composer in
+            single mode). Without this, content would butt against the
+            sticky footer and feel cramped. */}
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
             <div
-              aria-hidden
-              className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
+              className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
+              aria-hidden={true}
             />
-            <div className="relative px-5 pb-2">
-              <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-                <ComposerAnimated />
+          </AuiIf>
+
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <ThreadPrimitive.ViewportFooter
+              className={cn(
+                "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
+                hideComposer ? "bottom-3" : "bottom-[140px]",
+              )}
+            >
+              <ThreadScrollToBottom />
+            </ThreadPrimitive.ViewportFooter>
+          </AuiIf>
+        </ThreadPrimitive.Viewport>
+
+        {!hideComposer && (
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <div className="aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px] z-20">
+              <div
+                aria-hidden={true}
+                className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
+              />
+              <div className="relative px-5 pb-2">
+                <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
+                  <ComposerAnimated disabled={isComposerAttachPending} />
+                </div>
+                <p className="composer-footer-note">
+                  LLMs can make mistakes. Double-check responses.
+                </p>
               </div>
-              <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-                LLM's can make mistakes. Double-check all responses.
-              </p>
             </div>
-          </div>
-        </AuiIf>
-      )}
+          </AuiIf>
+        )}
+      </IntentAwareScrollProvider>
     </ThreadPrimitive.Root>
   );
 };
 
 const ThreadScrollToBottom: FC = () => {
+  // State and action both come from our IntentAwareScrollProvider (scoped
+  // per Thread, so compare panes are independent). We deliberately
+  // avoid `ThreadPrimitive.ScrollToBottom` + `useThreadViewport` to
+  // stay off assistant-ui's internal autoscroll path — see the hook
+  // for why. The button stays mounted and toggles via CSS; unmounting
+  // would trip the hook's MutationObserver as a content change.
+  const isAtBottom = useIsThreadAtBottom();
+  const scrollToBottom = useScrollThreadToBottom();
   return (
-    <ThreadPrimitive.ScrollToBottom asChild={true}>
-      <TooltipIconButton
-        tooltip="Scroll to bottom"
-        variant="outline"
-        className="aui-thread-scroll-to-bottom absolute -top-6 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
-      >
-        <ArrowDownIcon />
-      </TooltipIconButton>
-    </ThreadPrimitive.ScrollToBottom>
-  );
-};
-
-const SUGGESTION_TOOLS: Record<string, Array<"thinking" | "search" | "code">> = {
-  "How do you fine-tune an audio model with Unsloth?": ["thinking", "search"],
-  "Create a live weather dashboard in HTML using no API key. Show me the code": ["thinking", "code", "search"],
-  "Solve the integral of x·sin(x), and verify it step by step": ["thinking", "code"],
-  "Draw an SVG of a cute sloth & show the code": ["thinking", "code", "search"],
-};
-
-const toolIconMap = {
-  thinking: { icon: LightbulbIcon, label: "Thinking" },
-  search: { icon: GlobeIcon, label: "Web search" },
-  code: { icon: TerminalIcon, label: "Code" },
-} as const;
-
-const SuggestionItem: FC = () => {
-  const aui = useAui();
-  const prompt = useAuiState(({ suggestion }) => suggestion.prompt);
-  const isDisabled = useAuiState(({ thread }) => thread.isDisabled);
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const tools = SUGGESTION_TOOLS[prompt] ?? [];
-
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        if (!isDisabled && !isRunning) {
-          const store = useChatRuntimeStore.getState();
-          if (store.supportsReasoning) {
-            store.setReasoningEnabled(tools.includes("thinking"));
-          }
-          if (store.supportsTools) {
-            store.setToolsEnabled(tools.includes("search"));
-            store.setCodeToolsEnabled(tools.includes("code"));
-          }
-          aui.thread().append(prompt);
-          aui.composer().setText("");
-          return;
-        }
-        aui.composer().setText(prompt);
-      }}
-      className="fade-in slide-in-from-bottom-1 animate-in relative cursor-pointer corner-squircle rounded-xl border bg-background px-4 py-2.5 pr-12 text-left text-sm text-foreground shadow-sm transition-colors duration-150 hover:bg-accent"
-    >
-      <SuggestionPrimitive.Title />
-      {tools.length > 0 && (
-        <div className="absolute bottom-2.5 right-3 flex items-center gap-1">
-          {tools.map((tool) => {
-            const { icon: Icon, label } = toolIconMap[tool];
-            return (
-              <Icon
-                key={tool}
-                className="size-3 text-muted-foreground/60"
-                aria-label={label}
-              />
-            );
-          })}
-        </div>
+    <TooltipIconButton
+      tooltip="Scroll to bottom"
+      variant="outline"
+      onClick={() => scrollToBottom("auto")}
+      className={cn(
+        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-4 bg-background hover:bg-accent dark:bg-background dark:hover:bg-accent",
+        isAtBottom && "invisible pointer-events-none",
       )}
-    </button>
+    >
+      <ArrowDownIcon strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
   );
 };
 
 const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
+  const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
+
+  useEffect(() => {
+    const hour = new Date().getHours();
+    if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
+    else if (hour >= 12 && hour < 17) setCurrentEmoji("sloth magnify final.png");
+    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
+    else setCurrentEmoji("unsloth-gem.png");
+  }, []);
+
+  const currentEmojiSrc =
+    currentEmoji === "unsloth-gem.png"
+      ? `/${currentEmoji}`
+      : `/Sloth emojis/${currentEmoji}`;
+
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img
-              src="/Sloth emojis/sloth pc square.png"
+              src={currentEmojiSrc}
               alt="Sloth mascot"
               className="size-20"
             />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-bold text-2xl tracking-[-0.02em] duration-200">
+            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
               Chat with your model
             </h1>
-            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in text-muted-foreground text-sm delay-75 duration-200">
+            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
               Run GGUFs, safetensors, vision and audio models
             </p>
           </div>
-          <GeneratingSpinner />
           {!hideComposer && <ComposerAnimated />}
         </div>
       </div>
@@ -250,30 +259,12 @@ const ThreadWelcome: FC<{ hideComposer?: boolean }> = ({ hideComposer }) => {
   );
 };
 
-const GeneratingSpinner: FC = () => {
-  const status = useChatRuntimeStore((s) => s.generatingStatus);
-  if (!status) return null;
-  return (
-    <div className="mx-auto flex w-full max-w-(--thread-max-width) items-center justify-center py-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <LoaderIcon className="size-3.5 animate-spin" />
-        <span>Generating</span>
-      </div>
-    </div>
-  );
-};
-
-const ComposerAnimated: FC = () => {
+const ComposerAnimated: FC<{ disabled?: boolean }> = ({ disabled }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
-      <motion.div
-        layout={true}
-        layoutId="composer"
-        transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
-        className="relative z-10 w-full"
-      >
-        <Composer />
-      </motion.div>
+      <div className="relative z-10 w-full">
+        <Composer disabled={disabled} />
+      </div>
     </div>
   );
 };
@@ -281,7 +272,9 @@ const ComposerAnimated: FC = () => {
 const PendingAudioChip: FC = () => {
   const audioName = useChatRuntimeStore((s) => s.pendingAudioName);
   const clearPendingAudio = useChatRuntimeStore((s) => s.clearPendingAudio);
-  if (!audioName) return null;
+  if (!audioName) {
+    return null;
+  }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
       <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
@@ -300,26 +293,208 @@ const PendingAudioChip: FC = () => {
   );
 };
 
-const Composer: FC = () => {
+const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
+  const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const composerText = useAuiState(({ composer }) => composer.text);
+  const hasAttachments = useAuiState(
+    ({ composer }) => composer.attachments.length > 0,
+  );
+  const hasPendingAttachments = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) => attachment.status.type === "running",
+    ),
+  );
+  const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
+  const hasSendableContent =
+    composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+
+  const handleSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      if (
+        disabled ||
+        !hasSendableContent ||
+        isComposingRef.current ||
+        hasPendingAttachments
+      ) {
+        event.preventDefault();
+      }
+    },
+    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef],
+  );
+
+  const composerContent = (
+    <>
+      <ComposerAttachments />
+      <PendingAudioChip />
+      <ToolStatusDisplay />
+      <ComposerPrimitive.Input
+        placeholder="Send a message..."
+        className="aui-composer-input composer-input"
+        minRows={1}
+        maxRows={12}
+        autoFocus={!disabled}
+        disabled={disabled}
+        aria-label="Message input"
+        // dir="auto": browser picks LTR/RTL from the first strong char;
+        // no effect on Latin / CJK / Devanagari.
+        dir="auto"
+        {...inputProps}
+      />
+      <ComposerAction
+        disabled={
+          disabled || !hasSendableContent || isComposing || hasPendingAttachments
+        }
+        blockSend={() =>
+          !hasSendableContent || isComposingRef.current || hasPendingAttachments
+        }
+      />
+    </>
+  );
+
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface flex w-full flex-col rounded-3xl bg-background px-1 pt-2 outline-none transition-shadow data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
-        <ComposerAttachments />
-        <PendingAudioChip />
-        <ToolStatusDisplay />
-        <ComposerPrimitive.Input
-          placeholder="Send a message..."
-          className="aui-composer-input mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
-          minRows={1}
-          maxRows={6}
-          autoFocus={true}
-          aria-label="Message input"
-        />
-        <ComposerAction />
-      </ComposerPrimitive.AttachmentDropzone>
+    <ComposerPrimitive.Root
+      className="aui-composer-root relative flex w-full flex-col"
+      aria-disabled={disabled}
+      onSubmit={handleSubmit}
+    >
+      {isTauri ? (
+        // Phase 1 native model drops own Tauri local-path drops. Restore browser
+        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        <div className="aui-composer-attachment-dropzone chat-composer-surface">
+          {composerContent}
+        </div>
+      ) : (
+        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+          {composerContent}
+        </ComposerPrimitive.AttachmentDropzone>
+      )}
     </ComposerPrimitive.Root>
   );
 };
+
+function isNativeComposing(event: Event) {
+  return "isComposing" in event && (event as InputEvent).isComposing === true;
+}
+
+// Fallback timeout for stuck IME composition. When Chrome on Windows talks
+// to a WSL-hosted Studio (issue #5546), `compositionend` never fires after
+// the candidate is committed, so `composingRef` stays true and Send stays
+// disabled. Every compositionupdate / non-composing input resets the timer;
+// only a true gap-after-commit lets it fire. 2500ms is well above a normal
+// candidate-window pause but short enough to recover before the user
+// notices the Send button is stuck.
+const IME_STUCK_TIMEOUT_MS = 2500;
+
+function useImeComposerInputHandlers() {
+  const aui = useAui();
+  const composingRef = useRef(false);
+  const [isComposing, setIsComposing] = useState(false);
+  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearStuckTimer = useCallback(() => {
+    if (stuckTimerRef.current) {
+      clearTimeout(stuckTimerRef.current);
+      stuckTimerRef.current = null;
+    }
+  }, []);
+
+  const setCompositionState = useCallback(
+    (next: boolean) => {
+      composingRef.current = next;
+      setIsComposing(next);
+      clearStuckTimer();
+      if (next) {
+        stuckTimerRef.current = setTimeout(() => {
+          stuckTimerRef.current = null;
+          composingRef.current = false;
+          setIsComposing(false);
+        }, IME_STUCK_TIMEOUT_MS);
+      }
+    },
+    [clearStuckTimer],
+  );
+
+  const refreshStuckTimer = useCallback(() => {
+    if (!composingRef.current) {
+      return;
+    }
+    clearStuckTimer();
+    stuckTimerRef.current = setTimeout(() => {
+      stuckTimerRef.current = null;
+      composingRef.current = false;
+      setIsComposing(false);
+    }, IME_STUCK_TIMEOUT_MS);
+  }, [clearStuckTimer]);
+
+  useEffect(() => clearStuckTimer, [clearStuckTimer]);
+
+  const setComposerText = useCallback(
+    (value: string) => {
+      const composer = aui.composer();
+      if (!composer.getState().isEditing) {
+        return;
+      }
+      flushResourcesSync(() => {
+        composer.setText(value);
+      });
+    },
+    [aui],
+  );
+
+  const onCompositionStart = useCallback(() => {
+    setCompositionState(true);
+  }, [setCompositionState]);
+
+  const onCompositionUpdate = useCallback(() => {
+    refreshStuckTimer();
+  }, [refreshStuckTimer]);
+
+  const onCompositionEnd = useCallback(
+    (e: CompositionEvent<HTMLTextAreaElement>) => {
+      setCompositionState(false);
+      setComposerText(e.currentTarget.value);
+    },
+    [setComposerText, setCompositionState],
+  );
+
+  const onChange = useCallback(
+    (e: ChangeEvent<HTMLTextAreaElement>) => {
+      setCompositionState(isNativeComposing(e.nativeEvent));
+      setComposerText(e.target.value);
+    },
+    [setComposerText, setCompositionState],
+  );
+
+  // If the watchdog cleared the composing flags during a long candidate-window
+  // pause, a subsequent IME keypress (browser-side isComposing=true / IME
+  // keyCode 229) would otherwise reach handleSubmit with composingRef=false
+  // and submit the preedit text. Re-arm composingRef synchronously from the
+  // native event so the form-submit gate keeps blocking until compositionend.
+  // Re-arm the watchdog at the same time — otherwise the WSL+Chrome path
+  // this PR targets (no compositionend, no follow-up input event) would
+  // leave composingRef pinned true indefinitely and Send blocked again.
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        composingRef.current = true;
+        refreshStuckTimer();
+      }
+    },
+    [refreshStuckTimer],
+  );
+
+  return {
+    inputProps: {
+      onCompositionStart,
+      onCompositionUpdate,
+      onCompositionEnd,
+      onChange,
+      onKeyDown,
+    },
+    isComposing,
+    isComposingRef: composingRef,
+  };
+}
 
 const ComposerAudioUpload: FC = () => {
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -331,7 +506,9 @@ const ComposerAudioUpload: FC = () => {
 
   const handleAudioFile = useCallback(
     async (file: File) => {
-      if (file.size > MAX_AUDIO_SIZE) return;
+      if (file.size > MAX_AUDIO_SIZE) {
+        return;
+      }
       try {
         const base64 = await fileToBase64(file);
         setPendingAudio(base64, file.name);
@@ -342,7 +519,9 @@ const ComposerAudioUpload: FC = () => {
     [setPendingAudio],
   );
 
-  if (!activeModel?.hasAudioInput) return null;
+  if (!activeModel?.hasAudioInput) {
+    return null;
+  }
 
   return (
     <>
@@ -353,7 +532,9 @@ const ComposerAudioUpload: FC = () => {
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) handleAudioFile(file);
+          if (file) {
+            handleAudioFile(file);
+          }
           e.target.value = "";
         }}
       />
@@ -372,46 +553,187 @@ const ComposerAudioUpload: FC = () => {
   );
 };
 
-/** Qwen3/3.5 recommended params differ between thinking on/off. */
-function applyQwenThinkingParams(thinkingOn: boolean): void {
-  const store = useChatRuntimeStore.getState();
-  const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
-  if (!checkpoint.includes("qwen3")) return;
-  const params = thinkingOn
-    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-  store.setParams({ ...store.params, ...params });
-}
 
 const ReasoningToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
+  const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-  const disabled = !modelLoaded || !supportsReasoning;
+  const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
+  const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
+  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
+  const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
+  const lastOpenRouterChosenModel = useChatRuntimeStore(
+    (s) => s.lastOpenRouterChosenModel,
+  );
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const effectiveExternalModelId =
+    selectedExternalProvider?.providerType === "openrouter" &&
+    externalSelection?.modelId === "openrouter/free" &&
+    lastOpenRouterChosenModel
+      ? lastOpenRouterChosenModel
+      : externalSelection?.modelId;
+  const externalReasoningCaps =
+    externalSelection != null
+      ? getExternalReasoningCapabilities(
+          selectedExternalProvider?.providerType,
+          effectiveExternalModelId,
+          {
+            isReasoningProvider:
+              selectedExternalProvider?.isReasoningModel === true,
+          },
+        )
+      : null;
+  const effectiveReasoningStyle =
+    externalReasoningCaps?.reasoningStyle ?? reasoningStyle;
+  const effectiveReasoningAlwaysOn =
+    externalReasoningCaps?.reasoningAlwaysOn ?? reasoningAlwaysOn;
+  const effectiveSupportsReasoningOff =
+    externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
+  const effectiveReasoningEffortLevels =
+    externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
+  const effectiveSupportsReasoning =
+    externalReasoningCaps?.supportsReasoning ?? supportsReasoning;
+  const reasoningLockedOn =
+    effectiveSupportsReasoning &&
+    (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
+  const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  const effectiveReasoningVisualEnabled =
+    effectiveReasoningEnabled && reasoningEffort !== "none";
+  const disabled = !(modelLoaded && effectiveSupportsReasoning);
+  const formatEffortLabel = (level: typeof reasoningEffort): string => {
+    if (level !== "xhigh") return level.charAt(0).toUpperCase() + level.slice(1);
+    const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
+    if (
+      normalized.startsWith("claude-opus-4-6") ||
+      normalized.startsWith("claude-sonnet-4-6")
+    ) {
+      return "Max";
+    }
+    return "Extra High";
+  };
+  const effortLabel = formatEffortLabel(reasoningEffort);
+
+  if (effectiveReasoningStyle === "reasoning_effort") {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            disabled={disabled}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+              disabled
+                ? "cursor-not-allowed opacity-40"
+                : effectiveReasoningVisualEnabled
+                  ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                  : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+            )}
+            aria-label={thinkEffortAriaLabel({
+              modelLoaded,
+              reasoningDisabled: disabled,
+              reasoningEffort,
+            })}
+          >
+            {effectiveReasoningVisualEnabled ? (
+              <LightbulbIcon className="size-3.5" />
+            ) : (
+              <LightbulbOffIcon className="size-3.5" />
+            )}
+            <span>
+              Think: {effectiveReasoningVisualEnabled ? effortLabel : "None"}
+            </span>
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {effectiveSupportsReasoningOff && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setReasoningEnabled(false);
+                applyQwenThinkingParams(false);
+              }}
+            >
+              None
+              {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
+            </DropdownMenuItem>
+          )}
+          {effectiveReasoningEffortLevels
+            .filter((level) => level !== "none")
+            .map((level) => (
+            <DropdownMenuItem
+              key={level}
+              onSelect={() => {
+                setReasoningEffort(level);
+                setReasoningEnabled(true);
+                applyQwenThinkingParams(true);
+                // Kimi's $web_search builtin forbids thinking, so
+                // enabling thinking flips the Search pill off.
+                if (isKimiExternal && toolsEnabled) {
+                  setToolsEnabled(false);
+                }
+              }}
+            >
+              {formatEffortLabel(level)}
+              {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
 
   return (
     <button
       type="button"
-      disabled={disabled}
+      disabled={disabled || reasoningLockedOn}
+      aria-disabled={disabled || reasoningLockedOn}
+      title={
+        reasoningLockedOn
+          ? "This model requires reasoning to stay on."
+          : undefined
+      }
       onClick={() => {
+        if (reasoningLockedOn) return;
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
+        // Mutual exclusion with the Search pill on Kimi — see the
+        // dropdown branch above and shared-composer for the same rule.
+        if (isKimiExternal && next && toolsEnabled) {
+          setToolsEnabled(false);
+        }
       }}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : reasoningEnabled
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-      )}
-      aria-label={reasoningEnabled ? "Disable thinking" : "Enable thinking"}
+      className="composer-pill-btn"
+      data-active={
+        reasoningLockedOn || (effectiveReasoningEnabled && !disabled)
+          ? "true"
+          : "false"
+      }
+      aria-label={thinkToggleAriaLabel({
+        reasoningLockedOn,
+        modelLoaded,
+        reasoningDisabled: disabled,
+        effectiveReasoningEnabled,
+      })}
     >
-      {reasoningEnabled && !disabled ? (
+      {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
         <LightbulbIcon className="size-3.5" />
       ) : (
         <LightbulbOffIcon className="size-3.5" />
@@ -421,28 +743,92 @@ const ReasoningToggle: FC = () => {
   );
 };
 
+const PreserveThinkingToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const supportsPreserveThinking = useChatRuntimeStore(
+    (s) => s.supportsPreserveThinking,
+  );
+  const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
+  const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
+  if (!supportsPreserveThinking) return null;
+  const disabled = !modelLoaded;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setPreserveThinking(!preserveThinking)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+        disabled
+          ? "cursor-not-allowed opacity-40"
+          : preserveThinking
+            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+      )}
+      aria-label={
+        preserveThinking ? "Disable preserve think" : "Enable preserve think"
+      }
+    >
+      {preserveThinking && !disabled ? (
+        <LightbulbIcon className="size-3.5" />
+      ) : (
+        <LightbulbOffIcon className="size-3.5" />
+      )}
+      <span>Preserve Think</span>
+    </button>
+  );
+};
+
 const WebSearchToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers (OpenAI today) expose a server-side web_search tool
+  // even when the local tool runtime is unavailable — gate the Search pill
+  // on either source so it lights up on external models too. Mirror of
+  // shared-composer's searchDisabled.
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const disabled = !modelLoaded || !supportsTools;
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => setToolsEnabled(!toolsEnabled)}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : toolsEnabled
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-      )}
+      onClick={() => {
+        const next = !toolsEnabled;
+        setToolsEnabled(next);
+        // Kimi's $web_search builtin requires thinking=disabled (see
+        // https://platform.kimi.ai/docs/guide/use-web-search). Keep
+        // the two pills mutually exclusive so the visible state always
+        // matches what the backend ends up sending.
+        if (isKimiExternal) {
+          setReasoningEnabled(!next);
+          applyQwenThinkingParams(!next);
+        }
+      }}
+      className="composer-pill-btn"
+      data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <GlobeIcon className="size-3.5" />
@@ -456,26 +842,29 @@ const CodeToolsToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
-  const setCodeToolsEnabled = useChatRuntimeStore(
-    (s) => s.setCodeToolsEnabled,
+  // External providers have no local tool runtime, but Anthropic's
+  // Claude 4.x dispatches code_execution_20250825 server-side. The
+  // chat-page resolver stashes that capability in the runtime store
+  // (next to supportsBuiltinWebSearch). Mirror of shared-composer's
+  // codeDisabled so this pill lights up in active threads too.
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
   );
-  const disabled = !modelLoaded || !supportsTools;
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const disabled =
+    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : codeToolsEnabled
-            ? "bg-primary/10 text-primary hover:bg-primary/20"
-            : "bg-muted text-muted-foreground hover:bg-muted-foreground/15",
-      )}
-      aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+      className="composer-pill-btn"
+      data-active={codeToolsEnabled && !disabled ? "true" : "false"}
+      aria-label={
+        codeToolsEnabled ? "Disable code execution" : "Enable code execution"
+      }
     >
       <CodeToggleIcon className="size-3.5" />
       <span>Code</span>
@@ -483,21 +872,39 @@ const CodeToolsToggle: FC = () => {
   );
 };
 
-const CodeToggleIcon: FC<{ className?: string }> = ({ className }) => {
+const ImagesToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  // OpenAI cloud Responses-API models advertise image_generation as a
+  // server-side tool; no local runtime fallback exists. Mirror of
+  // shared-composer's imageDisabled / showImagePill so the in-thread
+  // composer surfaces the same control as the empty-state composer.
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  if (!supportsBuiltinImageGeneration) {
+    return null;
+  }
+  const disabled = !modelLoaded;
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+      className="composer-pill-btn"
+      data-active={imageToolsEnabled && !disabled ? "true" : "false"}
+      aria-label={
+        imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+      }
     >
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
+      <ImageIcon className="size-3.5" />
+      <span>Images</span>
+    </button>
   );
 };
 
@@ -506,6 +913,11 @@ const ToolStatusDisplay: FC = () => {
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const [elapsed, setElapsed] = useState(0);
   const [visible, setVisible] = useState(false);
+  const visibleRef = useRef(false);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
 
   useEffect(() => {
     if (!toolStatus) {
@@ -523,7 +935,7 @@ const ToolStatusDisplay: FC = () => {
     // tools show immediately so the badge does not flicker. Fast
     // tool calls that all complete under 300ms never show the badge.
     let showTimer: ReturnType<typeof setTimeout> | undefined;
-    if (!visible) {
+    if (!visibleRef.current) {
       showTimer = setTimeout(() => setVisible(true), 300);
     }
 
@@ -532,11 +944,15 @@ const ToolStatusDisplay: FC = () => {
     }, 1000);
     return () => {
       clearInterval(interval);
-      if (showTimer) clearTimeout(showTimer);
+      if (showTimer) {
+        clearTimeout(showTimer);
+      }
     };
   }, [toolStatus, isThreadRunning]);
 
-  if (!toolStatus || !visible) return null;
+  if (!(toolStatus && visible)) {
+    return null;
+  }
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
@@ -550,21 +966,27 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{ disabled?: boolean; blockSend?: () => boolean }> = ({
+  disabled,
+  blockSend,
+}) => {
   return (
-    <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
-      <div className="flex items-center gap-1">
+    <div className="aui-composer-action-wrapper composer-action-wrapper">
+      <div className="flex items-center gap-0.5">
         <ComposerAddAttachment />
         <ComposerAudioUpload />
         <ReasoningToggle />
+        <PreserveThinkingToggle />
         <WebSearchToggle />
         <CodeToolsToggle />
+        <ImagesToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
           <ComposerPrimitive.Dictate asChild={true}>
             <TooltipIconButton
               tooltip="Dictate"
+              aria-label="Dictate"
               variant="ghost"
               className="size-8 rounded-full text-muted-foreground"
             >
@@ -576,6 +998,7 @@ const ComposerAction: FC = () => {
           <ComposerPrimitive.StopDictation asChild={true}>
             <TooltipIconButton
               tooltip="Stop dictation"
+              aria-label="Stop dictation"
               variant="ghost"
               className="size-8 rounded-full text-destructive"
             >
@@ -591,6 +1014,12 @@ const ComposerAction: FC = () => {
               type="submit"
               variant="default"
               size="icon"
+              disabled={disabled}
+              onClick={(event) => {
+                if (blockSend?.()) {
+                  event.preventDefault();
+                }
+              }}
               className="aui-composer-send size-8 rounded-full"
               aria-label="Send message"
             >
@@ -631,18 +1060,39 @@ const GeneratingIndicator: FC = () => {
     ({ message }) =>
       message.content.length === 0 && message.status?.type === "running",
   );
-  if (!show) return null;
+  if (!show) {
+    return null;
+  }
   return <span className="text-sm text-muted-foreground">Generating...</span>;
+};
+
+// Placeholder when stop fires before any visible content (e.g. mid-think).
+const CancelledIndicator: FC = () => {
+  const show = useAuiState(
+    ({ message }) =>
+      message.content.length === 0 &&
+      message.status?.type === "incomplete" &&
+      message.status?.reason === "cancelled",
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
+      Cancelled.
+    </span>
+  );
 };
 
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) animate-in py-0.5 text-[15.5px] duration-150"
+      className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
-      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-foreground leading-relaxed">
+      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
+        <CancelledIndicator />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
@@ -655,6 +1105,8 @@ const AssistantMessage: FC = () => {
                 web_search: WebSearchToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
+                code_execution: CodeExecutionToolUI,
+                image_generation: ImageGenerationToolUI,
               },
               Fallback: ToolFallback,
             },
@@ -664,8 +1116,8 @@ const AssistantMessage: FC = () => {
         <MessageError />
       </div>
 
-      <div className="aui-assistant-message-footer mt-1 flex">
-        <BranchPicker />
+      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+        <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
@@ -702,9 +1154,13 @@ const DeleteMessageButton: FC = () => {
       tooltip="Delete message"
       disabled={isRunning}
       onClick={handleDelete}
-      className="text-muted-foreground hover:text-destructive"
+      className="text-chat-icon-fg hover:text-destructive"
     >
-      <Trash2Icon className="size-4" />
+      <HugeiconsIcon
+        icon={Delete02Icon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
     </TooltipIconButton>
   );
 };
@@ -714,11 +1170,13 @@ const CopyButton: FC = () => {
   const [copied, setCopied] = useState(false);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     const text = aui.message().getCopyText();
-    if (copyToClipboard(text)) {
+    if (await copyToClipboard(text)) {
       setCopied(true);
-      if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
       resetTimeoutRef.current = setTimeout(() => {
         setCopied(false);
         resetTimeoutRef.current = null;
@@ -728,7 +1186,11 @@ const CopyButton: FC = () => {
 
   return (
     <TooltipIconButton tooltip="Copy" onClick={handleCopy}>
-      {copied ? <CheckIcon /> : <CopyIcon />}
+      <HugeiconsIcon
+        icon={copied ? Tick02Icon : Copy01Icon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
     </TooltipIconButton>
   );
 };
@@ -737,47 +1199,50 @@ const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
-      autohide="always"
-      autohideFloat="single-branch"
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-floating:absolute"
+      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
+          <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <DeleteMessageButton />
-      <MessageTiming side="top" />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
           <TooltipIconButton
             tooltip="More"
             className="data-[state=open]:bg-accent"
           >
-            <MoreHorizontalIcon />
+            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
           </TooltipIconButton>
         </ActionBarMorePrimitive.Trigger>
         <ActionBarMorePrimitive.Content
           side="bottom"
           align="start"
+          onCloseAutoFocus={(e) => e.preventDefault()}
           className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <DownloadIcon className="size-4" />
+              <DownloadIcon strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
+      <MessageTiming side="top" className="h-8 px-2" />
     </ActionBarPrimitive.Root>
   );
 };
 
 const UserMessageAudio: FC = () => {
-  const audioName = useAuiState(({ message }) => sentAudioNames.get(message.id));
-  if (!audioName) return null;
+  const audioName = useAuiState(({ message }) =>
+    sentAudioNames.get(message.id),
+  );
+  if (!audioName) {
+    return null;
+  }
   return (
     <div className="col-start-2 flex justify-end">
       <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
@@ -791,22 +1256,21 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-0.5 text-[15.5px] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-2xl bg-muted px-4 py-2.5 text-foreground">
+        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
-        <div className="mt-1 flex min-h-6">
+        <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">
           <UserActionBar />
+          <BranchPicker className="aui-user-branch-picker ml-0.5" />
         </div>
       </div>
-
-      <BranchPicker className="aui-user-branch-picker -mr-1 justify-end" />
     </MessagePrimitive.Root>
   );
 };
@@ -815,12 +1279,12 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       autohide="always"
-      className="aui-user-action-bar-root -mr-1 flex gap-1 text-muted-foreground"
+      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
+          <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
       <DeleteMessageButton />
@@ -830,6 +1294,7 @@ const UserActionBar: FC = () => {
 
 const EditComposer: FC = () => {
   const aui = useAui();
+  const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
 
   useAuiEvent("thread.runEnd", () => {
@@ -844,18 +1309,26 @@ const EditComposer: FC = () => {
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
         <ComposerPrimitive.Input
-          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm outline-none"
+          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
+          // See main composer above for the dir="auto" rationale.
+          dir="auto"
+          {...inputProps}
         />
         <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
           <ComposerPrimitive.Cancel asChild={true}>
-            <Button variant="ghost" size="sm">
+            <Button type="button" variant="ghost" size="sm">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
           <Button
+            type="button"
             size="sm"
-            onClick={() => {
+            onClick={(event) => {
+              if (isComposingRef.current) {
+                event.preventDefault();
+                return;
+              }
               const newText = aui.composer().getState().text;
               const originalText = aui.message().getCopyText();
 
@@ -888,23 +1361,31 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch={true}
       className={cn(
-        "aui-branch-picker-root mr-2 -ml-2 inline-flex items-center text-muted-foreground text-xs",
+        "aui-branch-picker-root inline-flex items-center text-chat-icon-fg text-[13px]",
         className,
       )}
       {...rest}
     >
       <BranchPickerPrimitive.Previous asChild={true}>
-        <TooltipIconButton tooltip="Previous">
-          <ChevronLeftIcon />
-        </TooltipIconButton>
+        <button
+          type="button"
+          aria-label="Previous"
+          className="aui-branch-chevron-btn"
+        >
+          <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
+        </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-medium">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+      <span className="aui-branch-picker-state font-mono text-[13px] tabular-nums">
+        <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
-        <TooltipIconButton tooltip="Next">
-          <ChevronRightIcon />
-        </TooltipIconButton>
+        <button
+          type="button"
+          aria-label="Next"
+          className="aui-branch-chevron-btn"
+        >
+          <ChevronRightIcon strokeWidth={1.25} className="size-[36px]" />
+        </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
   );

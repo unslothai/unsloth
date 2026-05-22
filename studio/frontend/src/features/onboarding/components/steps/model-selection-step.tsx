@@ -366,6 +366,7 @@ export function ModelSelectionStep() {
                 <SelectItem value="qlora">QLoRA (4-bit)</SelectItem>
                 <SelectItem value="lora">LoRA (16-bit)</SelectItem>
                 <SelectItem value="full">Full Fine-tune</SelectItem>
+                <SelectItem value="cpt">Continued Pretraining</SelectItem>
               </SelectContent>
             </Select>
           </div>
