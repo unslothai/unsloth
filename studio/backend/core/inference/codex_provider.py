@@ -598,7 +598,9 @@ async def _run_codex_synthesis(
             except TypeError:
                 thread = await codex.thread_start()
             result = await thread.run(synthesis_prompt)
-        return _coerce_text(result) or getattr(result, "final_response", "") or str(result)
+        return (
+            _coerce_text(result) or getattr(result, "final_response", "") or str(result)
+        )
     except Exception as exc:
         logger.warning("codex_provider.synthesis_failed", error = str(exc))
         return ""
