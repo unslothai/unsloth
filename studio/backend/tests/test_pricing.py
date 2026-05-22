@@ -22,8 +22,8 @@ from core.inference.pricing import (
 )
 
 
-def _isclose(a, b, tol=1e-6):
-    return math.isclose(a, b, rel_tol=tol, abs_tol=tol)
+def _isclose(a, b, tol = 1e-6):
+    return math.isclose(a, b, rel_tol = tol, abs_tol = tol)
 
 
 # ── unknown model -> priced=False, totals zero, tokens still report ──
@@ -31,7 +31,8 @@ def _isclose(a, b, tol=1e-6):
 
 def test_unknown_model_priced_false():
     out = calculate_cost(
-        "anthropic", "made-up-model-9000",
+        "anthropic",
+        "made-up-model-9000",
         {"input_tokens": 100, "output_tokens": 50},
     )
     assert out["priced"] is False
@@ -45,7 +46,8 @@ def test_unknown_model_priced_false():
 
 def test_anthropic_opus_4_7_input_and_output_math():
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
     )
     assert _isclose(out["input_usd"], 5.0)
@@ -59,7 +61,8 @@ def test_anthropic_opus_4_7_input_and_output_math():
 def test_anthropic_cache_5m_and_read_use_correct_multipliers():
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -80,9 +83,11 @@ def test_anthropic_cache_5m_and_read_use_correct_multipliers():
 def test_anthropic_cache_1h_write_uses_2x_multiplier():
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {
-            "input_tokens": 0, "output_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "cache_creation_input_tokens": 1_000_000,
             "cache_read_input_tokens": 0,
             "cache_creation": {
@@ -99,9 +104,11 @@ def test_anthropic_cache_5m_default_when_no_breakdown():
     # the full cache_creation bucket as 5m (the upstream default pool).
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {
-            "input_tokens": 0, "output_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "cache_creation_input_tokens": 500_000,
         },
     )
@@ -114,9 +121,11 @@ def test_anthropic_cache_5m_default_when_no_breakdown():
 
 def test_anthropic_web_search_charged_per_thousand():
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {
-            "input_tokens": 0, "output_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "server_tool_use": {"web_search_requests": 250},
         },
     )
@@ -125,9 +134,11 @@ def test_anthropic_web_search_charged_per_thousand():
 
 def test_anthropic_code_exec_charged_per_hour():
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7",
+        "anthropic",
+        "claude-opus-4-7",
         {
-            "input_tokens": 0, "output_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "server_tool_use": {"code_execution_hours": 2.0},
         },
     )
@@ -138,7 +149,8 @@ def test_anthropic_dated_id_falls_back_to_canonical_prefix():
     # Hypothetical dated snapshot of claude-opus-4-7 should still
     # inherit the canonical-id pricing via the prefix-match fallback.
     out = calculate_cost(
-        "anthropic", "claude-opus-4-7-20260712",
+        "anthropic",
+        "claude-opus-4-7-20260712",
         {"input_tokens": 1_000_000, "output_tokens": 0},
     )
     assert out["priced"] is True
@@ -150,7 +162,8 @@ def test_anthropic_dated_id_falls_back_to_canonical_prefix():
 
 def test_openai_gpt55_input_output_math():
     out = calculate_cost(
-        "openai", "gpt-5.5",
+        "openai",
+        "gpt-5.5",
         {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
     )
     assert _isclose(out["input_usd"], 1.25)
@@ -164,7 +177,8 @@ def test_openai_cache_read_subtracted_from_input_at_discount():
     # bucket and re-bill them at 0.1x.
     base = OPENAI_PRICING["gpt-5.5"]["input_per_mtok"]
     out = calculate_cost(
-        "openai", "gpt-5.5",
+        "openai",
+        "gpt-5.5",
         {
             "input_tokens": 1_000_000,
             "output_tokens": 0,
@@ -178,7 +192,8 @@ def test_openai_cache_read_subtracted_from_input_at_discount():
 
 def test_openai_dated_snapshot_inherits_canonical_pricing():
     out = calculate_cost(
-        "openai", "gpt-5.5-2026-04-23",
+        "openai",
+        "gpt-5.5-2026-04-23",
         {"input_tokens": 1_000_000, "output_tokens": 0},
     )
     assert out["priced"] is True

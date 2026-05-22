@@ -36,33 +36,33 @@ from typing import Any, Optional
 #
 # `input_per_mtok` and `output_per_mtok` are USD per 1,000,000 tokens.
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
-    "claude-opus-4-7":             {"input_per_mtok": 5.0,  "output_per_mtok": 25.0},
-    "claude-opus-4-6":             {"input_per_mtok": 5.0,  "output_per_mtok": 25.0},
-    "claude-opus-4-5-20251101":    {"input_per_mtok": 5.0,  "output_per_mtok": 25.0},
-    "claude-opus-4-1-20250805":    {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
-    "claude-opus-4-20250514":      {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
-    "claude-sonnet-4-6":           {"input_per_mtok": 3.0,  "output_per_mtok": 15.0},
-    "claude-sonnet-4-5-20250929":  {"input_per_mtok": 3.0,  "output_per_mtok": 15.0},
-    "claude-sonnet-4-20250514":    {"input_per_mtok": 3.0,  "output_per_mtok": 15.0},
-    "claude-haiku-4-5-20251001":   {"input_per_mtok": 1.0,  "output_per_mtok": 5.0},
+    "claude-opus-4-7": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+    "claude-opus-4-6": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+    "claude-opus-4-5-20251101": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+    "claude-opus-4-1-20250805": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
+    "claude-opus-4-20250514": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
+    "claude-sonnet-4-6": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-sonnet-4-5-20250929": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-sonnet-4-20250514": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-haiku-4-5-20251001": {"input_per_mtok": 1.0, "output_per_mtok": 5.0},
 }
 
 OPENAI_PRICING: dict[str, dict[str, float]] = {
     # gpt-5 family -- approximate published prices as of May 2026.
     # Update from platform.openai.com/docs/pricing when a model lands.
-    "gpt-5.5":             {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
-    "gpt-5.5-pro":         {"input_per_mtok": 5.0,  "output_per_mtok": 40.0},
-    "gpt-5.4":             {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
-    "gpt-5.4-pro":         {"input_per_mtok": 5.0,  "output_per_mtok": 40.0},
-    "gpt-5.4-mini":        {"input_per_mtok": 0.25, "output_per_mtok": 2.0},
-    "gpt-5.4-nano":        {"input_per_mtok": 0.05, "output_per_mtok": 0.4},
-    "gpt-5.3-codex":       {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
+    "gpt-5.5": {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
+    "gpt-5.5-pro": {"input_per_mtok": 5.0, "output_per_mtok": 40.0},
+    "gpt-5.4": {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
+    "gpt-5.4-pro": {"input_per_mtok": 5.0, "output_per_mtok": 40.0},
+    "gpt-5.4-mini": {"input_per_mtok": 0.25, "output_per_mtok": 2.0},
+    "gpt-5.4-nano": {"input_per_mtok": 0.05, "output_per_mtok": 0.4},
+    "gpt-5.3-codex": {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
     "gpt-5.3-chat-latest": {"input_per_mtok": 1.25, "output_per_mtok": 10.0},
-    "o3":                  {"input_per_mtok": 2.0,  "output_per_mtok": 8.0},
-    "o3-pro":              {"input_per_mtok": 20.0, "output_per_mtok": 80.0},
-    "o3-mini":             {"input_per_mtok": 1.1,  "output_per_mtok": 4.4},
-    "o3-deep-research":    {"input_per_mtok": 10.0, "output_per_mtok": 40.0},
-    "o4-mini":             {"input_per_mtok": 0.5,  "output_per_mtok": 2.0},
+    "o3": {"input_per_mtok": 2.0, "output_per_mtok": 8.0},
+    "o3-pro": {"input_per_mtok": 20.0, "output_per_mtok": 80.0},
+    "o3-mini": {"input_per_mtok": 1.1, "output_per_mtok": 4.4},
+    "o3-deep-research": {"input_per_mtok": 10.0, "output_per_mtok": 40.0},
+    "o4-mini": {"input_per_mtok": 0.5, "output_per_mtok": 2.0},
 }
 
 # Shared multipliers (same across every Anthropic model).
@@ -85,8 +85,10 @@ ANTHROPIC_CODE_EXEC_USD_PER_HOUR = 0.05
 
 def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
     table = (
-        ANTHROPIC_PRICING if provider == "anthropic"
-        else OPENAI_PRICING if provider == "openai"
+        ANTHROPIC_PRICING
+        if provider == "anthropic"
+        else OPENAI_PRICING
+        if provider == "openai"
         else None
     )
     if table is None:
@@ -175,9 +177,10 @@ def calculate_cost(
             # Fall back: assume default 5m pool when no breakdown is given.
             cc_5m = cache_creation
         out["cache_write_usd"] = (
-            (cc_5m / 1_000_000.0) * base * ANTHROPIC_CACHE_5M_WRITE_MULT
-            + (cc_1h / 1_000_000.0) * base * ANTHROPIC_CACHE_1H_WRITE_MULT
-        )
+            cc_5m / 1_000_000.0
+        ) * base * ANTHROPIC_CACHE_5M_WRITE_MULT + (
+            cc_1h / 1_000_000.0
+        ) * base * ANTHROPIC_CACHE_1H_WRITE_MULT
         out["cache_read_usd"] = (
             (cache_read / 1_000_000.0) * base * ANTHROPIC_CACHE_READ_MULT
         )
