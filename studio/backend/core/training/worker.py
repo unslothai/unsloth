@@ -2222,6 +2222,71 @@ def run_training_process(
                     ActivationCapture,
                     ActivationCaptureCallback,
                 )
+                from storage.studio_db import (
+                    upsert_activation_metadata,
+                    insert_activation_record,
+                )
+
+                _job_id = config.get("job_id")
+
+                class _StudioActivationCapture(ActivationCapture):
+                    """Extends ActivationCapture to also write to the Studio DB."""
+
+                    def __init__(self, model, cfg, job_id):
+                        super().__init__(model, cfg)
+                        self._studio_job_id = job_id
+                        if job_id:
+                            try:
+                                _meta = {
+                                    "model_name": getattr(self, "_model_name", None),
+                                    "num_layers": len(getattr(self, "_layers", [])),
+                                    "hidden_size": getattr(self, "_hidden_size", None),
+                                    "intermediate_size": getattr(
+                                        self, "_intermediate_size", None
+                                    ),
+                                    "captured_channels": getattr(
+                                        self, "_sampled_channels", []
+                                    ),
+                                    "capture_interval": cfg.capture_interval,
+                                    "max_channels": cfg.max_channels,
+                                    "capture_mlp_out": cfg.capture_mlp_out,
+                                    "capture_gradients": cfg.capture_gradients,
+                                    "capture_lora_norms": cfg.capture_lora_norms,
+                                    "lora_targets": [],
+                                }
+                                upsert_activation_metadata(job_id, _meta)
+                            except Exception as _e:
+                                logger.warning(
+                                    "DB activation metadata write failed: %s", _e
+                                )
+
+                    def flush(self):
+                        # Snapshot buffer BEFORE super().flush() clears it
+                        has_data = bool(self._buffer or self._grad_buffer)
+                        if has_data:
+                            _step = self._step
+                            _loss = self._loss
+                            _layers = {str(k): v for k, v in self._buffer.items()}
+                            _grad_norms = (
+                                {str(k): v for k, v in self._grad_buffer.items()}
+                                if self._grad_buffer
+                                else None
+                            )
+                        super().flush()
+                        if has_data and self._studio_job_id:
+                            try:
+                                insert_activation_record(
+                                    self._studio_job_id,
+                                    _step,
+                                    _loss,
+                                    _layers,
+                                    _grad_norms,
+                                    None,
+                                )
+                            except Exception as _e:
+                                logger.warning(
+                                    "DB activation record write failed: %s", _e
+                                )
 
                 # Target ~30 replay frames; fall back to every step when total unknown
                 _cfg_max_steps = config.get("max_steps", 0) or 0
@@ -2232,7 +2297,9 @@ def run_training_process(
                     output_dir = os.path.join(output_dir, "activation_logs"),
                     capture_interval = _act_interval,
                 )
-                _act_capture = ActivationCapture(trainer.model, _act_config)
+                _act_capture = _StudioActivationCapture(
+                    trainer.model, _act_config, _job_id
+                )
                 _act_cb = ActivationCaptureCallback(_act_capture)
                 trainer.extra_hf_callbacks = [_act_cb]
                 logger.info("ActivationCaptureCallback registered for %s\n", output_dir)

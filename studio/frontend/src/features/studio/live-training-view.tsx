@@ -8,13 +8,90 @@ import {
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { ReactElement } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
-import { NeuronHeatmapSection } from "./sections/neuron-heatmap-section";
-import { DeadNeuronPanel } from "./sections/dead-neuron-panel";
+import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-section";
+import { NeuronHealthTrend } from "./sections/neuron-health-trend";
+import { DiagnosticsPanel } from "./sections/diagnostics-panel";
 import { ProgressSection } from "./sections/progress-section";
 import { TrainingStartOverlay } from "./training-start-overlay";
+import { useActivationData } from "@/features/training/hooks/use-activation-data";
+
+function InterpretabilitySection({
+  isTraining,
+  jobId,
+}: {
+  isTraining: boolean;
+  jobId: string | null;
+}): ReactElement {
+  const { metadata, records, loading } = useActivationData({ isTraining, jobId });
+  const [stepIndex, setStepIndex] = useState<number>(0);
+
+  // Keep step index at the latest record after training finishes
+  useEffect(() => {
+    if (!isTraining) setStepIndex(Math.max(0, records.length - 1));
+  }, [records.length, isTraining]);
+
+  const handleStepChange = useCallback(
+    (idx: number) => {
+      if (idx === -1) {
+        setStepIndex((prev) => Math.min(prev + 1, records.length - 1));
+      } else {
+        setStepIndex(Math.max(0, Math.min(idx, records.length - 1)));
+      }
+    },
+    [records.length],
+  );
+
+  // During training always show the latest; after training the slider drives it
+  const displayIndex = isTraining ? Math.max(0, records.length - 1) : stepIndex;
+  const record = records[displayIndex] ?? null;
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Heatmap — full width, horizontal */}
+      <NeuronHeatmapSection
+        isTraining={isTraining}
+        records={records}
+        metadata={metadata}
+        loading={loading}
+        record={record}
+        stepIndex={displayIndex}
+        onStepChange={handleStepChange}
+      />
+
+      {/* Trend chart — full width, compact */}
+      <div className="h-[280px]">
+        <NeuronHealthTrend
+          records={records}
+          stepIndex={displayIndex}
+          onStepChange={handleStepChange}
+        />
+      </div>
+
+      {/* Replay controls */}
+      {!isTraining && records.length > 1 && (
+        <ReplayControls
+          stepIndex={stepIndex}
+          totalSteps={records.length}
+          onStepChange={handleStepChange}
+          currentStep={record?.step ?? 0}
+        />
+      )}
+
+      {/* Diagnostics */}
+      {records.length > 0 && (
+        <DiagnosticsPanel
+          records={records}
+          stepIndex={displayIndex}
+          metadata={metadata}
+          onStepChange={handleStepChange}
+        />
+      )}
+    </div>
+  );
+}
 
 export function LiveTrainingView(): ReactElement {
   const runtime = useTrainingRuntimeStore(
@@ -50,6 +127,7 @@ export function LiveTrainingView(): ReactElement {
       selectedModel: state.selectedModel,
       trainingMethod: state.trainingMethod,
       enableActivationCapture: state.enableActivationCapture,
+      dataset: state.dataset,
     })),
   );
 
@@ -71,6 +149,7 @@ export function LiveTrainingView(): ReactElement {
     error: runtime.error,
     isTrainingRunning: runtime.isTrainingRunning,
     modelName: config.selectedModel ?? "",
+    datasetName: config.dataset ?? null,
     trainingMethod: config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
@@ -123,20 +202,10 @@ export function LiveTrainingView(): ReactElement {
 
           <TabsContent value="interpretability">
             {config.enableActivationCapture ? (
-              <div className="flex gap-4 items-stretch min-h-[400px]">
-                <div className="w-[340px] shrink-0">
-                  <NeuronHeatmapSection
-                    isTraining={viewData.isTrainingRunning}
-                    jobId={runtime.jobId}
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <DeadNeuronPanel
-                    isTraining={viewData.isTrainingRunning}
-                    jobId={runtime.jobId}
-                  />
-                </div>
-              </div>
+              <InterpretabilitySection
+                isTraining={viewData.isTrainingRunning}
+                jobId={runtime.jobId}
+              />
             ) : (
               <div className="flex flex-col items-center justify-center min-h-[300px] gap-3 text-center text-muted-foreground">
                 <p className="text-sm">Neuron activation capture is disabled.</p>

@@ -30,7 +30,11 @@ try:
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
+    from storage.studio_db import (
+        get_resumable_run_by_output_dir,
+        get_activation_metadata,
+        get_activation_records,
+    )
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -44,7 +48,11 @@ except ImportError:
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
+    from storage.studio_db import (
+        get_resumable_run_by_output_dir,
+        get_activation_metadata,
+        get_activation_records,
+    )
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -899,6 +907,7 @@ async def stream_training_progress(
 
 @router.get("/activations")
 def get_activations(
+    job_id: Optional[str] = None,
     output_dir: Optional[str] = None,
     since_step: Optional[int] = None,
     current_subject: str = Depends(get_current_subject),
@@ -906,13 +915,33 @@ def get_activations(
     """
     Return activation log data for the current (or specified) training run.
 
-    Reads ``activation_logs/metadata.json`` and ``activation_logs/activation_log.jsonl``
+    Tries the Studio DB first (keyed by job_id), then falls back to reading
+    ``activation_logs/metadata.json`` and ``activation_logs/activation_log.jsonl``
     from the training output directory.  Returns ``{"metadata": {...}, "records": [...]}``
     with an empty records list when no data is available yet.
     """
     import json as _json_mod
 
-    # Resolve the output directory to search for activation logs
+    # ── DB-first lookup ───────────────────────────────────────────────────────
+    # Resolve job_id from query param or from the active training backend.
+    _job_id = job_id
+    if not _job_id:
+        try:
+            backend = get_training_backend()
+            _job_id = getattr(backend, "current_job_id", None)
+        except Exception:
+            pass
+
+    if _job_id:
+        try:
+            db_metadata = get_activation_metadata(_job_id)
+            if db_metadata is not None:
+                db_records = get_activation_records(_job_id, since_step)
+                return {"metadata": db_metadata, "records": db_records}
+        except Exception as exc:
+            logger.warning("DB activation lookup failed, falling back to files: %s", exc)
+
+    # ── JSONL file fallback ───────────────────────────────────────────────────
     candidate_dirs: list[Path] = []
 
     if output_dir:

@@ -153,6 +153,7 @@ export interface TrainingViewData {
   // Config summary
   modelName: string;
   trainingMethod: string;
+  datasetName: string | null;
 
   // Time-series (for ChartsSection)
   lossHistory: TrainingSeriesPoint[];

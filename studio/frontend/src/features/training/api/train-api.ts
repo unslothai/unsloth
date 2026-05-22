@@ -206,8 +206,9 @@ export type ActivationData = {
   records: ActivationRecord[];
 };
 
-export async function fetchActivations(outputDir?: string, sinceStep?: number): Promise<ActivationData> {
+export async function fetchActivations(jobId?: string | null, outputDir?: string, sinceStep?: number): Promise<ActivationData> {
   const params = new URLSearchParams();
+  if (jobId) params.set("job_id", jobId);
   if (outputDir) params.set("output_dir", outputDir);
   if (sinceStep !== undefined) params.set("since_step", String(sinceStep));
   const query = params.toString();

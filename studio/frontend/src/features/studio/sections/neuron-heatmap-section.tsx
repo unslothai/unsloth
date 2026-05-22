@@ -13,60 +13,69 @@ import {
 import { cn } from "@/lib/utils";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import {
   type ReactElement,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import { useActivationData } from "@/features/training/hooks/use-activation-data";
 import type { ActivationMetadata, ActivationRecord } from "@/features/training/api/train-api";
+import {
+  computeOverlaySets,
+  computeViewValues,
+  type OverlaySets,
+  type ViewMode,
+} from "./activation-stats";
+import { InterpretabilityInfoDialog } from "./diagnostics-panel";
 
-// ── Color palette ────────────────────────────────────────────────────────────
+// ── Overlay key type (exported for diagnostics-panel) ─────────────────────────
+export type OverlayKey = "dead" | "constant" | "onset_dead";
+
+// ── Color palette ─────────────────────────────────────────────────────────────
 // Dark mode:  slate-700 → Unsloth green  |  outliers: red-500
 // Light mode: lime-400  → Unsloth green (mid) → green-900  |  outliers: red-500
-// Lime anchors the low end for contrast on white; Unsloth green sits at the
-// midpoint so it stays recognisable; dark green caps the high end.
 
 const PALETTE_SIZE = 256;
 
-const GREY_DARK:         [number, number, number] = [51,  65,  85];  // slate-700
-const COLOR_HIGH_DARK:   [number, number, number] = [22, 197, 139];  // Unsloth green
+const GREY_DARK:         [number, number, number] = [51,  65,  85];
+const COLOR_HIGH_DARK:   [number, number, number] = [22, 197, 139];
 
-// Light mode 3-stop: lime-400 → Unsloth green → green-900
-const LIME_LIGHT:        [number, number, number] = [163, 230,  53]; // lime-400
-const COLOR_MID_LIGHT:   [number, number, number] = [22,  197, 139]; // Unsloth green (mid)
-const COLOR_HIGH_LIGHT:  [number, number, number] = [20,   83,  45]; // green-900
+const LIME_LIGHT:        [number, number, number] = [163, 230,  53];
+const COLOR_MID_LIGHT:   [number, number, number] = [22,  197, 139];
+const COLOR_HIGH_LIGHT:  [number, number, number] = [20,   83,  45];
 
-const OUTLIER_COLOR_DARK  = "rgb(239,68,68)";  // red-500
-const OUTLIER_COLOR_LIGHT = "rgb(239,68,68)";  // red-500 (same as dark mode)
-// Blend mode: outliers at the same colour as the palette high-end
+const OUTLIER_COLOR_DARK  = "rgb(239,68,68)";
+const OUTLIER_COLOR_LIGHT = "rgb(239,68,68)";
 const OUTLIER_BLEND_DARK  = `rgb(${COLOR_HIGH_DARK.join(",")})`;
 const OUTLIER_BLEND_LIGHT = `rgb(${COLOR_HIGH_LIGHT.join(",")})`;
 
-// Reactively tracks the `dark` class on <html> so canvas + React both update
 function subscribe(cb: () => void): () => void {
   const observer = new MutationObserver(cb);
   observer.observe(document.documentElement, { attributeFilter: ["class"] });
   return () => observer.disconnect();
 }
-function getSnapshot(): boolean {
-  return document.documentElement.classList.contains("dark");
-}
 function useIsDark(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
+  return useSyncExternalStore(
+    subscribe,
+    () => document.documentElement.classList.contains("dark"),
+    () => false,
+  );
 }
 
 // ── Grid layout constants ─────────────────────────────────────────────────────
-const LEFT_MARGIN   = 44;  // px — space for Y-axis neuron-index labels
-const BOTTOM_MARGIN = 28;  // px — space for X-axis layer labels + title
-const CELL_SIZE = 8;        // px — drawn width/height of each squircle cell
-const CELL_GAP  = 1;        // px — gap between cells (makes squircle corners visible)
-const CELL_SLOT = CELL_SIZE + CELL_GAP; // slot size used for positioning & hit-testing
-const CELL_RADIUS = 2;      // corner radius for squircle look
+const LEFT_MARGIN   = 44;
+const BOTTOM_MARGIN = 28;
+const CELL_SIZE = 8;
+const CELL_GAP  = 1;
+const CELL_SLOT = CELL_SIZE + CELL_GAP;
+const CELL_RADIUS = 2;
+const TOP_MARGIN  = 8;
 
 function buildPalette(
   low:  [number, number, number],
@@ -113,8 +122,6 @@ function buildPalette3(
 
 const PALETTE_DARK  = buildPalette(GREY_DARK, COLOR_HIGH_DARK);
 const PALETTE_LIGHT = buildPalette3(LIME_LIGHT, COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
-// Tooltip text palettes — text colour mapped to activity level, readable on popover bg:
-// dark mode: white → Unsloth green  |  light mode: dark-grey → green-900 (via mid)
 const TOOLTIP_PALETTE_DARK  = buildPalette([255, 255, 255], COLOR_HIGH_DARK);
 const TOOLTIP_PALETTE_LIGHT = buildPalette3([55, 65, 81], COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
 
@@ -123,10 +130,6 @@ function paletteColor(t: number, palette: Uint8ClampedArray): string {
   return `rgb(${palette[idx * 4]},${palette[idx * 4 + 1]},${palette[idx * 4 + 2]})`;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-// Rounds a minimum stride up to the nearest "nice" interval so axis ticks land
-// on round numbers (e.g. every 5, 10, 16, 32 layers rather than every 7).
 function niceInterval(minStride: number): number {
   const steps = [1, 2, 4, 5, 8, 10, 16, 20, 25, 32, 50, 64, 100, 128, 200, 256];
   for (const s of steps) {
@@ -135,66 +138,74 @@ function niceInterval(minStride: number): number {
   return Math.ceil(minStride / 100) * 100;
 }
 
-// ── Layout type (returned by drawHeatmap so hover handler can map pixels → cells)
+// ── Layout type ───────────────────────────────────────────────────────────────
 
 type HeatmapLayout = {
-  cellSlot: number;         // slot size (CELL_SIZE + CELL_GAP) for hit-testing (canvas buffer pixels)
-  leftMargin: number;       // left axis margin in canvas buffer pixels (for hit-testing)
+  cellSlot: number;
+  leftMargin: number;
+  topMargin: number;
   numLayers: number;
   numChannels: number;
   layerKeys: string[];
   capturedChannels: number[];
-  globalMax: number;        // true maximum (for tooltip display)
-  clampMax: number;         // p99 percentile used as color-scale ceiling
-  transposed: boolean;      // true when channels→X, layers→Y (expanded landscape mode)
+  globalMax: number;
+  clampMax: number;
+  transposed: boolean;
 };
+
+// ── Overlay canvas colors ─────────────────────────────────────────────────────
+
+const OVERLAY_DEFS: Array<[OverlayKey, string]> = [
+  ["dead",       "rgba(96,165,250,0.55)"],
+  ["constant",   "rgba(251,146,60,0.5)"],
+  ["onset_dead", "rgba(147,51,234,0.65)"],
+];
 
 // ── Canvas drawing ────────────────────────────────────────────────────────────
 
 function drawHeatmap(
   canvas: HTMLCanvasElement,
-  record: ActivationRecord,
+  values: Record<string, number[]>,
   capturedChannels: number[],
   outlierColor: string,
   palette: Uint8ClampedArray,
+  activeOverlays: Set<OverlayKey>,
+  overlaySets: OverlaySets,
   transposed = false,
   scale = 1,
 ): HeatmapLayout | null {
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  const layerKeys = Object.keys(record.layers).sort((a, b) => Number(a) - Number(b));
+  const layerKeys = Object.keys(values).sort((a, b) => Number(a) - Number(b));
   const numLayers = layerKeys.length;
   if (numLayers === 0) return null;
 
-  const numChannels = capturedChannels.length || record.layers[layerKeys[0]].mean_abs.length;
+  const numChannels = capturedChannels.length || values[layerKeys[0]]?.length || 0;
   if (numChannels === 0) return null;
 
-  // Scale all pixel measurements so expanded mode draws a true HD buffer.
   const s       = scale;
-  const cSlot   = CELL_SLOT   * s;  // per-cell slot (cell + gap)
-  const cSize   = CELL_SIZE   * s;  // drawn cell size
-  const cRadius = CELL_RADIUS * s;  // corner radius
-  const lMargin = LEFT_MARGIN   * s;  // left axis area
-  const bMargin = BOTTOM_MARGIN * s;  // bottom axis area
+  const cSlot   = CELL_SLOT   * s;
+  const cSize   = CELL_SIZE   * s;
+  const cRadius = CELL_RADIUS * s;
+  const lMargin = LEFT_MARGIN   * s;
+  const bMargin = BOTTOM_MARGIN * s;
+  const tMargin = TOP_MARGIN    * s;
 
-  // transposed=false (normal/compact): layers → X, channels → Y  (portrait)
-  // transposed=true  (expanded):       channels → X, layers → Y  (landscape)
   const gridW = (transposed ? numChannels : numLayers)  * cSlot;
   const gridH = (transposed ? numLayers  : numChannels) * cSlot;
 
-  // Only resize when dimensions actually change to avoid layout reflow on every draw.
   const newW = Math.round(lMargin + gridW);
-  const newH = Math.round(gridH + bMargin);
+  const newH = Math.round(tMargin + gridH + bMargin);
   if (canvas.width !== newW || canvas.height !== newH) {
     canvas.width  = newW;
     canvas.height = newH;
   }
 
-  // Collect all values; normalise by p99 to avoid outliers washing out the colour scale
+  // Collect all values; normalise by p99
   const allVals: number[] = [];
   for (const key of layerKeys) {
-    for (const v of record.layers[key].mean_abs) allVals.push(v);
+    for (const v of (values[key] ?? [])) allVals.push(v);
   }
   allVals.sort((a, b) => a - b);
   const globalMax = allVals[allVals.length - 1] || 1;
@@ -205,11 +216,11 @@ function drawHeatmap(
 
   // ── Draw squircle cells ──
   for (let li = 0; li < numLayers; li++) {
-    const layer = record.layers[layerKeys[li]];
-    for (let ci = 0; ci < layer.mean_abs.length; ci++) {
-      const v  = layer.mean_abs[ci];
+    const layerVals = values[layerKeys[li]] ?? [];
+    for (let ci = 0; ci < layerVals.length; ci++) {
+      const v  = layerVals[ci];
       const cx = lMargin + (transposed ? ci : li) * cSlot;
-      const cy =           (transposed ? li : ci) * cSlot;
+      const cy = tMargin + (transposed ? li : ci) * cSlot;
       ctx.fillStyle = v > clampMax ? outlierColor : paletteColor(v / clampMax, palette);
       ctx.beginPath();
       ctx.roundRect(cx, cy, cSize, cSize, cRadius);
@@ -217,11 +228,38 @@ function drawHeatmap(
     }
   }
 
+  // ── Overlay pass ──
+  if (activeOverlays.size > 0) {
+    const layerIndexMap = new Map<string, number>();
+    layerKeys.forEach((k, i) => layerIndexMap.set(k, i));
+
+    for (const [overlayKey, overlayColor] of OVERLAY_DEFS) {
+      if (!activeOverlays.has(overlayKey)) continue;
+      const cellSet =
+        overlayKey === "dead"       ? overlaySets.dead :
+        overlayKey === "constant"   ? overlaySets.constant :
+                                      overlaySets.onsetDead;
+
+      ctx.fillStyle = overlayColor;
+      for (const id of cellSet) {
+        const colonIdx = id.indexOf(":");
+        const layerKey = id.slice(0, colonIdx);
+        const ci = Number(id.slice(colonIdx + 1));
+        const li = layerIndexMap.get(layerKey) ?? -1;
+        if (li < 0 || ci >= numChannels) continue;
+        const cx = lMargin + (transposed ? ci : li) * cSlot;
+        const cy = tMargin + (transposed ? li : ci) * cSlot;
+        ctx.beginPath();
+        ctx.roundRect(cx, cy, cSize, cSize, cRadius);
+        ctx.fill();
+      }
+    }
+  }
+
   const LABEL_COLOR = "rgba(160,160,160,0.9)";
   const TITLE_COLOR = "rgba(120,120,120,0.75)";
 
   // ── Y-axis tick labels ──
-  // Target ~10 Y labels regardless of buffer scale (cSlot varies with dpr).
   const yCount  = transposed ? numLayers  : numChannels;
   const yStride = niceInterval(Math.max(1, Math.ceil(yCount / 10)));
   ctx.fillStyle     = LABEL_COLOR;
@@ -230,18 +268,17 @@ function drawHeatmap(
   ctx.textBaseline  = "middle";
   for (let yi = 0; yi < yCount; yi += yStride) {
     const label = transposed ? String(layerKeys[yi]) : String(capturedChannels[yi] ?? yi);
-    ctx.fillText(label, lMargin - 4 * s, yi * cSlot + cSize / 2);
+    ctx.fillText(label, lMargin - 4 * s, tMargin + yi * cSlot + cSize / 2);
   }
   if ((yCount - 1) % yStride !== 0) {
     const label = transposed
       ? String(layerKeys[yCount - 1])
       : String(capturedChannels[yCount - 1] ?? yCount - 1);
-    ctx.fillText(label, lMargin - 4 * s, (yCount - 1) * cSlot + cSize / 2);
+    ctx.fillText(label, lMargin - 4 * s, tMargin + (yCount - 1) * cSlot + cSize / 2);
   }
 
-  // Y-axis title (rotated)
   ctx.save();
-  ctx.translate(8 * s, gridH / 2);
+  ctx.translate(8 * s, tMargin + gridH / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillStyle    = TITLE_COLOR;
   ctx.font         = `${11 * s}px sans-serif`;
@@ -251,7 +288,6 @@ function drawHeatmap(
   ctx.restore();
 
   // ── X-axis tick labels ──
-  // Target ~12 X labels regardless of buffer scale.
   const xCount  = transposed ? numChannels : numLayers;
   const xStride = niceInterval(Math.max(1, Math.ceil(xCount / 12)));
   ctx.fillStyle     = LABEL_COLOR;
@@ -260,62 +296,200 @@ function drawHeatmap(
   ctx.textBaseline  = "top";
   for (let xi = 0; xi < xCount; xi += xStride) {
     const label = transposed ? String(capturedChannels[xi] ?? xi) : String(layerKeys[xi]);
-    ctx.fillText(label, lMargin + xi * cSlot + cSize / 2, gridH + 3 * s);
+    ctx.fillText(label, lMargin + xi * cSlot + cSize / 2, tMargin + gridH + 3 * s);
   }
   if ((xCount - 1) % xStride !== 0) {
     const label = transposed
       ? String(capturedChannels[xCount - 1] ?? xCount - 1)
       : String(layerKeys[xCount - 1]);
-    ctx.fillText(label, lMargin + (xCount - 1) * cSlot + cSize / 2, gridH + 3 * s);
+    ctx.fillText(label, lMargin + (xCount - 1) * cSlot + cSize / 2, tMargin + gridH + 3 * s);
   }
 
-  // X-axis title
   ctx.fillStyle    = TITLE_COLOR;
   ctx.font         = `${11 * s}px sans-serif`;
   ctx.textAlign    = "center";
   ctx.textBaseline = "bottom";
   ctx.fillText(transposed ? "Channel →" : "Layer →", lMargin + gridW / 2, canvas.height);
 
-  return { cellSlot: cSlot, leftMargin: lMargin, numLayers, numChannels, layerKeys, capturedChannels, globalMax, clampMax, transposed };
+  return { cellSlot: cSlot, leftMargin: lMargin, topMargin: tMargin, numLayers, numChannels, layerKeys, capturedChannels, globalMax, clampMax, transposed };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Props = {
+type SectionProps = {
   isTraining: boolean;
-  jobId: string | null;
+  records: ActivationRecord[];
+  metadata: ActivationMetadata | null;
+  loading: boolean;
+  record: ActivationRecord | null;
+  stepIndex: number;
+  onStepChange: (idx: number) => void;
 };
-
-// ── Tooltip type ─────────────────────────────────────────────────────────────
 
 type TooltipState = {
   clientX: number;
   clientY: number;
   layerKey: string;
   channelIdx: number;
-  value: number;      // raw activation
-  normalized: number; // 0-1 for palette color
+  value: number;
+  normalized: number;
 };
 
-// ── Heatmap canvas element ────────────────────────────────────────────────────
+// ── KaTeX helpers ─────────────────────────────────────────────────────────────
+
+function KatexDisplay({ latex }: { latex: string }): ReactElement {
+  return (
+    <span
+      className="block overflow-x-auto text-[11px]"
+      dangerouslySetInnerHTML={{
+        __html: katex.renderToString(latex, { throwOnError: false, displayMode: true }),
+      }}
+    />
+  );
+}
+
+// ── Mode pill configs ─────────────────────────────────────────────────────────
+
+interface ViewModeConfig {
+  key: ViewMode;
+  label: string;
+  latex: string;
+  description: string;
+}
+
+const VIEW_MODES: ViewModeConfig[] = [
+  {
+    key: "activations",
+    label: "Activations",
+    latex: "\\bar{a}_c \\equiv \\frac{1}{N}\\sum_{n=1}^{N}|x_{n,c}| \\;\\equiv\\; \\texttt{mean\\_abs}[c]",
+    description: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value from the activation log — how strongly each channel fires on average.",
+  },
+];
+
+interface OverlayConfig {
+  key: OverlayKey;
+  label: string;
+  color: string;
+  latex: string;
+  description: string;
+}
+
+const OVERLAY_CONFIGS: OverlayConfig[] = [
+  {
+    key: "dead",
+    label: "Dead",
+    color: "rgb(96,165,250)",
+    latex: "\\max_t(\\bar{a}_t) < \\varepsilon,\\quad \\varepsilon = 0.01",
+    description: "Channel never exceeded ε — contributes nothing to model output.",
+  },
+  {
+    key: "constant",
+    label: "Constant",
+    color: "rgb(251,146,60)",
+    latex: "CV \\equiv \\sigma/\\mu < 0.05",
+    description: "Fires but barely changes over training. Limits expressive capacity.",
+  },
+  {
+    key: "onset_dead",
+    label: "Onset Dead",
+    color: "rgb(147,51,234)",
+    latex: "\\bar{a}_0 \\geq \\varepsilon \\;\\wedge\\; \\max_{t>0}(\\bar{a}_t) < \\varepsilon",
+    description: "Was alive at step 0, died mid-training — the critical red flag.",
+  },
+];
+
+// ── ModePill ──────────────────────────────────────────────────────────────────
+
+interface ModePillProps {
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  disabledReason?: string;
+  onClick: () => void;
+  latex: string;
+  description: string;
+  indicatorColor?: string;
+  activeColor?: string;
+}
+
+function ModePill({
+  label,
+  active,
+  disabled,
+  disabledReason,
+  onClick,
+  latex,
+  description,
+  indicatorColor,
+  activeColor,
+}: ModePillProps): ReactElement {
+  const activeBorderColor = activeColor ? `${activeColor.replace("rgb", "rgba").replace(")", ", 0.5)")}` : undefined;
+  const activeBgColor = activeColor ? `${activeColor.replace("rgb", "rgba").replace(")", ", 0.15)")}` : undefined;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={disabled ? undefined : onClick}
+          style={active && activeColor ? { borderColor: activeBorderColor, backgroundColor: activeBgColor, color: activeColor } : undefined}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors select-none",
+            active && !activeColor
+              ? "border-primary/60 bg-primary/15 text-primary"
+              : disabled
+                ? "border-border/30 text-muted-foreground/40 cursor-not-allowed"
+                : !active
+                  ? "border-border/50 text-muted-foreground hover:text-foreground hover:border-border cursor-pointer"
+                  : "cursor-pointer",
+          )}
+        >
+          {indicatorColor && (
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
+              style={{ backgroundColor: active ? indicatorColor : "currentColor" }}
+            />
+          )}
+          {label}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[300px] p-3">
+        {disabled && disabledReason ? (
+          <p className="text-xs text-muted-foreground">{disabledReason}</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <KatexDisplay latex={latex} />
+            <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+// ── HeatmapCanvas ─────────────────────────────────────────────────────────────
 
 function HeatmapCanvas({
-  record,
-  metadata,
+  values,
+  capturedChannels,
+  activeOverlays,
+  overlaySets,
   expanded = false,
   outlierBlend = false,
 }: {
-  record: ActivationRecord | null;
-  metadata: ActivationMetadata | null;
+  values: Record<string, number[]> | null;
+  capturedChannels: number[];
+  activeOverlays: Set<OverlayKey>;
+  overlaySets: OverlaySets;
   expanded?: boolean;
   outlierBlend?: boolean;
 }): ReactElement {
-  const canvasRef        = useRef<HTMLCanvasElement>(null);
-  const wrapperRef       = useRef<HTMLDivElement>(null);
-  const layoutRef        = useRef<HeatmapLayout | null>(null);
+  const canvasRef         = useRef<HTMLCanvasElement>(null);
+  const wrapperRef        = useRef<HTMLDivElement>(null);
+  const layoutRef         = useRef<HeatmapLayout | null>(null);
   const imperativeDrawRef = useRef<(() => void) | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
-  const capturedChannels = metadata?.captured_channels ?? [];
   const isDark = useIsDark();
   const palette        = isDark ? PALETTE_DARK         : PALETTE_LIGHT;
   const tooltipPalette = isDark ? TOOLTIP_PALETTE_DARK : TOOLTIP_PALETTE_LIGHT;
@@ -323,67 +497,56 @@ function HeatmapCanvas({
     ? (isDark ? OUTLIER_BLEND_DARK  : OUTLIER_BLEND_LIGHT)
     : (isDark ? OUTLIER_COLOR_DARK  : OUTLIER_COLOR_LIGHT);
 
-  // Keep imperativeDrawRef in sync with latest closure so ResizeObserver can
-  // call the current draw function without going through React state.
   useEffect(() => {
     function draw() {
       const canvas = canvasRef.current;
-      if (!canvas || !record) return;
+      if (!canvas || !values) return;
 
+      const cw = wrapperRef.current?.offsetWidth ?? 0;
       let physicalScale = 1;
-      if (expanded) {
-        const cw = wrapperRef.current?.offsetWidth ?? 0;
-        if (cw > 0) {
-          const lKeys   = Object.keys(record.layers);
-          const numLays = lKeys.length;
-          const numCh   = capturedChannels.length || record.layers[lKeys[0]]?.mean_abs.length || 1;
-          // expanded → transposed=true: channels on X axis, layers on Y axis
-          const naturalW = LEFT_MARGIN + numCh   * CELL_SLOT;
-          const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN;
-          // Fill as much width as possible; cap height to ~65% of viewport
-          const maxH        = window.innerHeight * 0.65;
-          const visualScale = Math.min(cw / naturalW, maxH / naturalH, 8);
-          const dpr         = window.devicePixelRatio || 1;
-          physicalScale     = visualScale * dpr;
-          canvas.style.width  = `${Math.round(naturalW * visualScale)}px`;
-          canvas.style.height = `${Math.round(naturalH * visualScale)}px`;
-        }
-      } else {
-        canvas.style.width  = "";
-        canvas.style.height = "";
+      if (cw > 0) {
+        const lKeys   = Object.keys(values);
+        const numLays = lKeys.length;
+        const numCh   = capturedChannels.length || values[lKeys[0]]?.length || 1;
+        const naturalW = LEFT_MARGIN + numCh   * CELL_SLOT;
+        const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN + TOP_MARGIN;
+        const maxH     = expanded ? window.innerHeight * 0.65 : window.innerHeight * 0.4;
+        const visualScale = Math.min(cw / naturalW, maxH / naturalH, 8);
+        const dpr         = window.devicePixelRatio || 1;
+        physicalScale     = visualScale * dpr;
+        canvas.style.width  = `${Math.round(naturalW * visualScale)}px`;
+        canvas.style.height = `${Math.round(naturalH * visualScale)}px`;
       }
 
-      layoutRef.current = drawHeatmap(canvas, record, capturedChannels, outlierColor, palette, expanded, physicalScale);
+      layoutRef.current = drawHeatmap(
+        canvas, values, capturedChannels, outlierColor, palette,
+        activeOverlays, overlaySets, true, physicalScale,
+      );
     }
     imperativeDrawRef.current = draw;
     draw();
-  }, [record, capturedChannels, outlierColor, palette, expanded]);
+  }, [values, capturedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded]);
 
-  // Responsive resize: observe wrapper and redraw imperatively — no React
-  // state update cycle, so the canvas tracks window resize with zero lag.
   useEffect(() => {
-    if (!expanded) return;
     const el = wrapperRef.current;
     if (!el) return;
-    // Initial sizing pass after dialog finishes mounting
     imperativeDrawRef.current?.();
     const ro = new ResizeObserver(() => imperativeDrawRef.current?.());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [expanded]);
+  }, []);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const canvas = e.currentTarget;
       const layout = layoutRef.current;
-      if (!layout || !record) return;
+      if (!layout || !values) return;
 
-      // Map CSS pixels → canvas pixels (handles any CSS scaling)
       const rect   = canvas.getBoundingClientRect();
       const scaleX = canvas.width  / rect.width;
       const scaleY = canvas.height / rect.height;
       const cx = (e.clientX - rect.left) * scaleX;
-      const cy = (e.clientY - rect.top)  * scaleY;
+      const cy = (e.clientY - rect.top)  * scaleY - layout.topMargin;
 
       const li = layout.transposed
         ? Math.floor(cy / layout.cellSlot)
@@ -397,25 +560,25 @@ function HeatmapCanvas({
         return;
       }
 
-      const layerKey = layout.layerKeys[li];
-      const layer    = record.layers[layerKey];
-      if (!layer || ci >= layer.mean_abs.length) { setTooltip(null); return; }
+      const layerKey   = layout.layerKeys[li];
+      const layerVals  = values[layerKey];
+      if (!layerVals || ci >= layerVals.length) { setTooltip(null); return; }
 
-      const value      = layer.mean_abs[ci];
+      const value      = layerVals[ci];
       const isOutlier  = value > layout.clampMax;
       const normalized = isOutlier ? -1 : value / layout.clampMax;
       const channelIdx = layout.capturedChannels[ci] ?? ci;
 
       setTooltip({ clientX: e.clientX, clientY: e.clientY, layerKey, channelIdx, value, normalized });
     },
-    [record],
+    [values],
   );
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 
-  if (!record) {
+  if (!values) {
     return (
-      <div className="flex h-[120px] w-full items-center justify-center rounded border border-border/40">
+      <div className="flex h-[120px] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
         <p className="text-xs text-muted-foreground">No activation data yet</p>
       </div>
     );
@@ -423,11 +586,11 @@ function HeatmapCanvas({
 
   return (
     <>
-      <div ref={wrapperRef} className={expanded ? "w-full overflow-hidden" : "overflow-x-auto"}>
+      <div ref={wrapperRef} className="w-full overflow-hidden">
         <canvas
           ref={canvasRef}
           className="block cursor-crosshair"
-          style={expanded ? { imageRendering: "auto" } : undefined}
+          style={{ imageRendering: "auto" }}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
         />
@@ -454,7 +617,7 @@ function HeatmapCanvas({
               <span className="font-mono font-medium tabular-nums">{tooltip.channelIdx}</span>
             </div>
             <div className="mt-0.5 border-t border-border/40 pt-1 flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Activation</span>
+              <span className="text-muted-foreground">Value</span>
               <span
                 className="font-mono font-semibold tabular-nums"
                 style={{ color: tooltip.normalized < 0 ? outlierColor : paletteColor(tooltip.normalized, tooltipPalette) }}
@@ -470,7 +633,7 @@ function HeatmapCanvas({
   );
 }
 
-// ── Color legend bar ──────────────────────────────────────────────────────────
+// ── ColorLegend ───────────────────────────────────────────────────────────────
 
 function ColorLegend({
   outlierBlend = false,
@@ -525,19 +688,19 @@ function ColorLegend({
             Outlier (&gt;p99)
           </button>
         </TooltipTrigger>
-        <TooltipContent className={cn("max-w-[260px]", isDark ? "dark" : "light")}>
+        <TooltipContent className="max-w-[260px]">
           <p className="font-medium mb-1">Outlier detection</p>
           <p className="text-xs/relaxed font-normal">
-            All neuron values are sorted and the 99th percentile
+            All neuron values are sorted and the 99th percentile
             (<code className="font-mono">p99</code>) is used as the colour-scale
-            ceiling. Any cell whose activation exceeds <code className="font-mono">p99</code> is
+            ceiling. Any cell whose activation exceeds <code className="font-mono">p99</code> is
             classified as an outlier and rendered in the accent colour instead
             of the normal gradient.
           </p>
           <p className="text-xs/relaxed font-normal mt-1.5 border-t border-border/40 pt-1.5">
-            <span className="font-medium">Click the pill</span> to toggle blend mode — when active
-            (orange) outliers use the same colour as the high end of the scale so they blend in,
-            making fine gradations easier to spot.
+            <span className="font-medium">Click the pill</span> to toggle blend mode — when active
+            (orange) outliers use the same colour as the high end of the scale so they blend in,
+            making fine gradations easier to spot.
           </p>
         </TooltipContent>
       </Tooltip>
@@ -545,12 +708,12 @@ function ColorLegend({
   );
 }
 
-// ── Replay controls ───────────────────────────────────────────────────────────
+// ── ReplayControls ────────────────────────────────────────────────────────────
 
 const SPEEDS = [0.5, 1, 2, 3, 5, 10] as const;
 type Speed = (typeof SPEEDS)[number];
 
-function ReplayControls({
+export function ReplayControls({
   stepIndex,
   totalSteps,
   onStepChange,
@@ -579,11 +742,10 @@ function ReplayControls({
     setPlaying(true);
     const ms = Math.round(1000 / speed);
     intervalRef.current = setInterval(() => {
-      onStepChange(-1); // signal "advance by 1"
+      onStepChange(-1);
     }, ms);
   }, [speed, onStepChange]);
 
-  // Restart interval when speed changes while playing
   useEffect(() => {
     if (!playing) return;
     startPlayback();
@@ -591,7 +753,6 @@ function ReplayControls({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [speed]);
 
-  // At end of playback: loop or stop
   useEffect(() => {
     if (playing && stepIndex >= totalSteps - 1) {
       if (loop) {
@@ -602,16 +763,13 @@ function ReplayControls({
     }
   }, [playing, stepIndex, totalSteps, loop, stopPlayback, onStepChange]);
 
-  // Cleanup on unmount
   useEffect(() => () => stopPlayback(), [stopPlayback]);
 
   const handleToggle = () => {
     if (playing) {
       stopPlayback();
     } else {
-      if (stepIndex >= totalSteps - 1) {
-        onStepChange(0); // rewind
-      }
+      if (stepIndex >= totalSteps - 1) onStepChange(0);
       startPlayback();
     }
   };
@@ -621,36 +779,21 @@ function ReplayControls({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        {/* Play/Pause */}
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 w-16 text-[11px]"
-          onClick={handleToggle}
-        >
+        <Button size="sm" variant="outline" className="h-6 w-16 text-[11px]" onClick={handleToggle}>
           {playing ? "⏸ Pause" : "▶ Play"}
         </Button>
-
-        {/* Step slider */}
         <input
           type="range"
           min={0}
           max={Math.max(0, totalSteps - 1)}
           value={stepIndex}
-          onChange={(e) => {
-            stopPlayback();
-            onStepChange(Number(e.target.value));
-          }}
+          onChange={(e) => { stopPlayback(); onStepChange(Number(e.target.value)); }}
           className="h-1 flex-1 cursor-pointer accent-primary"
         />
-
-        {/* Step label */}
         <span className="min-w-[4rem] text-right text-[11px] tabular-nums text-muted-foreground">
           Step {currentStep}
         </span>
       </div>
-
-      {/* Speed selector + loop toggle */}
       <div className="flex items-center gap-1.5">
         <span className="text-[10px] text-muted-foreground">Speed</span>
         {SPEEDS.map((s) => (
@@ -660,15 +803,12 @@ function ReplayControls({
             onClick={() => setSpeed(s)}
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-              speed === s
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground",
+              speed === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
             {s}×
           </button>
         ))}
-        {/* Loop toggle */}
         <button
           type="button"
           title={loop ? "Loop on" : "Loop off"}
@@ -676,21 +816,10 @@ function ReplayControls({
           onClick={() => setLoop((l) => !l)}
           className={cn(
             "ml-1 rounded p-0.5 text-[12px] leading-none transition-colors",
-            loop
-              ? "text-primary"
-              : "text-muted-foreground hover:text-foreground",
+            loop ? "text-primary" : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {/* repeat/loop glyph */}
-          <svg
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-3.5 w-3.5"
-          >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
             <path d="M4 12a6 6 0 1 0 1.5-3.9" />
             <polyline points="1 6 4 8 5.5 5.5" />
           </svg>
@@ -700,48 +829,58 @@ function ReplayControls({
   );
 }
 
-// ── Main section ──────────────────────────────────────────────────────────────
+// ── NeuronHeatmapSection ──────────────────────────────────────────────────────
 
-export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement {
-  const { metadata, records, loading } = useActivationData({ isTraining, jobId });
+export function NeuronHeatmapSection({
+  isTraining,
+  records,
+  metadata,
+  loading,
+  record,
+  stepIndex,
+  onStepChange,
+}: SectionProps): ReactElement {
+  const numLayers   = metadata?.num_layers ?? (record ? Object.keys(record.layers).length : 0);
+  const numChannels = metadata?.captured_channels?.length ?? 0;
+  const capturedChannels = metadata?.captured_channels ?? [];
 
-  const [stepIndex, setStepIndex] = useState<number>(0);
+  const [expanded,     setExpanded]     = useState(false);
+  const [outlierBlend, setOutlierBlend] = useState(false);
+  const [activeOverlays, setActiveOverlays] = useState<Set<OverlayKey>>(new Set());
+  const [infoOpen,     setInfoOpen]     = useState(false);
 
-  // During training: always show the latest record
-  const displayIndex = isTraining ? Math.max(0, records.length - 1) : stepIndex;
-  const record: ActivationRecord | null = records[displayIndex] ?? null;
+  const toggleOutlierBlend = useCallback(() => setOutlierBlend((v) => !v), []);
+  const toggleOverlay = useCallback((key: OverlayKey) => {
+    setActiveOverlays((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }, []);
 
-  // Keep step index at end after training completes
-  useEffect(() => {
-    if (!isTraining) setStepIndex(Math.max(0, records.length - 1));
-  }, [records.length, isTraining]);
-
-  const handleStepChange = useCallback(
-    (idx: number) => {
-      if (idx === -1) {
-        setStepIndex((prev) => Math.min(prev + 1, records.length - 1));
-      } else {
-        setStepIndex(Math.max(0, Math.min(idx, records.length - 1)));
-      }
-    },
-    [records.length],
+  // Compute heatmap values for the current view mode + step
+  const computedValues = useMemo(
+    () => (record ? computeViewValues(records, stepIndex, "activations") : null),
+    [records, stepIndex, record],
   );
 
-  const numLayers = metadata?.num_layers ?? (record ? Object.keys(record.layers).length : 0);
-  const numChannels = metadata?.captured_channels?.length ?? 0;
-  const [expanded, setExpanded] = useState(false);
-  const [outlierBlend, setOutlierBlend] = useState(false);
-  const toggleOutlierBlend = useCallback(() => setOutlierBlend((v) => !v), []);
+  // Compute overlay cell sets (cumulative up to current step)
+  const overlaySets = useMemo(
+    () => computeOverlaySets(records, stepIndex),
+    [records, stepIndex],
+  );
+
 
   return (
     <Card size="sm" className="shadow-border border border-border/60 bg-card/90 backdrop-blur-sm">
       <CardHeader className="pb-2">
+        {/* Row 1: title + meta + controls */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <CardTitle className="text-sm ml-1">Neuron Activations</CardTitle>
             {records.length > 0 && (
-              <span className="rounded border border-border/60 px-2 py-0.5 text-[10px] leading-tight text-muted-foreground text-center">
-                {numLayers} layers ·<br />{numChannels} channels
+              <span className="rounded border border-border/60 px-2 py-0.5 text-[10px] leading-none text-muted-foreground whitespace-nowrap">
+                {numLayers} layers · {numChannels} ch
               </span>
             )}
           </div>
@@ -762,6 +901,15 @@ export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement
             )}
             <button
               type="button"
+              onClick={() => setInfoOpen(true)}
+              className="rounded border border-border/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground hover:border-border focus:text-foreground leading-none"
+              title="How to read this chart"
+              aria-label="Open interpretability guide"
+            >
+              ?
+            </button>
+            <button
+              type="button"
               onClick={() => setExpanded(true)}
               className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
               title="Expand chart"
@@ -771,24 +919,45 @@ export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement
             </button>
           </div>
         </div>
+
+        {/* Row 2: View mode pill + overlay pills on one line */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          {VIEW_MODES.map((mode) => (
+            <ModePill
+              key={mode.key}
+              label={mode.label}
+              active={mode.key === "activations"}
+              onClick={() => {}}
+              latex={mode.latex}
+              description={mode.description}
+            />
+          ))}
+          <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
+          {OVERLAY_CONFIGS.map((ov) => (
+            <ModePill
+              key={ov.key}
+              label={ov.label}
+              active={activeOverlays.has(ov.key)}
+              onClick={() => toggleOverlay(ov.key)}
+              latex={ov.latex}
+              description={ov.description}
+              indicatorColor={ov.color}
+              activeColor={ov.color}
+            />
+          ))}
+        </div>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
-        {/* Skip drawing the card canvas while the dialog is open — avoids a
-            duplicate drawHeatmap call on every slider tick which doubles work
-            and triggers extra layout reflows. */}
-        <HeatmapCanvas record={expanded ? null : record} metadata={metadata} outlierBlend={outlierBlend} />
+        <HeatmapCanvas
+          values={expanded ? null : computedValues}
+          capturedChannels={capturedChannels}
+          activeOverlays={activeOverlays}
+          overlaySets={overlaySets}
+          outlierBlend={outlierBlend}
+        />
 
         {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
-
-        {!isTraining && records.length > 1 && (
-          <ReplayControls
-            stepIndex={stepIndex}
-            totalSteps={records.length}
-            onStepChange={handleStepChange}
-            currentStep={record?.step ?? 0}
-          />
-        )}
 
         {!loading && records.length === 0 && (
           <p className="text-center text-[11px] text-muted-foreground">
@@ -797,6 +966,7 @@ export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement
         )}
       </CardContent>
 
+      {/* Expanded dialog */}
       <Dialog open={expanded} onOpenChange={setExpanded}>
         <DialogContent className="w-[90vw] max-w-none sm:max-w-none">
           <DialogHeader>
@@ -809,20 +979,56 @@ export function NeuronHeatmapSection({ isTraining, jobId }: Props): ReactElement
               )}
             </DialogTitle>
           </DialogHeader>
+          {/* View + overlay pills — same as card header row */}
+          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+            {VIEW_MODES.map((mode) => (
+              <ModePill
+                key={mode.key}
+                label={mode.label}
+                active={mode.key === "activations"}
+                onClick={() => {}}
+                latex={mode.latex}
+                description={mode.description}
+              />
+            ))}
+            <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
+            {OVERLAY_CONFIGS.map((ov) => (
+              <ModePill
+                key={ov.key}
+                label={ov.label}
+                active={activeOverlays.has(ov.key)}
+                onClick={() => toggleOverlay(ov.key)}
+                latex={ov.latex}
+                description={ov.description}
+                indicatorColor={ov.color}
+                activeColor={ov.color}
+              />
+            ))}
+          </div>
           <div className="mt-2 w-full flex flex-col gap-3">
-            <HeatmapCanvas record={record} metadata={metadata} expanded={true} outlierBlend={outlierBlend} />
+            <HeatmapCanvas
+              values={computedValues}
+              capturedChannels={capturedChannels}
+              activeOverlays={activeOverlays}
+              overlaySets={overlaySets}
+              expanded={true}
+              outlierBlend={outlierBlend}
+            />
             {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
             {!isTraining && records.length > 1 && (
               <ReplayControls
                 stepIndex={stepIndex}
                 totalSteps={records.length}
-                onStepChange={handleStepChange}
+                onStepChange={onStepChange}
                 currentStep={record?.step ?? 0}
               />
             )}
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Info dialog */}
+      <InterpretabilityInfoDialog open={infoOpen} onOpenChange={setInfoOpen} />
     </Card>
   );
 }
