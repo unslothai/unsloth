@@ -662,6 +662,19 @@ class ChatCompletionRequest(BaseModel):
             "vllm, local, etc.). Treated as enabled when omitted."
         ),
     )
+    compaction_threshold: Optional[int] = Field(
+        None,
+        ge = 50_000,
+        le = 2_000_000,
+        description = (
+            "[x-unsloth] Anthropic server-side context compaction trigger, in "
+            "input tokens. When set on a compaction-capable model (Opus 4.6+, "
+            "Opus 4.7, Sonnet 4.6, Mythos preview), Studio attaches the "
+            "`compact_20260112` edit and the `compact-2026-01-12` beta header. "
+            "The minimum upstream-accepted threshold is 50k; values below 50k "
+            "are clamped. No-op on any other provider or unsupported model."
+        ),
+    )
     openai_code_exec_container_id: Optional[str] = Field(
         None,
         description = (

@@ -70,6 +70,29 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
+# Anthropic server-side context compaction (beta as of compact-2026-01-12).
+# Per the docs, the compaction tool is currently supported on Opus 4.6,
+# Opus 4.7, Sonnet 4.6 and Mythos Preview. The beta header is the same
+# for every supported model; the dated `compact_20260112` type lives in
+# the body's `context_management.edits` array. Anything sent to a model
+# outside this prefix list is silently ignored so we don't 400 upstream.
+_ANTHROPIC_COMPACTION_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-mythos-preview",
+)
+_ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
+_ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
+# The docs require the threshold to be at least 50K tokens; lower values
+# would 400. We clamp on the way out so a UI slider can't underflow.
+_ANTHROPIC_COMPACTION_MIN = 50_000
+
+
+def _anthropic_supports_compaction(model: str) -> bool:
+    return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
+
+
 class _MistralThinkingSpec(NamedTuple):
     models: tuple[str, ...]
     style: Literal["prompt_mode", "reasoning_effort", "disabled"]
@@ -239,6 +262,7 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -265,6 +289,7 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 anthropic_code_exec_container_id,
+                compaction_threshold,
             ):
                 yield line
             return
@@ -1072,6 +1097,7 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
+        compaction_threshold: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call the Anthropic Messages API and translate its SSE to OpenAI format.
@@ -1336,6 +1362,39 @@ class ExternalProviderClient:
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
 
+        # Server-side context compaction — see
+        #   https://platform.claude.com/docs/en/build-with-claude/compaction
+        # Beta as of `compact-2026-01-12`. When `compaction_threshold` is
+        # provided AND the model accepts compaction (Opus 4.6+ / 4.7,
+        # Sonnet 4.6, Mythos preview), attach
+        # `context_management.edits[{type:"compact_20260112", trigger:
+        # {type:"input_tokens", value:N}}]` to the body. Anthropic runs
+        # the compaction step server-side once the rendered prompt
+        # crosses the threshold and replies with a top-level
+        # `context_management` block plus `usage.iterations[]` so we can
+        # account per-iteration. Below-min thresholds get clamped up to
+        # 50K so the request doesn't 400.
+        compaction_active = (
+            compaction_threshold is not None
+            and compaction_threshold > 0
+            and _anthropic_supports_compaction(model)
+        )
+        if compaction_active:
+            trigger_value = max(
+                int(compaction_threshold), _ANTHROPIC_COMPACTION_MIN,
+            )
+            body["context_management"] = {
+                "edits": [
+                    {
+                        "type": _ANTHROPIC_COMPACTION_TYPE,
+                        "trigger": {
+                            "type": "input_tokens",
+                            "value": trigger_value,
+                        },
+                    }
+                ]
+            }
+
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
@@ -1366,20 +1425,22 @@ class ExternalProviderClient:
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         request_headers = self._auth_headers()
-        if code_execution_enabled:
-            # Anthropic accepts comma-separated beta features in a single
-            # `anthropic-beta` header. Merge our flag onto whatever the
-            # registry's extra_headers contributed (currently nothing on
-            # the beta axis, just anthropic-version) so future betas
-            # added at the registry level keep working.
-            existing_beta = request_headers.get("anthropic-beta", "").strip()
-            beta_parts = (
-                [p.strip() for p in existing_beta.split(",") if p.strip()]
-                if existing_beta
-                else []
-            )
-            if "code-execution-2025-08-25" not in beta_parts:
-                beta_parts.append("code-execution-2025-08-25")
+        # Anthropic accepts comma-separated beta features in a single
+        # `anthropic-beta` header. Merge our flags onto whatever the
+        # registry's extra_headers contributed (currently nothing on
+        # the beta axis, just anthropic-version) so future betas
+        # added at the registry level keep working.
+        existing_beta = request_headers.get("anthropic-beta", "").strip()
+        beta_parts = (
+            [p.strip() for p in existing_beta.split(",") if p.strip()]
+            if existing_beta
+            else []
+        )
+        if code_execution_enabled and "code-execution-2025-08-25" not in beta_parts:
+            beta_parts.append("code-execution-2025-08-25")
+        if compaction_active and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
+            beta_parts.append(_ANTHROPIC_COMPACTION_BETA)
+        if beta_parts:
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
         try:
