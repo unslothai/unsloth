@@ -2668,8 +2668,12 @@ class ExternalProviderClient:
                                     # (likely an <img src="data:image/...">)
                                     # based on the `kind: "image"` hint we
                                     # set on tool_start arguments.
+                                    # `time_ns()` (nanoseconds) instead of
+                                    # millisecond resolution so synthesised
+                                    # ids stay unique even when two image
+                                    # generations resolve in the same ms.
                                     item_id = item.get("id", "") or (
-                                        f"img_{int(time.time() * 1000)}"
+                                        f"img_{time.time_ns()}"
                                     )
                                     prompt_in = (
                                         item.get("revised_prompt")
