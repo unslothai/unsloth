@@ -1623,8 +1623,36 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     let parsedResult:
                       | string
-                      | { text: string; images: string[]; sessionId: string };
-                    if (imgIdx !== -1) {
+                      | { text: string; images: string[]; sessionId: string }
+                      | {
+                          image_b64: string;
+                          image_mime: string;
+                          size?: string;
+                          quality?: string;
+                          background?: string;
+                        };
+                    const imageB64 = toolEvent.image_b64 as string | undefined;
+                    if (
+                      toolCallParts[idx].toolName === "image_generation" &&
+                      typeof imageB64 === "string" &&
+                      imageB64
+                    ) {
+                      // OpenAI Responses image_generation_call: the
+                      // backend stashes the base64 PNG/WebP/JPEG on
+                      // separate `image_b64` / `image_mime` fields on
+                      // the synthetic _toolEvent so the JSON result
+                      // string stays small enough to log. Repackage as
+                      // a structured result for the dedicated tool UI.
+                      parsedResult = {
+                        image_b64: imageB64,
+                        image_mime:
+                          (toolEvent.image_mime as string | undefined) ??
+                          "image/png",
+                        size: toolEvent.size as string | undefined,
+                        quality: toolEvent.quality as string | undefined,
+                        background: toolEvent.background as string | undefined,
+                      };
+                    } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox directory
                       // used when no session_id is provided (see tools.py _get_workdir).
