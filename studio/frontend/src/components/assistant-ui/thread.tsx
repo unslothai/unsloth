@@ -289,19 +289,31 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
   const { inputProps, isComposing, isComposingRef } = useImeComposerInputHandlers();
+  const composerText = useAuiState(({ composer }) => composer.text);
+  const hasAttachments = useAuiState(
+    ({ composer }) => composer.attachments.length > 0,
+  );
   const hasPendingAttachments = useAuiState(({ composer }) =>
     composer.attachments.some(
       (attachment) => attachment.status.type === "running",
     ),
   );
+  const hasPendingAudio = useChatRuntimeStore((s) => Boolean(s.pendingAudioName));
+  const hasSendableContent =
+    composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
-      if (disabled || isComposingRef.current || hasPendingAttachments) {
+      if (
+        disabled ||
+        !hasSendableContent ||
+        isComposingRef.current ||
+        hasPendingAttachments
+      ) {
         event.preventDefault();
       }
     },
-    [disabled, hasPendingAttachments, isComposingRef],
+    [disabled, hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
   const composerContent = (
@@ -323,8 +335,12 @@ const Composer: FC<{ disabled?: boolean }> = ({ disabled }) => {
         {...inputProps}
       />
       <ComposerAction
-        disabled={disabled || isComposing || hasPendingAttachments}
-        blockSend={() => isComposingRef.current || hasPendingAttachments}
+        disabled={
+          disabled || !hasSendableContent || isComposing || hasPendingAttachments
+        }
+        blockSend={() =>
+          !hasSendableContent || isComposingRef.current || hasPendingAttachments
+        }
       />
     </>
   );
