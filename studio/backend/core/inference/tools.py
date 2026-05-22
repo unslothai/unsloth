@@ -194,6 +194,15 @@ _ABSOLUTE_SENSITIVE = (
     # threads; ``cmdline`` and ``auxv`` carry env-derived strings too.
     r"/proc/(?:self|thread-self|\d+)/(?:environ|mem|maps|auxv|cmdline)",
     r"/proc/(?:self|thread-self|\d+)/task/\d+/(?:environ|mem|maps|auxv|cmdline)",
+    # ``/proc/<pid>/cwd`` and ``/proc/<pid>/root`` are symlinks to the
+    # process cwd and the filesystem root respectively. Reading via
+    # ``/proc/self/cwd/X`` is equivalent to reading ``X`` but bypasses
+    # any path normalisation that worked on the literal text; reading
+    # ``/proc/self/root/etc/shadow`` opens ``/etc/shadow`` even under
+    # chroot. Block any access via these symlink prefixes; there is no
+    # legitimate LLM-tool-use reason to dereference them.
+    r"/proc/(?:self|thread-self|\d+)/(?:cwd|root)(?:/|\Z)",
+    r"/proc/(?:self|thread-self|\d+)/task/\d+/(?:cwd|root)(?:/|\Z)",
     r"/proc/kcore",
     r"/proc/kallsyms",
     r"/var/spool/cron/[^\s'\"]*",
@@ -1505,6 +1514,32 @@ def _check_signal_escape_patterns(code: str):
             return func.attr
         return None
 
+    def _resolve_dynamic_module_name(node):
+        """Return the module string for dynamic import expressions.
+
+        Recognises:
+          * ``__import__('os')``
+          * ``importlib.import_module('os')``
+          * bare ``import_module('os')`` (after ``from importlib import
+            import_module``)
+
+        Returns the literal first-argument string when matched, else
+        ``None``. Used to ensure ``__import__('os').system(...)`` and
+        ``m = importlib.import_module('os'); m.system(...)`` flow
+        through the same shell-escape gate as ``import os; os.system(...)``.
+        """
+        if not isinstance(node, ast.Call) or not node.args:
+            return None
+        arg0 = node.args[0]
+        if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
+            return None
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in ("__import__", "import_module"):
+            return arg0.value
+        if isinstance(f, ast.Attribute) and f.attr == "import_module":
+            return arg0.value
+        return None
+
     # Keyword argument names that carry command content (as opposed to
     # control flags like check=True, text=True, capture_output=True).
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
@@ -1605,6 +1640,22 @@ def _check_signal_escape_patterns(code: str):
             self.loop_depth += 1
             self.generic_visit(node)
             self.loop_depth -= 1
+
+        def visit_Assign(self, node):
+            # Track ``m = __import__('os')`` and
+            # ``m = importlib.import_module('os')`` so a subsequent
+            # ``m.system(...)`` / ``m.popen(...)`` flows through the
+            # os/subprocess alias detection unchanged.
+            dyn = _resolve_dynamic_module_name(node.value)
+            if dyn == "os":
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        self.os_aliases.add(tgt.id)
+            elif dyn == "subprocess":
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        self.subprocess_aliases.add(tgt.id)
+            self.generic_visit(node)
 
         def visit_Call(self, node):
             func = node.func
@@ -1717,6 +1768,17 @@ def _check_signal_escape_patterns(code: str):
                     if func.value.id in self.os_aliases:
                         shell_func = f"os.{func.attr}"
                     elif func.value.id in self.subprocess_aliases:
+                        shell_func = f"subprocess.{func.attr}"
+                else:
+                    # Inline dynamic import:
+                    #   __import__('os').system(...)
+                    #   importlib.import_module('os').popen(...)
+                    # No intermediate name binding so the Name branch
+                    # above misses it; resolve the receiver here.
+                    dyn = _resolve_dynamic_module_name(func.value)
+                    if dyn == "os":
+                        shell_func = f"os.{func.attr}"
+                    elif dyn == "subprocess":
                         shell_func = f"subprocess.{func.attr}"
             elif isinstance(func, ast.Name):
                 # Check from-import aliases: from os import system; system(...)

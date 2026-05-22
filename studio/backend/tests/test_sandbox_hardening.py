@@ -1307,3 +1307,103 @@ class TestR3Finding22_RequestsRequestPositionalKeyword:
     )
     def test_request_method_then_kw_trusted_url_allowed(self, code):
         assert not _is_blocked(code), f"trusted method+kw blocked: {code!r}"
+
+
+# ---------------------------------------------------------------------------
+# Followup — dynamic import bypass + /proc/self/cwd-root symlink traversal
+# ---------------------------------------------------------------------------
+
+
+class TestFollowup_DynamicImportShellEscape:
+    """``__import__('os').system(...)`` and
+    ``importlib.import_module('os').popen(...)`` bypass the bare
+    ``os.system`` gate because the receiver is a Call, not a Name in
+    ``os_aliases``. Same for the assign form
+    ``m = __import__('os'); m.system(...)``. The visitor now resolves
+    both shapes back to the canonical alias before the shell-escape
+    check runs."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "__import__('os').system('" + SUDO + " whoami')",
+            "__import__('os').popen('cat ~/.ssh/id_rsa')",
+            "import importlib; importlib.import_module('os').system('"
+            + SUDO
+            + " whoami')",
+            "from importlib import import_module; import_module('os').system('"
+            + SUDO
+            + " whoami')",
+            "m = __import__('os'); m.system('" + SUDO + " whoami')",
+            "m = __import__('subprocess'); m.run(['" + SUDO + "', 'whoami'], shell=True)",
+            "import importlib; mod = importlib.import_module('os'); "
+            "mod.popen('cat ~/.aws/credentials')",
+        ],
+    )
+    def test_dynamic_import_shell_escape_blocked(self, code):
+        assert _is_blocked(code), f"dynamic-import shell escape leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Legit: importing other modules and calling safe methods.
+            "import importlib; m = importlib.import_module('json'); m.dumps({'a':1})",
+            "__import__('json').dumps({'a': 1})",
+            "from importlib import import_module; pl = import_module('pathlib'); "
+            "pl.Path('/tmp/x').exists()",
+        ],
+    )
+    def test_dynamic_import_legit_allowed(self, code):
+        assert not _is_blocked(code), f"legit dynamic import blocked: {code!r}"
+
+
+class TestFollowup_ProcSelfSymlinkTraversal:
+    """``/proc/<pid>/cwd`` and ``/proc/<pid>/root`` are symlinks to the
+    process cwd and filesystem root. Without explicit detection,
+    ``/proc/self/cwd/../../etc/shadow`` escapes lexical ``..``
+    normalisation, and ``/proc/self/root/etc/shadow`` opens
+    ``/etc/shadow`` regardless of any chroot or relative-path
+    defence."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /proc/self/cwd/../../etc/shadow",
+            "cat /proc/self/root/etc/shadow",
+            "cat /proc/self/root/etc/sudoers",
+            "cat /proc/thread-self/cwd/secret.txt",
+            "cat /proc/1/root/etc/shadow",
+            "cat /proc/1/cwd/secrets.env",
+            "cat /proc/self/task/1/root/etc/shadow",
+        ],
+    )
+    def test_proc_self_symlink_traversal_bash_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"symlink traversal leaked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/proc/self/root/etc/shadow').read()",
+            "open('/proc/self/cwd/../../etc/shadow').read()",
+            "open('/proc/1/root/etc/sudoers')",
+            "import pathlib; pathlib.Path('/proc/self/root/etc/shadow').read_text()",
+            "from pathlib import Path; "
+            "Path('/proc/thread-self/root/etc/shadow').open()",
+        ],
+    )
+    def test_proc_self_symlink_traversal_open_blocked(self, code):
+        assert _is_blocked(code), f"symlink traversal open leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # ``/proc/self/status`` is still useful for legit
+            # introspection (e.g. checking the sandbox PID).
+            "open('/proc/self/status').read()",
+            "open('/proc/self/stat').read()",
+            "open('/proc/cpuinfo').read()",
+            "open('/proc/meminfo').read()",
+        ],
+    )
+    def test_proc_legit_introspection_allowed(self, code):
+        assert not _is_blocked(code), f"legit /proc read blocked: {code!r}"
