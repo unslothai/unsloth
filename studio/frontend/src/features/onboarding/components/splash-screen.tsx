@@ -20,7 +20,7 @@ export function SplashScreen({
         {/* Mascot */}
         <div className="flex justify-center">
           <motion.img
-            src="/Sloth emojis/Sloth loca pc.png"
+            src={`${import.meta.env.BASE_URL}Sloth emojis/Sloth loca pc.png`}
             alt="Sloth mascot"
             className="size-30"
             initial={{ opacity: 0, y: 40, scale: 0.95 }}

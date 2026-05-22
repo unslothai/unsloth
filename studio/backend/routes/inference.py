@@ -605,9 +605,10 @@ async def load_model(
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
                 and llama_backend.model_identifier
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
-                # Also require runtime settings to match so Apply changes
-                # aren't silently dropped (#5401).
+                # Match runtime settings too so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(request, llama_backend)
+                # Skip if a prior audio probe failed -- let load_model retry.
+                and getattr(llama_backend, "_audio_probed", True)
             ):
                 logger.info(
                     f"Model already loaded (GGUF): {model_log_label} variant={request.gguf_variant}, skipping reload"
@@ -860,21 +861,15 @@ async def load_model(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
 
-            # Detect TTS/audio marker tokens by probing the loaded model's vocabulary.
-            # GGUF audio input is not wired through the chat path yet, so do not
-            # advertise has_audio_input for GGUF models until uploaded audio is
-            # actually forwarded to llama-server.
-            _gguf_audio = llama_backend.detect_audio_type()
-            _gguf_is_audio = _gguf_audio in ("snac", "bicodec", "dac")
-            llama_backend._is_audio = _gguf_is_audio
-            llama_backend._audio_type = _gguf_audio
+            # Audio detection moved into load_model under _serial_load_lock (#5642).
+            _gguf_audio = llama_backend._audio_type
+            _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = (
                 model_log_label if native_grant_backed else None
             )
             llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
-                await asyncio.to_thread(llama_backend.init_audio_codec, _gguf_audio)
 
             inference_config = load_inference_config(config.identifier)
 
@@ -1845,6 +1840,7 @@ async def _proxy_to_external_provider(
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
+            prompt_cache_ttl = payload.prompt_cache_ttl,
             stream = payload.stream,
         )
         try:

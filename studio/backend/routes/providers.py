@@ -27,6 +27,7 @@ from core.inference.providers import (
     get_provider_info,
     list_available_providers,
 )
+from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 from models.providers import (
     ProviderCreate,
@@ -75,6 +76,20 @@ async def list_registry(
 ):
     """List all supported provider types with their default configurations."""
     return list_available_providers()
+
+
+# ── Per-MTok pricing snapshot for client-side cost display ──────────
+
+
+@router.get("/pricing")
+async def get_pricing_snapshot(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Static per-MTok pricing table the frontend uses to convert
+    upstream usage chunks into a per-turn USD cost. See
+    ``core/inference/pricing.py`` for sourcing notes; values reflect
+    the published prices as of the file's last update."""
+    return pricing_snapshot()
 
 
 # ── Provider config CRUD ──────────────────────────────────────────
