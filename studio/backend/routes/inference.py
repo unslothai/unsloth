@@ -1696,7 +1696,7 @@ def _build_external_messages(
       reach generic /chat/completions passthrough where it would 400
       (e.g. DeepSeek, Mistral, Gemini, Kimi, OpenRouter, etc.).
     """
-    anthropic = (provider_type == "anthropic")
+    anthropic = provider_type == "anthropic"
     result = []
     for msg in messages:
         if isinstance(msg.content, str):
