@@ -703,11 +703,13 @@ const ReasoningToggle: FC = () => {
       aria-label={
         reasoningLockedOn
           ? "Thinking is required for this model"
-          : disabled
+          : !modelLoaded
             ? "Thinking (model not loaded)"
-            : effectiveReasoningEnabled
-              ? "Disable thinking"
-              : "Enable thinking"
+            : disabled
+              ? "Thinking (not supported by this model)"
+              : effectiveReasoningEnabled
+                ? "Disable thinking"
+                : "Enable thinking"
       }
     >
       {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (

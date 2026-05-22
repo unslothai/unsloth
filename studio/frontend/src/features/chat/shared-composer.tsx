@@ -993,11 +993,13 @@ export function SharedComposer({
               aria-label={
                 reasoningLockedOn
                   ? "Thinking is required for this model"
-                  : reasoningDisabled
+                  : !modelLoaded
                     ? "Thinking (model not loaded)"
-                    : effectiveReasoningEnabled
-                      ? "Disable thinking"
-                      : "Enable thinking"
+                    : reasoningDisabled
+                      ? "Thinking (not supported by this model)"
+                      : effectiveReasoningEnabled
+                        ? "Disable thinking"
+                        : "Enable thinking"
               }
             >
               {reasoningLockedOn ||
