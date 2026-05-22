@@ -605,7 +605,13 @@ class ChatCompletionRequest(BaseModel):
     )
     enabled_tools: Optional[list[str]] = Field(
         None,
-        description = "[x-unsloth] List of enabled tool names (e.g. ['web_search', 'python', 'terminal']). If None, all tools are enabled.",
+        description = (
+            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
+            "['web_search', 'python', 'terminal']. External providers accept "
+            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
+            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
+            "all local tools are enabled and no server-side tools are forwarded."
+        ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
