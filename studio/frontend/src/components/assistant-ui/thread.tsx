@@ -18,6 +18,7 @@ import {
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
+import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -1105,6 +1106,7 @@ const AssistantMessage: FC = () => {
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
+                image_generation: ImageGenerationToolUI,
               },
               Fallback: ToolFallback,
             },
