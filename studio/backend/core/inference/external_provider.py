@@ -25,6 +25,7 @@ import structlog
 # sites use printf-style positional args, which structlog accepts.
 logger = structlog.get_logger(__name__)
 
+
 # Claude 4.7 (Opus/Sonnet/Haiku) removed temperature, top_p, and top_k —
 # the API returns 400 "<param> is deprecated for this model" if any of
 # them is set to a non-default value. The "Sampling parameters removed"
