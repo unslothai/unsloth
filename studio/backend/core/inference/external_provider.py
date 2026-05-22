@@ -81,9 +81,7 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # /v1/responses reference. Covers gpt-5.x family, o1/o3/o4 family,
 # and gpt-4.5 family. The `(?:[-.]|$)` anchor keeps gpt-50 / o30
 # hypotheticals out.
-_OPENAI_REASONING_FAMILY = re.compile(
-    r"^(?:gpt-5(?:\.\d+)?|o[134]|gpt-4\.5)(?:[-.]|$)"
-)
+_OPENAI_REASONING_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?|o[134]|gpt-4\.5)(?:[-.]|$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):

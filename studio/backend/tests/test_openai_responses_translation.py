@@ -169,7 +169,15 @@ def test_responses_still_drops_sampling_for_reasoning_families(monkeypatch):
     # Sanity: parametrise across the reasoning-class families so a
     # future regex tweak that accidentally weakens the drop surfaces
     # here.
-    for model in ("gpt-5.5", "gpt-5.4", "gpt-5", "o1", "o3-mini", "o4-mini", "gpt-4.5-preview"):
+    for model in (
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5",
+        "o1",
+        "o3-mini",
+        "o4-mini",
+        "gpt-4.5-preview",
+    ):
         captured: dict = {}
 
         def handler(request: httpx.Request, _captured = captured) -> httpx.Response:
