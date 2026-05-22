@@ -34,13 +34,13 @@ def _drive(coro):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        api_key="sk-ant-test",
+        provider_type = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        api_key = "sk-ant-test",
     )
 
 
-def _capture(monkeypatch, model: str, threshold, tools=None) -> dict:
+def _capture(monkeypatch, model: str, threshold, tools = None) -> dict:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -48,26 +48,26 @@ def _capture(monkeypatch, model: str, threshold, tools=None) -> dict:
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content=b"event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n",
-            headers={"content-type": "text/event-stream"},
+            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
     )
 
     async def run():
         client = _make_client()
         async for _ in client.stream_chat_completion(
-            messages=[{"role": "user", "content": "hi"}],
-            model=model,
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=32,
-            enabled_tools=tools,
-            compaction_threshold=threshold,
+            messages = [{"role": "user", "content": "hi"}],
+            model = model,
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 32,
+            enabled_tools = tools,
+            compaction_threshold = threshold,
         ):
             pass
         await client.close()
@@ -120,13 +120,13 @@ def test_supported_model_attaches_compaction_block_and_beta(monkeypatch):
 def test_threshold_clamped_to_50k_minimum(monkeypatch):
     # Below-min values get clamped UP so we don't 400 upstream.
     captured = _capture(monkeypatch, "claude-opus-4-7", 60_000)
-    assert captured["body"]["context_management"]["edits"][0][
-        "trigger"
-    ]["value"] == 60_000
+    assert (
+        captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 60_000
+    )
     captured = _capture(monkeypatch, "claude-opus-4-7", 1)
-    assert captured["body"]["context_management"]["edits"][0][
-        "trigger"
-    ]["value"] == 50_000
+    assert (
+        captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 50_000
+    )
 
 
 # ── beta header merge with code execution ────────────────────────────
@@ -137,7 +137,7 @@ def test_compaction_beta_merges_with_code_execution_beta(monkeypatch):
         monkeypatch,
         "claude-opus-4-7",
         150_000,
-        tools=["code_execution"],
+        tools = ["code_execution"],
     )
     beta = captured["headers"].get("anthropic-beta", "")
     assert "code-execution-2025-08-25" in beta
@@ -152,7 +152,8 @@ def test_unsupported_model_silently_drops_compaction(monkeypatch):
     assert "context_management" not in captured["body"]
     # The beta header must not carry compact-2026-01-12 either.
     assert "compact-2026-01-12" not in captured["headers"].get(
-        "anthropic-beta", "",
+        "anthropic-beta",
+        "",
     )
 
 
@@ -163,5 +164,6 @@ def test_omitted_threshold_no_body_field(monkeypatch):
     captured = _capture(monkeypatch, "claude-opus-4-7", None)
     assert "context_management" not in captured["body"]
     assert "compact-2026-01-12" not in captured["headers"].get(
-        "anthropic-beta", "",
+        "anthropic-beta",
+        "",
     )

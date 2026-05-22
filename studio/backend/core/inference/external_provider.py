@@ -1381,7 +1381,8 @@ class ExternalProviderClient:
         )
         if compaction_active:
             trigger_value = max(
-                int(compaction_threshold), _ANTHROPIC_COMPACTION_MIN,
+                int(compaction_threshold),
+                _ANTHROPIC_COMPACTION_MIN,
             )
             body["context_management"] = {
                 "edits": [
