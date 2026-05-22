@@ -15,7 +15,7 @@ import sys
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
-from utils.models import ModelConfig, get_base_model_from_lora
+from utils.models import ModelConfig, get_base_model_from_lora, is_local_gguf_path
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
 from utils.hardware import (
@@ -253,6 +253,11 @@ class InferenceBackend:
         """
         Load any model: base, LoRA adapter, text, or vision.
         """
+        if getattr(config, "is_gguf", False) or is_local_gguf_path(config.identifier):
+            raise ValueError(
+                "Local GGUF models must be loaded through the llama.cpp backend."
+            )
+
         # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
         if max_seq_length <= 0:
             max_seq_length = 2048
