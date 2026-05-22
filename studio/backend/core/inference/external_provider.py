@@ -70,6 +70,11 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
 
+def _openai_image_replay_requires_reasoning(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("gpt-5") or normalized.startswith("o")
+
+
 def _sanitize_openai_reasoning_replay_item(
     item: Any,
 ) -> Optional[dict[str, Any]]:
@@ -2699,6 +2704,23 @@ class ExternalProviderClient:
                 if translated_parts:
                     input_items.append({"role": role, "content": translated_parts})
 
+        if (
+            _openai_image_replay_requires_reasoning(model)
+            and reasoning_effort != "none"
+            and enable_thinking is not False
+        ):
+            filtered_replay_items: list[dict[str, Any]] = []
+            has_reasoning_replay = False
+            for item in openai_replay_items:
+                if item.get("type") == "reasoning":
+                    has_reasoning_replay = True
+                    filtered_replay_items.append(item)
+                elif item.get("type") == "image_generation_call":
+                    if has_reasoning_replay:
+                        filtered_replay_items.append(item)
+                else:
+                    filtered_replay_items.append(item)
+            openai_replay_items = filtered_replay_items
         input_items.extend(openai_replay_items)
 
         # NOTE: gpt-5.x / o3 / gpt-4.5 are reasoning-class models. They reject
@@ -2995,6 +3017,7 @@ class ExternalProviderClient:
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
                     last_openai_reasoning_replay_item: Optional[dict[str, Any]] = None
+                    openai_reasoning_replay_items: dict[str, dict[str, Any]] = {}
 
                     def _emit_tool_event(payload: dict[str, Any]) -> str:
                         chunk = {
@@ -3072,6 +3095,54 @@ class ExternalProviderClient:
                                 "snippet": snippet,
                             }
                         )
+
+                    def _record_openai_reasoning_replay_item(
+                        payload: Any,
+                    ) -> Optional[dict[str, Any]]:
+                        if not isinstance(payload, dict):
+                            return None
+                        item_id = payload.get("id") or payload.get("item_id")
+                        if not isinstance(item_id, str) or not item_id:
+                            return None
+                        existing = openai_reasoning_replay_items.setdefault(
+                            item_id,
+                            {
+                                "type": "reasoning",
+                                "id": item_id,
+                                "summary": [],
+                                "status": "completed",
+                            },
+                        )
+                        if payload.get("type") == "reasoning":
+                            sanitized = _sanitize_openai_reasoning_replay_item(payload)
+                            if sanitized:
+                                existing.update(sanitized)
+                                return existing
+                        summary_text = ""
+                        part = payload.get("part")
+                        if isinstance(part, dict) and part.get("type") == "summary_text":
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                summary_text = text
+                        elif payload.get("type") == "response.reasoning_summary_text.done":
+                            text = payload.get("text")
+                            if isinstance(text, str):
+                                summary_text = text
+                        if summary_text:
+                            summary_index = payload.get("summary_index")
+                            summary = existing.setdefault("summary", [])
+                            if isinstance(summary, list):
+                                summary_part = {
+                                    "type": "summary_text",
+                                    "text": summary_text,
+                                }
+                                if isinstance(summary_index, int) and summary_index >= 0:
+                                    while len(summary) <= summary_index:
+                                        summary.append({"type": "summary_text", "text": ""})
+                                    summary[summary_index] = summary_part
+                                else:
+                                    summary.append(summary_part)
+                        return existing
 
                     def _extract_reasoning_text(payload: Any) -> str:
                         if payload is None:
@@ -3210,7 +3281,7 @@ class ExternalProviderClient:
                                     continue
                                 if item.get("type") == "reasoning":
                                     last_openai_reasoning_replay_item = (
-                                        _sanitize_openai_reasoning_replay_item(item)
+                                        _record_openai_reasoning_replay_item(item)
                                     )
                                     summary_text = _extract_reasoning_text(
                                         item.get("summary")
@@ -3391,6 +3462,11 @@ class ExternalProviderClient:
                                 isinstance(event_type, str)
                                 and "reasoning" in event_type
                             ):
+                                recorded_reasoning = _record_openai_reasoning_replay_item(
+                                    event
+                                )
+                                if recorded_reasoning:
+                                    last_openai_reasoning_replay_item = recorded_reasoning
                                 reasoning_delta = _extract_reasoning_text(event)
                                 if reasoning_delta:
                                     if not reasoning_open:

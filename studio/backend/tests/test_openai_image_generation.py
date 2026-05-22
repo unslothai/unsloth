@@ -90,12 +90,11 @@ def _collect_tool_events(monkeypatch) -> list[dict]:
     event and return the parsed _toolEvent chunks."""
 
     sse = (
-        b"event: response.output_item.done\n"
-        b'data: {"type":"response.output_item.done",'
-        b'"item":{"type":"reasoning",'
-        b'"id":"rs_abc",'
-        b'"summary":[{"type":"summary_text","text":"Need to draw a cat."}],'
-        b'"status":"completed"}}\n\n'
+        b"event: response.reasoning_summary_text.done\n"
+        b'data: {"type":"response.reasoning_summary_text.done",'
+        b'"item_id":"rs_abc",'
+        b'"summary_index":0,'
+        b'"text":"Need to draw a cat."}\n\n'
         b"event: response.output_item.done\n"
         b'data: {"type":"response.output_item.done",'
         b'"item":{"type":"image_generation_call",'
@@ -244,6 +243,25 @@ def test_image_generation_reference_forwarded_for_followup_edit(monkeypatch):
         },
         {"type": "image_generation_call", "id": "img_abc"},
     ]
+
+
+def test_orphan_image_generation_ref_dropped_for_reasoning_models(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        base_url = "https://api.openai.com/v1",
+        enabled_tools = ["image_generation"],
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "image_generation_call", "id": "img_legacy"},
+                ],
+            },
+            {"role": "user", "content": "do you have the original image?"},
+        ],
+    )
+    input_items = captured["body"].get("input") or []
+    assert {"type": "image_generation_call", "id": "img_legacy"} not in input_items
 
 
 def test_external_message_builder_preserves_openai_image_generation_refs():

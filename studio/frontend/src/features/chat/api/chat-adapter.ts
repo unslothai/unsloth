@@ -378,8 +378,14 @@ function normalizeOpenAIReasoningItem(
   return normalized;
 }
 
+function openAIImageGenerationRequiresReasoningReplay(modelId: string): boolean {
+  const normalized = modelId.trim().toLowerCase();
+  return normalized.startsWith("gpt-5") || normalized.startsWith("o");
+}
+
 function collectOpenAIImageGenerationCallParts(
   message: RunMessage,
+  options?: { requireReasoningReplay?: boolean },
 ): Array<
   OpenAIReasoningContentPart | { type: "image_generation_call"; id: string }
 > {
@@ -411,6 +417,9 @@ function collectOpenAIImageGenerationCallParts(
       const reasoningItem = normalizeOpenAIReasoningItem(
         args?.openai_reasoning_item,
       );
+      if (options?.requireReasoningReplay && !reasoningItem) {
+        continue;
+      }
       if (reasoningItem && !seenReasoningIds.has(reasoningItem.id)) {
         seenReasoningIds.add(reasoningItem.id);
         parts.push(reasoningItem);
@@ -423,7 +432,10 @@ function collectOpenAIImageGenerationCallParts(
 
 function toOpenAIMessage(
   message: RunMessage,
-  options?: { includeOpenAIImageGenerationCalls?: boolean },
+  options?: {
+    includeOpenAIImageGenerationCalls?: boolean;
+    requireOpenAIImageGenerationReasoning?: boolean;
+  },
 ): {
   role: "system" | "user" | "assistant";
   content: OpenAIMessageContent;
@@ -448,7 +460,9 @@ function toOpenAIMessage(
 
   const imageParts = collectImageParts(message);
   const imageGenerationCallParts = options?.includeOpenAIImageGenerationCalls
-    ? collectOpenAIImageGenerationCallParts(message)
+    ? collectOpenAIImageGenerationCallParts(message, {
+        requireReasoningReplay: options.requireOpenAIImageGenerationReasoning,
+      })
     : [];
   if (imageParts.length > 0 || imageGenerationCallParts.length > 0) {
     return {
@@ -1017,6 +1031,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           toOpenAIMessage(message, {
             includeOpenAIImageGenerationCalls:
               imageGenerationEnabledForThisTurn,
+            requireOpenAIImageGenerationReasoning: Boolean(
+              externalSelection &&
+                runtime.reasoningEnabled !== false &&
+                openAIImageGenerationRequiresReasoningReplay(
+                  externalSelection.modelId,
+                ),
+            ),
           }),
         )
         .filter((message): message is NonNullable<typeof message> =>
