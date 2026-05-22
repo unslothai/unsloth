@@ -453,11 +453,16 @@ _TOOL_XML_RE = _re.compile(
             r"<tool_call>.*?</tool_call>",
             r"<function=\w+>.*?</function>",
             r"<\|tool_call>.*?<tool_call\|>",
-            # ``<|python_tag|>...`` runs to end of line. ``[^\n<]`` was
-            # used to stop at any ``<`` but that leaked the tail of
-            # any tool call whose argument contained a literal ``<``
-            # (queries, code snippets) into the user-visible stream.
-            r"<\|python_tag\|>[^\n]*",
+            # ``<|python_tag|>...`` runs until the next Llama-3 ``<|``
+            # sentinel (``<|eot_id|>``, ``<|eom_id|>``, etc.) or end of
+            # text. Earlier revisions used ``[^\n<]*`` (leaked tools
+            # whose args contained a literal ``<`` like
+            # ``code="if x < 10"``) and then ``[^\n]*`` (single-line
+            # only; multi-line ``python.call(code="line1\nline2")``
+            # leaked the second line). ``(?:[^<]|<(?!\|))*`` consumes
+            # any character that is not a sentinel start, so newlines,
+            # bare ``<``, and embedded JSON all stay inside the strip.
+            r"<\|python_tag\|>(?:[^<]|<(?!\|))*",
         ]
     ),
     _re.DOTALL,

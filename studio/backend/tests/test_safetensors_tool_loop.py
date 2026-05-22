@@ -1388,5 +1388,97 @@ class TestGptOssNameDetection:
         assert is_gpt_oss_model_name(None) is False
 
 
+# ────────────────────────────────────────────────────────────────────
+# Routes-level python_tag strip (multi-line; stop on next sentinel)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestRoutesPythonTagStrip:
+    """Earlier revisions of ``_TOOL_XML_RE`` in
+    ``studio.backend.routes.inference`` used either ``[^\\n<]*`` (5615 --
+    leaked the tail of any tool call whose argument contained a literal
+    ``<`` like ``code="if x < 10"``) or ``[^\\n]*`` (5620 round one --
+    single-line only, so the second line of
+    ``python.call(code="line1\\nline2")`` leaked). The current pattern
+    ``(?:[^<]|<(?!\\|))*`` consumes any character that is not a Llama-3
+    ``<|`` sentinel start, so multi-line code, embedded JSON, and bare
+    ``<`` characters in code all stay inside the strip.
+
+    The fully resolved strip is also exposed via
+    ``strip_tool_markup(text, final=True)`` in the parser; the
+    streaming path's routes-level strip is the regression-prone one
+    because it runs on every cumulative emission while content is
+    still arriving.
+    """
+
+    def _strip(self, text: str) -> str:
+        # Import inside the test so a routes-module import error does
+        # not blow up the entire test file at collection time.
+        from routes.inference import _strip_tool_xml
+
+        return _strip_tool_xml(text)
+
+    def test_single_line_python_tag_stripped(self):
+        # Floor: the original 5620 single-line behaviour still works.
+        text = '<|python_tag|>brave_search.call(query="weather")'
+        assert self._strip(text) == ""
+
+    def test_python_tag_with_less_than_in_code(self):
+        # 5615 regression: literal ``<`` inside code must NOT terminate
+        # the strip early.
+        text = '<|python_tag|>python.call(code="if x < 10: pass")'
+        assert self._strip(text) == ""
+
+    def test_python_tag_multiline_code_stripped(self):
+        # 5620 round-1 regression: multi-line code's second line leaked.
+        text = '<|python_tag|>python.call(code="line1\nline2\nline3")'
+        assert self._strip(text) == ""
+
+    def test_python_tag_multiline_with_less_than(self):
+        # Combined: multi-line code AND literal ``<`` in code.
+        text = (
+            '<|python_tag|>python.call(code="for i in range(10):\n'
+            '    if i < 5:\n'
+            '        print(i)")'
+        )
+        assert self._strip(text) == ""
+
+    def test_python_tag_stops_at_eom_sentinel(self):
+        # Strip stops at the next Llama-3 ``<|`` sentinel so any
+        # trailing assistant content survives.
+        text = (
+            '<|python_tag|>python.call(code="multi\nline")'
+            "<|eom_id|>final answer text"
+        )
+        assert self._strip(text) == "<|eom_id|>final answer text"
+
+    def test_python_tag_stops_at_eot_sentinel(self):
+        text = (
+            "<|python_tag|>brave_search.call(query=\"x\")"
+            "<|eot_id|>after"
+        )
+        assert self._strip(text) == "<|eot_id|>after"
+
+    def test_python_tag_json_form_multiline_stripped(self):
+        # The JSON form of python_tag with newlines inside string args.
+        text = (
+            '<|python_tag|>{"name":"python",'
+            '"parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}'
+        )
+        assert self._strip(text) == ""
+
+    def test_python_tag_with_eom_then_trailing_python_tag(self):
+        # Two python_tag emissions back-to-back across a sentinel: both
+        # should strip independently.
+        text = (
+            '<|python_tag|>brave_search.call(query="a")'
+            "<|eom_id|>"
+            '<|python_tag|>python.call(code="x=1")'
+        )
+        # ``<|eom_id|>`` between the two strips remains; both
+        # python_tag blocks are fully consumed.
+        assert self._strip(text) == "<|eom_id|>"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
