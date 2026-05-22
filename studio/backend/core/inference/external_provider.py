@@ -1192,9 +1192,7 @@ class ExternalProviderClient:
                 # `input_document`) would 400 the Anthropic API with
                 # "messages.N.content: at least one block is required".
                 if anthropic_parts:
-                    filtered.append(
-                        {"role": msg["role"], "content": anthropic_parts}
-                    )
+                    filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
                 filtered.append(msg)
 
