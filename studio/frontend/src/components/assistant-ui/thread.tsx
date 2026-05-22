@@ -11,6 +11,10 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import {
+  thinkEffortAriaLabel,
+  thinkToggleAriaLabel,
+} from "@/components/assistant-ui/think-aria-label";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
@@ -640,7 +644,11 @@ const ReasoningToggle: FC = () => {
                   ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
                   : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
             )}
-            aria-label={`Reasoning effort: ${reasoningEffort}`}
+            aria-label={thinkEffortAriaLabel({
+              modelLoaded,
+              reasoningDisabled: disabled,
+              reasoningEffort,
+            })}
           >
             {effectiveReasoningVisualEnabled ? (
               <LightbulbIcon className="size-3.5" />
@@ -716,13 +724,12 @@ const ReasoningToggle: FC = () => {
           ? "true"
           : "false"
       }
-      aria-label={
-        reasoningLockedOn
-          ? "Thinking is required for this model"
-          : effectiveReasoningEnabled
-            ? "Disable thinking"
-            : "Enable thinking"
-      }
+      aria-label={thinkToggleAriaLabel({
+        reasoningLockedOn,
+        modelLoaded,
+        reasoningDisabled: disabled,
+        effectiveReasoningEnabled,
+      })}
     >
       {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
         <LightbulbIcon className="size-3.5" />
