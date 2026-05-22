@@ -11,22 +11,14 @@ type FireworksOpts = {
   zIndex?: number;
 };
 
-// Studio CSP (`script-src 'self'`) blocks canvas-confetti's default
-// blob: worker, so we mount a dedicated overlay canvas once and drive it
-// via `confetti.create(...)` with `useWorker: false`. The shared instance
-// is reused across calls so we don't leak canvases per tour completion.
-//
-// Stacking note: when canvas-confetti runs against a caller-provided
-// canvas, the per-fire `zIndex` option no longer drives stacking; the
-// canvas element's own CSS `z-index` does. We therefore apply
-// `opts.zIndex` (or the default) to the shared canvas's style on each
-// call so callers that want to lower/raise the fireworks layer still
-// get that behavior.
+// CSP blocks canvas-confetti's default blob: worker, so reuse a single
+// overlay canvas via `confetti.create(..., { useWorker: false })`.
+// Caller-provided canvases ignore the per-fire `zIndex`; stacking is
+// driven by `_sharedCanvas.style.zIndex` instead (set in fireConfettiFireworks).
 const DEFAULT_FIREWORKS_Z_INDEX = 99999;
 let _sharedCanvas: HTMLCanvasElement | null = null;
 let _sharedFire: ConfettiInstance | null = null;
-// Cache the in-flight init promise so two same-tick calls don't both await
-// `import("canvas-confetti")` and append a second orphan canvas.
+// Cache the init promise so concurrent callers share one import + canvas.
 let _sharedFirePromise: Promise<ConfettiInstance | null> | null = null;
 function getSharedFire(): Promise<ConfettiInstance | null> {
   if (typeof document === "undefined") return Promise.resolve(null);
@@ -64,9 +56,7 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
     const fire = await getSharedFire();
     if (!fire || !_sharedCanvas) return;
 
-    // Honor `opts.zIndex` even though canvas-confetti's per-fire `zIndex`
-    // is ignored for caller-provided canvases (see note above): we drive
-    // stacking via the shared canvas's CSS instead of the per-fire option.
+    // Per-fire zIndex is ignored on a shared canvas; drive stacking via CSS.
     _sharedCanvas.style.zIndex = String(opts.zIndex ?? DEFAULT_FIREWORKS_Z_INDEX);
 
     const duration = opts.durationMs ?? 1200;
