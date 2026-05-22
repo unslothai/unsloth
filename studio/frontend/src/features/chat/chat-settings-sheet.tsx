@@ -69,6 +69,7 @@ import {
   getExternalProviderApiKey,
   parseExternalModelId,
   supportsProviderPromptCaching,
+  supportsProviderPromptCacheTtl,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -531,6 +532,10 @@ export function ChatSettingsPanel({
     Boolean(currentCheckpoint) &&
     modelRequiresTrustRemoteCode &&
     !(params.trustRemoteCode ?? false);
+  const showPromptCacheTtlControl = Boolean(
+    activeExternalProvider &&
+      supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
+  );
   const showPromptCachingControl =
     activeExternalProvider != null &&
     supportsProviderPromptCaching(activeExternalProvider.providerType);
@@ -1110,6 +1115,43 @@ export function ChatSettingsPanel({
                 aria-label="Enable prompt caching"
               />
             </div>
+            {showPromptCacheTtlControl && promptCachingEnabled ? (
+              <div className="flex items-center justify-between gap-3 pt-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Cache TTL
+                  </span>
+                  <InfoHint>
+                    Anthropic exposes a 5 minute and a 1 hour ephemeral
+                    cache pool. The 1 hour pool costs 2x base input on
+                    write vs 1.25x for 5 minute, but reads stay 0.1x for
+                    both, so a single read landing more than 5 minutes
+                    after the write pays off the premium.
+                  </InfoHint>
+                </div>
+                <Select
+                  value={activeExternalProvider.promptCacheTtl ?? "5m"}
+                  onValueChange={(value) => {
+                    if (value !== "5m" && value !== "1h") return;
+                    onExternalProviderChange?.({
+                      ...activeExternalProvider,
+                      promptCacheTtl: value,
+                    });
+                  }}
+                >
+                  <SelectTrigger
+                    className="panel-select-trigger h-8 w-[124px] shrink-0"
+                    aria-label="Prompt cache TTL"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5m">5 minutes</SelectItem>
+                    <SelectItem value="1h">1 hour</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
           </CollapsibleSection>
         ) : null}
 
