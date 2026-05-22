@@ -457,6 +457,93 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     assert fc_part["functionCall"]["args"] == {"location": "Paris"}
 
 
+def test_function_call_ids_forwarded_into_gemini_function_call_part(monkeypatch):
+    """OpenAI tool_call id rides functionCall.id so parallel calls disambiguate."""
+    messages = [
+        {"role": "user", "content": "x"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_alpha",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": json.dumps({"q": "a"}),
+                    },
+                },
+                {
+                    "id": "call_beta",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": json.dumps({"q": "b"}),
+                    },
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_alpha",
+            "content": json.dumps({"hits": ["A"]}),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_beta",
+            "content": json.dumps({"hits": ["B"]}),
+        },
+    ]
+    captured = _capture_body(monkeypatch, messages = messages)
+    contents = captured["body"]["contents"]
+    assistant_parts = next(c for c in contents if c["role"] == "model")["parts"]
+    call_ids = [
+        p["functionCall"]["id"]
+        for p in assistant_parts
+        if "functionCall" in p
+    ]
+    assert call_ids == ["call_alpha", "call_beta"], assistant_parts
+    response_ids = [
+        p["functionResponse"]["id"]
+        for c in contents
+        for p in c["parts"]
+        if "functionResponse" in p
+    ]
+    assert response_ids == ["call_alpha", "call_beta"], contents
+
+
+def test_parse_gemini_models_translates_native_catalog():
+    """Gemini's native /v1beta/models payload becomes OpenAI-shape entries."""
+    payload = {
+        "models": [
+            {
+                "name": "models/gemini-2.5-flash",
+                "baseModelId": "gemini-2.5-flash",
+                "displayName": "Gemini 2.5 Flash",
+                "supportedGenerationMethods": [
+                    "generateContent",
+                    "streamGenerateContent",
+                ],
+            },
+            {
+                "name": "models/embedding-001",
+                "supportedGenerationMethods": ["embedContent"],
+            },
+            {
+                "name": "models/gemini-2.5-pro",
+            },
+        ]
+    }
+    out = ExternalProviderClient._parse_gemini_models(payload)
+    ids = [m["id"] for m in out]
+    assert "gemini-2.5-flash" in ids
+    assert "gemini-2.5-pro" in ids
+    assert "embedding-001" not in ids
+    flash = next(m for m in out if m["id"] == "gemini-2.5-flash")
+    assert flash["display_name"] == "Gemini 2.5 Flash"
+    assert flash["owned_by"] == "google"
+
+
 def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatch):
     """executableCode + codeExecutionResult parts emit code_execution events."""
     sse = [

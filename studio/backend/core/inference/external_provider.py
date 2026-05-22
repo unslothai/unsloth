@@ -2715,14 +2715,19 @@ class ExternalProviderClient:
                     tc_id = tc.get("id")
                     if fn_name and isinstance(tc_id, str) and tc_id:
                         tool_call_names[tc_id] = fn_name
-                    parts.append(
-                        {
-                            "functionCall": {
-                                "name": fn_name,
-                                "args": args,
-                            }
-                        }
-                    )
+                    # Forward the OpenAI tool_call id into Gemini's
+                    # functionCall.id so a follow-up turn that issues
+                    # multiple calls to the same function (different
+                    # args, same name) can be disambiguated on the
+                    # response side. Gemini accepts the field per
+                    # https://ai.google.dev/gemini-api/docs/function-calling.
+                    function_call_part: dict[str, Any] = {
+                        "name": fn_name,
+                        "args": args,
+                    }
+                    if isinstance(tc_id, str) and tc_id:
+                        function_call_part["id"] = tc_id
+                    parts.append({"functionCall": function_call_part})
             if role == "tool":
                 # OpenAI's role="tool" follow-up carries the function
                 # result. Gemini's matching shape is a role="user" turn
@@ -2742,18 +2747,21 @@ class ExternalProviderClient:
                         response_payload = {"result": content}
                 else:
                     response_payload = content or {}
-                parts = [
-                    {
-                        "functionResponse": {
-                            "name": tool_name,
-                            "response": (
-                                response_payload
-                                if isinstance(response_payload, dict)
-                                else {"result": response_payload}
-                            ),
-                        }
-                    }
-                ]
+                function_response_part: dict[str, Any] = {
+                    "name": tool_name,
+                    "response": (
+                        response_payload
+                        if isinstance(response_payload, dict)
+                        else {"result": response_payload}
+                    ),
+                }
+                # Mirror tool_call_id onto functionResponse.id so
+                # Gemini can match the result to the originating
+                # functionCall when multiple parallel calls were made.
+                tc_id = msg.get("tool_call_id")
+                if isinstance(tc_id, str) and tc_id:
+                    function_response_part["id"] = tc_id
+                parts = [{"functionResponse": function_response_part}]
                 gemini_role = "user"
             if parts:
                 contents.append({"role": gemini_role, "parts": parts})
@@ -4365,10 +4373,65 @@ class ExternalProviderClient:
                     models = [model for model in raw_models if isinstance(model, dict)]
             if not models and self.provider_type == "ollama":
                 models = await self._list_ollama_native_models()
+            # Gemini's native /v1beta/models returns
+            # {"models": [{"name": "models/gemini-2.5-flash", ...}]}
+            # -- repackage into the OpenAI-compatible shape the rest
+            # of Studio expects so dynamic model discovery works.
+            if not models and self.provider_type == "gemini":
+                models = self._parse_gemini_models(data)
             return models
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    @staticmethod
+    def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
+        """Translate Gemini's native /v1beta/models payload to OpenAI shape.
+
+        Native response:
+          {"models": [{"name": "models/gemini-2.5-flash",
+                       "baseModelId": "gemini-2.5-flash",
+                       "displayName": "Gemini 2.5 Flash",
+                       "supportedGenerationMethods": [...]}]}
+
+        We only keep entries that advertise
+        ``generateContent`` / ``streamGenerateContent`` so the picker
+        does not surface embedding-only models the chat path can't
+        drive.
+        """
+        if not isinstance(payload, dict):
+            return []
+        entries = payload.get("models") or []
+        if not isinstance(entries, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            methods = entry.get("supportedGenerationMethods") or []
+            if isinstance(methods, list) and methods and not any(
+                m in methods for m in ("generateContent", "streamGenerateContent")
+            ):
+                continue
+            base_id = entry.get("baseModelId")
+            name = entry.get("name") or ""
+            # ``name`` arrives as ``"models/gemini-2.5-flash"``; the
+            # chat path uses the bare id.
+            short_id = (
+                base_id
+                if isinstance(base_id, str) and base_id
+                else (name.split("/", 1)[1] if "/" in name else name)
+            )
+            if not short_id:
+                continue
+            out.append(
+                {
+                    "id": short_id,
+                    "owned_by": "google",
+                    "display_name": entry.get("displayName") or short_id,
+                }
+            )
+        return out
 
     async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
         """Fallback when Ollama's /v1/models returns an empty or null catalog."""
