@@ -42,6 +42,7 @@ def _capture(monkeypatch, ttl = None) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
+        captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
             content = (b"event: message_stop\n" b'data: {"type": "message_stop"}\n\n'),
@@ -124,6 +125,25 @@ def test_1h_ttl_writes_into_1h_pool(monkeypatch):
     assert len(ccs) == 2, ccs
     for cc in ccs:
         assert cc == {"type": "ephemeral", "ttl": "1h"}, cc
+
+
+def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
+    # The `extended-cache-ttl-2025-04-11` beta header that originally
+    # gated 1h cache TTL has been promoted to GA: verified live against
+    # api.anthropic.com on 2026-05-22 -- a request with
+    # `cache_control:{type:"ephemeral", ttl:"1h"}` and NO beta header
+    # returns 200 and populates `ephemeral_1h_input_tokens`. Pin the
+    # contract so we don't reintroduce the gate by accident; a future
+    # regression that re-adds the header would surface here.
+    captured = _capture(monkeypatch, ttl = "1h")
+    beta = captured["headers"].get("anthropic-beta", "")
+    assert "extended-cache-ttl-2025-04-11" not in beta, beta
+
+
+def test_5m_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
+    captured = _capture(monkeypatch, ttl = "5m")
+    beta = captured["headers"].get("anthropic-beta", "")
+    assert "extended-cache-ttl-2025-04-11" not in beta, beta
 
 
 # ── unknown values are dropped, not forwarded ──────────────────────

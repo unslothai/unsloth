@@ -1177,6 +1177,15 @@ class ExternalProviderClient:
         # discount makes up for the 1.6x write premium after a single
         # additional hit. Anything other than the known TTL strings is
         # dropped to avoid sending a malformed marker.
+        #
+        # The `extended-cache-ttl-2025-04-11` beta header that originally
+        # gated 1h TTL has been promoted to GA: as of 2026-05 the live
+        # API accepts `ttl: "1h"` without any beta opt-in. Verified
+        # against api.anthropic.com on claude-opus-4-7 (status 200 +
+        # `ephemeral_1h_input_tokens` populated). The test below pins
+        # the contract by asserting the header is NOT on the wire so a
+        # future regression that reintroduces the gate would surface
+        # before users see a 400.
         cache_marker: dict[str, Any] = {"type": "ephemeral"}
         if prompt_cache_ttl in ("5m", "1h"):
             cache_marker["ttl"] = prompt_cache_ttl
